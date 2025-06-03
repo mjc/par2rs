@@ -27,6 +27,9 @@
             clang
             llvmPackages.bintools
             rustup
+            openssl
+            openssl.dev
+            pkg-config
           ];
 
           RUSTC_VERSION = overrides.toolchain.channel;
