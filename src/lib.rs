@@ -38,29 +38,8 @@ pub struct FileDescriptionPacket {
     pub md5_hash: [u8; 16], // MD5 hash of the entire file
     pub md5_16k: [u8; 16], // MD5 hash of the first 16kB of the file
     pub file_length: u64, // Length of the file
-    #[br(parse_with = parse_file_name)]
-    pub file_name: String, // Name of the file (variable-length, multiples of 4 bytes)
-}
-
-fn parse_file_name<R: binread::io::Read + binread::io::Seek>(reader: &mut R, _: &binread::ReadOptions, _: ()) -> binread::BinResult<String> {
-    let start_pos = reader.stream_position()?;
-    let mut buffer = Vec::new();
-    loop {
-        let mut chunk = [0u8; 4];
-        let bytes_read = reader.read(&mut chunk)?;
-        if bytes_read == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..bytes_read]);
-        if bytes_read < 4 {
-            break;
-        }
-    }
-
-    String::from_utf8(buffer).map_err(|_| binread::Error::Custom {
-        pos: start_pos,
-        err: Box::new(String::from("Invalid UTF-8 in file_name")),
-    })
+    #[br(count = 256)]
+    pub file_name: Vec<u8>, // Name of the file (not null-terminated)
 }
 
 #[derive(Debug, BinRead)]
