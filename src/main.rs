@@ -1,79 +1,33 @@
-use binread::BinRead;
 use binread::BinReaderExt;
-use clap::{Arg, Command};
 use std::fs;
 use std::path::Path;
 
-#[derive(Debug, BinRead)]
-struct Par2Header {
-    magic: [u8; 8], // "PAR2\0PKT"
-    length: u64,   // Length of the packet
-    md5: [u8; 16], // MD5 hash of the packet
-    set_id: [u8; 16], // Unique identifier for the PAR2 set
-    type_of_packet: [u8; 16], // Type of the packet
-    // Add more fields as per the PAR2 specification
-}
+use par2rs::parse_args;
+use par2rs::Par2Header;
 
 fn main() {
-    let matches = Command::new("par2rs")
-        .version("1.0")
-        .author("Your Name <your.email@example.com>")
-        .about("A Rust implementation of par2repair")
-        .arg(
-            Arg::new("input")
-                .help("Input file")
-                .required(true)
-                .value_parser(clap::value_parser!(String)),
-        )
-        .arg(
-            Arg::new("output")
-                .help("Output file")
-                .required(false)
-                .value_parser(clap::value_parser!(String)),
-        )
-        .get_matches();
+    let matches = parse_args();
 
-    if let Some(input) = matches.get_one::<String>("input") {
-        let input_path = Path::new(input);
+    let input_file = matches.get_one::<String>("input").expect("Input file is required");
+    let output_file = matches.get_one::<String>("output");
 
-        let par2_file = if input_path.extension().and_then(|ext| ext.to_str()) != Some("par2") {
-            let parent_dir = input_path.parent().unwrap_or_else(|| Path::new("."));
-            let par2_files: Vec<_> = fs::read_dir(parent_dir)
-                .unwrap()
-                .filter_map(|entry| {
-                    let entry = entry.unwrap();
-                    let path = entry.path();
-                    if path.extension().and_then(|ext| ext.to_str()) == Some("par2") {
-                        Some(path)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            if par2_files.is_empty() {
-                eprintln!("No .par2 file found in the same folder as the input file.");
-                return;
-            }
-
-            par2_files[0].clone()
-        } else {
-            input_path.to_path_buf()
-        };
-
-        println!("Using .par2 file: {}", par2_file.display());
-
-        // Read the .par2 file using binread
-        let mut file = fs::File::open(par2_file).unwrap();
-        let par2_data: Result<Par2Header, _> = file.read_le();
-
-        match par2_data {
-            Ok(data) => println!("Successfully read .par2 file: {:?}", data),
-            Err(e) => eprintln!("Failed to read .par2 file: {}", e),
-        }
+    println!("Input file: {}", input_file);
+    if let Some(output) = output_file {
+        println!("Output file: {}", output);
     }
 
-    if let Some(output) = matches.get_one::<String>("output") {
-        println!("Output file: {}", output);
+    // Example usage of Par2Header (to avoid unused field warnings)
+    let file_path = Path::new(input_file);
+    if file_path.exists() {
+        let mut file = fs::File::open(file_path).expect("Failed to open file");
+        let header: Par2Header = file.read_le().expect("Failed to read Par2Header");
+        println!("Parsed Par2Header: {:?}", header);
+        println!("Magic: {:?}", header.magic);
+        println!("Length: {}", header.length);
+        println!("MD5: {:x?}", header.md5);
+        println!("Set ID: {:x?}", header.set_id);
+        println!("Type of Packet: {:x?}", header.type_of_packet);
+    } else {
+        eprintln!("File does not exist: {}", input_file);
     }
 }
