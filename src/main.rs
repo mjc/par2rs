@@ -1,9 +1,59 @@
 use binread::BinReaderExt;
 use std::fs;
+use std::io::{Read, Seek};
 use std::path::Path;
 
 use par2rs::parse_args;
-use par2rs::{Par2Header, MainPacket, FileDescriptionPacket, InputFileSliceChecksumPacket, RecoverySlicePacket, CreatorPacket};
+use par2rs::{MainPacket, PackedMainPacket, FileDescriptionPacket, RecoverySlicePacket, CreatorPacket};
+
+fn parse_packets(file: &mut fs::File) {
+    loop {
+        let mut magic = [0u8; 8];
+        if let Err(_) = file.read_exact(&mut magic) {
+            break; // End of file or error
+        }
+
+        if &magic != b"PAR2\0PKT" {
+            eprintln!("Invalid magic sequence, stopping parsing.");
+            break;
+        }
+
+        file.seek(std::io::SeekFrom::Current(-8)).expect("Failed to rewind to the beginning of the packet");
+        let mut header = [0u8; 64]; // Full 64-byte header including type_of_packet
+        
+        file.read_exact(&mut header).expect("Failed to read header");
+
+        let type_of_packet = &header[48..64]; // Adjusted to correctly extract the last 16 bytes of the common header
+
+        match type_of_packet {
+            b"PAR 2.0\0Main\0\0\0\0" => {
+                file.seek(std::io::SeekFrom::Current(-64)).expect("Failed to rewind to the beginning of the packet");
+                let _: MainPacket = file.read_le().expect("Failed to read MainPacket");
+                println!("Parsed MainPacket successfully");
+            }
+            b"PAR 2.0\0PkdMain\0" => {
+                let _: PackedMainPacket = file.read_le().expect("Failed to read PackedMainPacket");
+                println!("Parsed PackedMainPacket successfully");
+            }
+            b"PAR 2.0\0FileDesc" => {
+                let _: FileDescriptionPacket = file.read_le().expect("Failed to read FileDescriptionPacket");
+                println!("Parsed FileDescriptionPacket successfully");
+            }
+            b"PAR 2.0\0RecvSlic" => {
+                let _: RecoverySlicePacket = file.read_le().expect("Failed to read RecoverySlicePacket");
+                println!("Parsed RecoverySlicePacket successfully");
+            }
+            b"PAR 2.0\0Creator\0" => {
+                let _: CreatorPacket = file.read_le().expect("Failed to read CreatorPacket");
+                println!("Parsed CreatorPacket successfully");
+            }
+            _ => {
+                eprintln!("Unknown packet type: {:?}", String::from_utf8_lossy(&type_of_packet));
+                break;
+            }
+        }
+    }
+}
 
 fn main() {
     let matches = parse_args();
@@ -16,46 +66,10 @@ fn main() {
         println!("Output file: {}", output);
     }
 
-    // Example usage of Par2Header (to avoid unused field warnings)
     let file_path = Path::new(input_file);
     if file_path.exists() {
         let mut file = fs::File::open(file_path).expect("Failed to open file");
-        let header: Par2Header = file.read_le().expect("Failed to read Par2Header");
-        println!("Parsed Par2Header: {:?}", header);
-        println!("Magic: {:?}", header.magic);
-        println!("Length: {}", header.length);
-        println!("MD5: {:x?}", header.md5);
-        println!("Set ID: {:x?}", header.set_id);
-        println!("Type of Packet: {:x?}", header.type_of_packet);
-
-        // Parse the rest of the PAR2 file
-        let mut file = fs::File::open(file_path).expect("Failed to open file");
-
-        // Read the main packet
-        let main_packet: MainPacket = file.read_le().expect("Failed to read MainPacket");
-        println!("Parsed MainPacket: {:?}", main_packet);
-
-        // Read file description packets
-        for _ in 0..main_packet.file_count {
-            let file_description: FileDescriptionPacket = file.read_le().expect("Failed to read FileDescriptionPacket");
-            println!("Parsed FileDescriptionPacket: {:?}", file_description);
-        }
-
-        // Read input file slice checksum packets
-        for _ in 0..main_packet.file_count {
-            let input_file_slice_checksum: InputFileSliceChecksumPacket = file.read_le().expect("Failed to read InputFileSliceChecksumPacket");
-            println!("Parsed InputFileSliceChecksumPacket: {:?}", input_file_slice_checksum);
-        }
-
-        // Read recovery slice packets
-        for _ in 0..header.recovery_block_count {
-            let recovery_slice: RecoverySlicePacket = file.read_le().expect("Failed to read RecoverySlicePacket");
-            println!("Parsed RecoverySlicePacket: {:?}", recovery_slice);
-        }
-
-        // Read creator packet
-        let creator_packet: CreatorPacket = file.read_le().expect("Failed to read CreatorPacket");
-        println!("Parsed CreatorPacket: {:?}", creator_packet);
+        parse_packets(&mut file);
     } else {
         eprintln!("File does not exist: {}", input_file);
     }
