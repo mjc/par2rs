@@ -31,7 +31,4 @@ fn main() {
     } else {
         eprintln!("File does not exist: {}", input_file);
     }
-
-    // Call the repair function
-    repair_par2_file(input_file);
 }
