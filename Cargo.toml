@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 reed-solomon-erasure = "*"
 binread = "*"
+clap = "4.5.39"
