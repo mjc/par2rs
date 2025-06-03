@@ -3,6 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use par2rs::parse_args;
+use par2rs::repair::repair_par2_file;
 use par2rs::Par2Header;
 
 fn main() {
@@ -30,4 +31,7 @@ fn main() {
     } else {
         eprintln!("File does not exist: {}", input_file);
     }
+
+    // Call the repair function
+    repair_par2_file(input_file);
 }
