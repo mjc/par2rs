@@ -30,6 +30,7 @@
             openssl
             openssl.dev
             pkg-config
+            par2cmdline
           ];
 
           RUSTC_VERSION = overrides.toolchain.channel;
