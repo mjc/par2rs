@@ -3,8 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use par2rs::parse_args;
-use par2rs::repair::repair_par2_file;
-use par2rs::Par2Header;
+use par2rs::{Par2Header, MainPacket, FileDescriptionPacket, InputFileSliceChecksumPacket, RecoverySlicePacket, CreatorPacket};
 
 fn main() {
     let matches = parse_args();
@@ -28,6 +27,35 @@ fn main() {
         println!("MD5: {:x?}", header.md5);
         println!("Set ID: {:x?}", header.set_id);
         println!("Type of Packet: {:x?}", header.type_of_packet);
+
+        // Parse the rest of the PAR2 file
+        let mut file = fs::File::open(file_path).expect("Failed to open file");
+
+        // Read the main packet
+        let main_packet: MainPacket = file.read_le().expect("Failed to read MainPacket");
+        println!("Parsed MainPacket: {:?}", main_packet);
+
+        // Read file description packets
+        for _ in 0..main_packet.file_count {
+            let file_description: FileDescriptionPacket = file.read_le().expect("Failed to read FileDescriptionPacket");
+            println!("Parsed FileDescriptionPacket: {:?}", file_description);
+        }
+
+        // Read input file slice checksum packets
+        for _ in 0..main_packet.file_count {
+            let input_file_slice_checksum: InputFileSliceChecksumPacket = file.read_le().expect("Failed to read InputFileSliceChecksumPacket");
+            println!("Parsed InputFileSliceChecksumPacket: {:?}", input_file_slice_checksum);
+        }
+
+        // Read recovery slice packets
+        for _ in 0..header.recovery_block_count {
+            let recovery_slice: RecoverySlicePacket = file.read_le().expect("Failed to read RecoverySlicePacket");
+            println!("Parsed RecoverySlicePacket: {:?}", recovery_slice);
+        }
+
+        // Read creator packet
+        let creator_packet: CreatorPacket = file.read_le().expect("Failed to read CreatorPacket");
+        println!("Parsed CreatorPacket: {:?}", creator_packet);
     } else {
         eprintln!("File does not exist: {}", input_file);
     }
