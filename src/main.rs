@@ -7,7 +7,7 @@ use par2rs::parse_args;
 use par2rs::{MainPacket, PackedMainPacket, FileDescriptionPacket, RecoverySlicePacket, CreatorPacket, InputFileSliceChecksumPacket};
 use par2rs::Packet;
 
-fn parse_packets(file: &mut fs::File) -> Vec<Packet> {
+pub fn parse_packets(file: &mut fs::File) -> Vec<Packet> {
     let mut packets = Vec::new();
 
     loop {
