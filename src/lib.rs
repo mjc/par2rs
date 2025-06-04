@@ -12,8 +12,7 @@ pub struct MainPacket {
     pub length: u64,      // Length of the packet
     pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
-    #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string(), pad_after = 4)]
-    pub type_of_packet: String, // Type of the packet, converted to a string
+    #[br(pad_after = 16)] // Skip the `type_of_packet` field
     pub slice_size: u64,  // Size of each slice
     #[br(count = (length - 72) / 16)] // Calculate count based on packet length and header size
     pub file_ids: Vec<[u8; 16]>, // File IDs of all files in the recovery set
@@ -25,8 +24,7 @@ pub struct FileDescriptionPacket {
     pub length: u64,      // Length of the packet
     pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
-    #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string())]
-    pub type_of_packet: String, // Type of the packet, converted to a string
+    #[br(pad_after = 16)] // Skip the `type_of_packet` field
     pub file_id: [u8; 16], // Unique identifier for the file
     pub md5_hash: [u8; 16], // MD5 hash of the entire file
     pub md5_16k: [u8; 16], // MD5 hash of the first 16kB of the file
@@ -41,8 +39,7 @@ pub struct InputFileSliceChecksumPacket {
     pub length: u64,      // Length of the packet
     pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
-    #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string())]
-    pub type_of_packet: String, // Type of the packet, converted to a string
+    #[br(pad_after = 16)] // Skip the `type_of_packet` field
     pub file_id: [u8; 16], // File ID of the file
     #[br(count = (length - 64 - 16) / 20)]
     // Calculate count based on packet length and header size
@@ -55,8 +52,7 @@ pub struct RecoverySlicePacket {
     pub length: u64,      // Length of the packet
     pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
-    #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string())]
-    pub type_of_packet: String, // Type of the packet, converted to a string
+    #[br(pad_after = 16)] // Skip the `type_of_packet` field
     pub exponent: u32,    // Exponent used to generate recovery data
     #[br(count = length as usize - (8 + 8 + 16 + 16 + 4))] // Subtract sizes of all other fields
     pub recovery_data: Vec<u8>, // Recovery data
@@ -68,8 +64,7 @@ pub struct CreatorPacket {
     pub length: u64,      // Length of the packet
     pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
-    #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string())]
-    pub type_of_packet: String, // Type of the packet, converted to a string
+    #[br(pad_after = 16)] // Skip the `type_of_packet` field
     #[br(count = length as usize - (8 + 8 + 16 + 16 + 16))] // Subtract sizes of all other fields
     pub creator_info: Vec<u8>, // ASCII text identifying the client
 }
@@ -80,8 +75,7 @@ pub struct PackedMainPacket {
     pub length: u64,      // Length of the packet
     pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
-    #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string())]
-    pub type_of_packet: String, // Type of the packet, converted to a string
+    #[br(pad_after = 16)] // Skip the `type_of_packet` field
     pub subslice_size: u64, // Subslice size. Must be a multiple of 4 and equally divide the slice size.
     pub slice_size: u64, // Slice size. Must be a multiple of 4 and a multiple of the subslice size.
     pub file_count: u32, // Number of files in the recovery set.
