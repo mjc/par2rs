@@ -2,8 +2,8 @@ pub mod args;
 
 pub use args::parse_args;
 
-use binread::BinRead;
-use binread::BinReaderExt;
+use binrw::BinRead;
+use binrw::BinReaderExt;
 
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
