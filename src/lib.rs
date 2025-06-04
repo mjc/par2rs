@@ -10,12 +10,12 @@ use std::io::Seek;
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct MainPacket {
-    pub length: u64,   // Length of the packet
-    pub md5: [u8; 16], // MD5 hash of the packet
+    pub length: u64,      // Length of the packet
+    pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
     #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string(), pad_after = 4)]
     pub type_of_packet: String, // Type of the packet, converted to a string
-    pub slice_size: u64, // Size of each slice
+    pub slice_size: u64,  // Size of each slice
     #[br(count = (length - 72) / 16)] // Calculate count based on packet length and header size
     pub file_ids: Vec<[u8; 16]>, // File IDs of all files in the recovery set
 }
@@ -23,8 +23,8 @@ pub struct MainPacket {
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct FileDescriptionPacket {
-    pub length: u64,   // Length of the packet
-    pub md5: [u8; 16], // MD5 hash of the packet
+    pub length: u64,      // Length of the packet
+    pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
     #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string())]
     pub type_of_packet: String, // Type of the packet, converted to a string
@@ -39,25 +39,26 @@ pub struct FileDescriptionPacket {
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct InputFileSliceChecksumPacket {
-    pub length: u64,   // Length of the packet
-    pub md5: [u8; 16], // MD5 hash of the packet
+    pub length: u64,      // Length of the packet
+    pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
     #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string())]
     pub type_of_packet: String, // Type of the packet, converted to a string
     pub file_id: [u8; 16], // File ID of the file
-    #[br(count = (length - 64 - 16) / 20)] // Calculate count based on packet length and header size
+    #[br(count = (length - 64 - 16) / 20)]
+    // Calculate count based on packet length and header size
     pub slice_checksums: Vec<([u8; 16], u32)>, // MD5 and CRC32 pairs for slices
 }
 
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct RecoverySlicePacket {
-    pub length: u64,   // Length of the packet
-    pub md5: [u8; 16], // MD5 hash of the packet
+    pub length: u64,      // Length of the packet
+    pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
     #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string())]
     pub type_of_packet: String, // Type of the packet, converted to a string
-    pub exponent: u32, // Exponent used to generate recovery data
+    pub exponent: u32,    // Exponent used to generate recovery data
     #[br(count = length as usize - (8 + 8 + 16 + 16 + 4))] // Subtract sizes of all other fields
     pub recovery_data: Vec<u8>, // Recovery data
 }
@@ -65,8 +66,8 @@ pub struct RecoverySlicePacket {
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct CreatorPacket {
-    pub length: u64,   // Length of the packet
-    pub md5: [u8; 16], // MD5 hash of the packet
+    pub length: u64,      // Length of the packet
+    pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
     #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string())]
     pub type_of_packet: String, // Type of the packet, converted to a string
@@ -77,8 +78,8 @@ pub struct CreatorPacket {
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct PackedMainPacket {
-    pub length: u64,   // Length of the packet
-    pub md5: [u8; 16], // MD5 hash of the packet
+    pub length: u64,      // Length of the packet
+    pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
     #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string())]
     pub type_of_packet: String, // Type of the packet, converted to a string
@@ -111,12 +112,32 @@ impl Packet {
         file.seek(std::io::SeekFrom::Current(-64)).ok()?;
 
         let packet_parsers: &[(&[u8], fn(&mut std::fs::File) -> Option<Packet>)] = &[
-            (b"PAR 2.0\0Main\0\0\0\0", |f: &mut std::fs::File| f.read_le::<MainPacket>().ok().map(Packet::MainPacket)),
-            (b"PAR 2.0\0PkdMain\0", |f: &mut std::fs::File| f.read_le::<PackedMainPacket>().ok().map(Packet::PackedMainPacket)),
-            (b"PAR 2.0\0FileDesc", |f: &mut std::fs::File| f.read_le::<FileDescriptionPacket>().ok().map(Packet::FileDescriptionPacket)),
-            (b"PAR 2.0\0RecvSlic", |f: &mut std::fs::File| f.read_le::<RecoverySlicePacket>().ok().map(Packet::RecoverySlicePacket)),
-            (b"PAR 2.0\0Creator\0", |f: &mut std::fs::File| f.read_le::<CreatorPacket>().ok().map(Packet::CreatorPacket)),
-            (b"PAR 2.0\0IFSC\0\0\0\0", |f: &mut std::fs::File| f.read_le::<InputFileSliceChecksumPacket>().ok().map(Packet::InputFileSliceChecksumPacket)),
+            (b"PAR 2.0\0Main\0\0\0\0", |f: &mut std::fs::File| {
+                f.read_le::<MainPacket>().ok().map(Packet::MainPacket)
+            }),
+            (b"PAR 2.0\0PkdMain\0", |f: &mut std::fs::File| {
+                f.read_le::<PackedMainPacket>()
+                    .ok()
+                    .map(Packet::PackedMainPacket)
+            }),
+            (b"PAR 2.0\0FileDesc", |f: &mut std::fs::File| {
+                f.read_le::<FileDescriptionPacket>()
+                    .ok()
+                    .map(Packet::FileDescriptionPacket)
+            }),
+            (b"PAR 2.0\0RecvSlic", |f: &mut std::fs::File| {
+                f.read_le::<RecoverySlicePacket>()
+                    .ok()
+                    .map(Packet::RecoverySlicePacket)
+            }),
+            (b"PAR 2.0\0Creator\0", |f: &mut std::fs::File| {
+                f.read_le::<CreatorPacket>().ok().map(Packet::CreatorPacket)
+            }),
+            (b"PAR 2.0\0IFSC\0\0\0\0", |f: &mut std::fs::File| {
+                f.read_le::<InputFileSliceChecksumPacket>()
+                    .ok()
+                    .map(Packet::InputFileSliceChecksumPacket)
+            }),
         ];
 
         for (packet_type, parser) in packet_parsers {
