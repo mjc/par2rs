@@ -25,19 +25,24 @@ fn main() {
         // Here you can do something with the packets, like processing or saving them
         println!("Parsed {} packets", packets.len());
 
+        // Add the input file to the list of .par2 files to parse
+        let mut par2_files: Vec<_> = vec![file_path.to_path_buf()];
+
+        // Find additional .par2 files in the folder
         let folder_path = file_path.parent().expect("Failed to get parent folder");
-        let par2_files: Vec<_> = fs::read_dir(folder_path)
-            .expect("Failed to read directory")
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "par2") {
-                    Some(path)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        par2_files.extend(
+            fs::read_dir(folder_path)
+                .expect("Failed to read directory")
+                .filter_map(|entry| {
+                    let entry = entry.ok()?;
+                    let path = entry.path();
+                    if path.extension().map_or(false, |ext| ext == "par2") && path != file_path {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                })
+        );
 
         println!("Found .par2 files: {:?}", par2_files);
 
