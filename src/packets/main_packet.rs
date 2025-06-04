@@ -1,4 +1,4 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0Main\0\0\0\0";
 
@@ -27,4 +27,58 @@ pub struct MainPacket {
     pub file_ids: Vec<[u8; 16]>, // File IDs of all files in the recovery set
     #[br(count = (length - 72 - (file_ids.len() as u64 * 16)) / 16)]
     pub non_recovery_file_ids: Vec<[u8; 16]>, // File IDs of all files in the non-recovery set
+}
+
+/// A doctest for testing the `BinWrite` implementation of `MainPacket`.
+///
+/// ```rust
+/// use std::fs::File;
+/// use std::io::Cursor;
+/// use binrw::{BinWriterExt, BinWrite};
+/// use par2rs::packets::main_packet::MainPacket;
+///
+/// let main_packet = MainPacket {
+///     length: 92,
+///     md5: [0; 16],
+///     set_id: [0; 16],
+///     slice_size: 1024,
+///     file_ids: vec![[0; 16]],
+///     non_recovery_file_ids: vec![],
+/// };
+///
+/// let mut buffer = Cursor::new(Vec::new());
+/// main_packet.write_le(&mut buffer).unwrap();
+///
+/// let expected = std::fs::read("tests/fixtures/packets/MainPacket.par2").unwrap();
+/// let actual = buffer.into_inner();
+///
+/// for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+///     if a != e {
+///         println!("Byte mismatch at position {}: actual = {}, expected = {}", i, a, e);
+///     }
+/// }
+/// ```
+impl BinWrite for MainPacket {
+    type Args<'a> = ();
+
+    fn write_options<W: std::io::Write + std::io::Seek>(
+        &self,
+        writer: &mut W,
+        _endian: binrw::Endian,
+        _args: Self::Args<'_>,
+    ) -> binrw::BinResult<()> {
+        writer.write_all(super::MAGIC_BYTES)?;
+        writer.write_all(TYPE_OF_PACKET)?;
+        writer.write_all(&self.length.to_le_bytes())?;
+        writer.write_all(&self.md5)?;
+        writer.write_all(&self.set_id)?;
+        writer.write_all(&self.slice_size.to_le_bytes())?;
+        for file_id in &self.file_ids {
+            writer.write_all(file_id)?;
+        }
+        for non_recovery_file_id in &self.non_recovery_file_ids {
+            writer.write_all(non_recovery_file_id)?;
+        }
+        Ok(())
+    }
 }
