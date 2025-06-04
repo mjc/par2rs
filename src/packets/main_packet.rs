@@ -109,7 +109,7 @@ impl MainPacket {
         data.extend_from_slice(&self.set_id);
         data.extend_from_slice(TYPE_OF_PACKET);
         data.extend_from_slice(&self.slice_size.to_le_bytes());
-        data.extend_from_slice(&self.length.to_le_bytes());
+        data.extend_from_slice(&self.file_count.to_le_bytes());
         for file_id in &self.file_ids {
             data.extend_from_slice(file_id);
         }
