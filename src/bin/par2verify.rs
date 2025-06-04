@@ -1,22 +1,17 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use par2rs::parse_args;
 use par2rs::verify::verify_par2_packets;
 use rayon::prelude::*;
 
 fn main() {
-    let matches = parse_args();
+    let matches = par2rs::parse_args();
 
     let input_file = matches
         .get_one::<String>("input")
         .expect("Input file is required");
-    let output_file = matches.get_one::<String>("output");
 
     println!("Input file: {}", input_file);
-    if let Some(output) = output_file {
-        println!("Output file: {}", output);
-    }
 
     let file_path = Path::new(input_file);
     if !file_path.exists() {
