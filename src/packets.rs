@@ -1,5 +1,7 @@
+// Refactored for maintainability
 use binrw::BinRead;
 use binrw::BinReaderExt;
+use std::io::{Read, Seek, SeekFrom};
 
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
@@ -8,8 +10,8 @@ pub struct MainPacket {
     pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
     #[br(pad_after = 16)] // Skip the `type_of_packet` field
-    pub slice_size: u64, // Size of each slice
-    #[br(count = (length - 72) / 16)] // Calculate count based on packet length and header size
+    pub slice_size: u64,  // Size of each slice
+    #[br(count = (length - 72) / 16)]
     pub file_ids: Vec<[u8; 16]>, // File IDs of all files in the recovery set
     #[br(count = (length - 72 - (file_ids.len() as u64 * 16)) / 16)]
     pub non_recovery_file_ids: Vec<[u8; 16]>, // File IDs of all files in the non-recovery set
@@ -94,21 +96,30 @@ pub enum Packet {
 }
 
 impl Packet {
-    pub fn parse<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Option<Self> {
-        let mut header = [0u8; 64];
+    pub fn parse<R: Read + Seek>(reader: &mut R) -> Option<Self> {
+        let (type_of_packet, packet_length) = Self::get_packet_type(reader)?;
 
-        // Read the header
+        let packet = Self::match_packet_type(reader, &type_of_packet)?;
+
+        Self::seek_to_end_of_packet(reader, packet_length);
+
+        Some(packet)
+    }
+
+    fn get_packet_type<R: Read + Seek>(reader: &mut R) -> Option<([u8; 16], u64)> {
+        let mut header = [0u8; 64];
         if reader.read_exact(&mut header).is_err() {
             return None;
         }
-
         // Rewind the reader to the start of the packet
-        reader.seek(std::io::SeekFrom::Current(-64)).ok();
+        reader.seek(SeekFrom::Current(-64)).ok()?;
+        let type_of_packet = header[48..64].try_into().ok()?;
+        let packet_length = u64::from_le_bytes(header[0..8].try_into().ok()?);
+        Some((type_of_packet, packet_length))
+    }
 
-        let type_of_packet = &header[48..64];
-        let packet_length = u64::from_le_bytes(header[0..8].try_into().unwrap());
-
-        let packet = match type_of_packet {
+    fn match_packet_type<R: Read + Seek>(reader: &mut R, type_of_packet: &[u8]) -> Option<Self> {
+        match type_of_packet {
             b"PAR 2.0\0Main\0\0\0\0" => reader.read_le::<MainPacket>().ok().map(Packet::Main),
             b"PAR 2.0\0PkdMain\0" => reader.read_le::<PackedMainPacket>().ok().map(Packet::PackedMain),
             b"PAR 2.0\0FileDesc" => reader.read_le::<FileDescriptionPacket>().ok().map(Packet::FileDescription),
@@ -116,23 +127,21 @@ impl Packet {
             b"PAR 2.0\0Creator\0" => reader.read_le::<CreatorPacket>().ok().map(Packet::Creator),
             b"PAR 2.0\0IFSC\0\0\0\0" => reader.read_le::<InputFileSliceChecksumPacket>().ok().map(Packet::InputFileSliceChecksum),
             _ => None,
-        };
+        }
+    }
 
-        // Seek to the end of the packet
-        reader.seek(std::io::SeekFrom::Current(packet_length as i64 - 64)).ok();
-
-        packet
+    fn seek_to_end_of_packet<R: Seek>(reader: &mut R, packet_length: u64) {
+        reader.seek(SeekFrom::Current(packet_length as i64 - 64)).ok();
     }
 }
 
-pub fn parse_packets<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Vec<Packet> {
+pub fn parse_packets<R: Read + Seek>(reader: &mut R) -> Vec<Packet> {
     let mut packets = Vec::new();
 
     while let Some(packet) = Packet::parse(reader) {
         packets.push(packet);
 
-        // Break the loop if the reader reaches the end of the file
-        if reader.stream_position().unwrap() >= reader.seek(std::io::SeekFrom::End(0)).unwrap() {
+        if reader.stream_position().unwrap() >= reader.seek(SeekFrom::End(0)).unwrap() {
             break;
         }
     }
