@@ -16,3 +16,33 @@ pub struct FileDescriptionPacket {
     #[br(count = length - 120)] // Adjusted count to account for removed magic field
     pub file_name: Vec<u8>, // Name of the file (not null-terminated)
 }
+
+impl FileDescriptionPacket {
+    /// Verifies the MD5 hash of the packet.
+    /// Computes the MD5 hash of the serialized fields and compares it to the stored MD5 value.
+    ///
+    /// A doctest for testing the `verify` method of `FileDescriptionPacket`.
+    ///
+    /// ```rust
+    /// use std::fs::File;
+    /// use binrw::BinReaderExt;
+    /// use par2rs::packets::file_description_packet::FileDescriptionPacket;
+    ///
+    /// let mut file = File::open("tests/fixtures/packets/FileDescriptionPacket.par2").unwrap();
+    /// let packet: FileDescriptionPacket = file.read_le().unwrap();
+    ///
+    /// assert!(packet.verify(), "MD5 verification failed for FileDescriptionPacket");
+    /// ```
+    pub fn verify(&self) -> bool {
+        let mut data = Vec::new();
+        data.extend_from_slice(&self.set_id);
+        data.extend_from_slice(TYPE_OF_PACKET);
+        data.extend_from_slice(&self.file_id);
+        data.extend_from_slice(&self.md5_hash);
+        data.extend_from_slice(&self.md5_16k);
+        data.extend_from_slice(&self.file_length.to_le_bytes());
+        data.extend_from_slice(&self.file_name);
+        let computed_md5 = md5::compute(&data);
+        computed_md5.as_ref() == self.md5
+    }
+}
