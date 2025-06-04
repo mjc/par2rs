@@ -1,5 +1,7 @@
 use binrw::BinRead;
 
+pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0FileDesc\0";
+
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct FileDescriptionPacket {

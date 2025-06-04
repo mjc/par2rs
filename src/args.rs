@@ -11,7 +11,8 @@ pub fn parse_args() -> clap::ArgMatches {
                 .help("Input file")
                 .required(true)
                 .value_parser(|input: &str| {
-                    let path = fs::canonicalize(input).map_err(|_| "Failed to resolve input path")?;
+                    let path =
+                        fs::canonicalize(input).map_err(|_| "Failed to resolve input path")?;
                     if path.exists() {
                         Ok(path.to_string_lossy().to_string())
                     } else {
@@ -24,7 +25,8 @@ pub fn parse_args() -> clap::ArgMatches {
                 .help("Output file")
                 .required(false)
                 .value_parser(|output: &str| {
-                    let path = fs::canonicalize(output).map_err(|_| "Failed to resolve output path")?;
+                    let path =
+                        fs::canonicalize(output).map_err(|_| "Failed to resolve output path")?;
                     if path.parent().map_or(true, |parent| parent.exists()) {
                         Ok(path.to_string_lossy().to_string())
                     } else {
