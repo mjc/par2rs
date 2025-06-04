@@ -87,3 +87,12 @@ pub struct PackedMainPacket {
     #[br(count = (length as usize - 64 - 8 - 8 - 4 - (file_count as usize * 16)) / 16)]
     pub non_recovery_set_ids: Vec<[u8; 16]>, // File IDs of all files in the non-recovery set.
 }
+
+pub enum Packet {
+    MainPacket(MainPacket),
+    PackedMainPacket(PackedMainPacket),
+    FileDescriptionPacket(FileDescriptionPacket),
+    RecoverySlicePacket(RecoverySlicePacket),
+    CreatorPacket(CreatorPacket),
+    InputFileSliceChecksumPacket(InputFileSliceChecksumPacket),
+}
