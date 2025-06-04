@@ -70,7 +70,7 @@ fn compute_md5(file_name: &str, directory: Option<&str>, length: Option<usize>) 
         .map_err(|_| format!("Failed to open file: {}", file_path))?;
     let mut reader = std::io::BufReader::new(file);
     let mut hasher = md5::Context::new();
-    let mut buffer = vec![0u8; 16 * 1024]; // Default buffer size
+    let mut buffer = vec![0u8; 256 * 1024 * 1024]; // 256MB buffer size
 
     let mut total_read = 0;
     loop {
