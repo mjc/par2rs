@@ -42,7 +42,7 @@ pub fn quick_check_files(packets: Vec<crate::Packet>) -> bool {
     let file_names: Vec<String> = packets
         .iter()
         .filter_map(|packet| {
-            if let Packet::FileDescriptionPacket(desc) = packet {
+            if let Packet::FileDescription(desc) = packet {
                 // Compute the md5 of the first 16 bytes of the file:
                 // Trim null bytes from the file name
                 // Prepend the directory to the file path
