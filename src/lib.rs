@@ -3,8 +3,9 @@ pub mod args;
 pub use args::parse_args;
 
 use binread::BinRead;
-use std::io::{Read, Seek};
 use binread::BinReaderExt;
+use std::io::Read;
+use std::io::Seek;
 
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
@@ -101,7 +102,14 @@ pub enum Packet {
 }
 
 impl Packet {
-    pub fn parse(file: &mut std::fs::File, type_of_packet: &[u8]) -> Option<Self> {
+    pub fn parse(file: &mut std::fs::File, _type_of_packet: &[u8]) -> Option<Self> {
+        let mut header = [0u8; 64];
+        file.read_exact(&mut header).ok()?;
+        let type_of_packet = &header[48..64];
+
+        // Rewind the file pointer to the start of the packet
+        file.seek(std::io::SeekFrom::Current(-64)).ok()?;
+
         let packet_parsers: &[(&[u8], fn(&mut std::fs::File) -> Option<Packet>)] = &[
             (b"PAR 2.0\0Main\0\0\0\0", |f: &mut std::fs::File| f.read_le::<MainPacket>().ok().map(Packet::MainPacket)),
             (b"PAR 2.0\0PkdMain\0", |f: &mut std::fs::File| f.read_le::<PackedMainPacket>().ok().map(Packet::PackedMainPacket)),
@@ -124,32 +132,9 @@ impl Packet {
 pub fn parse_packets(file: &mut std::fs::File) -> Vec<Packet> {
     let mut packets = Vec::new();
 
-    while let Ok(magic) = read_magic(file) {
-        if &magic != b"PAR2\0PKT" {
-            eprintln!("Invalid magic sequence: {:?}, stopping parsing.", magic);
-            break;
-        }
-
-        if let Some(packet) = parse_packet(file) {
-            packets.push(packet);
-        } else {
-            eprintln!("Unknown packet type, stopping parsing.");
-            break;
-        }
+    while let Some(packet) = Packet::parse(file, &[]) {
+        packets.push(packet);
     }
 
     packets
-}
-
-fn read_magic(file: &mut std::fs::File) -> std::io::Result<[u8; 8]> {
-    let mut magic = [0u8; 8];
-    file.read_exact(&mut magic).map(|_| magic)
-}
-
-fn parse_packet(file: &mut std::fs::File) -> Option<Packet> {
-    let mut header = [0u8; 64];
-    file.read_exact(&mut header).ok()?;
-    let type_of_packet = &header[48..64];
-    file.seek(std::io::SeekFrom::Current(-64)).ok()?;
-    Packet::parse(file, type_of_packet)
 }
