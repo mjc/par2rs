@@ -7,8 +7,8 @@ use std::io::{Read, Seek};
 use binread::BinReaderExt;
 
 #[derive(Debug, BinRead)]
+#[br(magic = b"PAR2\0PKT")]
 pub struct MainPacket {
-    pub magic: [u8; 8], // "PAR2\0PKT"
     pub length: u64,   // Length of the packet
     pub md5: [u8; 16], // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
@@ -20,8 +20,8 @@ pub struct MainPacket {
 }
 
 #[derive(Debug, BinRead)]
+#[br(magic = b"PAR2\0PKT")]
 pub struct FileDescriptionPacket {
-    pub magic: [u8; 8], // "PAR2\0PKT"
     pub length: u64,   // Length of the packet
     pub md5: [u8; 16], // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
@@ -31,13 +31,13 @@ pub struct FileDescriptionPacket {
     pub md5_hash: [u8; 16], // MD5 hash of the entire file
     pub md5_16k: [u8; 16], // MD5 hash of the first 16kB of the file
     pub file_length: u64, // Length of the file
-    #[br(count = length - 120)] // Subtract sizes of all other fields
+    #[br(count = length - 120)] // Adjusted count to account for removed magic field
     pub file_name: Vec<u8>, // Name of the file (not null-terminated)
 }
 
 #[derive(Debug, BinRead)]
+#[br(magic = b"PAR2\0PKT")]
 pub struct InputFileSliceChecksumPacket {
-    pub magic: [u8; 8], // "PAR2\0PKT"
     pub length: u64,   // Length of the packet
     pub md5: [u8; 16], // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
@@ -49,8 +49,8 @@ pub struct InputFileSliceChecksumPacket {
 }
 
 #[derive(Debug, BinRead)]
+#[br(magic = b"PAR2\0PKT")]
 pub struct RecoverySlicePacket {
-    pub magic: [u8; 8], // "PAR2\0PKT"
     pub length: u64,   // Length of the packet
     pub md5: [u8; 16], // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
@@ -62,8 +62,8 @@ pub struct RecoverySlicePacket {
 }
 
 #[derive(Debug, BinRead)]
+#[br(magic = b"PAR2\0PKT")]
 pub struct CreatorPacket {
-    pub magic: [u8; 8], // "PAR2\0PKT"
     pub length: u64,   // Length of the packet
     pub md5: [u8; 16], // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
@@ -74,8 +74,8 @@ pub struct CreatorPacket {
 }
 
 #[derive(Debug, BinRead)]
+#[br(magic = b"PAR2\0PKT")]
 pub struct PackedMainPacket {
-    pub magic: [u8; 8], // "PAR2\0PKT"
     pub length: u64,   // Length of the packet
     pub md5: [u8; 16], // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
