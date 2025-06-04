@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use par2rs::parse_args;
+use par2rs::verify::verify_par2_packets;
 use rayon::prelude::*;
 
 fn main() {
@@ -29,6 +30,8 @@ fn main() {
         .collect::<Vec<_>>();
 
     println!("Total packets collected: {}", all_packets.len());
+
+    verify_par2_packets(all_packets);
 }
 
 fn collect_par2_files(file_path: &Path) -> Vec<PathBuf> {

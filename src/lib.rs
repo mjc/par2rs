@@ -1,4 +1,5 @@
 pub mod args;
+pub mod verify;
 
 pub use args::parse_args;
 
