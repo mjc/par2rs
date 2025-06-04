@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn test_quick_check_files() {
         // Create mock packets for testing
-        let mock_packets = vec![Packet::MainPacket(crate::MainPacket {
+        let mock_packets = vec![Packet::Main(MainPacket {
             length: 0,
             md5: [0; 16],
             set_id: [0; 16],
