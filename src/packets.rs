@@ -1,7 +1,12 @@
-// Refactored for maintainability
-use binrw::BinRead;
-use binrw::BinReaderExt;
 use std::io::{Read, Seek, SeekFrom};
+use binrw::{BinRead, BinReaderExt};
+
+pub mod main_packet;
+pub mod file_description_packet;
+pub mod input_file_slice_checksum_packet;
+pub mod recovery_slice_packet;
+pub mod creator_packet;
+pub mod packed_main_packet;
 
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
