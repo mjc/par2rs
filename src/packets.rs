@@ -8,7 +8,7 @@ pub struct MainPacket {
     pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
     #[br(pad_after = 16)] // Skip the `type_of_packet` field
-    pub slice_size: u64,  // Size of each slice
+    pub slice_size: u64, // Size of each slice
     #[br(count = (length - 72) / 16)] // Calculate count based on packet length and header size
     pub file_ids: Vec<[u8; 16]>, // File IDs of all files in the recovery set
     #[br(count = (length - 72 - (file_ids.len() as u64 * 16)) / 16)]
@@ -50,7 +50,7 @@ pub struct RecoverySlicePacket {
     pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
     #[br(pad_after = 16)] // Skip the `type_of_packet` field
-    pub exponent: u32,    // Exponent used to generate recovery data
+    pub exponent: u32, // Exponent used to generate recovery data
     #[br(count = length as usize - (8 + 8 + 16 + 16 + 4))] // Subtract sizes of all other fields
     pub recovery_data: Vec<u8>, // Recovery data
 }
@@ -62,7 +62,8 @@ pub struct CreatorPacket {
     pub md5: [u8; 16],    // MD5 hash of the packet
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
     #[br(pad_after = 16)] // Skip the `type_of_packet` field
-    #[br(count = length as usize - (8 + 8 + 16 + 16 + 16))] // Subtract sizes of all other fields
+    #[br(count = length as usize - (8 + 8 + 16 + 16 + 16))]
+    // Subtract sizes of all other fields
     pub creator_info: Vec<u8>, // ASCII text identifying the client
 }
 
