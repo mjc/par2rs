@@ -7,13 +7,13 @@ use std::path::Path;
 
 /// Verifies par2 packets.
 /// This function reads the packets from the provided vector and verifies that they are usable
-/// 
+///
 /// # Arguments
 /// /// * `packets` - A vector of packets parsed from the PAR2 files.
-/// 
+///
 /// # Returns
 /// /// * `packets` - A vector of packets that are usable.
-/// 
+///
 /// # Output
 /// Prints failed verification messages to stderr if any packet fails verification.
 // pub fn verify_par2_packets(packets: Vec<crate::Packet>) -> Vec<crate::Packet> {
@@ -50,7 +50,13 @@ pub fn quick_check_files(packets: Vec<crate::Packet>) -> bool {
                 let file_path = file_name.trim_end_matches(char::from(0));
 
                 // Verify the MD5 of the first 16 KB of the file
-                if let Err(err) = verify_md5(file_path, None, Some(16 * 1024), &desc.md5_16k, "first 16 KB of file") {
+                if let Err(err) = verify_md5(
+                    file_path,
+                    None,
+                    Some(16 * 1024),
+                    &desc.md5_16k,
+                    "first 16 KB of file",
+                ) {
                     eprintln!("{}", err);
                     return None;
                 }
@@ -79,18 +85,26 @@ pub fn quick_check_files(packets: Vec<crate::Packet>) -> bool {
 }
 
 /// Helper function to compute MD5 checksum of a file
-fn compute_md5(file_name: &str, directory: Option<&str>, length: Option<usize>) -> Result<[u8; 16], String> {
+fn compute_md5(
+    file_name: &str,
+    directory: Option<&str>,
+    length: Option<usize>,
+) -> Result<[u8; 16], String> {
     let file_path = match directory {
-        Some(dir) => Path::new(dir).join(file_name.trim_end_matches(char::from(0))).to_string_lossy().to_string(),
+        Some(dir) => Path::new(dir)
+            .join(file_name.trim_end_matches(char::from(0)))
+            .to_string_lossy()
+            .to_string(),
         None => {
             let cwd = std::env::current_dir()
                 .map_err(|_| "Failed to get current working directory".to_string())?;
-            cwd.join(file_name.trim_end_matches(char::from(0))).to_string_lossy().to_string()
+            cwd.join(file_name.trim_end_matches(char::from(0)))
+                .to_string_lossy()
+                .to_string()
         }
     };
 
-    let file = File::open(&file_path)
-        .map_err(|_| format!("Failed to open file: {}", file_path))?;
+    let file = File::open(&file_path).map_err(|_| format!("Failed to open file: {}", file_path))?;
     let mut reader = std::io::BufReader::new(file);
     let mut hasher = md5::Context::new();
     let mut buffer = vec![0u8; 256 * 1024 * 1024]; // 256MB buffer size

@@ -60,7 +60,7 @@ fn main() -> io::Result<()> {
                 _ => {
                     println!("Unknown packet type: {:02X?}", packet_type_bytes);
                     "UnknownPacket"
-                },
+                }
             };
 
             // Debug: Print the length of the packet
@@ -80,7 +80,10 @@ fn main() -> io::Result<()> {
             if !seen_packet_types.contains(human_readable_name) {
                 // Update the output file path
                 let output_file = output_dir.join(format!("{}.par2", human_readable_name));
-                println!("Attempting to save packet type: {} to file: {:?}", human_readable_name, output_file);
+                println!(
+                    "Attempting to save packet type: {} to file: {:?}",
+                    human_readable_name, output_file
+                );
                 match File::create(&output_file) {
                     Ok(mut output) => {
                         if let Err(e) = output.write_all(packet_data) {
@@ -96,15 +99,21 @@ fn main() -> io::Result<()> {
                                     if written_file_size != packet_data.len() as u64 {
                                         println!("Error: Written file size ({}) does not match packet size ({}).", written_file_size, packet_data.len());
                                     } else {
-                                        println!("File size verification successful: {} bytes.", written_file_size);
+                                        println!(
+                                            "File size verification successful: {} bytes.",
+                                            written_file_size
+                                        );
                                     }
-                                },
+                                }
                                 Err(e) => {
-                                    println!("Failed to retrieve metadata for file {:?}: {}", output_file, e);
+                                    println!(
+                                        "Failed to retrieve metadata for file {:?}: {}",
+                                        output_file, e
+                                    );
                                 }
                             }
                         }
-                    },
+                    }
                     Err(e) => {
                         println!("Failed to create file {:?}: {}", output_file, e);
                     }
@@ -115,6 +124,9 @@ fn main() -> io::Result<()> {
         }
     }
 
-    println!("Split into {} unique packet types.", seen_packet_types.len());
+    println!(
+        "Split into {} unique packet types.",
+        seen_packet_types.len()
+    );
     Ok(())
 }

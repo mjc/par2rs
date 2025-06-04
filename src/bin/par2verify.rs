@@ -21,7 +21,11 @@ fn main() {
 
     if let Some(parent) = file_path.parent() {
         if let Err(err) = std::env::set_current_dir(parent) {
-            eprintln!("Failed to set current directory to {}: {}", parent.display(), err);
+            eprintln!(
+                "Failed to set current directory to {}: {}",
+                parent.display(),
+                err
+            );
             return;
         }
     }
