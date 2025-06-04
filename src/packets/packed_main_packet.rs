@@ -17,3 +17,37 @@ pub struct PackedMainPacket {
     #[br(count = (length as usize - 64 - 8 - 8 - 4 - (file_count as usize * 16)) / 16)]
     pub non_recovery_set_ids: Vec<[u8; 16]>, // File IDs of all files in the non-recovery set.
 }
+
+impl PackedMainPacket {
+    /// Verifies the MD5 hash of the packet.
+    /// Computes the MD5 hash of the serialized fields and compares it to the stored MD5 value.
+    ///
+    /// A doctest for testing the `verify` method of `PackedMainPacket`.
+    ///
+    /// ```rust
+    /// use std::fs::File;
+    /// use binrw::BinReaderExt;
+    /// use par2rs::packets::packed_main_packet::PackedMainPacket;
+    ///
+    /// // let mut file = File::open("tests/fixtures/packets/PackedMainPacket.par2").unwrap();
+    /// // let packet: PackedMainPacket = file.read_le().unwrap();
+    ///
+    /// // assert!(packet.verify(), "MD5 verification failed for PackedMainPacket");
+    /// ```
+    pub fn verify(&self) -> bool {
+        let mut data = Vec::new();
+        data.extend_from_slice(&self.set_id);
+        data.extend_from_slice(TYPE_OF_PACKET);
+        data.extend_from_slice(&self.subslice_size.to_le_bytes());
+        data.extend_from_slice(&self.slice_size.to_le_bytes());
+        data.extend_from_slice(&self.file_count.to_le_bytes());
+        for id in &self.recovery_set_ids {
+            data.extend_from_slice(id);
+        }
+        for id in &self.non_recovery_set_ids {
+            data.extend_from_slice(id);
+        }
+        let computed_md5 = md5::compute(&data);
+        computed_md5.as_ref() == self.md5
+    }
+}

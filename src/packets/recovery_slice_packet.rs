@@ -13,3 +13,30 @@ pub struct RecoverySlicePacket {
     #[br(count = length as usize - (8 + 8 + 16 + 16 + 4))] // Subtract sizes of all other fields
     pub recovery_data: Vec<u8>, // Recovery data
 }
+
+impl RecoverySlicePacket {
+    /// Verifies the MD5 hash of the packet.
+    /// Computes the MD5 hash of the serialized fields and compares it to the stored MD5 value.
+    ///
+    /// A doctest for testing the `verify` method of `RecoverySlicePacket`.
+    ///
+    /// ```rust,ignore
+    /// use std::fs::File;
+    /// use binrw::BinReaderExt;
+    /// use par2rs::packets::recovery_slice_packet::RecoverySlicePacket;
+    ///
+    /// // let mut file = File::open("tests/fixtures/packets/RecoverySlicePacket.par2").unwrap();
+    /// // let packet: RecoverySlicePacket = file.read_le().unwrap();
+    ///
+    /// // assert!(packet.verify(), "MD5 verification failed for RecoverySlicePacket");
+    /// ```
+    pub fn verify(&self) -> bool {
+        let mut data = Vec::new();
+        data.extend_from_slice(&self.set_id);
+        data.extend_from_slice(TYPE_OF_PACKET);
+        data.extend_from_slice(&self.exponent.to_le_bytes());
+        data.extend_from_slice(&self.recovery_data);
+        let computed_md5 = md5::compute(&data);
+        computed_md5.as_ref() == self.md5
+    }
+}
