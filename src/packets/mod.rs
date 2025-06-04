@@ -28,6 +28,17 @@ pub enum Packet {
 }
 
 impl Packet {
+    pub fn verify(&self) -> bool {
+        match self {
+            Packet::Main(packet) => packet.verify(),
+            Packet::PackedMain(packet) => packet.verify(),
+            Packet::FileDescription(packet) => packet.verify(),
+            Packet::RecoverySlice(packet) => packet.verify(),
+            Packet::Creator(packet) => packet.verify(),
+            Packet::InputFileSliceChecksum(packet) => packet.verify(),
+        }
+    }
+
     pub fn parse<R: Read + Seek>(reader: &mut R) -> Option<Self> {
         let (type_of_packet, packet_length) = Self::get_packet_type(reader)?;
 
