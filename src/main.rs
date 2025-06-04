@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use par2rs::parse_args;
 use rayon::prelude::*;
@@ -23,24 +23,15 @@ fn main() {
         return;
     }
 
-    // Collect all .par2 files in the folder, including the input file
-    let par2_files = collect_par2_files(file_path);
-
-    let all_packets: Vec<_> = par2_files
+    let all_packets = collect_par2_files(file_path)
         .par_iter()
-        .map(|par2_file| {
-            let mut file = fs::File::open(par2_file).expect("Failed to open .par2 file");
-            let packets = par2rs::parse_packets(&mut file);
-            println!("Parsed {} packets from {:?}", packets.len(), par2_file);
-            packets
-        })
-        .flatten()
-        .collect();
+        .flat_map(|par2_file| parse_par2_file(par2_file))
+        .collect::<Vec<_>>();
 
     println!("Total packets collected: {}", all_packets.len());
 }
 
-fn collect_par2_files(file_path: &Path) -> Vec<std::path::PathBuf> {
+fn collect_par2_files(file_path: &Path) -> Vec<PathBuf> {
     let mut par2_files = vec![file_path.to_path_buf()];
 
     if let Some(folder_path) = file_path.parent() {
@@ -48,17 +39,20 @@ fn collect_par2_files(file_path: &Path) -> Vec<std::path::PathBuf> {
             fs::read_dir(folder_path)
                 .expect("Failed to read directory")
                 .filter_map(|entry| {
-                    let entry = entry.ok()?;
-                    let path = entry.path();
-                    if path.extension().map_or(false, |ext| ext == "par2") && path != file_path {
-                        Some(path)
-                    } else {
-                        None
-                    }
+                    let path = entry.ok()?.path();
+                    (path.extension().map_or(false, |ext| ext == "par2") && path != file_path)
+                        .then_some(path)
                 }),
         );
     }
 
     println!("Found .par2 files: {:?}", par2_files);
     par2_files
+}
+
+fn parse_par2_file(par2_file: &Path) -> Vec<par2rs::Packet> {
+    let mut file = fs::File::open(par2_file).expect("Failed to open .par2 file");
+    let packets = par2rs::parse_packets(&mut file);
+    println!("Parsed {} packets from {:?}", packets.len(), par2_file);
+    packets
 }
