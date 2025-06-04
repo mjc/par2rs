@@ -37,7 +37,24 @@ fn main() {
 
     println!("Total packets collected: {}", all_packets.len());
 
-    quick_check_files(all_packets);
+    let verified_packets = verify_packets(all_packets);
+
+    quick_check_files(verified_packets);
+}
+
+fn verify_packets(packets: Vec<par2rs::Packet>) -> Vec<par2rs::Packet> {
+    let mut verified_packets = vec![];
+
+    for packet in packets {
+        if packet.verify() {
+            verified_packets.push(packet);
+        } else {
+            eprintln!("Packet verification failed: {:?}", packet);
+        }
+    }
+
+    println!("Total verified packets: {}", verified_packets.len());
+    verified_packets
 }
 
 fn collect_par2_files(file_path: &Path) -> Vec<PathBuf> {
