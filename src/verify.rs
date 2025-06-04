@@ -161,6 +161,7 @@ fn verify_md5(
 mod tests {
     use super::*;
     use crate::Packet;
+    use crate::packets::main_packet::MainPacket;
 
     #[test]
     fn test_quick_check_files() {
