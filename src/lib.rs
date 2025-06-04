@@ -4,8 +4,6 @@ pub use args::parse_args;
 
 use binread::BinRead;
 use binread::BinReaderExt;
-use std::io::Read;
-use std::io::Seek;
 
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
@@ -103,46 +101,26 @@ pub enum Packet {
 }
 
 impl Packet {
-    pub fn parse(file: &mut std::fs::File, _type_of_packet: &[u8]) -> Option<Self> {
+    pub fn parse<R: std::io::Read + std::io::Seek>(reader: &mut R, _type_of_packet: &[u8]) -> Option<Self> {
         let mut header = [0u8; 64];
-        file.read_exact(&mut header).ok()?;
+        reader.read_exact(&mut header).ok()?;
         let type_of_packet = &header[48..64];
 
-        // Rewind the file pointer to the start of the packet
-        file.seek(std::io::SeekFrom::Current(-64)).ok()?;
+        // Rewind the reader to the start of the packet
+        reader.seek(std::io::SeekFrom::Current(-64)).ok()?;
 
-        let packet_parsers: &[(&[u8], fn(&mut std::fs::File) -> Option<Packet>)] = &[
-            (b"PAR 2.0\0Main\0\0\0\0", |f: &mut std::fs::File| {
-                f.read_le::<MainPacket>().ok().map(Packet::MainPacket)
-            }),
-            (b"PAR 2.0\0PkdMain\0", |f: &mut std::fs::File| {
-                f.read_le::<PackedMainPacket>()
-                    .ok()
-                    .map(Packet::PackedMainPacket)
-            }),
-            (b"PAR 2.0\0FileDesc", |f: &mut std::fs::File| {
-                f.read_le::<FileDescriptionPacket>()
-                    .ok()
-                    .map(Packet::FileDescriptionPacket)
-            }),
-            (b"PAR 2.0\0RecvSlic", |f: &mut std::fs::File| {
-                f.read_le::<RecoverySlicePacket>()
-                    .ok()
-                    .map(Packet::RecoverySlicePacket)
-            }),
-            (b"PAR 2.0\0Creator\0", |f: &mut std::fs::File| {
-                f.read_le::<CreatorPacket>().ok().map(Packet::CreatorPacket)
-            }),
-            (b"PAR 2.0\0IFSC\0\0\0\0", |f: &mut std::fs::File| {
-                f.read_le::<InputFileSliceChecksumPacket>()
-                    .ok()
-                    .map(Packet::InputFileSliceChecksumPacket)
-            }),
+        let packet_parsers: &[(&[u8], fn(&mut R) -> Option<Packet>)] = &[
+            (b"PAR 2.0\0Main\0\0\0\0", |r: &mut R| r.read_le::<MainPacket>().ok().map(Packet::MainPacket)),
+            (b"PAR 2.0\0PkdMain\0", |r: &mut R| r.read_le::<PackedMainPacket>().ok().map(Packet::PackedMainPacket)),
+            (b"PAR 2.0\0FileDesc", |r: &mut R| r.read_le::<FileDescriptionPacket>().ok().map(Packet::FileDescriptionPacket)),
+            (b"PAR 2.0\0RecvSlic", |r: &mut R| r.read_le::<RecoverySlicePacket>().ok().map(Packet::RecoverySlicePacket)),
+            (b"PAR 2.0\0Creator\0", |r: &mut R| r.read_le::<CreatorPacket>().ok().map(Packet::CreatorPacket)),
+            (b"PAR 2.0\0IFSC\0\0\0\0", |r: &mut R| r.read_le::<InputFileSliceChecksumPacket>().ok().map(Packet::InputFileSliceChecksumPacket)),
         ];
 
         for (packet_type, parser) in packet_parsers {
             if type_of_packet == *packet_type {
-                return parser(file);
+                return parser(reader);
             }
         }
 
@@ -150,10 +128,10 @@ impl Packet {
     }
 }
 
-pub fn parse_packets(file: &mut std::fs::File) -> Vec<Packet> {
+pub fn parse_packets<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Vec<Packet> {
     let mut packets = Vec::new();
 
-    while let Some(packet) = Packet::parse(file, &[]) {
+    while let Some(packet) = Packet::parse(reader, &[]) {
         packets.push(packet);
     }
 
