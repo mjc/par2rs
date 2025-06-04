@@ -38,36 +38,14 @@ use std::path::Path;
 ///
 /// A boolean indicating whether the verification was successful.
 pub fn quick_check_files(packets: Vec<crate::Packet>) -> bool {
+    println!("Starting quick check of files...");
+
     // First gather all the file_names from FileDescriptionPackets
     let file_names: Vec<String> = packets
         .iter()
         .filter_map(|packet| {
             if let Packet::FileDescription(desc) = packet {
-                // Compute the md5 of the first 16 bytes of the file:
-                // Trim null bytes from the file name
-                // Prepend the directory to the file path
-                let file_name = String::from_utf8_lossy(&desc.file_name);
-                let file_path = file_name.trim_end_matches(char::from(0));
-
-                // Verify the MD5 of the first 16 KB of the file
-                if let Err(err) = verify_md5(
-                    file_path,
-                    None,
-                    Some(16 * 1024),
-                    &desc.md5_16k,
-                    "first 16 KB of file",
-                ) {
-                    eprintln!("{}", err);
-                    return None;
-                }
-
-                // Verify the MD5 of the entire file
-                if let Err(err) = verify_md5(file_path, None, None, &desc.md5_hash, "entire file") {
-                    eprintln!("{}", err);
-                    return None;
-                }
-
-                Some(String::from_utf8_lossy(&desc.file_name).to_string())
+                verify_file_md5(desc)
             } else {
                 None
             }
@@ -155,6 +133,36 @@ fn verify_md5(
         ));
     }
     Ok(())
+}
+
+pub fn verify_file_md5(desc: &crate::packets::FileDescriptionPacket) -> Option<String> {
+    let file_name = String::from_utf8_lossy(&desc.file_name).to_string();
+    let file_path = file_name.trim_end_matches(char::from(0)).to_string();
+
+    // Verify the MD5 of the first 16 KB of the file
+    if let Err(err) = verify_md5(
+        &file_path,
+        None,
+        Some(16 * 1024),
+        &desc.md5_16k,
+        "first 16 KB of file",
+    ) {
+        eprintln!("{}", err);
+        return None;
+    }
+    println!(
+        "Verified first 16 KB of file: {}",
+        file_name.trim_end_matches(char::from(0))
+    );
+
+    // Verify the MD5 of the entire file
+    if let Err(err) = verify_md5(&file_path, None, None, &desc.md5_hash, "entire file") {
+        eprintln!("{}", err);
+        return None;
+    }
+    println!("Verified entire file: {}", file_name.trim_end_matches(char::from(0)));
+
+    Some(file_name)
 }
 
 #[cfg(test)]
