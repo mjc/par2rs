@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use par2rs::parse_args;
+use rayon::prelude::*;
 
 fn main() {
     let matches = parse_args();
@@ -22,17 +23,19 @@ fn main() {
         return;
     }
 
-    let mut all_packets = Vec::new();
-
     // Collect all .par2 files in the folder, including the input file
     let par2_files = collect_par2_files(file_path);
 
-    for par2_file in par2_files {
-        let mut file = fs::File::open(&par2_file).expect("Failed to open .par2 file");
-        let packets = par2rs::parse_packets(&mut file);
-        println!("Parsed {} packets from {:?}", packets.len(), par2_file);
-        all_packets.extend(packets);
-    }
+    let all_packets: Vec<_> = par2_files
+        .par_iter()
+        .map(|par2_file| {
+            let mut file = fs::File::open(par2_file).expect("Failed to open .par2 file");
+            let packets = par2rs::parse_packets(&mut file);
+            println!("Parsed {} packets from {:?}", packets.len(), par2_file);
+            packets
+        })
+        .flatten()
+        .collect();
 
     println!("Total packets collected: {}", all_packets.len());
 }
