@@ -8,12 +8,12 @@ pub mod main_packet;
 pub mod packed_main_packet;
 pub mod recovery_slice_packet;
 
-use creator_packet::CreatorPacket;
-use file_description_packet::FileDescriptionPacket;
-use input_file_slice_checksum_packet::InputFileSliceChecksumPacket;
-use main_packet::MainPacket;
-use packed_main_packet::PackedMainPacket;
-use recovery_slice_packet::RecoverySlicePacket;
+pub use creator_packet::CreatorPacket;
+pub use file_description_packet::FileDescriptionPacket;
+pub use input_file_slice_checksum_packet::InputFileSliceChecksumPacket;
+pub use main_packet::MainPacket;
+pub use packed_main_packet::PackedMainPacket;
+pub use recovery_slice_packet::RecoverySlicePacket;
 
 pub const MAGIC_BYTES: &[u8] = b"PAR2\0PKT";
 

@@ -43,12 +43,9 @@ pub fn quick_check_files(packets: Vec<crate::Packet>) -> bool {
     // First gather all the file_names from FileDescriptionPackets
     let file_names: Vec<String> = packets
         .iter()
-        .filter_map(|packet| {
-            if let Packet::FileDescription(desc) = packet {
-                verify_file_md5(desc)
-            } else {
-                None
-            }
+        .filter_map(|packet| match packet {
+            Packet::FileDescription(desc) => verify_file_md5(desc),
+            _ => None,
         })
         .collect();
 
@@ -160,7 +157,10 @@ pub fn verify_file_md5(desc: &crate::packets::FileDescriptionPacket) -> Option<S
         eprintln!("{}", err);
         return None;
     }
-    println!("Verified entire file: {}", file_name.trim_end_matches(char::from(0)));
+    println!(
+        "Verified entire file: {}",
+        file_name.trim_end_matches(char::from(0))
+    );
 
     Some(file_name)
 }

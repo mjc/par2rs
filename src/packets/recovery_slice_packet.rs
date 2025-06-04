@@ -10,7 +10,8 @@ pub struct RecoverySlicePacket {
     #[br(pad_after = 16)] // Skip the `type_of_packet` field
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
     pub exponent: u32, // Exponent used to generate recovery data
-    #[br(count = length as usize - (8 + 8 + 16 + 16 + 16 + 4))] // Include the type_of_packet field (16 bytes) in the calculation
+    #[br(count = length as usize - (8 + 8 + 16 + 16 + 16 + 4))]
+    // Include the type_of_packet field (16 bytes) in the calculation
     pub recovery_data: Vec<u8>, // Recovery data
 }
 
@@ -20,7 +21,7 @@ impl RecoverySlicePacket {
     ///
     /// A doctest for testing the `verify` method of `RecoverySlicePacket`.
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use std::fs::File;
     /// use binrw::BinReaderExt;
     /// use par2rs::packets::recovery_slice_packet::RecoverySlicePacket;
