@@ -15,7 +15,6 @@ use main_packet::MainPacket;
 use packed_main_packet::PackedMainPacket;
 use recovery_slice_packet::RecoverySlicePacket;
 
-
 pub const MAGIC_BYTES: &[u8] = b"PAR2\0PKT";
 
 #[derive(Debug)]

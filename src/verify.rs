@@ -160,8 +160,8 @@ fn verify_md5(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Packet;
     use crate::packets::main_packet::MainPacket;
+    use crate::Packet;
 
     #[test]
     fn test_quick_check_files() {
@@ -171,6 +171,7 @@ mod tests {
             md5: [0; 16],
             set_id: [0; 16],
             slice_size: 0,
+            file_count: 0,
             file_ids: vec![],
             non_recovery_file_ids: vec![],
         })];
