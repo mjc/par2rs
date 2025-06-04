@@ -55,6 +55,7 @@ pub struct RecoverySlicePacket {
     #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string())]
     pub type_of_packet: String, // Type of the packet, converted to a string
     pub exponent: u32, // Exponent used to generate recovery data
+    #[br(count = length as usize - (8 + 8 + 16 + 16 + 4))] // Subtract sizes of all other fields
     pub recovery_data: Vec<u8>, // Recovery data
 }
 
