@@ -17,19 +17,30 @@ fn main() {
     }
 
     let file_path = Path::new(input_file);
-    if file_path.exists() {
-        let mut file = fs::File::open(file_path).expect("Failed to open file");
+    if !file_path.exists() {
+        eprintln!("File does not exist: {}", input_file);
+        return;
+    }
 
+    let mut all_packets = Vec::new();
+
+    // Collect all .par2 files in the folder, including the input file
+    let par2_files = collect_par2_files(file_path);
+
+    for par2_file in par2_files {
+        let mut file = fs::File::open(&par2_file).expect("Failed to open .par2 file");
         let packets = par2rs::parse_packets(&mut file);
+        println!("Parsed {} packets from {:?}", packets.len(), par2_file);
+        all_packets.extend(packets);
+    }
 
-        // Here you can do something with the packets, like processing or saving them
-        println!("Parsed {} packets", packets.len());
+    println!("Total packets collected: {}", all_packets.len());
+}
 
-        // Add the input file to the list of .par2 files to parse
-        let mut par2_files: Vec<_> = vec![file_path.to_path_buf()];
+fn collect_par2_files(file_path: &Path) -> Vec<std::path::PathBuf> {
+    let mut par2_files = vec![file_path.to_path_buf()];
 
-        // Find additional .par2 files in the folder
-        let folder_path = file_path.parent().expect("Failed to get parent folder");
+    if let Some(folder_path) = file_path.parent() {
         par2_files.extend(
             fs::read_dir(folder_path)
                 .expect("Failed to read directory")
@@ -41,22 +52,10 @@ fn main() {
                     } else {
                         None
                     }
-                })
+                }),
         );
-
-        println!("Found .par2 files: {:?}", par2_files);
-
-        let mut all_packets = Vec::new();
-
-        for par2_file in par2_files {
-            let mut file = fs::File::open(&par2_file).expect("Failed to open .par2 file");
-            let packets = par2rs::parse_packets(&mut file);
-            println!("Parsed {} packets from {:?}", packets.len(), par2_file);
-            all_packets.extend(packets);
-        }
-
-        println!("Total packets collected: {}", all_packets.len());
-    } else {
-        eprintln!("File does not exist: {}", input_file);
     }
+
+    println!("Found .par2 files: {:?}", par2_files);
+    par2_files
 }
