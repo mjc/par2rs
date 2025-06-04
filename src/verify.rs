@@ -5,6 +5,29 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
+/// Verifies par2 packets.
+/// This function reads the packets from the provided vector and verifies that they are usable
+/// 
+/// # Arguments
+/// /// * `packets` - A vector of packets parsed from the PAR2 files.
+/// 
+/// # Returns
+/// /// * `packets` - A vector of packets that are usable.
+/// 
+/// # Output
+/// Prints failed verification messages to stderr if any packet fails verification.
+// pub fn verify_par2_packets(packets: Vec<crate::Packet>) -> Vec<crate::Packet> {
+//     packets.into_iter().filter_map(|packet| {
+//         match packet {
+//             Packet::PackedMainPacket(packed_main_packet) => {
+//                 // TODO: Implement MD5 verification for PackedMainPacket if needed
+//                 Some(packet)
+//             }
+//             _ => Some(packet), // Other packets are assumed valid for now
+//         }
+//     }).collect()
+// }
+
 /// Quickly verifies a set of files from the par2 md5sums
 ///
 /// # Arguments
@@ -134,6 +157,7 @@ mod tests {
             set_id: [0; 16],
             slice_size: 0,
             file_ids: vec![],
+            non_recovery_file_ids: vec![],
         })];
 
         let result = quick_check_files(mock_packets);

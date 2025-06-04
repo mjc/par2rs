@@ -16,6 +16,8 @@ pub struct MainPacket {
     pub slice_size: u64,  // Size of each slice
     #[br(count = (length - 72) / 16)] // Calculate count based on packet length and header size
     pub file_ids: Vec<[u8; 16]>, // File IDs of all files in the recovery set
+    #[br(count = (length - 72 - (file_ids.len() as u64 * 16)) / 16)]
+    pub non_recovery_file_ids: Vec<[u8; 16]>, // File IDs of all files in the non-recovery set
 }
 
 #[derive(Debug, BinRead)]
@@ -154,4 +156,122 @@ pub fn parse_packets<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Vec<Pa
     }
 
     packets
+}
+
+impl MainPacket {
+    /// Returns the raw, unparsed representation of the packet.
+    fn md5able(&self) -> Vec<u8> {
+        // Start calculation from the first byte of Recovery Set ID
+        let mut raw_data = Vec::new();
+
+        // Add the set ID
+        raw_data.extend(&self.set_id);
+
+        // Add the slice size
+        raw_data.extend(&self.slice_size.to_le_bytes());
+
+        // Add the number of files in the recovery set
+        let file_count = self.file_ids.len() as u32;
+        raw_data.extend(&file_count.to_le_bytes());
+
+        // Add the file IDs of all files in the recovery set
+        for file_id in &self.file_ids {
+            raw_data.extend(file_id);
+        }
+
+        // Add the file IDs of all files in the non-recovery set
+        for file_id in &self.non_recovery_file_ids {
+            raw_data.extend(file_id);
+        }
+
+        raw_data
+    }
+
+    /// Verifies the MD5 hash of a raw MainPacket.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use md5::{Context, Digest};
+    /// use par2rs::MainPacket;
+    ///
+    /// let file_ids = vec![[0u8; 16], [1u8; 16]];
+    /// let non_recovery_file_ids = vec![[2u8; 16]];
+    /// let slice_size: u64 = 1024;
+    /// let length = 72 + (file_ids.len() + non_recovery_file_ids.len()) as u64 * 16;
+    ///
+    /// let mut hasher = Context::new();
+    /// hasher.consume(b"PAR2\0PKT");
+    /// hasher.consume(&[0u8; 16]); // Placeholder set_id
+    /// hasher.consume(&slice_size.to_le_bytes());
+    /// hasher.consume(&(file_ids.len() as u32).to_le_bytes());
+    /// for file_id in &file_ids {
+    ///     hasher.consume(file_id);
+    /// }
+    /// for file_id in &non_recovery_file_ids {
+    ///     hasher.consume(file_id);
+    /// }
+    /// let md5 = hasher.compute().into();
+    ///
+    /// let packet = MainPacket {
+    ///     length,
+    ///     md5,
+    ///     set_id: [0u8; 16],
+    ///     slice_size,
+    ///     file_ids,
+    ///     non_recovery_file_ids,
+    /// };
+    ///
+    /// assert!(packet.verify());
+    /// ```
+    /// # Examples
+    ///
+    /// ```
+    /// use md5::{Context, Digest};
+    /// use par2rs::MainPacket;
+    ///
+    /// let file_ids = vec![[2; 16]];
+    /// let non_recovery_file_ids = vec![[3; 16]];
+    /// let slice_size: u64 = 1024;
+    /// let length = 72 + (file_ids.len() + non_recovery_file_ids.len()) as u64 * 16;
+    ///
+    /// let mut hasher = Context::new();
+    /// hasher.consume(b"PAR2\0PKT");
+    /// hasher.consume(&length.to_le_bytes());
+    /// hasher.consume(&[0; 16]); // Placeholder MD5
+    /// hasher.consume(&[1; 16]); // Set ID
+    /// hasher.consume(b"PAR 2.0\0Main\0\0\0\0");
+    /// hasher.consume(&slice_size.to_le_bytes());
+    /// hasher.consume(&(file_ids.len() as u32).to_le_bytes());
+    /// for file_id in &file_ids {
+    ///     hasher.consume(file_id);
+    /// }
+    /// for file_id in &non_recovery_file_ids {
+    ///     hasher.consume(file_id);
+    /// }
+    /// let md5 = hasher.compute().into();
+    ///
+    /// let packet = MainPacket {
+    ///     length,
+    ///     md5,
+    ///     set_id: [1; 16],
+    ///     slice_size,
+    ///     file_ids,
+    ///     non_recovery_file_ids,
+    /// };
+    ///
+    /// assert!(packet.verify());
+    /// ```
+    pub fn verify(&self) -> bool {
+        use md5::Context;
+
+        let mut hasher = Context::new();
+
+        // Hash the raw representation of the packet.
+        let raw_data = self.md5able();
+        hasher.consume(&raw_data);
+
+        // Compare the computed hash with the stored MD5
+        hasher.compute().as_ref() == self.md5
+    }
 }
