@@ -89,7 +89,7 @@ impl MainPacket {
     /// Verifies the MD5 hash of the packet.
     /// Computes the MD5 hash of the serialized fields and compares it to the stored MD5 value.
     ///
-    /// A doctest for testing the `verify_md5` method of `MainPacket`.
+    /// A doctest for testing the `verify` method of `MainPacket`.
     ///
     /// ```rust
     /// use std::fs::File;
@@ -99,9 +99,9 @@ impl MainPacket {
     /// let mut file = File::open("tests/fixtures/packets/MainPacket.par2").unwrap();
     /// let main_packet: MainPacket = file.read_le().unwrap();
     ///
-    /// assert!(main_packet.verify_md5(), "MD5 verification failed");
+    /// assert!(main_packet.verify(), "MD5 verification failed");
     /// ```
-    pub fn verify_md5(&self) -> bool {
+    pub fn verify(&self) -> bool {
         // Serialize fields to compute the hash
         let mut data = Vec::new();
 
