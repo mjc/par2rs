@@ -6,7 +6,9 @@ use par2rs::parse_args;
 fn main() {
     let matches = parse_args();
 
-    let input_file = matches.get_one::<String>("input").expect("Input file is required");
+    let input_file = matches
+        .get_one::<String>("input")
+        .expect("Input file is required");
     let output_file = matches.get_one::<String>("output");
 
     println!("Input file: {}", input_file);

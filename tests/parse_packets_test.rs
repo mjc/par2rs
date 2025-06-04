@@ -1,8 +1,12 @@
+use par2rs::{parse_packets, Packet};
 use std::fs::File;
 use std::path::Path;
-use par2rs::{parse_packets, Packet};
 
-fn assert_packet_type(packets: &[Packet], matcher: fn(&Packet) -> bool, error_message: &'static str) {
+fn assert_packet_type(
+    packets: &[Packet],
+    matcher: fn(&Packet) -> bool,
+    error_message: &'static str,
+) {
     assert!(packets.iter().any(matcher), "{}", error_message);
 }
 
@@ -16,8 +20,16 @@ fn test_parse_packets() {
 
     assert!(!packets.is_empty(), "No packets were parsed from the file");
 
-    assert_packet_type(&packets, |p| matches!(p, Packet::MainPacket(_)), "MainPacket not found in parsed packets");
-    assert_packet_type(&packets, |p| matches!(p, Packet::CreatorPacket(_)), "CreatorPacket not found in parsed packets");
+    assert_packet_type(
+        &packets,
+        |p| matches!(p, Packet::MainPacket(_)),
+        "MainPacket not found in parsed packets",
+    );
+    assert_packet_type(
+        &packets,
+        |p| matches!(p, Packet::CreatorPacket(_)),
+        "CreatorPacket not found in parsed packets",
+    );
 
     println!("Parsed packets successfully: {:?}", packets);
 }
