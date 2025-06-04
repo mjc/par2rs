@@ -132,7 +132,6 @@ mod tests {
             length: 0,
             md5: [0; 16],
             set_id: [0; 16],
-            type_of_packet: "MainPacket".to_string(),
             slice_size: 0,
             file_ids: vec![],
         })];
