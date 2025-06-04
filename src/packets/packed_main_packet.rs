@@ -5,8 +5,8 @@ pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0PkdMain\0";
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct PackedMainPacket {
-    pub length: u64,      // Length of the packet
-    pub md5: [u8; 16],    // MD5 hash of the packet
+    pub length: u64,   // Length of the packet
+    pub md5: [u8; 16], // MD5 hash of the packet
     #[br(pad_after = 16)] // Skip the `type_of_packet` field
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
     pub subslice_size: u64, // Subslice size. Must be a multiple of 4 and equally divide the slice size.
