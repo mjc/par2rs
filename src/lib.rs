@@ -29,8 +29,7 @@ pub struct FileDescriptionPacket {
     pub md5_hash: [u8; 16], // MD5 hash of the entire file
     pub md5_16k: [u8; 16], // MD5 hash of the first 16kB of the file
     pub file_length: u64, // Length of the file
-    pub file_name_length: u16, // Length of the file name
-    #[br(count = file_name_length)]
+    #[br(count = length - 120)] // Subtract sizes of all other fields
     pub file_name: Vec<u8>, // Name of the file (not null-terminated)
 }
 
@@ -43,7 +42,8 @@ pub struct InputFileSliceChecksumPacket {
     #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string())]
     pub type_of_packet: String, // Type of the packet, converted to a string
     pub file_id: [u8; 16], // File ID of the file
-    pub slice_checksums: Vec<( [u8; 16], u32 )>, // MD5 and CRC32 pairs for slices
+    #[br(count = (length - 64 - 16) / 20)] // Calculate count based on packet length and header size
+    pub slice_checksums: Vec<([u8; 16], u32)>, // MD5 and CRC32 pairs for slices
 }
 
 #[derive(Debug, BinRead)]
@@ -66,6 +66,7 @@ pub struct CreatorPacket {
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
     #[br(map = |b: [u8; 16]| String::from_utf8_lossy(&b).to_string())]
     pub type_of_packet: String, // Type of the packet, converted to a string
+    #[br(count = length as usize - (8 + 8 + 16 + 16 + 16))] // Subtract sizes of all other fields
     pub creator_info: Vec<u8>, // ASCII text identifying the client
 }
 

@@ -4,7 +4,7 @@ use std::io::{Read, Seek};
 use std::path::Path;
 
 use par2rs::parse_args;
-use par2rs::{MainPacket, PackedMainPacket, FileDescriptionPacket, RecoverySlicePacket, CreatorPacket};
+use par2rs::{MainPacket, PackedMainPacket, FileDescriptionPacket, RecoverySlicePacket, CreatorPacket, InputFileSliceChecksumPacket};
 
 fn parse_packets(file: &mut fs::File) {
     loop {
@@ -13,8 +13,10 @@ fn parse_packets(file: &mut fs::File) {
             break; // End of file or error
         }
 
+        println!("Magic: {:?}", magic);
+
         if &magic != b"PAR2\0PKT" {
-            eprintln!("Invalid magic sequence, stopping parsing.");
+            eprintln!("Invalid magic sequence: {:?}, stopping parsing.", magic);
             break;
         }
 
@@ -23,29 +25,42 @@ fn parse_packets(file: &mut fs::File) {
         
         file.read_exact(&mut header).expect("Failed to read header");
 
+        println!("Header: {:?}", header);
+
         let type_of_packet = &header[48..64]; // Adjusted to correctly extract the last 16 bytes of the common header
+
+        println!("Type of packet: {:?}", String::from_utf8_lossy(type_of_packet));
+
+        let length = u64::from_le_bytes(header[8..16].try_into().expect("Failed to extract length from header"));
+        println!("Packet length: {}", length);
+        
+        file.seek(std::io::SeekFrom::Current(-64)).expect("Failed to rewind to the beginning of the packet");
 
         match type_of_packet {
             b"PAR 2.0\0Main\0\0\0\0" => {
-                file.seek(std::io::SeekFrom::Current(-64)).expect("Failed to rewind to the beginning of the packet");
-                let _: MainPacket = file.read_le().expect("Failed to read MainPacket");
-                println!("Parsed MainPacket successfully");
+                let main_packet: MainPacket = file.read_le().expect("Failed to read MainPacket");
+                println!("Parsed MainPacket successfully, length: {}", main_packet.length);
             }
             b"PAR 2.0\0PkdMain\0" => {
-                let _: PackedMainPacket = file.read_le().expect("Failed to read PackedMainPacket");
+                let _packed_main_packet: PackedMainPacket = file.read_le().expect("Failed to read PackedMainPacket");
                 println!("Parsed PackedMainPacket successfully");
             }
             b"PAR 2.0\0FileDesc" => {
-                let _: FileDescriptionPacket = file.read_le().expect("Failed to read FileDescriptionPacket");
-                println!("Parsed FileDescriptionPacket successfully");
+                let file_description: FileDescriptionPacket = file.read_le().expect("Failed to read FileDescriptionPacket");
+                println!("Parsed FileDescriptionPacket successfully, length: {}", file_description.length);
+                println!("FileDescriptionPacket length: {}", file_description.length);
             }
             b"PAR 2.0\0RecvSlic" => {
-                let _: RecoverySlicePacket = file.read_le().expect("Failed to read RecoverySlicePacket");
+                let _recovery_slice: RecoverySlicePacket = file.read_le().expect("Failed to read RecoverySlicePacket");
                 println!("Parsed RecoverySlicePacket successfully");
             }
             b"PAR 2.0\0Creator\0" => {
-                let _: CreatorPacket = file.read_le().expect("Failed to read CreatorPacket");
+                let _creator_packet: CreatorPacket = file.read_le().expect("Failed to read CreatorPacket");
                 println!("Parsed CreatorPacket successfully");
+            }
+            b"PAR 2.0\0IFSC\0\0\0\0" => {
+                let input_file_slice_checksum_packet: InputFileSliceChecksumPacket = file.read_le().expect("Failed to read InputFileSliceChecksumPacket");
+                println!("Parsed InputFileSliceChecksumPacket successfully, slice checksum count: {}", input_file_slice_checksum_packet.slice_checksums.len());
             }
             _ => {
                 eprintln!("Unknown packet type: {:?}", String::from_utf8_lossy(&type_of_packet));
