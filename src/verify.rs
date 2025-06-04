@@ -1,4 +1,8 @@
 use crate::Packet;
+use md5;
+use std::fs::File;
+use std::io::Read;
+use std::convert::TryInto;
 
 /// Verifies the integrity of a PAR2 file set.
 ///
@@ -15,6 +19,30 @@ pub fn verify_par2_packets(packets: Vec<crate::Packet>) -> bool {
         .iter()
         .filter_map(|packet| {
             if let Packet::FileDescriptionPacket(desc) = packet {
+                // Compute the md5 of the first 16 bytes of the file:
+                // Trim null bytes from the file name
+                // Prepend the directory to the file path
+                let directory = "/home/mjc/Dune/";
+                let file_path = format!("{}{}", directory, String::from_utf8_lossy(&desc.file_name).trim_end_matches(char::from(0)));
+                
+                let mut file = File::open(&file_path).expect("Failed to open file");
+                let mut buffer = vec![0u8; 16 * 1024]; // Buffer for the first 16 KB
+                file.read_exact(&mut buffer).expect("Failed to read file");
+                let file_16k_md5 = md5::compute(&buffer); // Compute MD5 of the buffer
+                // Check if the md5 matches the one in the packet
+                let file_16k_md5_bytes: [u8; 16] = file_16k_md5.as_slice().try_into().expect("MD5 hash should be 16 bytes");
+                if file_16k_md5_bytes != desc.md5_16k { // Compare as [u8; 16]
+                    eprintln!(
+                        "MD5 mismatch for file {}: expected {:?}, got {:?}",
+                        file_path,
+                        desc.md5_16k,
+                        file_16k_md5_bytes
+                    );
+                    return None;
+                }
+                else {
+                    println!("MD5 match for file: {}", file_path);
+                }
                 Some(String::from_utf8_lossy(&desc.file_name).to_string())
             } else {
                 None
