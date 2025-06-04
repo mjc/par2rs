@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use par2rs::verify::verify_par2_packets;
+use par2rs::verify::quick_check_files;
 use rayon::prelude::*;
 
 fn main() {
@@ -19,6 +19,13 @@ fn main() {
         return;
     }
 
+    if let Some(parent) = file_path.parent() {
+        if let Err(err) = std::env::set_current_dir(parent) {
+            eprintln!("Failed to set current directory to {}: {}", parent.display(), err);
+            return;
+        }
+    }
+
     let all_packets = collect_par2_files(file_path)
         .par_iter()
         .flat_map(|par2_file| parse_par2_file(par2_file))
@@ -26,7 +33,7 @@ fn main() {
 
     println!("Total packets collected: {}", all_packets.len());
 
-    verify_par2_packets(all_packets);
+    quick_check_files(all_packets);
 }
 
 fn collect_par2_files(file_path: &Path) -> Vec<PathBuf> {
