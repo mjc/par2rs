@@ -37,26 +37,47 @@ use std::path::Path;
 /// # Returns
 ///
 /// A boolean indicating whether the verification was successful.
-pub fn quick_check_files(packets: Vec<crate::Packet>) -> bool {
+pub fn quick_check_files(packets: Vec<crate::Packet>) -> Vec<crate::Packet> {
     println!("Starting quick check of files...");
 
-    // First gather all the file_names from FileDescriptionPackets
+    // Collect file names from the packets
     let file_names: Vec<String> = packets
         .iter()
-        .filter_map(|packet| match packet {
-            Packet::FileDescription(desc) => verify_file_md5(desc),
-            _ => None,
+        .filter_map(|packet| {
+            if let Packet::FileDescription(desc) = packet {
+                Some(String::from_utf8_lossy(&desc.file_name).to_string())
+            } else {
+                None
+            }
         })
         .collect();
+    println!("Found file names: {:?}", file_names);
 
-    // Placeholder logic to use the file_names variable and avoid warnings
-    let _file_count = file_names.len();
+    // If no file names were found, return an empty list
+    if file_names.is_empty() {
+        println!("No file names found, nothing to verify.");
+        return vec![];
+    }
 
-    // Perform verification logic here.
-    // For now, we will just return true to indicate success.
-    // Replace this with the actual PAR2 verification algorithm.
-
-    true
+    // Quick Check all files
+    // Return a list of FileDescription packets that failed the check
+    packets
+        .into_iter()
+        .filter_map(|packet| {
+            if let Packet::FileDescription(desc) = &packet {
+                let file_name = String::from_utf8_lossy(&desc.file_name).to_string();
+                match verify_file_md5(desc) {
+                    Some(_) => None,
+                    None => {
+                        eprintln!("Failed to verify file: {}", file_name);
+                        Some(packet)
+                    }
+                }
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Helper function to compute MD5 checksum of a file
@@ -185,6 +206,6 @@ mod tests {
         })];
 
         let result = quick_check_files(mock_packets);
-        assert!(result, "Verification should succeed for mock packets");
+        assert!(result.is_empty(), "Verification should succeed for mock packets");
     }
 }

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use par2rs::verify::quick_check_files;
 use rayon::prelude::*;
 
-fn main() {
+fn main() -> Result<(), ()> {
     let matches = par2rs::parse_args();
 
     let input_file = matches
@@ -16,7 +16,7 @@ fn main() {
     let file_path = Path::new(input_file);
     if !file_path.exists() {
         eprintln!("File does not exist: {}", input_file);
-        return;
+        return Err(());
     }
 
     if let Some(parent) = file_path.parent() {
@@ -26,7 +26,7 @@ fn main() {
                 parent.display(),
                 err
             );
-            return;
+            return Err(());
         }
     }
 
@@ -39,7 +39,18 @@ fn main() {
 
     let verified_packets = verify_packets(all_packets);
 
-    quick_check_files(verified_packets);
+    let file_descriptors_for_broken_files = quick_check_files(verified_packets);
+
+    if file_descriptors_for_broken_files.is_empty() {
+        println!("All files passed verification.");
+        Ok(())
+    } else {
+        println!(
+            "Quick check failed for {} files. Attempting to verify packets...",
+            file_descriptors_for_broken_files.len()
+        );
+        Err(())
+    }
 }
 
 fn verify_packets(packets: Vec<par2rs::Packet>) -> Vec<par2rs::Packet> {
