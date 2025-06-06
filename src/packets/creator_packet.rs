@@ -40,7 +40,10 @@ impl CreatorPacket {
         data.extend_from_slice(&self.creator_info);
         let computed_md5 = md5::compute(&data);
         if computed_md5.as_ref() != self.md5 {
-            println!("MD5 mismatch: expected {:?}, computed {:?}", self.md5, computed_md5);
+            println!(
+                "MD5 mismatch: expected {:?}, computed {:?}",
+                self.md5, computed_md5
+            );
             return false;
         }
 

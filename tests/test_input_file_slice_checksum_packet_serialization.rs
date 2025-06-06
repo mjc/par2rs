@@ -13,7 +13,9 @@ fn test_input_file_slice_checksum_packet_serialized_length() {
 
     // Serialize the packet into a buffer
     let mut buffer = Cursor::new(Vec::new());
-    input_file_slice_checksum_packet.write_le(&mut buffer).unwrap();
+    input_file_slice_checksum_packet
+        .write_le(&mut buffer)
+        .unwrap();
 
     // Verify that the serialized length matches the packet's length field
     let serialized_length = buffer.get_ref().len() as u64;
