@@ -76,7 +76,9 @@ impl BinWrite for MainPacket {
         writer.write_all(&self.md5)?;
         writer.write_all(&self.set_id)?;
         writer.write_all(TYPE_OF_PACKET)?;
+
         writer.write_all(&self.slice_size.to_le_bytes())?;
+        writer.write_all(&self.file_count.to_le_bytes())?;
         for file_id in &self.file_ids {
             writer.write_all(file_id)?;
         }
@@ -124,6 +126,11 @@ impl MainPacket {
     /// assert!(main_packet.verify(), "MD5 verification failed");
     /// ```
     pub fn verify(&self) -> bool {
+        if self.length < 72 {
+            println!("Invalid packet length: {}", self.length);
+            return false;
+        }
+
         // Serialize fields to compute the hash
         let mut data = Vec::new();
 
@@ -141,6 +148,26 @@ impl MainPacket {
 
         // Compute MD5 hash and compare with stored MD5
         let computed_md5 = md5::compute(&data);
-        computed_md5.as_ref() == self.md5
+        if computed_md5.as_ref() != self.md5 {
+            return false;
+        }
+
+        // Check that BinWrite output matches the packet length
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        if self.write_le(&mut buffer).is_err() {
+            println!("Failed to serialize packet");
+            return false;
+        }
+
+        let serialized_length = buffer.get_ref().len() as u64;
+        if serialized_length != self.length {
+            println!(
+                "Serialized length mismatch: expected {}, got {}",
+                self.length, serialized_length
+            );
+            return false;
+        }
+
+        true
     }
 }

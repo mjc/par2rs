@@ -1,4 +1,4 @@
-use binrw::BinReaderExt;
+use binrw::{BinReaderExt, BinWrite};
 use par2rs::packets::main_packet::MainPacket;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -123,5 +123,21 @@ fn test_main_packet_fields() {
     assert_eq!(
         expected_length, 92,
         "Parsed length does not match the expected value of 92"
+    );
+}
+
+#[test]
+fn test_main_packet_serialized_length() {
+    let mut file = File::open("tests/fixtures/packets/MainPacket.par2").unwrap();
+    let main_packet: MainPacket = file.read_le().unwrap();
+
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    main_packet.write_le(&mut buffer).unwrap();
+
+    let serialized_length = buffer.get_ref().len() as u64;
+    assert_eq!(
+        serialized_length, main_packet.length,
+        "Serialized length mismatch: expected {}, got {}",
+        main_packet.length, serialized_length
     );
 }
