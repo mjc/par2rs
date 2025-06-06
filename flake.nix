@@ -22,7 +22,7 @@
           ];
       in {
         devShells.default = pkgs.mkShell rec {
-          nativeBuildInputs = [pkgs.pkg-config];
+          nativeBuildInputs = [pkgs.pkg-config pkgs.direnv];
           buildInputs = with pkgs; [
             clang
             llvmPackages.bintools
@@ -33,6 +33,10 @@
             par2cmdline
             xxd
             python3 # for copilot
+            rust-analyzer
+            cargo-watch
+            rustfmt
+            clippy
           ];
 
           RUSTC_VERSION = overrides.toolchain.channel;
