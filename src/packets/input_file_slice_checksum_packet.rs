@@ -1,4 +1,4 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0IFSC\0\0\0\0";
 
@@ -44,6 +44,50 @@ impl InputFileSliceChecksumPacket {
             data.extend_from_slice(&crc32.to_le_bytes());
         }
         let computed_md5 = md5::compute(&data);
-        computed_md5.as_ref() == self.md5
+        if computed_md5.as_ref() != self.md5 {
+            println!("MD5 mismatch: computed {:?}, expected {:?}", computed_md5, self.md5);
+            return false;
+        }
+
+        // Check that BinWrite output matches the packet length
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        if self.write_le(&mut buffer).is_err() {
+            println!("Failed to serialize packet");
+            return false;
+        }
+
+        let serialized_length = buffer.get_ref().len() as u64;
+        if serialized_length != self.length {
+            println!(
+                "Serialized length mismatch: expected {}, got {}",
+                self.length, serialized_length
+            );
+            return false;
+        }
+
+        true
+    }
+}
+
+impl BinWrite for InputFileSliceChecksumPacket {
+    type Args<'a> = ();
+
+    fn write_options<W: std::io::Write + std::io::Seek>(
+        &self,
+        writer: &mut W,
+        _endian: binrw::Endian,
+        _args: Self::Args<'_>,
+    ) -> binrw::BinResult<()> {
+        writer.write_all(super::MAGIC_BYTES)?;
+        writer.write_all(&self.length.to_le_bytes())?;
+        writer.write_all(&self.md5)?;
+        writer.write_all(&self.set_id)?;
+        writer.write_all(TYPE_OF_PACKET)?;
+        writer.write_all(&self.file_id)?;
+        for (md5, crc32) in &self.slice_checksums {
+            writer.write_all(md5)?;
+            writer.write_all(&crc32.to_le_bytes())?;
+        }
+        Ok(())
     }
 }

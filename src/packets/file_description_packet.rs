@@ -1,8 +1,8 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0FileDesc\0";
 
-#[derive(Debug, BinRead)]
+#[derive(Debug, BinRead, BinWrite)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct FileDescriptionPacket {
     pub length: u64,   // Length of the packet
@@ -105,6 +105,22 @@ impl FileDescriptionPacket {
             println!(
                 "MD5 hash mismatch: expected {:?}, got {:?}",
                 self.md5, computed_md5
+            );
+            return false;
+        }
+
+        // Check that BinWrite output matches the packet length
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        if self.write_le(&mut buffer).is_err() {
+            println!("Failed to serialize packet");
+            return false;
+        }
+
+        let serialized_length = buffer.get_ref().len() as u64;
+        if serialized_length != self.length {
+            println!(
+                "Serialized length mismatch: expected {}, got {}",
+                self.length, serialized_length
             );
             return false;
         }

@@ -1,8 +1,8 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0RecvSlic";
 
-#[derive(Debug, BinRead)]
+#[derive(Debug, BinRead, BinWrite)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct RecoverySlicePacket {
     pub length: u64,   // Length of the packet
@@ -42,6 +42,27 @@ impl RecoverySlicePacket {
         data.extend_from_slice(&self.exponent.to_le_bytes());
         data.extend_from_slice(&self.recovery_data);
         let computed_md5 = md5::compute(&data);
-        computed_md5.as_ref() == self.md5
+        if computed_md5.as_ref() != self.md5 {
+            println!("MD5 verification failed");
+            return false;
+        }
+
+        // Check that BinWrite output matches the packet length
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        if self.write_le(&mut buffer).is_err() {
+            println!("Failed to serialize packet");
+            return false;
+        }
+
+        let serialized_length = buffer.get_ref().len() as u64;
+        if serialized_length != self.length {
+            println!(
+                "Serialized length mismatch: expected {}, got {}",
+                self.length, serialized_length
+            );
+            return false;
+        }
+
+        true
     }
 }

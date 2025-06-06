@@ -1,4 +1,4 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0Creator\0";
 
@@ -39,6 +39,59 @@ impl CreatorPacket {
         data.extend_from_slice(TYPE_OF_PACKET);
         data.extend_from_slice(&self.creator_info);
         let computed_md5 = md5::compute(&data);
-        computed_md5.as_ref() == self.md5
+        if computed_md5.as_ref() != self.md5 {
+            println!("MD5 mismatch: expected {:?}, computed {:?}", self.md5, computed_md5);
+            return false;
+        }
+
+        // Check that BinWrite output matches the packet length
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        if self.write_le(&mut buffer).is_err() {
+            println!("Failed to serialize packet");
+            return false;
+        }
+
+        let serialized_length = buffer.get_ref().len() as u64;
+        if serialized_length != self.length {
+            println!(
+                "Serialized length mismatch: expected {}, got {}",
+                self.length, serialized_length
+            );
+            println!("Serialized data: {:?}", buffer.get_ref()); // Debugging serialized data
+            return false;
+        }
+
+        true
+    }
+}
+
+impl BinWrite for CreatorPacket {
+    type Args<'a> = ();
+
+    fn write_options<W: std::io::Write + std::io::Seek>(
+        &self,
+        writer: &mut W,
+        _endian: binrw::Endian,
+        _args: Self::Args<'_>,
+    ) -> binrw::BinResult<()> {
+        // Write the magic bytes
+        writer.write_all(b"PAR2\0PKT")?;
+
+        // Write the length field
+        writer.write_all(&self.length.to_le_bytes())?;
+
+        // Write the MD5 hash
+        writer.write_all(&self.md5)?;
+
+        // Write the set_id field
+        writer.write_all(&self.set_id)?;
+
+        // Write the type of packet (TYPE_OF_PACKET)
+        writer.write_all(TYPE_OF_PACKET)?;
+
+        // Write the creator_info field
+        writer.write_all(&self.creator_info)?;
+
+        Ok(())
     }
 }
