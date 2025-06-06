@@ -40,11 +40,9 @@ impl Packet {
     }
 
     pub fn parse<R: Read + Seek>(reader: &mut R) -> Option<Self> {
-        let (type_of_packet, packet_length) = Self::get_packet_type(reader)?;
+        let (type_of_packet, _packet_length) = Self::get_packet_type(reader)?;
 
         let packet = Self::match_packet_type(reader, &type_of_packet)?;
-
-        Self::seek_to_end_of_packet(reader, packet_length);
 
         Some(packet)
     }
@@ -54,10 +52,18 @@ impl Packet {
         if reader.read_exact(&mut header).is_err() {
             return None;
         }
-        // Rewind the reader to the start of the packet
+
+        // Check magic signature
+        if &header[0..8] != MAGIC_BYTES {
+            return None;
+        }
+
+        let type_of_packet: [u8; 16] = header[48..64].try_into().ok()?;
+        let packet_length = u64::from_le_bytes(header[8..16].try_into().ok()?);
+
+        // Rewind to start of packet so the packet struct can read the magic bytes again
         reader.seek(SeekFrom::Current(-64)).ok()?;
-        let type_of_packet = header[48..64].try_into().ok()?;
-        let packet_length = u64::from_le_bytes(header[0..8].try_into().ok()?);
+
         Some((type_of_packet, packet_length))
     }
 
@@ -86,12 +92,6 @@ impl Packet {
             _ => None,
         }
     }
-
-    fn seek_to_end_of_packet<R: Seek>(reader: &mut R, packet_length: u64) {
-        reader
-            .seek(SeekFrom::Current(packet_length as i64 - 64))
-            .ok();
-    }
 }
 
 pub fn parse_packets<R: Read + Seek>(reader: &mut R) -> Vec<Packet> {
@@ -99,10 +99,6 @@ pub fn parse_packets<R: Read + Seek>(reader: &mut R) -> Vec<Packet> {
 
     while let Some(packet) = Packet::parse(reader) {
         packets.push(packet);
-
-        if reader.stream_position().unwrap() >= reader.seek(SeekFrom::End(0)).unwrap() {
-            break;
-        }
     }
 
     packets
