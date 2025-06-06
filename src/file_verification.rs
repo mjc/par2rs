@@ -45,7 +45,20 @@ pub fn calculate_file_md5(file_path: &Path) -> Result<[u8; 16], std::io::Error> 
 
 /// Verify a single file by comparing its MD5 hash with the expected value
 pub fn verify_single_file(file_name: &str, expected_md5: [u8; 16]) -> bool {
-    let file_path = Path::new(file_name);
+    verify_single_file_with_base_dir(file_name, expected_md5, None)
+}
+
+/// Verify a single file with optional base directory for path resolution
+pub fn verify_single_file_with_base_dir(
+    file_name: &str,
+    expected_md5: [u8; 16],
+    base_dir: Option<&Path>,
+) -> bool {
+    let file_path = if let Some(base) = base_dir {
+        base.join(file_name)
+    } else {
+        Path::new(file_name).to_path_buf()
+    };
 
     // Check if file exists
     if !file_path.exists() {
@@ -53,7 +66,7 @@ pub fn verify_single_file(file_name: &str, expected_md5: [u8; 16]) -> bool {
     }
 
     // Calculate actual MD5 hash
-    match calculate_file_md5(file_path) {
+    match calculate_file_md5(&file_path) {
         Ok(actual_md5) => actual_md5 == expected_md5,
         Err(_) => false,
     }
@@ -74,6 +87,15 @@ pub fn verify_files_and_collect_results(
     file_info: &HashMap<String, ([u8; 16], [u8; 16], u64)>,
     show_progress: bool,
 ) -> Vec<FileVerificationResult> {
+    verify_files_and_collect_results_with_base_dir(file_info, show_progress, None)
+}
+
+/// Verify files and collect results with optional base directory for path resolution
+pub fn verify_files_and_collect_results_with_base_dir(
+    file_info: &HashMap<String, ([u8; 16], [u8; 16], u64)>,
+    show_progress: bool,
+    base_dir: Option<&Path>,
+) -> Vec<FileVerificationResult> {
     let mut results = Vec::new();
 
     for (file_name, &(file_id, expected_md5, _file_length)) in file_info {
@@ -82,10 +104,15 @@ pub fn verify_files_and_collect_results(
             println!("Opening: \"{}\"", truncated_name);
         }
 
-        let file_path = Path::new(file_name);
+        let file_path = if let Some(base) = base_dir {
+            base.join(file_name)
+        } else {
+            Path::new(file_name).to_path_buf()
+        };
+
         let exists = file_path.exists();
         let is_valid = if exists {
-            verify_single_file(file_name, expected_md5)
+            verify_single_file_with_base_dir(file_name, expected_md5, base_dir)
         } else {
             false
         };
