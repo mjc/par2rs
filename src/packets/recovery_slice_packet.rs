@@ -2,16 +2,16 @@ use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0RecvSlic";
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct RecoverySlicePacket {
     pub length: u64,   // Length of the packet
     pub md5: [u8; 16], // MD5 hash of the packet
-    #[br(pad_after = 16)] // Skip the `type_of_packet` field
     pub set_id: [u8; 16], // Unique identifier for the PAR2 set
+    pub type_of_packet: [u8; 16], // Type of packet - should be "PAR 2.0\0RecvSlic"
     pub exponent: u32, // Exponent used to generate recovery data
     #[br(count = length as usize - (8 + 8 + 16 + 16 + 16 + 4))]
-    // Include the type_of_packet field (16 bytes) in the calculation
+    // Calculate recovery data size: total length - (magic + length + md5 + set_id + type + exponent)
     pub recovery_data: Vec<u8>, // Recovery data
 }
 
@@ -64,5 +64,39 @@ impl RecoverySlicePacket {
         }
 
         true
+    }
+}
+
+impl BinWrite for RecoverySlicePacket {
+    type Args<'a> = ();
+
+    fn write_options<W: std::io::Write + std::io::Seek>(
+        &self,
+        writer: &mut W,
+        _endian: binrw::Endian,
+        _args: Self::Args<'_>,
+    ) -> binrw::BinResult<()> {
+        // Write the magic bytes
+        writer.write_all(b"PAR2\0PKT")?;
+
+        // Write the length field
+        writer.write_all(&self.length.to_le_bytes())?;
+
+        // Write the MD5 hash
+        writer.write_all(&self.md5)?;
+
+        // Write the set_id field
+        writer.write_all(&self.set_id)?;
+
+        // Write the type of packet
+        writer.write_all(&self.type_of_packet)?;
+
+        // Write the exponent
+        writer.write_all(&self.exponent.to_le_bytes())?;
+
+        // Write the recovery data
+        writer.write_all(&self.recovery_data)?;
+
+        Ok(())
     }
 }
