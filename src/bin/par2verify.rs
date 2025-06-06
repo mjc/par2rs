@@ -5,6 +5,7 @@
 //! and verifies that the protected files are intact.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 // ============================================================================
@@ -15,9 +16,11 @@ use std::path::{Path, PathBuf};
 fn load_all_par2_packets(par2_files: &[PathBuf]) -> (Vec<par2rs::Packet>, usize) {
     let mut all_packets = Vec::new();
     let mut total_recovery_blocks = 0;
+    let mut seen_packet_hashes = std::collections::HashSet::new();
 
     for par2_file in par2_files {
-        let (packets, recovery_blocks) = parse_par2_file_with_progress(par2_file);
+        let (packets, recovery_blocks) =
+            parse_par2_file_with_progress(par2_file, &mut seen_packet_hashes);
         all_packets.extend(packets);
         total_recovery_blocks += recovery_blocks;
     }
@@ -118,9 +121,23 @@ fn count_recovery_blocks(packets: &[par2rs::Packet]) -> usize {
         .count()
 }
 
+/// Get a unique hash for a packet to detect duplicates
+fn get_packet_hash(packet: &par2rs::Packet) -> [u8; 16] {
+    match packet {
+        par2rs::Packet::Main(p) => p.md5,
+        par2rs::Packet::FileDescription(p) => p.md5,
+        par2rs::Packet::InputFileSliceChecksum(p) => p.md5,
+        par2rs::Packet::RecoverySlice(p) => p.md5,
+        par2rs::Packet::Creator(p) => p.md5,
+        par2rs::Packet::PackedMain(p) => p.md5,
+    }
+}
+
 /// Print the result of loading packets from a file
 fn print_packet_load_result(_filename: &str, packet_count: usize, recovery_blocks: usize) {
-    if recovery_blocks > 0 {
+    if packet_count == 0 {
+        println!("No new packets found");
+    } else if recovery_blocks > 0 {
         println!(
             "Loaded {} new packets including {} recovery blocks",
             packet_count, recovery_blocks
@@ -130,18 +147,30 @@ fn print_packet_load_result(_filename: &str, packet_count: usize, recovery_block
     }
 }
 
-/// Parse a single PAR2 file and display loading progress
-fn parse_par2_file_with_progress(par2_file: &Path) -> (Vec<par2rs::Packet>, usize) {
+/// Parse a single PAR2 file and display loading progress, tracking new packets
+fn parse_par2_file_with_progress(
+    par2_file: &Path,
+    seen_packet_hashes: &mut std::collections::HashSet<[u8; 16]>,
+) -> (Vec<par2rs::Packet>, usize) {
     let filename = par2_file.file_name().unwrap().to_string_lossy();
     println!("Loading \"{}\".", filename);
 
     let mut file = fs::File::open(par2_file).expect("Failed to open .par2 file");
-    let packets = par2rs::parse_packets(&mut file);
+    let all_packets = par2rs::parse_packets(&mut file);
 
-    let recovery_blocks = count_recovery_blocks(&packets);
-    print_packet_load_result(&filename, packets.len(), recovery_blocks);
+    // Filter out packets we've already seen (based on packet MD5)
+    let mut new_packets = Vec::new();
+    for packet in all_packets {
+        let packet_hash = get_packet_hash(&packet);
+        if seen_packet_hashes.insert(packet_hash) {
+            new_packets.push(packet);
+        }
+    }
 
-    (packets, recovery_blocks)
+    let recovery_blocks = count_recovery_blocks(&new_packets);
+    print_packet_load_result(&filename, new_packets.len(), recovery_blocks);
+
+    (new_packets, recovery_blocks)
 }
 
 // ============================================================================
@@ -246,26 +275,91 @@ fn show_summary_stats(packets: &[par2rs::Packet], _total_recovery_blocks: usize)
 
 /// Format a filename for display, truncating if necessary
 fn format_display_name(file_name: &str) -> String {
-    if file_name.len() > 40 {
-        format!("{}...", &file_name[..37])
-    } else {
-        file_name.to_string()
-    }
+    Path::new(file_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map_or_else(
+            || file_name.to_string(),
+            |name| {
+                if name.len() > 50 {
+                    format!("{}...", &name[..47])
+                } else {
+                    name.to_string()
+                }
+            },
+        )
 }
 
-/// Print verification results for each file
-fn print_file_verification_results(file_names: &[String]) {
-    file_names.iter().for_each(|file_name| {
-        let display_name = format_display_name(file_name);
-        println!("Target: \"{}\" - found.", display_name);
-    });
+/// Calculate MD5 hash of a file
+fn calculate_file_md5(file_path: &Path) -> Result<[u8; 16], std::io::Error> {
+    let mut file = fs::File::open(file_path)?;
+    let mut hasher = md5::Context::new();
+    let mut buffer = [0; 8192]; // 8KB buffer for reading
+
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.consume(&buffer[..bytes_read]);
+    }
+
+    Ok(hasher.compute().0)
+}
+
+/// Verify a single file by comparing its MD5 hash with the expected value
+fn verify_single_file(file_name: &str, expected_md5: [u8; 16]) -> bool {
+    let file_path = Path::new(file_name);
+
+    // Check if file exists
+    if !file_path.exists() {
+        return false;
+    }
+
+    // Calculate actual MD5 hash
+    match calculate_file_md5(file_path) {
+        Ok(actual_md5) => actual_md5 == expected_md5,
+        Err(_) => false,
+    }
 }
 
 /// Verify source files and print progress information
 fn verify_source_files_with_progress(packets: Vec<par2rs::Packet>) -> Vec<par2rs::Packet> {
-    let file_names = extract_unique_filenames(&packets);
-    print_file_verification_results(&file_names);
+    let mut broken_file_ids = Vec::new();
+    let mut file_info = std::collections::HashMap::new();
 
-    // For now, return empty vec indicating no broken files
-    Vec::new()
+    // Collect file information from FileDescription packets
+    for packet in &packets {
+        if let par2rs::Packet::FileDescription(fd) = packet {
+            if let Ok(file_name) = std::str::from_utf8(&fd.file_name) {
+                let clean_name = file_name.trim_end_matches('\0').to_string();
+                file_info.insert(clean_name, (fd.md5_hash, fd.file_id));
+            }
+        }
+    }
+
+    // Verify each file
+    for (file_name, (expected_md5, file_id)) in file_info {
+        let truncated_name = format_display_name(&file_name);
+        println!("Opening: \"{}\"", truncated_name);
+
+        if verify_single_file(&file_name, expected_md5) {
+            println!("Target: \"{}\" - found.", file_name);
+        } else {
+            println!("Target: \"{}\" - missing or damaged.", file_name);
+            broken_file_ids.push(file_id);
+        }
+    }
+
+    // Return FileDescription packets for broken files
+    packets
+        .into_iter()
+        .filter(|packet| {
+            if let par2rs::Packet::FileDescription(fd) = packet {
+                broken_file_ids.contains(&fd.file_id)
+            } else {
+                false
+            }
+        })
+        .collect()
 }
