@@ -1,8 +1,10 @@
+use std::fmt::{Debug, Display};
+
 use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0Main\0\0\0\0";
 
-#[derive(Debug, BinRead)]
+#[derive(BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 /// A doctest for testing the `MainPacket` structure with `binread`.
 ///
@@ -82,6 +84,26 @@ impl BinWrite for MainPacket {
             writer.write_all(non_recovery_file_id)?;
         }
         Ok(())
+    }
+}
+
+impl Display for MainPacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn fmt_md5(md5: [u8; 16]) -> String {
+            format!("{:x?}", u128::from_le_bytes(md5))
+        }
+
+        write!(
+            f,
+            "MainPacket {{ length: {}, md5: {}, set_id: {}, slice_size: {}, file_count: {}, file_ids: {:?}, non_recovery_file_ids: {:?} }}",
+            self.length, fmt_md5(self.md5), fmt_md5(self.set_id), self.slice_size, self.file_count, self.file_ids.iter().map(|f| fmt_md5(*f)).collect::<Vec<_>>(), self.non_recovery_file_ids.iter().map(|f| fmt_md5(*f)).collect::<Vec<_>>()
+        )
+    }
+}
+
+impl Debug for MainPacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
     }
 }
 
