@@ -1,4 +1,7 @@
+pub mod analysis;
 pub mod args;
+pub mod file_ops;
+pub mod file_verification;
 pub mod packets;
 pub mod verify;
 
