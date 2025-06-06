@@ -32,6 +32,7 @@
             pkg-config
             par2cmdline
             xxd
+            python3 # for copilot
           ];
 
           RUSTC_VERSION = overrides.toolchain.channel;
