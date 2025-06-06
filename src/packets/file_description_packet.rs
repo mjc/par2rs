@@ -53,6 +53,11 @@ impl FileDescriptionPacket {
     /// assert_eq!(packet.file_id, expected_file_id.as_ref(), "File ID mismatch");
     /// ```
     pub fn verify(&self) -> bool {
+        if self.length < 120 {
+            println!("Invalid packet length: {}", self.length);
+            return false;
+        }
+
         // Compute the File ID based on the specification
         let mut id_data = Vec::new();
         id_data.extend_from_slice(&self.md5_16k);

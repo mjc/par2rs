@@ -206,6 +206,9 @@ mod tests {
         })];
 
         let result = quick_check_files(mock_packets);
-        assert!(result.is_empty(), "Verification should succeed for mock packets");
+        assert!(
+            result.is_empty(),
+            "Verification should succeed for mock packets"
+        );
     }
 }

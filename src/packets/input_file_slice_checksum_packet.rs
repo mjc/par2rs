@@ -31,6 +31,10 @@ impl InputFileSliceChecksumPacket {
     /// assert!(packet.verify(), "MD5 verification failed for InputFileSliceChecksumPacket");
     /// ```
     pub fn verify(&self) -> bool {
+        if self.length < 64 {
+            println!("Invalid packet length: {}", self.length);
+            return false;
+        }
         let mut data = Vec::new();
         data.extend_from_slice(&self.set_id);
         data.extend_from_slice(TYPE_OF_PACKET);
