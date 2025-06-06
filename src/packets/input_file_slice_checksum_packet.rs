@@ -45,7 +45,10 @@ impl InputFileSliceChecksumPacket {
         }
         let computed_md5 = md5::compute(&data);
         if computed_md5.as_ref() != self.md5 {
-            println!("MD5 mismatch: computed {:?}, expected {:?}", computed_md5, self.md5);
+            println!(
+                "MD5 mismatch: computed {:?}, expected {:?}",
+                computed_md5, self.md5
+            );
             return false;
         }
 

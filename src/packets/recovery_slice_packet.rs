@@ -5,11 +5,11 @@ pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0RecvSlic";
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct RecoverySlicePacket {
-    pub length: u64,   // Length of the packet
-    pub md5: [u8; 16], // MD5 hash of the packet
-    pub set_id: [u8; 16], // Unique identifier for the PAR2 set
+    pub length: u64,              // Length of the packet
+    pub md5: [u8; 16],            // MD5 hash of the packet
+    pub set_id: [u8; 16],         // Unique identifier for the PAR2 set
     pub type_of_packet: [u8; 16], // Type of packet - should be "PAR 2.0\0RecvSlic"
-    pub exponent: u32, // Exponent used to generate recovery data
+    pub exponent: u32,            // Exponent used to generate recovery data
     #[br(count = length as usize - (8 + 8 + 16 + 16 + 16 + 4))]
     // Calculate recovery data size: total length - (magic + length + md5 + set_id + type + exponent)
     pub recovery_data: Vec<u8>, // Recovery data
