@@ -1,0 +1,11 @@
+[build]
+# Enable instrumentation for coverage
+rustflags = ["-C", "instrument-coverage"]
+
+[target.x86_64-unknown-linux-gnu]
+# Specific configuration for linux targets
+rustflags = ["-C", "instrument-coverage"]
+
+[env]
+# Set environment variables for coverage
+LLVM_PROFILE_FILE = "target/coverage/%p-%m.profraw"

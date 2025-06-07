@@ -10,3 +10,28 @@ clap = "4.5.39"
 rayon = "1.10.0"
 md5 = "0.7.0"
 hex = "0.4.3"
+
+[dev-dependencies]
+# Test coverage and reporting tools
+cargo-tarpaulin = "0.31"
+
+# Tarpaulin configuration
+[package.metadata.tarpaulin]
+# Exclude generated files and certain test directories from coverage
+exclude = [
+    "target/*",
+    "scripts/*",
+]
+# Include all source files by default
+include = [
+    "src/*",
+    "tests/*",
+]
+# Timeout for individual tests (in seconds)
+timeout = 120
+# Follow symbolic links
+follow-links = true
+# Count hits in tests 
+count-hits = true
+# Output timeout for individual tests
+output-timeout = 60
