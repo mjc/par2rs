@@ -28,7 +28,7 @@ pub fn parse_args() -> clap::ArgMatches {
                 .value_parser(|output: &str| {
                     let path =
                         fs::canonicalize(output).map_err(|_| "Failed to resolve output path")?;
-                    if path.parent().map_or(true, |parent| parent.exists()) {
+                    if path.parent().is_none_or(|parent| parent.exists()) {
                         Ok(path.to_string_lossy().to_string())
                     } else {
                         Err(String::from("Output directory does not exist"))

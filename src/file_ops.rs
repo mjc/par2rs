@@ -14,7 +14,7 @@ pub fn find_par2_files_in_directory(folder_path: &Path, exclude_file: &Path) -> 
         .expect("Failed to read directory")
         .filter_map(|entry| {
             let path = entry.ok()?.path();
-            (path.extension().map_or(false, |ext| ext == "par2") && path != exclude_file)
+            (path.extension().is_some_and(|ext| ext == "par2") && path != exclude_file)
                 .then_some(path)
         })
         .collect()
