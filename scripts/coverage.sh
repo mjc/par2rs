@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Code Coverage Report Generator for par2rs
 # This script provides multiple options for generating coverage reports
