@@ -32,9 +32,9 @@ pub struct RecoverySetInfo {
 /// Status of a file that needs repair
 #[derive(Debug, PartialEq)]
 pub enum FileStatus {
-    Present,      // File exists and is valid
-    Missing,      // File doesn't exist
-    Corrupted,    // File exists but is corrupted
+    Present,   // File exists and is valid
+    Missing,   // File doesn't exist
+    Corrupted, // File exists but is corrupted
 }
 
 /// Result of a repair operation
@@ -162,13 +162,16 @@ impl RepairContext {
 
     /// Determine if repair is possible for the given file statuses
     pub fn can_repair(&self, file_status: &HashMap<String, FileStatus>) -> bool {
-        let _total_slices: usize = self.recovery_set.files.iter()
-            .map(|f| f.slice_count)
-            .sum();
+        let _total_slices: usize = self.recovery_set.files.iter().map(|f| f.slice_count).sum();
 
-        let missing_or_corrupted_slices: usize = self.recovery_set.files.iter()
+        let missing_or_corrupted_slices: usize = self
+            .recovery_set
+            .files
+            .iter()
             .filter(|f| {
-                let status = file_status.get(&f.file_name).unwrap_or(&FileStatus::Missing);
+                let status = file_status
+                    .get(&f.file_name)
+                    .unwrap_or(&FileStatus::Missing);
                 *status != FileStatus::Present
             })
             .map(|f| f.slice_count)
@@ -183,7 +186,7 @@ impl RepairContext {
     /// Perform repair operation
     pub fn repair(&self) -> Result<RepairResult, Box<dyn std::error::Error>> {
         let file_status = self.check_file_status();
-        
+
         // Check if repair is needed
         let needs_repair = file_status.values().any(|s| *s != FileStatus::Present);
         if !needs_repair {
@@ -209,7 +212,8 @@ impl RepairContext {
                 repaired_files: Vec::new(),
                 verified_files: Vec::new(),
                 files_failed: file_status.keys().cloned().collect(),
-                message: "Insufficient recovery data to repair all missing/corrupted files.".to_string(),
+                message: "Insufficient recovery data to repair all missing/corrupted files."
+                    .to_string(),
             });
         }
 
@@ -218,7 +222,10 @@ impl RepairContext {
     }
 
     /// Perform Reed-Solomon repair using available recovery data
-    fn perform_reed_solomon_repair(&self, file_status: &HashMap<String, FileStatus>) -> Result<RepairResult, Box<dyn std::error::Error>> {
+    fn perform_reed_solomon_repair(
+        &self,
+        file_status: &HashMap<String, FileStatus>,
+    ) -> Result<RepairResult, Box<dyn std::error::Error>> {
         let mut repaired_files = Vec::new();
         let mut verified_files = Vec::new();
         let mut files_failed = Vec::new();
@@ -228,10 +235,12 @@ impl RepairContext {
         // 2. Set up Reed-Solomon matrices according to PAR2 spec
         // 3. Use recovery slices to reconstruct missing slices
         // 4. Reassemble files from reconstructed slices
-        
+
         for file_info in &self.recovery_set.files {
-            let status = file_status.get(&file_info.file_name).unwrap_or(&FileStatus::Missing);
-            
+            let status = file_status
+                .get(&file_info.file_name)
+                .unwrap_or(&FileStatus::Missing);
+
             if *status == FileStatus::Present {
                 verified_files.push(file_info.file_name.clone());
                 continue; // File is already good
@@ -281,27 +290,41 @@ impl RepairContext {
     }
 
     /// Attempt to repair a single file (placeholder implementation)
-    fn attempt_file_repair(&self, file_info: &FileInfo, _status: &FileStatus) -> Result<(), String> {
+    fn attempt_file_repair(
+        &self,
+        file_info: &FileInfo,
+        _status: &FileStatus,
+    ) -> Result<(), String> {
         let _file_path = self.base_path.join(&file_info.file_name);
-        
+
         // This is a placeholder implementation
         // A real implementation would reconstruct the file using Reed-Solomon recovery
-        println!("Would repair file: {} (size: {} bytes)", file_info.file_name, file_info.file_length);
-        println!("Recovery slices available: {}", self.recovery_set.recovery_slices.len());
+        println!(
+            "Would repair file: {} (size: {} bytes)",
+            file_info.file_name, file_info.file_length
+        );
+        println!(
+            "Recovery slices available: {}",
+            self.recovery_set.recovery_slices.len()
+        );
         println!("Slice size: {}", self.recovery_set.slice_size);
         println!("Expected slices for this file: {}", file_info.slice_count);
-        
+
         // For now, just report that we would repair it
         // TODO: Implement actual Reed-Solomon reconstruction
-        
+
         Ok(())
     }
 }
 
 /// High-level repair function that can be called from the binary
-pub fn repair_files(par2_file: &str, target_files: &[String], verbose: bool) -> Result<RepairResult, Box<dyn std::error::Error>> {
+pub fn repair_files(
+    par2_file: &str,
+    target_files: &[String],
+    verbose: bool,
+) -> Result<RepairResult, Box<dyn std::error::Error>> {
     let par2_path = Path::new(par2_file);
-    
+
     if verbose {
         println!("Starting repair process for: {}", par2_path.display());
         if !target_files.is_empty() {
@@ -326,7 +349,11 @@ pub fn repair_files(par2_file: &str, target_files: &[String], verbose: bool) -> 
     }
 
     if verbose {
-        println!("Loaded {} recovery blocks from {} PAR2 files", recovery_blocks, par2_files.len());
+        println!(
+            "Loaded {} recovery blocks from {} PAR2 files",
+            recovery_blocks,
+            par2_files.len()
+        );
     }
 
     // Get the base directory for file resolution
@@ -350,12 +377,15 @@ pub fn repair_files(par2_file: &str, target_files: &[String], verbose: bool) -> 
 
     // Show recovery set information
     if verbose {
-        println!("Recovery set contains {} file(s):", repair_context.recovery_set.files.len());
+        println!(
+            "Recovery set contains {} file(s):",
+            repair_context.recovery_set.files.len()
+        );
         for file_info in &repair_context.recovery_set.files {
-            println!("  - {} ({} bytes, {} slices)", 
-                     file_info.file_name, 
-                     file_info.file_length, 
-                     file_info.slice_count);
+            println!(
+                "  - {} ({} bytes, {} slices)",
+                file_info.file_name, file_info.file_length, file_info.slice_count
+            );
         }
     }
 
@@ -376,7 +406,12 @@ pub fn repair_files(par2_file: &str, target_files: &[String], verbose: bool) -> 
     // If specific target files were provided, filter to only those
     let _files_to_process: Vec<&String> = if target_files.is_empty() {
         // Process all files from the recovery set
-        repair_context.recovery_set.files.iter().map(|f| &f.file_name).collect()
+        repair_context
+            .recovery_set
+            .files
+            .iter()
+            .map(|f| &f.file_name)
+            .collect()
     } else {
         // Only process specified target files
         target_files.iter().collect()
@@ -384,14 +419,14 @@ pub fn repair_files(par2_file: &str, target_files: &[String], verbose: bool) -> 
 
     // Perform repair
     let mut result = repair_context.repair()?;
-    
+
     // Filter results if specific files were requested
     if !target_files.is_empty() {
         result.repaired_files.retain(|f| target_files.contains(f));
         result.verified_files.retain(|f| target_files.contains(f));
         result.files_failed.retain(|f| target_files.contains(f));
     }
-    
+
     Ok(result)
 }
 
@@ -418,7 +453,7 @@ mod tests {
         if par2_file.exists() {
             let par2_files = crate::file_ops::collect_par2_files(par2_file);
             let (packets, _) = crate::file_ops::load_all_par2_packets(&par2_files, false);
-            
+
             if !packets.is_empty() {
                 let base_path = par2_file.parent().unwrap().to_path_buf();
                 if let Ok(repair_context) = RepairContext::new(packets, base_path) {
