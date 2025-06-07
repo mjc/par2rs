@@ -100,7 +100,7 @@ impl RepairContext {
                 .trim_end_matches('\0')
                 .to_string();
 
-            let slice_count = ((fd.file_length + main.slice_size - 1) / main.slice_size) as usize;
+            let slice_count = fd.file_length.div_ceil(main.slice_size) as usize;
 
             files.push(FileInfo {
                 file_id: fd.file_id,
@@ -218,7 +218,7 @@ impl RepairContext {
         }
 
         // Perform the actual repair
-        Ok(self.perform_reed_solomon_repair(&file_status)?)
+        self.perform_reed_solomon_repair(&file_status)
     }
 
     /// Perform Reed-Solomon repair using available recovery data

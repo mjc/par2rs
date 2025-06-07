@@ -13,7 +13,7 @@ fn main() -> io::Result<()> {
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "par2") {
+            if path.extension().is_some_and(|ext| ext == "par2") {
                 Some(path)
             } else {
                 None
@@ -59,7 +59,7 @@ fn main() -> io::Result<()> {
 
         // Ensure the output directory exists
         let output_dir = Path::new("tests/fixtures/packets");
-        if let Err(e) = fs::create_dir_all(&output_dir) {
+        if let Err(e) = fs::create_dir_all(output_dir) {
             println!("Failed to create output directory {:?}: {}", output_dir, e);
             return Err(e);
         }

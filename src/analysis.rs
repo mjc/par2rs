@@ -48,7 +48,7 @@ pub fn extract_main_packet_stats(packets: &[Packet]) -> (u32, usize) {
             .values()
             .map(|&file_length| {
                 // Calculate blocks needed for this file (round up)
-                ((file_length + block_size as u64 - 1) / block_size as u64) as usize
+                file_length.div_ceil(block_size as u64) as usize
             })
             .sum()
     } else {
