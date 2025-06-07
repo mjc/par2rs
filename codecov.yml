@@ -1,0 +1,53 @@
+# Codecov configuration for par2rs
+# https://docs.codecov.com/docs/codecov-yaml
+
+coverage:
+  # Set the precision of the coverage percentage (2 decimal places)
+  precision: 2
+  # Round coverage percentage down
+  round: down
+  # Range of coverage percentages (red to green)
+  range: "70...90"
+
+  status:
+    # Overall project coverage
+    project:
+      default:
+        # Coverage must be within 1% of base branch
+        threshold: 1%
+        # If coverage drops by more than 1%, fail the check
+        if_ci_failed: error
+    
+    # Coverage for changes in patch/PR
+    patch:
+      default:
+        # New code should have at least 80% coverage
+        target: 80%
+        threshold: 5%
+        if_ci_failed: error
+
+# Comment configuration for PRs
+comment:
+  # Post comment on pull requests
+  layout: "reach,diff,flags,tree,reach"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: true
+
+# Ignore certain paths from coverage
+ignore:
+  - "target/**/*"
+  - "tests/fixtures/**/*"
+  - "scripts/**/*"
+  - "*.md"
+  - "*.toml"
+  - "*.yml"
+  - "*.yaml"
+
+# Flag management
+flags:
+  unittests:
+    paths:
+      - src/
+      - tests/

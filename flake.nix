@@ -37,6 +37,7 @@
             cargo-watch
             rustfmt
             clippy
+            yamllint
           ];
 
           RUSTC_VERSION = overrides.toolchain.channel;

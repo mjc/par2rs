@@ -61,17 +61,42 @@ cargo llvm-cov --lcov --output-path target/coverage/lcov.info
 
 ## CI Integration
 
-For GitHub Actions, add to your workflow:
+### GitHub Actions
+
+The project includes a GitHub Actions workflow (`.github/workflows/rust.yml`) that automatically generates coverage reports on every push and pull request.
+
+#### Coverage Workflow Features:
+- Runs tests first to ensure they pass
+- Generates coverage using `cargo-tarpaulin`
+- Outputs multiple formats: XML, HTML, and LCOV
+- Uploads results to Codecov
+- Archives coverage reports as build artifacts
+
+#### Setting up Codecov (Optional)
+
+1. Go to [codecov.io](https://codecov.io) and sign up with your GitHub account
+2. Add your repository to Codecov
+3. Get your Codecov token from the repository settings
+4. Add the token as a repository secret:
+   - Go to your GitHub repo → Settings → Secrets and variables → Actions
+   - Add a new secret named `CODECOV_TOKEN` with your token value
+
+#### Manual CI Setup
+
+For other CI systems, add to your workflow:
 
 ```yaml
 - name: Install cargo-tarpaulin
   run: cargo install cargo-tarpaulin
 
 - name: Generate coverage report
-  run: cargo tarpaulin --out Xml --output-dir target/coverage
+  run: |
+    cargo tarpaulin --verbose --all-features --workspace --timeout 120 \
+      --out Xml --out Html --out Lcov \
+      --output-dir target/coverage
 
 - name: Upload coverage to Codecov
-  uses: codecov/codecov-action@v3
+  uses: codecov/codecov-action@v4
   with:
     file: target/coverage/cobertura.xml
 ```
@@ -79,6 +104,30 @@ For GitHub Actions, add to your workflow:
 ## Coverage Configuration
 
 The `.cargo/config.toml` file contains configuration for LLVM-based coverage instrumentation.
+
+The `Cargo.toml` file includes tarpaulin configuration under `[package.metadata.tarpaulin]`.
+
+## Viewing Coverage Reports
+
+### Local HTML Reports
+After generating HTML coverage:
+```bash
+# Open the HTML report in your browser
+open target/coverage/tarpaulin-report.html
+# Or for LLVM-cov:
+open target/coverage/html/index.html
+```
+
+### Understanding Coverage Metrics
+- **Line Coverage**: Percentage of code lines executed during tests
+- **Branch Coverage**: Percentage of conditional branches tested
+- **Function Coverage**: Percentage of functions called during tests
+
+### Coverage Thresholds
+Consider setting coverage targets:
+- **Good**: 70-80% line coverage
+- **Great**: 80-90% line coverage  
+- **Excellent**: 90%+ line coverage
 
 ## Exclusions
 
