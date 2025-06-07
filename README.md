@@ -154,7 +154,8 @@ tests/
 └── unit/                     # Detailed unit test modules
     ├── analysis.rs
     ├── file_ops.rs
-    └── file_verification.rs
+    ├── file_verification.rs
+    └── repair.rs
 ```
 
 ### Test Fixtures
@@ -162,6 +163,10 @@ tests/
 The project includes comprehensive test fixtures:
 - **Real PAR2 Files**: `testfile.par2` with volume files
 - **Individual Packets**: Isolated packet files for focused testing
+- **Repair Scenarios**: Test files for repair functionality
+  - `testfile_corrupted`: File with single corruption point
+  - `testfile_heavily_corrupted`: File with multiple corruption points
+  - `repair_scenarios/`: PAR2 files without data files (missing file scenario)
 - **Corrupted Data**: Test cases for error handling
 
 ## Binaries
