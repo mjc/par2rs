@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-reed-solomon-erasure = "*"
 binrw = "*"
 clap = "4.5.39"
 rayon = "1.10.0"

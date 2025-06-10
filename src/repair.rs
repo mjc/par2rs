@@ -4,7 +4,7 @@
 //! It implements Reed-Solomon error correction to reconstruct missing or corrupted files.
 
 use crate::file_verification::calculate_file_md5;
-use crate::galois::{gf_add, gf_div, gf_mul, gf_pow};
+use crate::reed_solomon::ReconstructionEngine;
 use crate::{FileDescriptionPacket, InputFileSliceChecksumPacket, MainPacket, Packet, RecoverySlicePacket};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -510,7 +510,7 @@ impl RepairContext {
         Ok(missing_slices)
     }
     
-    /// Reconstruct missing slices using PAR2 Reed-Solomon decoding with matrix operations
+    /// Reconstruct missing slices using the Reed-Solomon module
     fn reconstruct_slices(
         &self,
         existing_slices: &HashMap<usize, Vec<u8>>,
@@ -531,13 +531,6 @@ impl RepairContext {
         println!("Reconstructing {} missing slices using {} recovery slices", 
                 missing_slices.len(), recovery_slices_count);
 
-        // Debug: Print first few recovery slice exponents
-        println!("First 10 recovery slice exponents: {:?}", 
-                self.recovery_set.recovery_slices.iter()
-                    .take(10)
-                    .map(|rs| rs.exponent)
-                    .collect::<Vec<_>>());
-
         // Calculate total input slices across all files in the recovery set
         let total_input_slices: usize = self.recovery_set.files.iter().map(|f| f.slice_count).sum();
         
@@ -550,307 +543,66 @@ impl RepairContext {
                 for slice_index in 0..file.slice_count {
                     global_slice_map.insert(slice_index, global_index + slice_index);
                 }
+                break; // Found our file, stop here
             }
             global_index += file.slice_count;
         }
+        
+        println!("Global slice mapping for file {}: first slice maps to global index {}", 
+                file_info.file_name, global_index);
 
-        // Use matrix-based Reed-Solomon reconstruction for efficiency
-        self.reconstruct_slices_matrix_based(
-            existing_slices, 
-            missing_slices, 
-            file_info,
-            &global_slice_map,
+        // Create reconstruction engine
+        let reconstruction_engine = ReconstructionEngine::new(
+            slice_size,
             total_input_slices,
-            slice_size
-        )
-    }
+            self.recovery_set.recovery_slices.clone(),
+        );
 
-    /// Matrix-based Reed-Solomon reconstruction that processes entire slices at once
-    fn reconstruct_slices_matrix_based(
-        &self,
-        existing_slices: &HashMap<usize, Vec<u8>>,
-        missing_slices: &[usize],
-        file_info: &FileInfo,
-        global_slice_map: &HashMap<usize, usize>,
-        total_input_slices: usize,
-        slice_size: usize,
-    ) -> Result<HashMap<usize, Vec<u8>>, Box<dyn std::error::Error>> {
-        let mut reconstructed = HashMap::new();
-        let input_constants = self.generate_input_constants(total_input_slices);
-        
-        // Process each missing slice
-        for &slice_index in missing_slices {
-            let actual_size = if slice_index == file_info.slice_count - 1 {
-                let remaining_bytes = file_info.file_length % self.recovery_set.slice_size;
-                if remaining_bytes == 0 {
-                    slice_size
-                } else {
-                    remaining_bytes as usize
-                }
-            } else {
-                slice_size
-            };
-            
-            // Use the simple single-slice reconstruction approach to avoid stack overflow
-            if let Ok(reconstructed_slice) = self.reconstruct_single_slice_simple(
-                existing_slices,
-                slice_index,
-                global_slice_map,
-                &input_constants,
-                actual_size
-            ) {
-                println!("Reconstructed slice {} with {} bytes", slice_index, actual_size);
-                reconstructed.insert(slice_index, reconstructed_slice);
-            } else {
-                println!("Warning: Failed to reconstruct slice {}", slice_index);
-                // Create a zeroed slice as fallback
-                reconstructed.insert(slice_index, vec![0u8; actual_size]);
+        // Check if reconstruction is possible
+        if !reconstruction_engine.can_reconstruct(missing_slices.len()) {
+            return Err(format!(
+                "Reconstruction not possible with current configuration: {} missing slices",
+                missing_slices.len()
+            ).into());
+        }
+
+        // Perform reconstruction
+        let result = reconstruction_engine.reconstruct_missing_slices(
+            existing_slices,
+            missing_slices,
+            &global_slice_map,
+        );
+
+        if result.success {
+            // Handle any warnings
+            if let Some(warning) = &result.error_message {
+                println!("Warning: {}", warning);
             }
-        }
-        
-        Ok(reconstructed)
-    }
 
-    /// Simple single-slice reconstruction using basic approach (avoids stack overflow)
-    fn reconstruct_single_slice_simple(
-        &self,
-        _existing_slices: &HashMap<usize, Vec<u8>>,
-        missing_slice_index: usize,
-        _global_slice_map: &HashMap<usize, usize>,
-        _input_constants: &[u16],
-        slice_size: usize,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        println!("Attempting basic reconstruction for slice {} with size {}", missing_slice_index, slice_size);
-        
-        if self.recovery_set.recovery_slices.is_empty() {
-            println!("No recovery slices available");
-            return Err("No recovery slices available".into());
-        }
-        
-        // Very basic reconstruction: use the first recovery slice directly as the base
-        // This is not mathematically correct but will create a file that can be tested
-        let recovery_slice = &self.recovery_set.recovery_slices[0];
-        
-        println!("Using recovery slice with exponent {} and {} bytes of data", 
-                recovery_slice.exponent, recovery_slice.recovery_data.len());
-        
-        let mut result = vec![0u8; slice_size];
-        
-        // Copy as much as we can from the recovery slice
-        let copy_len = std::cmp::min(recovery_slice.recovery_data.len(), slice_size);
-        if copy_len > 0 {
-            result[..copy_len].copy_from_slice(&recovery_slice.recovery_data[..copy_len]);
-        }
-        
-        // Fill the rest with a simple pattern to distinguish from zeros
-        for i in copy_len..slice_size {
-            result[i] = ((i + missing_slice_index) % 256) as u8;
-        }
-        
-        println!("Created basic reconstructed slice with {} bytes", result.len());
-        Ok(result)
-    }
-
-    /// Reconstruct a single 16-bit word at a specific position using Reed-Solomon decoding
-    fn reconstruct_word_at_position(
-        &self,
-        known_words: &[u16],
-        known_indices: &[usize],
-        target_index: usize,
-        total_input_slices: usize,
-        word_position: usize,
-        missing_count: usize,
-    ) -> Result<u16, Box<dyn std::error::Error>> {
-        if missing_count > self.recovery_set.recovery_slices.len() {
-            return Err("Not enough recovery slices for reconstruction".into());
-        }
-
-        // Get recovery words at this position from recovery slices
-        let mut recovery_words = Vec::new();
-        let mut recovery_exponents = Vec::new();
-
-        for recovery_slice in &self.recovery_set.recovery_slices {
-            let byte_offset = word_position * 2;
-            if byte_offset + 1 < recovery_slice.recovery_data.len() {
-                let word = u16::from_le_bytes([
-                    recovery_slice.recovery_data[byte_offset],
-                    recovery_slice.recovery_data[byte_offset + 1],
-                ]);
-                recovery_words.push(word);
-                recovery_exponents.push(recovery_slice.exponent);
-            } else if byte_offset < recovery_slice.recovery_data.len() {
-                let word = u16::from_le_bytes([recovery_slice.recovery_data[byte_offset], 0]);
-                recovery_words.push(word);
-                recovery_exponents.push(recovery_slice.exponent);
-            }
-        }
-
-        // For PAR2 Reed-Solomon reconstruction, we need to solve:
-        // R_i = sum(D_j * C_j^E_i) for all input slices j and recovery exponent E_i
-        // Where R_i is recovery word i, D_j is input data word j, C_j is input constant j
-        
-        // If we have enough information, use proper Reed-Solomon matrix solving
-        if known_words.len() + missing_count <= recovery_words.len() + known_words.len() {
-            return self.solve_reed_solomon_equation(
-                known_words,
-                known_indices,
-                target_index,
-                &recovery_words,
-                &recovery_exponents,
-                total_input_slices,
-            );
-        }
-
-        Err("Cannot reconstruct word: insufficient data for Reed-Solomon solving".into())
-    }
-
-    /// Solve Reed-Solomon equation to find missing data word
-    fn solve_reed_solomon_equation(
-        &self,
-        known_words: &[u16],
-        known_indices: &[usize],
-        target_index: usize,
-        recovery_words: &[u16],
-        recovery_exponents: &[u32],
-        total_input_slices: usize,
-    ) -> Result<u16, Box<dyn std::error::Error>> {
-        // PAR2 input slice constants follow the pattern: 1, 2, 4, 8, 16, 32, 64, 128, ...
-        let input_constants = self.generate_input_constants(total_input_slices);
-        
-        if target_index >= input_constants.len() {
-            return Err("Target index out of range".into());
-        }
-
-        // Enhanced debugging for slice indices near the corrupted ones (94 and 1985)
-        let debug_this_call = (target_index >= 90 && target_index <= 100) || (target_index >= 1980 && target_index <= 1990);
-        if debug_this_call {
-            println!("Debug Reed-Solomon solving:");
-            println!("  Target index: {}, Target constant: {}", target_index, input_constants[target_index]);
-            println!("  Recovery exponent: {}", recovery_exponents[0]);
-            println!("  Recovery word: {}", recovery_words[0]);
-            println!("  Known words count: {}", known_words.len());
-            if known_words.len() > 0 {
-                println!("  First few known words: {:?}", &known_words[..std::cmp::min(3, known_words.len())]);
-                println!("  First few known indices: {:?}", &known_indices[..std::cmp::min(3, known_indices.len())]);
-            }
-        }
-
-        // Use the first recovery equation to solve for the missing word
-        // Prefer non-zero exponents for proper Reed-Solomon reconstruction
-        let mut recovery_word = 0u16;
-        let mut exponent = 0u32;
-        let mut found_usable_recovery = false;
-        
-        // First try to find a recovery slice with non-zero exponent
-        for i in 0..recovery_words.len() {
-            if recovery_exponents[i] != 0 {
-                recovery_word = recovery_words[i];
-                exponent = recovery_exponents[i];
-                found_usable_recovery = true;
-                if debug_this_call {
-                    println!("  Using non-zero exponent {} from recovery slice {}", exponent, i);
-                }
-                break;
-            }
-        }
-        
-        if !found_usable_recovery {
-            // Fallback to exponent 0 if no other recovery slices available
-            if let (Some(&rw), Some(&exp)) = (recovery_words.first(), recovery_exponents.first()) {
-                recovery_word = rw;
-                exponent = exp;
-                found_usable_recovery = true;
-                if debug_this_call {
-                    println!("  Falling back to exponent 0 (parity only)");
-                }
-            }
-        }
-        
-        if found_usable_recovery {
-            // Recovery equation: R = sum(D_j * C_j^E) for all j
-            // We know: R = known_sum + unknown_word * C_target^E
-            // So: unknown_word = (R - known_sum) / C_target^E
-            
-            let mut known_sum = 0u16;
-            for (i, &word) in known_words.iter().enumerate() {
-                if i < known_indices.len() && known_indices[i] < input_constants.len() {
-                    let constant = input_constants[known_indices[i]];
-                    let contribution = gf_mul(word, gf_pow(constant, exponent));
-                    known_sum = gf_add(known_sum, contribution);
-                    
-                    // Debug first few contributions
-                    if debug_this_call && i < 3 {
-                        println!("    Contribution {}: word={}, constant={}, constant^exp={}, contrib={}", 
-                                i, word, constant, gf_pow(constant, exponent), contribution);
+            // Adjust slice sizes for the last slice if needed
+            let mut final_reconstructed = HashMap::new();
+            for (slice_index, mut slice_data) in result.reconstructed_slices {
+                let actual_size = if slice_index == file_info.slice_count - 1 {
+                    let remaining_bytes = file_info.file_length % self.recovery_set.slice_size;
+                    if remaining_bytes == 0 {
+                        slice_size
+                    } else {
+                        remaining_bytes as usize
                     }
-                }
-            }
-            
-            // Calculate the target coefficient
-            let target_constant = input_constants[target_index];
-            let target_coefficient = gf_pow(target_constant, exponent);
-            
-            if target_coefficient == 0 {
-                return Err("Zero coefficient in Reed-Solomon equation".into());
-            }
-            
-            // Solve for unknown word: unknown = (recovery - known_sum) / coefficient
-            let numerator = gf_add(recovery_word, known_sum); // GF subtraction is same as addition
-            let unknown_word = gf_div(numerator, target_coefficient);
-            
-            if debug_this_call {
-                println!("    Final calculation: recovery={}, known_sum={}, target_coeff={}, numerator={}, result={}", 
-                        recovery_word, known_sum, target_coefficient, numerator, unknown_word);
-            }
-            
-            return Ok(unknown_word);
-        }
+                } else {
+                    slice_size
+                };
 
-        Err("No recovery data available for solving".into())
-    }
+                // Resize slice to correct size
+                slice_data.resize(actual_size, 0);
+                final_reconstructed.insert(slice_index, slice_data);
+                println!("Reconstructed slice {} with {} bytes", slice_index, actual_size);
+            }
 
-    /// Generate PAR2 input constants sequence
-    fn generate_input_constants(&self, count: usize) -> Vec<u16> {
-        println!("Generating {} input constants using static approach", count);
-        
-        // Use a completely static approach to avoid any stack overflow
-        // This is a simplified pattern that should work for basic testing
-        let mut constants = Vec::with_capacity(count);
-        
-        // Simple pattern: powers of 2 modulo 65536, plus some offset
-        for i in 0..count {
-            let value = match i % 16 {
-                0 => 1,
-                1 => 2,
-                2 => 4,
-                3 => 8,
-                4 => 16,
-                5 => 32,
-                6 => 64,
-                7 => 128,
-                8 => 256,
-                9 => 512,
-                10 => 1024,
-                11 => 2048,
-                12 => 4096,
-                13 => 8192,
-                14 => 16384,
-                15 => 32768,
-                _ => 1, // fallback
-            };
-            
-            // Add a bit of variation based on position
-            let offset = (i / 16) as u16;
-            let final_value = (value + offset) % 65535;
-            constants.push(if final_value == 0 { 1 } else { final_value });
+            Ok(final_reconstructed)
+        } else {
+            Err(result.error_message.unwrap_or_else(|| "Reed-Solomon reconstruction failed".to_string()).into())
         }
-        
-        // Debug: print first few constants to verify
-        if count > 10 {
-            println!("First 10 input constants: {:?}", &constants[..10]);
-        }
-        
-        constants
     }
     
     /// Write the repaired file to disk
@@ -898,6 +650,7 @@ impl RepairContext {
         }
         Ok(matches)
     }
+
 }
 
 /// High-level repair function that can be called from the binary
