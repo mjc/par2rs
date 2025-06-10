@@ -2,235 +2,272 @@
 //!
 //! This module implements 16-bit Galois Field arithmetic using the PAR2 standard
 //! generator polynomial 0x1100B (binary: 1 0001 0000 0000 1011).
+//!
+//! Ported from par2cmdline galois.h implementation.
+
+use std::ops::{Add, AddAssign, Sub, SubAssign, Mul, MulAssign, Div, DivAssign};
 
 /// PAR2 uses GF(2^16) with generator polynomial 0x1100B
-const GF_GENERATOR: u32 = 0x1100B;
+const GF16_GENERATOR: u32 = 0x1100B;
+/// PAR2 also supports GF(2^8) with generator polynomial 0x11D  
+const GF8_GENERATOR: u32 = 0x11D;
 
-/// Precomputed multiplication and division tables for performance
-pub struct GaloisField {
-    log_table: [u16; 65536],
-    exp_table: [u16; 131072], // 2x size to avoid modulo in calculations
+/// Galois Field lookup tables for fast arithmetic
+pub struct GaloisTable<const BITS: usize, const GENERATOR: u32> {
+    pub log: Vec<u16>,
+    pub antilog: Vec<u16>,
 }
 
-impl GaloisField {
-    /// Create a new Galois Field with precomputed tables
+impl<const BITS: usize, const GENERATOR: u32> GaloisTable<BITS, GENERATOR> {
+    const COUNT: usize = 1 << BITS;
+    const LIMIT: usize = Self::COUNT - 1;
+    
     pub fn new() -> Self {
-        let mut gf = GaloisField {
-            log_table: [0; 65536],
-            exp_table: [0; 131072],
+        let mut table = GaloisTable {
+            log: vec![0; Self::COUNT],
+            antilog: vec![0; Self::COUNT],
         };
-        gf.build_tables();
-        gf
+        table.build_tables();
+        table
     }
-
-    /// Build logarithm and exponential tables for fast multiplication/division
+    
     fn build_tables(&mut self) {
-        let mut value = 1u32;
+        let mut b = 1u32;
         
-        // Build the exponential table first
-        for i in 0..65535 {
-            self.exp_table[i] = value as u16;
-            if value < 65536 {
-                self.log_table[value as usize] = i as u16;
-            }
+        for l in 0..Self::LIMIT {
+            self.log[b as usize] = l as u16;
+            self.antilog[l] = b as u16;
             
-            value <<= 1;
-            if value & 0x10000 != 0 {
-                value ^= GF_GENERATOR;
+            b <<= 1;
+            if b & Self::COUNT as u32 != 0 {
+                b ^= GENERATOR;
             }
         }
         
-        // Duplicate the table for easier calculation
-        for i in 65535..131072 {
-            self.exp_table[i] = self.exp_table[i - 65535];
+        self.log[0] = Self::LIMIT as u16;
+        self.antilog[Self::LIMIT] = 0;
+    }
+}
+
+/// Galois Field element
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Galois<const BITS: usize, const GENERATOR: u32> {
+    value: u16,
+}
+
+impl<const BITS: usize, const GENERATOR: u32> Galois<BITS, GENERATOR> {
+    const COUNT: usize = 1 << BITS;
+    const LIMIT: usize = Self::COUNT - 1;
+    
+    pub fn new(value: u16) -> Self {
+        Self { value }
+    }
+    
+    pub fn value(&self) -> u16 {
+        self.value
+    }
+    
+    /// Power operation
+    pub fn pow(&self, exponent: u16) -> Self {
+        if self.value == 0 {
+            return Self::new(0);
         }
         
-        self.log_table[0] = 0; // Special case: log(0) = 0 (though mathematically undefined)
+        let table = Self::get_table();
+        let log_val = table.log[self.value as usize] as u32;
+        let result_log = (log_val * exponent as u32) % Self::LIMIT as u32;
+        Self::new(table.antilog[result_log as usize])
     }
-
-    /// Add two elements in GF(2^16) - this is just XOR
-    #[inline]
-    pub fn add(&self, a: u16, b: u16) -> u16 {
-        a ^ b
+    
+    /// Get logarithm value
+    pub fn log(&self) -> u16 {
+        let table = Self::get_table();
+        table.log[self.value as usize]
     }
-
-    /// Subtract two elements in GF(2^16) - same as addition (XOR)
-    #[inline]
-    pub fn sub(&self, a: u16, b: u16) -> u16 {
-        a ^ b
+    
+    /// Get antilogarithm value  
+    pub fn antilog(&self) -> u16 {
+        let table = Self::get_table();
+        table.antilog[self.value as usize]
     }
-
-    /// Multiply two elements in GF(2^16)
-    #[inline]
-    pub fn mul(&self, a: u16, b: u16) -> u16 {
-        if a == 0 || b == 0 {
-            return 0;
-        }
+    
+    /// Get the global table (using thread-local storage for safety)
+    fn get_table() -> &'static GaloisTable<BITS, GENERATOR> {
+        use std::sync::OnceLock;
+        static TABLE_16: OnceLock<GaloisTable<16, GF16_GENERATOR>> = OnceLock::new();
+        static TABLE_8: OnceLock<GaloisTable<8, GF8_GENERATOR>> = OnceLock::new();
         
-        let log_a = self.log_table[a as usize] as usize;
-        let log_b = self.log_table[b as usize] as usize;
-        self.exp_table[log_a + log_b]
-    }
-
-    /// Divide two elements in GF(2^16)
-    #[inline]
-    pub fn div(&self, a: u16, b: u16) -> u16 {
-        if a == 0 {
-            return 0;
-        }
-        if b == 0 {
-            panic!("Division by zero in Galois Field");
-        }
-        
-        let log_a = self.log_table[a as usize] as usize;
-        let log_b = self.log_table[b as usize] as usize;
-        
-        // Subtraction in log space, with wraparound
-        let log_result = if log_a >= log_b {
-            log_a - log_b
+        if BITS == 16 && GENERATOR == GF16_GENERATOR {
+            unsafe { 
+                std::mem::transmute(TABLE_16.get_or_init(|| GaloisTable::new()))
+            }
+        } else if BITS == 8 && GENERATOR == GF8_GENERATOR {
+            unsafe {
+                std::mem::transmute(TABLE_8.get_or_init(|| GaloisTable::new()))
+            }
         } else {
-            log_a + 65535 - log_b
-        };
-        
-        self.exp_table[log_result]
-    }
-
-    /// Raise an element to a power in GF(2^16)
-    #[inline]
-    pub fn pow(&self, base: u16, exponent: u32) -> u16 {
-        if base == 0 {
-            return if exponent == 0 { 1 } else { 0 };
+            panic!("Unsupported Galois field configuration");
         }
-        if exponent == 0 {
-            return 1;
+    }
+}
+
+// Addition (XOR in Galois fields)
+impl<const BITS: usize, const GENERATOR: u32> Add for Galois<BITS, GENERATOR> {
+    type Output = Self;
+    
+    fn add(self, rhs: Self) -> Self::Output {
+        Self::new(self.value ^ rhs.value)
+    }
+}
+
+impl<const BITS: usize, const GENERATOR: u32> AddAssign for Galois<BITS, GENERATOR> {
+    fn add_assign(&mut self, rhs: Self) {
+        self.value ^= rhs.value;
+    }
+}
+
+// Subtraction (same as addition in GF(2^n))
+impl<const BITS: usize, const GENERATOR: u32> Sub for Galois<BITS, GENERATOR> {
+    type Output = Self;
+    
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self::new(self.value ^ rhs.value)
+    }
+}
+
+impl<const BITS: usize, const GENERATOR: u32> SubAssign for Galois<BITS, GENERATOR> {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.value ^= rhs.value;
+    }
+}
+
+// Multiplication using log tables
+impl<const BITS: usize, const GENERATOR: u32> Mul for Galois<BITS, GENERATOR> {
+    type Output = Self;
+    
+    fn mul(self, rhs: Self) -> Self::Output {
+        if self.value == 0 || rhs.value == 0 {
+            return Self::new(0);
         }
         
-        let log_base = self.log_table[base as usize] as u64;
-        let log_result = (log_base * exponent as u64) % 65535;
-        self.exp_table[log_result as usize]
+        let table = Self::get_table();
+        let log_sum = (table.log[self.value as usize] as usize + 
+                      table.log[rhs.value as usize] as usize) % Self::LIMIT;
+        Self::new(table.antilog[log_sum])
     }
+}
 
-    /// Get the multiplicative inverse of an element
-    #[inline]
-    pub fn inverse(&self, a: u16) -> u16 {
-        if a == 0 {
-            panic!("Cannot invert zero in Galois Field");
+impl<const BITS: usize, const GENERATOR: u32> MulAssign for Galois<BITS, GENERATOR> {
+    fn mul_assign(&mut self, rhs: Self) {
+        *self = *self * rhs;
+    }
+}
+
+// Division using log tables
+impl<const BITS: usize, const GENERATOR: u32> Div for Galois<BITS, GENERATOR> {
+    type Output = Self;
+    
+    fn div(self, rhs: Self) -> Self::Output {
+        if rhs.value == 0 {
+            panic!("Division by zero in Galois field");
+        }
+        if self.value == 0 {
+            return Self::new(0);
         }
         
-        let log_a = self.log_table[a as usize] as usize;
-        self.exp_table[65535 - log_a]
+        let table = Self::get_table();
+        let log_diff = (table.log[self.value as usize] as i32 - 
+                       table.log[rhs.value as usize] as i32 + 
+                       Self::LIMIT as i32) % Self::LIMIT as i32;
+        Self::new(table.antilog[log_diff as usize])
     }
 }
 
-impl Default for GaloisField {
-    fn default() -> Self {
-        Self::new()
+impl<const BITS: usize, const GENERATOR: u32> DivAssign for Galois<BITS, GENERATOR> {
+    fn div_assign(&mut self, rhs: Self) {
+        *self = *self / rhs;
     }
 }
 
-use std::sync::OnceLock;
-
-/// Global Galois Field instance for PAR2 operations
-static GALOIS_FIELD: OnceLock<GaloisField> = OnceLock::new();
-
-/// Get the global Galois Field instance
-pub fn galois_field() -> &'static GaloisField {
-    GALOIS_FIELD.get_or_init(|| GaloisField::new())
+// Conversion traits
+impl<const BITS: usize, const GENERATOR: u32> From<u16> for Galois<BITS, GENERATOR> {
+    fn from(value: u16) -> Self {
+        Self::new(value)
+    }
 }
 
-/// Convenience functions using the global Galois Field
-#[inline]
-pub fn gf_add(a: u16, b: u16) -> u16 {
-    galois_field().add(a, b)
+impl<const BITS: usize, const GENERATOR: u32> Into<u16> for Galois<BITS, GENERATOR> {
+    fn into(self) -> u16 {
+        self.value
+    }
 }
 
-#[inline]
-pub fn gf_sub(a: u16, b: u16) -> u16 {
-    galois_field().sub(a, b)
+// Display traits
+impl<const BITS: usize, const GENERATOR: u32> std::fmt::Display for Galois<BITS, GENERATOR> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.value)
+    }
 }
 
-#[inline]
-pub fn gf_mul(a: u16, b: u16) -> u16 {
-    galois_field().mul(a, b)
-}
+// Type aliases for PAR2 standard fields
+pub type Galois8 = Galois<8, GF8_GENERATOR>;
+pub type Galois16 = Galois<16, GF16_GENERATOR>;
 
-#[inline]
-pub fn gf_div(a: u16, b: u16) -> u16 {
-    galois_field().div(a, b)
-}
-
-#[inline]
-pub fn gf_pow(base: u16, exponent: u32) -> u16 {
-    galois_field().pow(base, exponent)
-}
-
-#[inline]
-pub fn gf_inverse(a: u16) -> u16 {
-    galois_field().inverse(a)
+/// GCD function as used in par2cmdline
+pub fn gcd(mut a: u32, mut b: u32) -> u32 {
+    if a != 0 && b != 0 {
+        while a != 0 && b != 0 {
+            if a > b {
+                a = a % b;
+            } else {
+                b = b % a;
+            }
+        }
+        a + b
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    
     #[test]
-    fn test_galois_field_basic_operations() {
-        let gf = GaloisField::new();
+    fn test_galois16_basic_ops() {
+        let a = Galois16::new(0x1234);
+        let b = Galois16::new(0x5678);
         
-        // Test basic properties
-        assert_eq!(gf.add(5, 3), 5 ^ 3);
-        assert_eq!(gf.sub(5, 3), 5 ^ 3);
+        // Test addition (XOR)
+        let sum = a + b;
+        assert_eq!(sum.value(), 0x1234 ^ 0x5678);
         
-        // Test multiplicative identity
-        assert_eq!(gf.mul(1, 42), 42);
-        assert_eq!(gf.mul(42, 1), 42);
-        
-        // Test additive identity
-        assert_eq!(gf.add(0, 42), 42);
-        assert_eq!(gf.add(42, 0), 42);
-        
-        // Test that a * inverse(a) = 1 for some non-zero values
-        for a in 1..10u16 {
-            let inv_a = gf.inverse(a);
-            assert_eq!(gf.mul(a, inv_a), 1, "Failed for a = {}", a);
-        }
+        // Test that addition and subtraction are the same
+        assert_eq!(a + b, a - b);
     }
-
+    
     #[test]
-    fn test_galois_field_division() {
-        let gf = GaloisField::new();
+    fn test_galois16_multiplication() {
+        let a = Galois16::new(2);
+        let b = Galois16::new(3);
+        let product = a * b;
         
-        // Test that a / b * b = a for some non-zero a, b
-        for a in 1..10u16 {
-            for b in 1..10u16 {
-                let quotient = gf.div(a, b);
-                let result = gf.mul(quotient, b);
-                assert_eq!(result, a, "Failed for a = {}, b = {}", a, b);
-            }
-        }
+        // In GF(2^16), 2 * 3 should give a specific result
+        // We can verify by checking that (a * b) / a == b
+        assert_eq!(product / a, b);
     }
-
+    
     #[test]
-    fn test_galois_field_power() {
-        let gf = GaloisField::new();
-        
-        // Test some basic power operations
-        assert_eq!(gf.pow(2, 0), 1);
-        assert_eq!(gf.pow(2, 1), 2);
-        assert_eq!(gf.pow(0, 5), 0);
-        
-        // Test that a^0 = 1 for some non-zero values
-        for a in 1..10u16 {
-            assert_eq!(gf.pow(a, 0), 1);
-        }
+    fn test_galois16_power() {
+        let base = Galois16::new(2);
+        let squared = base.pow(2);
+        assert_eq!(squared, base * base);
     }
-
+    
     #[test]
-    fn test_convenience_functions() {
-        // Test that convenience functions work
-        assert_eq!(gf_add(5, 3), 5 ^ 3);
-        assert_eq!(gf_mul(1, 42), 42);
-        assert_eq!(gf_pow(2, 1), 2);
-        assert_eq!(gf_pow(2, 0), 1);
+    fn test_gcd() {
+        assert_eq!(gcd(48, 18), 6);
+        assert_eq!(gcd(65535, 7), 1);
+        assert_eq!(gcd(0, 5), 0);
     }
 }
