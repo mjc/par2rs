@@ -227,10 +227,10 @@ mod tests {
 
     #[test]
     fn test_convenience_functions() {
-        // Test that convenience functions work by creating a local instance
-        let gf = GaloisField::new();
-        assert_eq!(gf.add(5, 3), 5 ^ 3);
-        assert_eq!(gf.mul(1, 42), 42);
-        assert_eq!(gf.pow(2, 1), 2);
+        // Test that convenience functions work
+        assert_eq!(gf_add(5, 3), 5 ^ 3);
+        assert_eq!(gf_mul(1, 42), 42);
+        assert_eq!(gf_pow(2, 1), 2);
+        assert_eq!(gf_pow(2, 0), 1);
     }
 }

@@ -4,7 +4,7 @@
 //! It implements Reed-Solomon error correction to reconstruct missing or corrupted files.
 
 use crate::file_verification::calculate_file_md5;
-use crate::reed_solomon::ReconstructionEngine;
+use crate::reed_solomon::{ReconstructionEngine};
 use crate::{FileDescriptionPacket, InputFileSliceChecksumPacket, MainPacket, Packet, RecoverySlicePacket};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -531,27 +531,20 @@ impl RepairContext {
         println!("Reconstructing {} missing slices using {} recovery slices", 
                 missing_slices.len(), recovery_slices_count);
 
-        // Calculate total input slices across all files in the recovery set
-        let total_input_slices: usize = self.recovery_set.files.iter().map(|f| f.slice_count).sum();
+        // For PAR2 Reed-Solomon, we only need input constants for this specific file
+        // Not for all files in the recovery set (which was causing the stack overflow)
+        let total_input_slices = file_info.slice_count;
         
-        // Map file slices to global slice indices 
+        // Map file slices to global slice indices (for this file, they're the same as local indices)
         let mut global_slice_map = HashMap::new();
-        let mut global_index = 0;
-        
-        for file in &self.recovery_set.files {
-            if file.file_id == file_info.file_id {
-                for slice_index in 0..file.slice_count {
-                    global_slice_map.insert(slice_index, global_index + slice_index);
-                }
-                break; // Found our file, stop here
-            }
-            global_index += file.slice_count;
+        for slice_index in 0..file_info.slice_count {
+            global_slice_map.insert(slice_index, slice_index);
         }
         
-        println!("Global slice mapping for file {}: first slice maps to global index {}", 
-                file_info.file_name, global_index);
+        println!("Single-file Reed-Solomon reconstruction for {} with {} slices", 
+                file_info.file_name, total_input_slices);
 
-        // Create reconstruction engine
+        // Create reconstruction engine with limited scope
         let reconstruction_engine = ReconstructionEngine::new(
             slice_size,
             total_input_slices,
