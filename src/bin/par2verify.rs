@@ -3,54 +3,15 @@
 //! This tool verifies the integrity of files using PAR2 (Parity Archive) files.
 //! It loads PAR2 packets from the main and volume files, displays statistics,
 //! and verifies that the protected files are intact.
+//!
+//! This implementation follows the par2cmdline approach:
+//! - Performs whole-file verification using MD5 hashes
+//! - For damaged files, performs block-level verification
+//! - Reports which blocks are broken and calculates repair requirements
+//! - Determines if repair is possible with available recovery blocks
 
-use par2rs::{analysis, file_ops, file_verification};
+use par2rs::{analysis, file_ops, verify};
 use std::path::Path;
-
-// ============================================================================
-// Main Function and Program Flow
-// ============================================================================
-
-/// Handle verification results and print appropriate messages
-fn handle_verification_results(
-    file_descriptors_for_broken_files: Vec<par2rs::Packet>,
-) -> Result<(), ()> {
-    if file_descriptors_for_broken_files.is_empty() {
-        println!("All files are correct, repair is not required.");
-        Ok(())
-    } else {
-        println!(
-            "Quick check failed for {} files. Attempting to verify packets...",
-            file_descriptors_for_broken_files.len()
-        );
-        Err(())
-    }
-}
-
-/// Verify source files and print progress information
-fn verify_source_files_with_progress(packets: Vec<par2rs::Packet>) -> Vec<par2rs::Packet> {
-    // Collect file information from FileDescription packets
-    let file_info = analysis::collect_file_info_from_packets(&packets);
-
-    // Verify each file and collect results
-    let verification_results =
-        file_verification::verify_files_and_collect_results(&file_info, true);
-
-    // Collect file IDs for broken files
-    let broken_file_ids: Vec<[u8; 16]> = verification_results
-        .iter()
-        .filter(|result| !result.is_valid)
-        .map(|result| result.file_id)
-        .collect();
-
-    // Return FileDescription packets for broken files
-    file_verification::find_broken_file_descriptors(packets, &broken_file_ids)
-}
-
-/// Verify packet integrity (placeholder implementation)
-fn verify_packets(packets: Vec<par2rs::Packet>) -> Vec<par2rs::Packet> {
-    packets // For now, just return all packets without verification
-}
 
 fn main() -> Result<(), ()> {
     let matches = par2rs::parse_args();
@@ -83,11 +44,17 @@ fn main() -> Result<(), ()> {
     let stats = analysis::calculate_par2_stats(&all_packets, total_recovery_blocks);
     analysis::print_summary_stats(&stats);
 
-    let verified_packets = verify_packets(all_packets);
-
-    // Verification phase
+    // Perform comprehensive verification
     println!("\nVerifying source files:\n");
-    let file_descriptors_for_broken_files = verify_source_files_with_progress(verified_packets);
+    let verification_results = verify::comprehensive_verify_files(all_packets);
 
-    handle_verification_results(file_descriptors_for_broken_files)
+    // Print detailed results
+    verify::print_verification_results(&verification_results);
+
+    // Return success if no repair is needed, error if repair is required
+    if verification_results.missing_block_count == 0 {
+        Ok(())
+    } else {
+        Err(())
+    }
 }
