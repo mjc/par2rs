@@ -10,24 +10,42 @@ use std::path::{Path, PathBuf};
 
 /// Find all PAR2 files in a directory, excluding the specified file
 pub fn find_par2_files_in_directory(folder_path: &Path, exclude_file: &Path) -> Vec<PathBuf> {
-    fs::read_dir(folder_path)
-        .expect("Failed to read directory")
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            (path.extension().is_some_and(|ext| ext == "par2") && path != exclude_file)
-                .then_some(path)
-        })
-        .collect()
+    match fs::read_dir(folder_path) {
+        Ok(entries) => entries
+            .filter_map(|entry| {
+                let path = entry.ok()?.path();
+                (path.extension().is_some_and(|ext| ext == "par2") && path != exclude_file)
+                    .then_some(path)
+            })
+            .collect(),
+        Err(_) => {
+            eprintln!(
+                "Warning: Failed to read directory: {}",
+                folder_path.display()
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// Collect all PAR2 files related to the input file (main file + volume files)
 pub fn collect_par2_files(file_path: &Path) -> Vec<PathBuf> {
     let mut par2_files = vec![file_path.to_path_buf()];
 
-    if let Some(folder_path) = file_path.parent() {
-        let additional_files = find_par2_files_in_directory(folder_path, file_path);
-        par2_files.extend(additional_files);
-    }
+    // Get the directory containing the PAR2 file
+    let folder_path = if file_path.is_absolute() {
+        // For absolute paths, use the parent directory
+        file_path.parent().unwrap_or(Path::new("."))
+    } else {
+        // For relative paths, get the parent or use current directory
+        match file_path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        }
+    };
+
+    let additional_files = find_par2_files_in_directory(folder_path, file_path);
+    par2_files.extend(additional_files);
 
     // Sort files to match system par2verify order
     par2_files.sort();

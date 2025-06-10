@@ -3,6 +3,7 @@ pub mod args;
 pub mod file_ops;
 pub mod file_verification;
 pub mod packets;
+pub mod reed_solomon;
 pub mod repair;
 pub mod verify;
 

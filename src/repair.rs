@@ -4,9 +4,13 @@
 //! It implements Reed-Solomon error correction to reconstruct missing or corrupted files.
 
 use crate::file_verification::calculate_file_md5;
-use crate::{FileDescriptionPacket, MainPacket, Packet, RecoverySlicePacket};
+use crate::reed_solomon::ReconstructionEngine;
+use crate::{
+    FileDescriptionPacket, InputFileSliceChecksumPacket, MainPacket, Packet, RecoverySlicePacket,
+};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// Information about a file in the recovery set
@@ -27,6 +31,7 @@ pub struct RecoverySetInfo {
     pub slice_size: u64,
     pub files: Vec<FileInfo>,
     pub recovery_slices: Vec<RecoverySlicePacket>,
+    pub file_slice_checksums: HashMap<[u8; 16], InputFileSliceChecksumPacket>,
 }
 
 /// Status of a file that needs repair
@@ -70,6 +75,7 @@ impl RepairContext {
         let mut main_packet: Option<MainPacket> = None;
         let mut file_descriptions: Vec<FileDescriptionPacket> = Vec::new();
         let mut recovery_slices: Vec<RecoverySlicePacket> = Vec::new();
+        let mut input_file_slice_checksums: Vec<InputFileSliceChecksumPacket> = Vec::new();
 
         // Collect packets by type
         for packet in packets {
@@ -82,6 +88,9 @@ impl RepairContext {
                 }
                 Packet::RecoverySlice(rs) => {
                     recovery_slices.push(rs);
+                }
+                Packet::InputFileSliceChecksum(ifsc) => {
+                    input_file_slice_checksums.push(ifsc);
                 }
                 _ => {} // Ignore other packet types for now
             }
@@ -112,11 +121,18 @@ impl RepairContext {
             });
         }
 
+        // Build checksum map indexed by file_id
+        let mut file_slice_checksums = HashMap::new();
+        for ifsc in input_file_slice_checksums {
+            file_slice_checksums.insert(ifsc.file_id, ifsc);
+        }
+
         Ok(RecoverySetInfo {
             set_id: main.set_id,
             slice_size: main.slice_size,
             files,
             recovery_slices,
+            file_slice_checksums,
         })
     }
 
@@ -162,9 +178,8 @@ impl RepairContext {
 
     /// Determine if repair is possible for the given file statuses
     pub fn can_repair(&self, file_status: &HashMap<String, FileStatus>) -> bool {
-        let _total_slices: usize = self.recovery_set.files.iter().map(|f| f.slice_count).sum();
-
-        let missing_or_corrupted_slices: usize = self
+        // For files that are missing, we need all their slices
+        let missing_slices: usize = self
             .recovery_set
             .files
             .iter()
@@ -172,15 +187,100 @@ impl RepairContext {
                 let status = file_status
                     .get(&f.file_name)
                     .unwrap_or(&FileStatus::Missing);
-                *status != FileStatus::Present
+                *status == FileStatus::Missing
             })
             .map(|f| f.slice_count)
             .sum();
 
+        // For corrupted files, we need to check each slice individually
+        let mut corrupted_slices = 0;
+        for file_info in &self.recovery_set.files {
+            let status = file_status
+                .get(&file_info.file_name)
+                .unwrap_or(&FileStatus::Missing);
+
+            if *status == FileStatus::Corrupted {
+                // Count actually corrupted slices in this file
+                let file_path = self.base_path.join(&file_info.file_name);
+                corrupted_slices += self.count_corrupted_slices(&file_path, file_info);
+            }
+        }
+
+        let total_needed_slices = missing_slices + corrupted_slices;
         let available_recovery_slices = self.recovery_set.recovery_slices.len();
 
-        // Can repair if we have enough recovery slices to replace missing/corrupted slices
-        available_recovery_slices >= missing_or_corrupted_slices
+        println!("Debug: Missing slices: {}, Corrupted slices: {}, Total needed: {}, Available recovery slices: {}", 
+                missing_slices, corrupted_slices, total_needed_slices, available_recovery_slices);
+
+        // Can repair if we have enough recovery slices to replace needed slices
+        available_recovery_slices >= total_needed_slices
+    }
+
+    /// Count the number of corrupted slices in a file
+    fn count_corrupted_slices(&self, file_path: &Path, file_info: &FileInfo) -> usize {
+        // Get the input file slice checksum packet for this file
+        let slice_checksums = match self
+            .recovery_set
+            .file_slice_checksums
+            .get(&file_info.file_id)
+        {
+            Some(checksums) => checksums,
+            None => {
+                println!(
+                    "Warning: No slice checksums found for file {}",
+                    file_info.file_name
+                );
+                return file_info.slice_count; // Assume all slices are corrupted if no checksums
+            }
+        };
+
+        let mut corrupted_count = 0;
+        let slice_size = self.recovery_set.slice_size;
+
+        // Open the file and check each slice
+        if let Ok(mut file) = File::open(file_path) {
+            for slice_index in 0..file_info
+                .slice_count
+                .min(slice_checksums.slice_checksums.len())
+            {
+                let slice_offset = slice_index as u64 * slice_size;
+                let slice_end = ((slice_index + 1) as u64 * slice_size).min(file_info.file_length);
+                let slice_length = slice_end - slice_offset;
+
+                // Read the slice data
+                if file.seek(SeekFrom::Start(slice_offset)).is_err() {
+                    corrupted_count += 1;
+                    continue;
+                }
+
+                let mut slice_data = vec![0u8; slice_length as usize];
+                if file.read_exact(&mut slice_data).is_err() {
+                    corrupted_count += 1;
+                    continue;
+                }
+
+                // Calculate MD5 hash of the slice
+                let slice_md5 = md5::compute(&slice_data).0;
+                let expected_md5 = slice_checksums.slice_checksums[slice_index].0;
+
+                if slice_md5 != expected_md5 {
+                    corrupted_count += 1;
+                    if slice_index < 10 {
+                        // Only log first few for debugging
+                        println!("Slice {} corrupted in {}", slice_index, file_info.file_name);
+                    }
+                }
+            }
+        } else {
+            // Cannot read file, assume all slices are corrupted
+            corrupted_count = file_info.slice_count;
+        }
+
+        println!(
+            "Found {} corrupted slices in {}",
+            corrupted_count, file_info.file_name
+        );
+        corrupted_count
     }
 
     /// Perform repair operation
@@ -230,12 +330,7 @@ impl RepairContext {
         let mut verified_files = Vec::new();
         let mut files_failed = Vec::new();
 
-        // This is a simplified implementation - a full implementation would need:
-        // 1. Load all existing valid slices
-        // 2. Set up Reed-Solomon matrices according to PAR2 spec
-        // 3. Use recovery slices to reconstruct missing slices
-        // 4. Reassemble files from reconstructed slices
-
+        // Process each file that needs repair
         for file_info in &self.recovery_set.files {
             let status = file_status
                 .get(&file_info.file_name)
@@ -246,12 +341,16 @@ impl RepairContext {
                 continue; // File is already good
             }
 
-            // For now, implement a basic file creation for missing files
-            // In a full implementation, this would use Reed-Solomon reconstruction
-            match self.attempt_file_repair(file_info, status) {
-                Ok(_) => {
-                    repaired_files.push(file_info.file_name.clone());
-                    println!("Repaired: {}", file_info.file_name);
+            // Attempt to repair the file using Reed-Solomon reconstruction
+            match self.repair_single_file(file_info, status) {
+                Ok(repaired) => {
+                    if repaired {
+                        repaired_files.push(file_info.file_name.clone());
+                        println!("Successfully repaired: {}", file_info.file_name);
+                    } else {
+                        verified_files.push(file_info.file_name.clone());
+                        println!("File was already valid: {}", file_info.file_name);
+                    }
                 }
                 Err(e) => {
                     files_failed.push(file_info.file_name.clone());
@@ -289,31 +388,312 @@ impl RepairContext {
         })
     }
 
-    /// Attempt to repair a single file (placeholder implementation)
-    fn attempt_file_repair(
+    /// Repair a single file using Reed-Solomon reconstruction
+    fn repair_single_file(
         &self,
         file_info: &FileInfo,
-        _status: &FileStatus,
-    ) -> Result<(), String> {
-        let _file_path = self.base_path.join(&file_info.file_name);
+        status: &FileStatus,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let file_path = self.base_path.join(&file_info.file_name);
 
-        // This is a placeholder implementation
-        // A real implementation would reconstruct the file using Reed-Solomon recovery
+        // Load slices from the existing file (if it exists and has valid slices)
+        let mut file_slices = self.load_file_slices(file_info)?;
+
+        // Check which slices are missing or corrupted
+        let missing_slices = self.identify_missing_slices(&file_slices, file_info)?;
+
+        if missing_slices.is_empty() {
+            // All slices are present and valid, but check if the overall file is still corrupted
+            if *status == FileStatus::Corrupted {
+                println!("All slices are valid but file MD5 doesn't match - attempting repair");
+                // The file might have been corrupted after slicing, let's try to rebuild it
+                self.write_repaired_file(&file_path, &file_slices, file_info)?;
+
+                // Verify the repaired file
+                if self.verify_repaired_file(&file_path, file_info)? {
+                    return Ok(true);
+                } else {
+                    return Err("File reconstruction failed even with all valid slices".into());
+                }
+            }
+            // File is already complete and valid
+            return Ok(false);
+        }
+
         println!(
-            "Would repair file: {} (size: {} bytes)",
-            file_info.file_name, file_info.file_length
+            "File {} has {} missing/corrupted slices out of {} total",
+            file_info.file_name,
+            missing_slices.len(),
+            file_info.slice_count
         );
+
+        // Check if we have enough recovery data
+        if missing_slices.len() > self.recovery_set.recovery_slices.len() {
+            return Err(format!(
+                "Cannot repair: {} missing slices but only {} recovery slices available",
+                missing_slices.len(),
+                self.recovery_set.recovery_slices.len()
+            )
+            .into());
+        }
+
+        // Reconstruct missing slices using Reed-Solomon
+        let reconstructed_slices =
+            self.reconstruct_slices(&file_slices, &missing_slices, file_info)?;
+
+        // Update file_slices with reconstructed data
+        for (slice_index, slice_data) in reconstructed_slices {
+            file_slices.insert(slice_index, slice_data);
+        }
+
+        // Write the repaired file
+        self.write_repaired_file(&file_path, &file_slices, file_info)?;
+
+        // Verify the repaired file
+        if self.verify_repaired_file(&file_path, file_info)? {
+            Ok(true)
+        } else {
+            Err("Repaired file failed verification".into())
+        }
+    }
+
+    /// Load slices from an existing file
+    fn load_file_slices(
+        &self,
+        file_info: &FileInfo,
+    ) -> Result<HashMap<usize, Vec<u8>>, Box<dyn std::error::Error>> {
+        let file_path = self.base_path.join(&file_info.file_name);
+        let mut slices = HashMap::new();
+
+        if !file_path.exists() {
+            return Ok(slices); // Return empty map for missing files
+        }
+
+        let mut file = File::open(&file_path)?;
+        let slice_size = self.recovery_set.slice_size as usize;
+
+        for slice_index in 0..file_info.slice_count {
+            let actual_slice_size = if slice_index == file_info.slice_count - 1 {
+                let remaining_bytes = file_info.file_length % self.recovery_set.slice_size;
+                if remaining_bytes == 0 {
+                    slice_size
+                } else {
+                    remaining_bytes as usize
+                }
+            } else {
+                slice_size
+            };
+
+            let mut slice_data = vec![0u8; actual_slice_size];
+            file.seek(SeekFrom::Start((slice_index * slice_size) as u64))?;
+
+            let bytes_read = file.read(&mut slice_data)?;
+            if bytes_read == actual_slice_size {
+                // Verify slice checksum if available
+                if let Some(checksums) = self
+                    .recovery_set
+                    .file_slice_checksums
+                    .get(&file_info.file_id)
+                {
+                    if slice_index < checksums.slice_checksums.len() {
+                        let expected_md5 = checksums.slice_checksums[slice_index].0;
+                        let actual_md5 = md5::compute(&slice_data);
+
+                        if actual_md5.as_ref() == expected_md5 {
+                            slices.insert(slice_index, slice_data);
+                        } else {
+                            println!("Slice {} failed checksum verification", slice_index);
+                        }
+                    } else {
+                        // No checksum available for this slice, assume it's good if size matches
+                        slices.insert(slice_index, slice_data);
+                    }
+                } else {
+                    // No checksums available, assume slice is valid if size matches
+                    slices.insert(slice_index, slice_data);
+                }
+            } else {
+                println!(
+                    "Slice {} has incorrect size: expected {}, got {}",
+                    slice_index, actual_slice_size, bytes_read
+                );
+            }
+        }
+
         println!(
-            "Recovery slices available: {}",
-            self.recovery_set.recovery_slices.len()
+            "Loaded {} valid slices out of {} total slices",
+            slices.len(),
+            file_info.slice_count
         );
-        println!("Slice size: {}", self.recovery_set.slice_size);
-        println!("Expected slices for this file: {}", file_info.slice_count);
+        Ok(slices)
+    }
 
-        // For now, just report that we would repair it
-        // TODO: Implement actual Reed-Solomon reconstruction
+    /// Identify which slices are missing or corrupted
+    fn identify_missing_slices(
+        &self,
+        existing_slices: &HashMap<usize, Vec<u8>>,
+        file_info: &FileInfo,
+    ) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
+        let mut missing_slices = Vec::new();
 
+        for slice_index in 0..file_info.slice_count {
+            if !existing_slices.contains_key(&slice_index) {
+                missing_slices.push(slice_index);
+            }
+        }
+
+        Ok(missing_slices)
+    }
+
+    /// Reconstruct missing slices using the Reed-Solomon module
+    fn reconstruct_slices(
+        &self,
+        existing_slices: &HashMap<usize, Vec<u8>>,
+        missing_slices: &[usize],
+        file_info: &FileInfo,
+    ) -> Result<HashMap<usize, Vec<u8>>, Box<dyn std::error::Error>> {
+        let slice_size = self.recovery_set.slice_size as usize;
+        let recovery_slices_count = self.recovery_set.recovery_slices.len();
+
+        if missing_slices.len() > recovery_slices_count {
+            return Err(format!(
+                "Cannot repair: {} missing slices but only {} recovery slices available",
+                missing_slices.len(),
+                recovery_slices_count
+            )
+            .into());
+        }
+
+        println!(
+            "Reconstructing {} missing slices using {} recovery slices",
+            missing_slices.len(),
+            recovery_slices_count
+        );
+
+        // For PAR2 Reed-Solomon, we only need input constants for this specific file
+        // Not for all files in the recovery set (which was causing the stack overflow)
+        let total_input_slices = file_info.slice_count;
+
+        // Map file slices to global slice indices (for this file, they're the same as local indices)
+        let mut global_slice_map = HashMap::new();
+        for slice_index in 0..file_info.slice_count {
+            global_slice_map.insert(slice_index, slice_index);
+        }
+
+        println!(
+            "Single-file Reed-Solomon reconstruction for {} with {} slices",
+            file_info.file_name, total_input_slices
+        );
+
+        // Create reconstruction engine with limited scope
+        let reconstruction_engine = ReconstructionEngine::new(
+            slice_size,
+            total_input_slices,
+            self.recovery_set.recovery_slices.clone(),
+        );
+
+        // Check if reconstruction is possible
+        if !reconstruction_engine.can_reconstruct(missing_slices.len()) {
+            return Err(format!(
+                "Reconstruction not possible with current configuration: {} missing slices",
+                missing_slices.len()
+            )
+            .into());
+        }
+
+        // Perform reconstruction
+        let result = reconstruction_engine.reconstruct_missing_slices(
+            existing_slices,
+            missing_slices,
+            &global_slice_map,
+        );
+
+        if result.success {
+            // Handle any warnings
+            if let Some(warning) = &result.error_message {
+                println!("Warning: {}", warning);
+            }
+
+            // Adjust slice sizes for the last slice if needed
+            let mut final_reconstructed = HashMap::new();
+            for (slice_index, mut slice_data) in result.reconstructed_slices {
+                let actual_size = if slice_index == file_info.slice_count - 1 {
+                    let remaining_bytes = file_info.file_length % self.recovery_set.slice_size;
+                    if remaining_bytes == 0 {
+                        slice_size
+                    } else {
+                        remaining_bytes as usize
+                    }
+                } else {
+                    slice_size
+                };
+
+                // Resize slice to correct size
+                slice_data.resize(actual_size, 0);
+                final_reconstructed.insert(slice_index, slice_data);
+                println!(
+                    "Reconstructed slice {} with {} bytes",
+                    slice_index, actual_size
+                );
+            }
+
+            Ok(final_reconstructed)
+        } else {
+            Err(result
+                .error_message
+                .unwrap_or_else(|| "Reed-Solomon reconstruction failed".to_string())
+                .into())
+        }
+    }
+
+    /// Write the repaired file to disk
+    fn write_repaired_file(
+        &self,
+        file_path: &Path,
+        slices: &HashMap<usize, Vec<u8>>,
+        file_info: &FileInfo,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut file = File::create(file_path)?;
+
+        // Write slices in order
+        for slice_index in 0..file_info.slice_count {
+            if let Some(slice_data) = slices.get(&slice_index) {
+                file.write_all(slice_data)?;
+            } else {
+                return Err(format!("Missing slice {} when writing file", slice_index).into());
+            }
+        }
+
+        file.flush()?;
         Ok(())
+    }
+
+    /// Verify that the repaired file is correct
+    fn verify_repaired_file(
+        &self,
+        file_path: &Path,
+        file_info: &FileInfo,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        // Check file size
+        let metadata = fs::metadata(file_path)?;
+        if metadata.len() != file_info.file_length {
+            println!(
+                "File size mismatch: expected {}, got {}",
+                file_info.file_length,
+                metadata.len()
+            );
+            return Ok(false);
+        }
+
+        // Check MD5 hash
+        let file_md5 = calculate_file_md5(file_path)?;
+        let matches = file_md5 == file_info.md5_hash;
+        if !matches {
+            println!("MD5 mismatch:");
+            println!("  Expected: {:02x?}", file_info.md5_hash);
+            println!("  Actual:   {:02x?}", file_md5);
+        }
+        Ok(matches)
     }
 }
 
