@@ -2,7 +2,7 @@ use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0RecvSlic";
 
-#[derive(Debug, BinRead)]
+#[derive(Debug, Clone, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct RecoverySlicePacket {
     pub length: u64,              // Length of the packet
