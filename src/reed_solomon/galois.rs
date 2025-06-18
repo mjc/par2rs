@@ -18,6 +18,12 @@ pub struct GaloisTable<const BITS: usize, const GENERATOR: u32> {
     pub antilog: Vec<u16>,
 }
 
+impl<const BITS: usize, const GENERATOR: u32> Default for GaloisTable<BITS, GENERATOR> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const BITS: usize, const GENERATOR: u32> GaloisTable<BITS, GENERATOR> {
     const COUNT: usize = 1 << BITS;
     const LIMIT: usize = Self::COUNT - 1;
@@ -105,9 +111,9 @@ impl<const BITS: usize, const GENERATOR: u32> Galois<BITS, GENERATOR> {
         static TABLE_8: OnceLock<GaloisTable<8, GF8_GENERATOR>> = OnceLock::new();
 
         if BITS == 16 && GENERATOR == GF16_GENERATOR {
-            unsafe { std::mem::transmute(TABLE_16.get_or_init(|| GaloisTable::new())) }
+            unsafe { std::mem::transmute(TABLE_16.get_or_init(GaloisTable::new)) }
         } else if BITS == 8 && GENERATOR == GF8_GENERATOR {
-            unsafe { std::mem::transmute(TABLE_8.get_or_init(|| GaloisTable::new())) }
+            unsafe { std::mem::transmute(TABLE_8.get_or_init(GaloisTable::new)) }
         } else {
             panic!("Unsupported Galois field configuration");
         }
@@ -201,9 +207,9 @@ impl<const BITS: usize, const GENERATOR: u32> From<u16> for Galois<BITS, GENERAT
     }
 }
 
-impl<const BITS: usize, const GENERATOR: u32> Into<u16> for Galois<BITS, GENERATOR> {
-    fn into(self) -> u16 {
-        self.value
+impl<const BITS: usize, const GENERATOR: u32> From<Galois<BITS, GENERATOR>> for u16 {
+    fn from(val: Galois<BITS, GENERATOR>) -> Self {
+        val.value
     }
 }
 
@@ -223,9 +229,9 @@ pub fn gcd(mut a: u32, mut b: u32) -> u32 {
     if a != 0 && b != 0 {
         while a != 0 && b != 0 {
             if a > b {
-                a = a % b;
+                a %= b;
             } else {
-                b = b % a;
+                b %= a;
             }
         }
         a + b

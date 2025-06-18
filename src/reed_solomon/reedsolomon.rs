@@ -69,6 +69,12 @@ pub struct ReedSolomon {
     left_matrix: Vec<Galois16>,
 }
 
+impl Default for ReedSolomon {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ReedSolomon {
     pub fn new() -> Self {
         Self {
@@ -388,14 +394,14 @@ impl ReedSolomon {
                 for col in 0..cols {
                     let idx = (row * cols + col) as usize;
                     if idx < self.left_matrix.len() {
-                        self.left_matrix[idx] = self.left_matrix[idx] / pivot;
+                        self.left_matrix[idx] /= pivot;
                     }
                 }
                 right_matrix[pivot_idx] = Galois16::new(1);
                 for col in (row + 1)..rows {
                     let idx = (row * rows + col) as usize;
                     if idx < right_matrix.len() {
-                        right_matrix[idx] = right_matrix[idx] / pivot;
+                        right_matrix[idx] /= pivot;
                     }
                 }
             }
@@ -416,7 +422,7 @@ impl ReedSolomon {
                                     && dst_idx < self.left_matrix.len()
                                 {
                                     let scaled = self.left_matrix[src_idx] * factor;
-                                    self.left_matrix[dst_idx] = self.left_matrix[dst_idx] - scaled;
+                                    self.left_matrix[dst_idx] -= scaled;
                                 }
                             }
 
@@ -427,7 +433,7 @@ impl ReedSolomon {
 
                                 if src_idx < right_matrix.len() && dst_idx < right_matrix.len() {
                                     let scaled = right_matrix[src_idx] * factor;
-                                    right_matrix[dst_idx] = right_matrix[dst_idx] - scaled;
+                                    right_matrix[dst_idx] -= scaled;
                                 }
                             }
                         }
