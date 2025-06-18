@@ -4,8 +4,10 @@
 //! It implements Reed-Solomon error correction to reconstruct missing or corrupted files.
 
 use crate::file_verification::calculate_file_md5;
-use crate::reed_solomon::{ReconstructionEngine};
-use crate::{FileDescriptionPacket, InputFileSliceChecksumPacket, MainPacket, Packet, RecoverySlicePacket};
+use crate::reed_solomon::ReconstructionEngine;
+use crate::{
+    FileDescriptionPacket, InputFileSliceChecksumPacket, MainPacket, Packet, RecoverySlicePacket,
+};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -196,7 +198,7 @@ impl RepairContext {
             let status = file_status
                 .get(&file_info.file_name)
                 .unwrap_or(&FileStatus::Missing);
-            
+
             if *status == FileStatus::Corrupted {
                 // Count actually corrupted slices in this file
                 let file_path = self.base_path.join(&file_info.file_name);
@@ -217,10 +219,17 @@ impl RepairContext {
     /// Count the number of corrupted slices in a file
     fn count_corrupted_slices(&self, file_path: &Path, file_info: &FileInfo) -> usize {
         // Get the input file slice checksum packet for this file
-        let slice_checksums = match self.recovery_set.file_slice_checksums.get(&file_info.file_id) {
+        let slice_checksums = match self
+            .recovery_set
+            .file_slice_checksums
+            .get(&file_info.file_id)
+        {
             Some(checksums) => checksums,
             None => {
-                println!("Warning: No slice checksums found for file {}", file_info.file_name);
+                println!(
+                    "Warning: No slice checksums found for file {}",
+                    file_info.file_name
+                );
                 return file_info.slice_count; // Assume all slices are corrupted if no checksums
             }
         };
@@ -230,7 +239,10 @@ impl RepairContext {
 
         // Open the file and check each slice
         if let Ok(mut file) = File::open(file_path) {
-            for slice_index in 0..file_info.slice_count.min(slice_checksums.slice_checksums.len()) {
+            for slice_index in 0..file_info
+                .slice_count
+                .min(slice_checksums.slice_checksums.len())
+            {
                 let slice_offset = slice_index as u64 * slice_size;
                 let slice_end = ((slice_index + 1) as u64 * slice_size).min(file_info.file_length);
                 let slice_length = slice_end - slice_offset;
@@ -253,7 +265,8 @@ impl RepairContext {
 
                 if slice_md5 != expected_md5 {
                     corrupted_count += 1;
-                    if slice_index < 10 { // Only log first few for debugging
+                    if slice_index < 10 {
+                        // Only log first few for debugging
                         println!("Slice {} corrupted in {}", slice_index, file_info.file_name);
                     }
                 }
@@ -263,7 +276,10 @@ impl RepairContext {
             corrupted_count = file_info.slice_count;
         }
 
-        println!("Found {} corrupted slices in {}", corrupted_count, file_info.file_name);
+        println!(
+            "Found {} corrupted slices in {}",
+            corrupted_count, file_info.file_name
+        );
         corrupted_count
     }
 
@@ -379,20 +395,20 @@ impl RepairContext {
         status: &FileStatus,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let file_path = self.base_path.join(&file_info.file_name);
-        
+
         // Load slices from the existing file (if it exists and has valid slices)
         let mut file_slices = self.load_file_slices(file_info)?;
-        
+
         // Check which slices are missing or corrupted
         let missing_slices = self.identify_missing_slices(&file_slices, file_info)?;
-        
+
         if missing_slices.is_empty() {
             // All slices are present and valid, but check if the overall file is still corrupted
             if *status == FileStatus::Corrupted {
                 println!("All slices are valid but file MD5 doesn't match - attempting repair");
                 // The file might have been corrupted after slicing, let's try to rebuild it
                 self.write_repaired_file(&file_path, &file_slices, file_info)?;
-                
+
                 // Verify the repaired file
                 if self.verify_repaired_file(&file_path, file_info)? {
                     return Ok(true);
@@ -403,30 +419,36 @@ impl RepairContext {
             // File is already complete and valid
             return Ok(false);
         }
-        
-        println!("File {} has {} missing/corrupted slices out of {} total", 
-                file_info.file_name, missing_slices.len(), file_info.slice_count);
-        
+
+        println!(
+            "File {} has {} missing/corrupted slices out of {} total",
+            file_info.file_name,
+            missing_slices.len(),
+            file_info.slice_count
+        );
+
         // Check if we have enough recovery data
         if missing_slices.len() > self.recovery_set.recovery_slices.len() {
             return Err(format!(
                 "Cannot repair: {} missing slices but only {} recovery slices available",
                 missing_slices.len(),
                 self.recovery_set.recovery_slices.len()
-            ).into());
+            )
+            .into());
         }
-        
+
         // Reconstruct missing slices using Reed-Solomon
-        let reconstructed_slices = self.reconstruct_slices(&file_slices, &missing_slices, file_info)?;
-        
+        let reconstructed_slices =
+            self.reconstruct_slices(&file_slices, &missing_slices, file_info)?;
+
         // Update file_slices with reconstructed data
         for (slice_index, slice_data) in reconstructed_slices {
             file_slices.insert(slice_index, slice_data);
         }
-        
+
         // Write the repaired file
         self.write_repaired_file(&file_path, &file_slices, file_info)?;
-        
+
         // Verify the repaired file
         if self.verify_repaired_file(&file_path, file_info)? {
             Ok(true)
@@ -436,17 +458,20 @@ impl RepairContext {
     }
 
     /// Load slices from an existing file
-    fn load_file_slices(&self, file_info: &FileInfo) -> Result<HashMap<usize, Vec<u8>>, Box<dyn std::error::Error>> {
+    fn load_file_slices(
+        &self,
+        file_info: &FileInfo,
+    ) -> Result<HashMap<usize, Vec<u8>>, Box<dyn std::error::Error>> {
         let file_path = self.base_path.join(&file_info.file_name);
         let mut slices = HashMap::new();
-        
+
         if !file_path.exists() {
             return Ok(slices); // Return empty map for missing files
         }
-        
+
         let mut file = File::open(&file_path)?;
         let slice_size = self.recovery_set.slice_size as usize;
-        
+
         for slice_index in 0..file_info.slice_count {
             let actual_slice_size = if slice_index == file_info.slice_count - 1 {
                 let remaining_bytes = file_info.file_length % self.recovery_set.slice_size;
@@ -458,18 +483,22 @@ impl RepairContext {
             } else {
                 slice_size
             };
-            
+
             let mut slice_data = vec![0u8; actual_slice_size];
             file.seek(SeekFrom::Start((slice_index * slice_size) as u64))?;
-            
+
             let bytes_read = file.read(&mut slice_data)?;
             if bytes_read == actual_slice_size {
                 // Verify slice checksum if available
-                if let Some(checksums) = self.recovery_set.file_slice_checksums.get(&file_info.file_id) {
+                if let Some(checksums) = self
+                    .recovery_set
+                    .file_slice_checksums
+                    .get(&file_info.file_id)
+                {
                     if slice_index < checksums.slice_checksums.len() {
                         let expected_md5 = checksums.slice_checksums[slice_index].0;
                         let actual_md5 = md5::compute(&slice_data);
-                        
+
                         if actual_md5.as_ref() == expected_md5 {
                             slices.insert(slice_index, slice_data);
                         } else {
@@ -484,15 +513,21 @@ impl RepairContext {
                     slices.insert(slice_index, slice_data);
                 }
             } else {
-                println!("Slice {} has incorrect size: expected {}, got {}", 
-                        slice_index, actual_slice_size, bytes_read);
+                println!(
+                    "Slice {} has incorrect size: expected {}, got {}",
+                    slice_index, actual_slice_size, bytes_read
+                );
             }
         }
-        
-        println!("Loaded {} valid slices out of {} total slices", slices.len(), file_info.slice_count);
+
+        println!(
+            "Loaded {} valid slices out of {} total slices",
+            slices.len(),
+            file_info.slice_count
+        );
         Ok(slices)
     }
-    
+
     /// Identify which slices are missing or corrupted
     fn identify_missing_slices(
         &self,
@@ -500,16 +535,16 @@ impl RepairContext {
         file_info: &FileInfo,
     ) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
         let mut missing_slices = Vec::new();
-        
+
         for slice_index in 0..file_info.slice_count {
             if !existing_slices.contains_key(&slice_index) {
                 missing_slices.push(slice_index);
             }
         }
-        
+
         Ok(missing_slices)
     }
-    
+
     /// Reconstruct missing slices using the Reed-Solomon module
     fn reconstruct_slices(
         &self,
@@ -519,30 +554,36 @@ impl RepairContext {
     ) -> Result<HashMap<usize, Vec<u8>>, Box<dyn std::error::Error>> {
         let slice_size = self.recovery_set.slice_size as usize;
         let recovery_slices_count = self.recovery_set.recovery_slices.len();
-        
+
         if missing_slices.len() > recovery_slices_count {
             return Err(format!(
                 "Cannot repair: {} missing slices but only {} recovery slices available",
                 missing_slices.len(),
                 recovery_slices_count
-            ).into());
+            )
+            .into());
         }
 
-        println!("Reconstructing {} missing slices using {} recovery slices", 
-                missing_slices.len(), recovery_slices_count);
+        println!(
+            "Reconstructing {} missing slices using {} recovery slices",
+            missing_slices.len(),
+            recovery_slices_count
+        );
 
         // For PAR2 Reed-Solomon, we only need input constants for this specific file
         // Not for all files in the recovery set (which was causing the stack overflow)
         let total_input_slices = file_info.slice_count;
-        
+
         // Map file slices to global slice indices (for this file, they're the same as local indices)
         let mut global_slice_map = HashMap::new();
         for slice_index in 0..file_info.slice_count {
             global_slice_map.insert(slice_index, slice_index);
         }
-        
-        println!("Single-file Reed-Solomon reconstruction for {} with {} slices", 
-                file_info.file_name, total_input_slices);
+
+        println!(
+            "Single-file Reed-Solomon reconstruction for {} with {} slices",
+            file_info.file_name, total_input_slices
+        );
 
         // Create reconstruction engine with limited scope
         let reconstruction_engine = ReconstructionEngine::new(
@@ -556,7 +597,8 @@ impl RepairContext {
             return Err(format!(
                 "Reconstruction not possible with current configuration: {} missing slices",
                 missing_slices.len()
-            ).into());
+            )
+            .into());
         }
 
         // Perform reconstruction
@@ -589,15 +631,21 @@ impl RepairContext {
                 // Resize slice to correct size
                 slice_data.resize(actual_size, 0);
                 final_reconstructed.insert(slice_index, slice_data);
-                println!("Reconstructed slice {} with {} bytes", slice_index, actual_size);
+                println!(
+                    "Reconstructed slice {} with {} bytes",
+                    slice_index, actual_size
+                );
             }
 
             Ok(final_reconstructed)
         } else {
-            Err(result.error_message.unwrap_or_else(|| "Reed-Solomon reconstruction failed".to_string()).into())
+            Err(result
+                .error_message
+                .unwrap_or_else(|| "Reed-Solomon reconstruction failed".to_string())
+                .into())
         }
     }
-    
+
     /// Write the repaired file to disk
     fn write_repaired_file(
         &self,
@@ -606,7 +654,7 @@ impl RepairContext {
         file_info: &FileInfo,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut file = File::create(file_path)?;
-        
+
         // Write slices in order
         for slice_index in 0..file_info.slice_count {
             if let Some(slice_data) = slices.get(&slice_index) {
@@ -615,11 +663,11 @@ impl RepairContext {
                 return Err(format!("Missing slice {} when writing file", slice_index).into());
             }
         }
-        
+
         file.flush()?;
         Ok(())
     }
-    
+
     /// Verify that the repaired file is correct
     fn verify_repaired_file(
         &self,
@@ -629,10 +677,14 @@ impl RepairContext {
         // Check file size
         let metadata = fs::metadata(file_path)?;
         if metadata.len() != file_info.file_length {
-            println!("File size mismatch: expected {}, got {}", file_info.file_length, metadata.len());
+            println!(
+                "File size mismatch: expected {}, got {}",
+                file_info.file_length,
+                metadata.len()
+            );
             return Ok(false);
         }
-        
+
         // Check MD5 hash
         let file_md5 = calculate_file_md5(file_path)?;
         let matches = file_md5 == file_info.md5_hash;
@@ -643,7 +695,6 @@ impl RepairContext {
         }
         Ok(matches)
     }
-
 }
 
 /// High-level repair function that can be called from the binary
