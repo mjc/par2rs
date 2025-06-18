@@ -3,10 +3,9 @@
 //! This module provides the ReedSolomon struct and methods for PAR2-compatible
 //! Reed-Solomon encoding and decoding operations.
 
-use crate::reed_solomon::galois::{Galois16};
+use crate::reed_solomon::galois::{Galois16, gcd};
 use crate::RecoverySlicePacket;
 use std::collections::HashMap;
-use std::marker::PhantomData;
 
 /// Output row specification for Reed-Solomon matrix
 #[derive(Debug, Clone)]
@@ -48,8 +47,8 @@ impl std::fmt::Display for RsError {
 
 impl std::error::Error for RsError {}
 
-/// Reed-Solomon encoder/decoder
-pub struct ReedSolomon<G> {
+/// Reed-Solomon encoder/decoder following par2cmdline approach
+pub struct ReedSolomon {
     // Input tracking
     input_count: u32,
     data_present: u32,
@@ -65,20 +64,10 @@ pub struct ReedSolomon<G> {
     output_rows: Vec<RsOutputRow>,
 
     // Matrix
-    left_matrix: Vec<G>,
-    
-    _phantom: PhantomData<G>,
+    left_matrix: Vec<Galois16>,
 }
 
-impl<G> ReedSolomon<G> 
-where
-    G: Copy + Clone + Default + PartialEq + 
-       std::ops::Add<Output = G> + std::ops::Sub<Output = G> + 
-       std::ops::Mul<Output = G> + std::ops::Div<Output = G> +
-       std::ops::AddAssign + std::ops::SubAssign + 
-       std::ops::MulAssign + std::ops::DivAssign +
-       From<u16> + Into<u16>,
-{
+impl ReedSolomon {
     pub fn new() -> Self {
         Self {
             input_count: 0,
@@ -92,11 +81,11 @@ where
             par_missing: 0,
             output_rows: Vec::new(),
             left_matrix: Vec::new(),
-            _phantom: PhantomData,
         }
     }
     
     /// Set which input blocks are present or missing
+    /// Following par2cmdline's SetInput logic for Galois16
     pub fn set_input(&mut self, present: &[bool]) -> RsResult<()> {
         self.input_count = present.len() as u32;
         
@@ -111,7 +100,8 @@ where
         self.data_present = 0;
         self.data_missing = 0;
         
-        // Simple base value assignment for now
+        let mut logbase = 0u32;
+        
         for (index, &is_present) in present.iter().enumerate() {
             if is_present {
                 self.data_present_index.push(index as u32);
@@ -121,7 +111,19 @@ where
                 self.data_missing += 1;
             }
             
-            self.database.push(index as u16 + 1);
+            // Determine the next useable base value.
+            // Its log must be relatively prime to 65535 (following par2cmdline)
+            while gcd(65535, logbase) != 1 {
+                logbase += 1;
+            }
+            if logbase >= 65535 {
+                return Err(RsError::TooManyInputBlocks);
+            }
+            
+            // Use ALog to get the base value (following par2cmdline)
+            let base = Galois16::new(logbase as u16).alog();
+            self.database.push(base);
+            logbase += 1;
         }
         
         Ok(())
@@ -129,19 +131,6 @@ where
     
     /// Set all input blocks as present
     pub fn set_input_all_present(&mut self, count: u32) -> RsResult<()> {
-        self.input_count = count;
-        
-        self.data_present_index.clear();
-        self.data_missing_index.clear();
-        self.database.clear();
-        
-        self.data_present_index.reserve(count as usize);
-        self.data_missing_index.reserve(count as usize);
-        self.database.reserve(count as usize);
-        
-        self.data_present = 0;
-        self.data_missing = 0;
-        
         let present: Vec<bool> = vec![true; count as usize];
         self.set_input(&present)
     }
@@ -168,7 +157,7 @@ where
         Ok(())
     }
     
-    /// Compute the Reed-Solomon matrix
+    /// Compute the Reed-Solomon matrix (following par2cmdline approach)
     pub fn compute(&mut self) -> RsResult<()> {
         let out_count = self.data_missing + self.par_missing;
         let in_count = self.data_present + self.data_missing;
@@ -181,14 +170,23 @@ where
         
         // Allocate the left matrix
         let matrix_size = (out_count * in_count) as usize;
-        self.left_matrix = vec![G::default(); matrix_size];
+        self.left_matrix = vec![Galois16::new(0); matrix_size];
         
-        // Build Vandermonde matrix
-        self.build_matrix(out_count, in_count)?;
+        // Allocate right matrix for solving if needed
+        let mut right_matrix = if self.data_missing > 0 {
+            Some(vec![Galois16::new(0); (out_count * out_count) as usize])
+        } else {
+            None
+        };
+        
+        // Build Vandermonde matrix following par2cmdline logic
+        self.build_matrix(out_count, in_count, right_matrix.as_mut())?;
         
         // Solve if recovering data
         if self.data_missing > 0 {
-            self.gauss_eliminate(out_count, in_count)?;
+            if let Some(ref mut right_mat) = right_matrix {
+                self.gauss_eliminate(out_count, in_count, right_mat)?;
+            }
         }
         
         Ok(())
@@ -210,114 +208,157 @@ where
         let factor = self.left_matrix[factor_index];
         
         // Skip if factor is zero
-        if Into::<u16>::into(factor) == 0 {
+        if factor.value() == 0 {
             return Ok(());
         }
         
-        // Simple processing - multiply each byte by factor and add to output
+        // Process data using Galois field arithmetic
         for (i, &input_byte) in input_data.iter().enumerate() {
-            let input_val = G::from(input_byte as u16);
+            let input_val = Galois16::new(input_byte as u16);
             let result = input_val * factor;
-            let output_val = G::from(output_data[i] as u16);
+            let output_val = Galois16::new(output_data[i] as u16);
             let new_output = output_val + result;
-            output_data[i] = Into::<u16>::into(new_output) as u8;
+            output_data[i] = new_output.value() as u8;
         }
         
         Ok(())
     }
     
-    fn build_matrix(&mut self, _out_count: u32, in_count: u32) -> RsResult<()> {
-        let mut output_row_iter = self.output_rows.iter();
+    fn build_matrix(&mut self, out_count: u32, in_count: u32, mut right_matrix: Option<&mut Vec<Galois16>>) -> RsResult<()> {
+        let mut output_row_iter = 0;
         
         // Build matrix for present recovery blocks used for missing data blocks
         for row in 0..self.data_missing {
             // Find next present recovery block
-            while let Some(out_row) = output_row_iter.next() {
-                if out_row.present {
-                    let exponent = out_row.exponent;
+            while output_row_iter < self.output_rows.len() && !self.output_rows[output_row_iter].present {
+                output_row_iter += 1;
+            }
+            
+            if output_row_iter >= self.output_rows.len() {
+                return Err(RsError::InvalidMatrix);
+            }
+            
+            let exponent = self.output_rows[output_row_iter].exponent;
+            
+            // Fill columns for present data blocks
+            for col in 0..self.data_present {
+                let base_idx = self.data_present_index[col as usize] as usize;
+                let base = Galois16::new(self.database[base_idx]);
+                let factor = base.pow(exponent);
+                
+                let matrix_idx = (row * in_count + col) as usize;
+                self.left_matrix[matrix_idx] = factor;
+            }
+            
+            // Fill columns for missing data blocks (identity for this row)
+            for col in 0..self.data_missing {
+                let factor = if row == col { Galois16::new(1) } else { Galois16::new(0) };
+                let matrix_idx = (row * in_count + col + self.data_present) as usize;
+                self.left_matrix[matrix_idx] = factor;
+            }
+            
+            // Fill right matrix if present
+            if let Some(ref mut right_mat) = right_matrix {
+                // One column for each missing data block
+                for col in 0..self.data_missing {
+                    let base_idx = self.data_missing_index[col as usize] as usize;
+                    let base = Galois16::new(self.database[base_idx]);
+                    let factor = base.pow(exponent);
                     
-                    // Fill columns for present data blocks
-                    for col in 0..self.data_present {
-                        let base_idx = self.data_present_index[col as usize] as usize;
-                        let base = self.database[base_idx];
-                        
-                        // Use simple power calculation
-                        let mut factor_val = 1u16;
-                        for _ in 0..exponent {
-                            factor_val = factor_val.wrapping_mul(base);
-                        }
-                        
-                        let matrix_idx = (row * in_count + col) as usize;
-                        self.left_matrix[matrix_idx] = G::from(factor_val);
-                    }
-                    
-                    // Fill columns for missing data blocks (identity for this row)
-                    for col in 0..self.data_missing {
-                        let factor = if row == col { G::from(1) } else { G::default() };
-                        let matrix_idx = (row * in_count + col + self.data_present) as usize;
-                        self.left_matrix[matrix_idx] = factor;
-                    }
-                    break;
+                    let matrix_idx = (row * out_count + col) as usize;
+                    right_mat[matrix_idx] = factor;
+                }
+                // One column for each missing recovery block
+                for col in 0..self.par_missing {
+                    let matrix_idx = (row * out_count + col + self.data_missing) as usize;
+                    right_mat[matrix_idx] = Galois16::new(0);
                 }
             }
+            
+            output_row_iter += 1;
         }
         
         // Build matrix for missing recovery blocks
-        output_row_iter = self.output_rows.iter();
+        output_row_iter = 0;
         for row in 0..self.par_missing {
             // Find next missing recovery block
-            while let Some(out_row) = output_row_iter.next() {
-                if !out_row.present {
-                    let exponent = out_row.exponent;
+            while output_row_iter < self.output_rows.len() && self.output_rows[output_row_iter].present {
+                output_row_iter += 1;
+            }
+            
+            if output_row_iter >= self.output_rows.len() {
+                return Err(RsError::InvalidMatrix);
+            }
+            
+            let exponent = self.output_rows[output_row_iter].exponent;
+            
+            // Fill columns for present data blocks
+            for col in 0..self.data_present {
+                let base_idx = self.data_present_index[col as usize] as usize;
+                let base = Galois16::new(self.database[base_idx]);
+                let factor = base.pow(exponent);
+                
+                let matrix_idx = ((row + self.data_missing) * in_count + col) as usize;
+                self.left_matrix[matrix_idx] = factor;
+            }
+            
+            // Fill columns for missing data blocks
+            for col in 0..self.data_missing {
+                let matrix_idx = ((row + self.data_missing) * in_count + col + self.data_present) as usize;
+                self.left_matrix[matrix_idx] = Galois16::new(0);
+            }
+            
+            // Fill right matrix if present
+            if let Some(ref mut right_mat) = right_matrix {
+                // One column for each missing data block
+                for col in 0..self.data_missing {
+                    let base_idx = self.data_missing_index[col as usize] as usize;
+                    let base = Galois16::new(self.database[base_idx]);
+                    let factor = base.pow(exponent);
                     
-                    // Fill columns for present data blocks
-                    for col in 0..self.data_present {
-                        let base_idx = self.data_present_index[col as usize] as usize;
-                        let base = self.database[base_idx];
-                        
-                        // Use simple power calculation
-                        let mut factor_val = 1u16;
-                        for _ in 0..exponent {
-                            factor_val = factor_val.wrapping_mul(base);
-                        }
-                        
-                        let matrix_idx = ((row + self.data_missing) * in_count + col) as usize;
-                        self.left_matrix[matrix_idx] = G::from(factor_val);
-                    }
-                    
-                    // Fill columns for missing data blocks
-                    for col in 0..self.data_missing {
-                        let factor = G::default();
-                        let matrix_idx = ((row + self.data_missing) * in_count + col + self.data_present) as usize;
-                        self.left_matrix[matrix_idx] = factor;
-                    }
-                    break;
+                    let matrix_idx = ((row + self.data_missing) * out_count + col) as usize;
+                    right_mat[matrix_idx] = factor;
+                }
+                // One column for each missing recovery block
+                for col in 0..self.par_missing {
+                    let factor = if row == col { Galois16::new(1) } else { Galois16::new(0) };
+                    let matrix_idx = ((row + self.data_missing) * out_count + col + self.data_missing) as usize;
+                    right_mat[matrix_idx] = factor;
                 }
             }
+            
+            output_row_iter += 1;
         }
         
         Ok(())
     }
     
-    fn gauss_eliminate(&mut self, rows: u32, cols: u32) -> RsResult<()> {
-        // Simple Gaussian elimination for the Reed-Solomon matrix
+    fn gauss_eliminate(&mut self, rows: u32, cols: u32, right_matrix: &mut Vec<Galois16>) -> RsResult<()> {
+        // Gaussian elimination following par2cmdline approach
         for row in 0..self.data_missing {
-            let pivot_idx = (row * cols + row) as usize;
-            if pivot_idx >= self.left_matrix.len() {
+            let pivot_idx = (row * rows + row) as usize;
+            if pivot_idx >= right_matrix.len() {
                 return Err(RsError::InvalidMatrix);
             }
             
-            let pivot = self.left_matrix[pivot_idx];
-            if Into::<u16>::into(pivot) == 0 {
+            let pivot = right_matrix[pivot_idx];
+            if pivot.value() == 0 {
                 return Err(RsError::ComputationError);
             }
             
             // Scale row to make pivot = 1
-            if Into::<u16>::into(pivot) != 1 {
+            if pivot.value() != 1 {
                 for col in 0..cols {
                     let idx = (row * cols + col) as usize;
                     if idx < self.left_matrix.len() {
                         self.left_matrix[idx] = self.left_matrix[idx] / pivot;
+                    }
+                }
+                right_matrix[pivot_idx] = Galois16::new(1);
+                for col in (row + 1)..rows {
+                    let idx = (row * rows + col) as usize;
+                    if idx < right_matrix.len() {
+                        right_matrix[idx] = right_matrix[idx] / pivot;
                     }
                 }
             }
@@ -325,11 +366,11 @@ where
             // Eliminate other rows
             for other_row in 0..rows {
                 if other_row != row {
-                    let factor_idx = (other_row * cols + row) as usize;
-                    if factor_idx < self.left_matrix.len() {
-                        let factor = self.left_matrix[factor_idx];
+                    let factor_idx = (other_row * rows + row) as usize;
+                    if factor_idx < right_matrix.len() {
+                        let factor = right_matrix[factor_idx];
                         
-                        if Into::<u16>::into(factor) != 0 {
+                        if factor.value() != 0 {
                             for col in 0..cols {
                                 let src_idx = (row * cols + col) as usize;
                                 let dst_idx = (other_row * cols + col) as usize;
@@ -337,6 +378,17 @@ where
                                 if src_idx < self.left_matrix.len() && dst_idx < self.left_matrix.len() {
                                     let scaled = self.left_matrix[src_idx] * factor;
                                     self.left_matrix[dst_idx] = self.left_matrix[dst_idx] - scaled;
+                                }
+                            }
+                            
+                            right_matrix[factor_idx] = Galois16::new(0);
+                            for col in (row + 1)..rows {
+                                let src_idx = (row * rows + col) as usize;
+                                let dst_idx = (other_row * rows + col) as usize;
+                                
+                                if src_idx < right_matrix.len() && dst_idx < right_matrix.len() {
+                                    let scaled = right_matrix[src_idx] * factor;
+                                    right_matrix[dst_idx] = right_matrix[dst_idx] - scaled;
                                 }
                             }
                         }
@@ -348,7 +400,6 @@ where
         Ok(())
     }
 }
-
 /// Result of Reed-Solomon reconstruction
 #[derive(Debug)]
 pub struct ReconstructionResult {
@@ -358,6 +409,7 @@ pub struct ReconstructionResult {
 }
 
 /// Reconstruction engine for PAR2-compatible Reed-Solomon operations
+/// This follows the par2cmdline approach more closely
 pub struct ReconstructionEngine {
     slice_size: usize,
     total_input_slices: usize,
@@ -383,6 +435,7 @@ impl ReconstructionEngine {
     }
     
     /// Reconstruct missing slices using Reed-Solomon error correction
+    /// Following par2cmdline approach with proper exponents
     pub fn reconstruct_missing_slices(
         &self,
         existing_slices: &HashMap<usize, Vec<u8>>,
@@ -405,7 +458,7 @@ impl ReconstructionEngine {
             };
         }
         
-        let mut rs = ReedSolomon::<Galois16>::new();
+        let mut rs = ReedSolomon::new();
         
         // Set up input blocks (present/missing status)
         let mut present_status = vec![false; self.total_input_slices];
@@ -423,10 +476,13 @@ impl ReconstructionEngine {
             };
         }
         
-        // Set up recovery blocks (use available recovery slices)
+        // Set up recovery blocks using actual exponents from recovery slices
+        // This is crucial - par2cmdline uses specific exponents, not sequential indices
         let recovery_count = missing_slices.len().min(self.recovery_slices.len());
         for i in 0..recovery_count {
-            if let Err(e) = rs.set_output(true, i as u16) {
+            // Use the actual exponent from the recovery slice packet
+            let exponent = self.recovery_slices[i].exponent as u16;
+            if let Err(e) = rs.set_output(true, exponent) {
                 return ReconstructionResult {
                     success: false,
                     reconstructed_slices: HashMap::new(),
@@ -435,7 +491,7 @@ impl ReconstructionEngine {
             }
         }
         
-        // Set missing outputs
+        // Set missing outputs (these don't need real exponents as they're being computed)
         for &slice_idx in missing_slices {
             if let Err(e) = rs.set_output(false, slice_idx as u16) {
                 return ReconstructionResult {
@@ -479,7 +535,7 @@ impl ReconstructionEngine {
                 }
             }
             
-            // Process recovery slices
+            // Process recovery slices with their data
             for (recovery_idx, recovery_slice) in self.recovery_slices.iter().enumerate().take(recovery_count) {
                 if let Err(e) = rs.process(
                     (self.total_input_slices + recovery_idx) as u32,
@@ -509,11 +565,10 @@ impl ReconstructionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reed_solomon::galois::gcd;
     
     #[test]
     fn test_reed_solomon_basic() {
-        let mut rs = ReedSolomon::<Galois16>::new();
+        let mut rs = ReedSolomon::new();
         
         // Set up 4 input blocks, all present
         rs.set_input_all_present(4).unwrap();
@@ -532,6 +587,7 @@ mod tests {
     
     #[test]
     fn test_gcd_function() {
+        use crate::reed_solomon::galois::gcd;
         assert_eq!(gcd(48, 18), 6);
         assert_eq!(gcd(65535, 2), 1);
         assert_eq!(gcd(65535, 3), 3);

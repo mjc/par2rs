@@ -91,6 +91,13 @@ impl<const BITS: usize, const GENERATOR: u32> Galois<BITS, GENERATOR> {
         table.antilog[self.value as usize]
     }
     
+    /// ALog operation - antilogarithm for base value generation
+    /// This is used in par2cmdline for generating database base values
+    pub fn alog(&self) -> u16 {
+        let table = Self::get_table();
+        table.antilog[self.value as usize]
+    }
+    
     /// Get the global table (using thread-local storage for safety)
     fn get_table() -> &'static GaloisTable<BITS, GENERATOR> {
         use std::sync::OnceLock;
