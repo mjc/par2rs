@@ -9,6 +9,7 @@ clap = "4.5.39"
 rayon = "1.10.0"
 md5 = "0.7.0"
 hex = "0.4.3"
+crc32fast = "1.4.0"
 
 [dev-dependencies]
 # Test coverage and reporting tools

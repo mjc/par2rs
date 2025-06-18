@@ -19,7 +19,10 @@ pub fn find_par2_files_in_directory(folder_path: &Path, exclude_file: &Path) -> 
             })
             .collect(),
         Err(_) => {
-            eprintln!("Warning: Failed to read directory: {}", folder_path.display());
+            eprintln!(
+                "Warning: Failed to read directory: {}",
+                folder_path.display()
+            );
             Vec::new()
         }
     }
