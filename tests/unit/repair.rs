@@ -7,6 +7,7 @@ use par2rs::file_ops::*;
 use par2rs::file_verification::*;
 use std::fs;
 use std::path::Path;
+use tempfile::TempDir;
 
 mod corruption_detection {
     use super::*;
@@ -121,17 +122,38 @@ mod missing_file_scenarios {
     #[test]
     fn detects_missing_data_file() {
         // Test scenario where PAR2 files exist but data file is missing
-        let repair_dir = Path::new("tests/fixtures/repair_scenarios");
-        let main_file = repair_dir.join("testfile.par2");
-        let data_file = repair_dir.join("testfile");
+        // Create temp dir and copy only PAR2 files (not the data file)
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let temp_path = temp_dir.path();
+
+        let source_dir = Path::new("tests/fixtures/repair_scenarios");
+
+        // Copy only PAR2 files to temp directory
+        for entry in fs::read_dir(source_dir).expect("Failed to read source dir") {
+            let entry = entry.expect("Failed to read entry");
+            let path = entry.path();
+
+            if path.is_file() {
+                if let Some(ext) = path.extension() {
+                    if ext == "par2" {
+                        let file_name = path.file_name().unwrap();
+                        let dest_path = temp_path.join(file_name);
+                        fs::copy(&path, &dest_path).expect("Failed to copy PAR2 file");
+                    }
+                }
+            }
+        }
+
+        let main_file = temp_path.join("testfile.par2");
+        let data_file = temp_path.join("testfile");
 
         assert!(
             main_file.exists(),
-            "PAR2 file should exist in repair scenarios"
+            "PAR2 file should exist in test directory"
         );
         assert!(
             !data_file.exists(),
-            "Data file should be missing in repair scenarios"
+            "Data file should be missing in test scenario"
         );
 
         // Load PAR2 information
@@ -161,6 +183,8 @@ mod missing_file_scenarios {
             found_testfile,
             "Should find testfile description in PAR2 set"
         );
+
+        // temp_dir is automatically cleaned up
     }
 
     #[test]

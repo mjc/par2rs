@@ -38,6 +38,8 @@
             rustfmt
             clippy
             yamllint
+            cargo-flamegraph
+            perf
           ];
 
           RUSTC_VERSION = overrides.toolchain.channel;
