@@ -5,6 +5,7 @@
 
 use crate::reed_solomon::galois::{gcd, Galois16};
 use crate::RecoverySlicePacket;
+use log::debug;
 use std::collections::HashMap;
 
 /// Output row specification for Reed-Solomon matrix
@@ -459,6 +460,7 @@ pub struct ReconstructionEngine {
     slice_size: usize,
     total_input_slices: usize,
     recovery_slices: Vec<RecoverySlicePacket>,
+    base_values: Vec<u16>,
 }
 
 impl ReconstructionEngine {
@@ -467,10 +469,28 @@ impl ReconstructionEngine {
         total_input_slices: usize,
         recovery_slices: Vec<RecoverySlicePacket>,
     ) -> Self {
+        // Generate base values for each input slice
+        // Following PAR2 spec: base values are generated from log values that are
+        // relatively prime to 65535
+        let mut base_values = Vec::with_capacity(total_input_slices);
+        let mut logbase = 0u32;
+
+        for _ in 0..total_input_slices {
+            // Find next logbase that is relatively prime to 65535
+            while gcd(65535, logbase) != 1 {
+                logbase += 1;
+            }
+            // Convert logbase to base value using antilog
+            let base = Galois16::new(logbase as u16).alog();
+            base_values.push(base);
+            logbase += 1;
+        }
+
         Self {
             slice_size,
             total_input_slices,
             recovery_slices,
+            base_values,
         }
     }
 
@@ -480,7 +500,11 @@ impl ReconstructionEngine {
     }
 
     /// Reconstruct missing slices using Reed-Solomon error correction
-    /// Following par2cmdline approach with proper exponents
+    ///
+    /// Implements PAR2-compliant Reed-Solomon reconstruction using:
+    /// 1. Vandermonde matrix built from base values and exponents
+    /// 2. Gaussian elimination in GF(2^16) to solve the linear system
+    /// 3. Recovery slices as the "known values" (right-hand side)
     pub fn reconstruct_missing_slices(
         &self,
         existing_slices: &HashMap<usize, Vec<u8>>,
@@ -503,102 +527,124 @@ impl ReconstructionEngine {
             };
         }
 
-        let mut rs = ReedSolomon::new();
+        // PAR2 Reed-Solomon reconstruction algorithm
+        //
+        // The recovery slices are computed as:
+        //   recovery[i] = sum over all input slices j of: input[j] * (base[j] ^ exponent[i])
+        //
+        // To reconstruct missing input slices, we need to solve a system of linear
+        // equations in GF(2^16). We use the available recovery slices as equations.
 
-        // Set up input blocks (present/missing status)
-        let mut present_status = vec![false; self.total_input_slices];
-        for &slice_idx in existing_slices.keys() {
-            if slice_idx < self.total_input_slices {
-                present_status[slice_idx] = true;
-            }
-        }
+        let num_missing = missing_slices.len();
+        let num_recovery_to_use = num_missing;
 
-        if let Err(e) = rs.set_input(&present_status) {
-            return ReconstructionResult {
-                success: false,
-                reconstructed_slices: HashMap::new(),
-                error_message: Some(format!("Failed to set input: {}", e)),
-            };
-        }
+        // We'll solve for the missing slices by setting up equations:
+        // For each recovery slice k with exponent e_k:
+        //   recovery[k] = sum_present(input[j] * base[j]^e_k) + sum_missing(input[m] * base[m]^e_k)
+        //
+        // Rearranging:
+        //   sum_missing(input[m] * base[m]^e_k) = recovery[k] - sum_present(input[j] * base[j]^e_k)
+        //
+        // This gives us a linear system: A * x = b
+        // where A[k][m] = base[missing[m]]^exponent[k]
+        //       x[m] = input[missing[m]]  (unknown)
+        //       b[k] = recovery[k] - contribution from present slices
 
-        // Set up recovery blocks using actual exponents from recovery slices
-        // This is crucial - par2cmdline uses specific exponents, not sequential indices
-        let recovery_count = missing_slices.len().min(self.recovery_slices.len());
-        for i in 0..recovery_count {
-            // Use the actual exponent from the recovery slice packet
-            let exponent = self.recovery_slices[i].exponent as u16;
-            if let Err(e) = rs.set_output(true, exponent) {
-                return ReconstructionResult {
-                    success: false,
-                    reconstructed_slices: HashMap::new(),
-                    error_message: Some(format!("Failed to set output: {}", e)),
-                };
-            }
-        }
-
-        // Set missing outputs (these don't need real exponents as they're being computed)
-        for &slice_idx in missing_slices {
-            if let Err(e) = rs.set_output(false, slice_idx as u16) {
-                return ReconstructionResult {
-                    success: false,
-                    reconstructed_slices: HashMap::new(),
-                    error_message: Some(format!("Failed to set missing output: {}", e)),
-                };
-            }
-        }
-
-        // Compute the Reed-Solomon matrix
-        if let Err(e) = rs.compute() {
-            return ReconstructionResult {
-                success: false,
-                reconstructed_slices: HashMap::new(),
-                error_message: Some(format!("Failed to compute matrix: {}", e)),
-            };
-        }
-
-        // Perform reconstruction
         let mut reconstructed_slices = HashMap::new();
 
-        for &missing_slice_idx in missing_slices {
-            let mut reconstructed_data = vec![0u8; self.slice_size];
+        // Process each 2-byte word position independently
+        let num_words = self.slice_size / 2;
 
-            // Process each existing slice through the Reed-Solomon matrix
-            for (&existing_slice_idx, existing_data) in existing_slices {
-                if existing_slice_idx < self.total_input_slices {
-                    if let Err(e) = rs.process(
-                        existing_slice_idx as u32,
-                        existing_data,
-                        missing_slice_idx as u32,
-                        &mut reconstructed_data,
-                    ) {
-                        return ReconstructionResult {
-                            success: false,
-                            reconstructed_slices: HashMap::new(),
-                            error_message: Some(format!("Failed to process slice: {}", e)),
-                        };
+        for word_pos in 0..num_words {
+            // Build the matrix A and vector b for this word position
+            let mut matrix = vec![vec![Galois16::new(0); num_missing]; num_recovery_to_use];
+            let mut rhs = vec![Galois16::new(0); num_recovery_to_use];
+
+            // For each recovery slice equation
+            for (eq_idx, recovery_slice) in self
+                .recovery_slices
+                .iter()
+                .take(num_recovery_to_use)
+                .enumerate()
+            {
+                let exponent = recovery_slice.exponent as u16;
+
+                // Get the recovery word at this position
+                let word_offset = word_pos * 2;
+                let recovery_word = if word_offset + 1 < recovery_slice.recovery_data.len() {
+                    u16::from_le_bytes([
+                        recovery_slice.recovery_data[word_offset],
+                        recovery_slice.recovery_data[word_offset + 1],
+                    ])
+                } else {
+                    0
+                };
+                let mut rhs_val = Galois16::new(recovery_word);
+
+                // Subtract contributions from present (existing) slices
+                for (&file_local_idx, slice_data) in existing_slices {
+                    // Map file-local index to global index
+                    if let Some(&global_idx) = _global_slice_map.get(&file_local_idx) {
+                        if global_idx < self.total_input_slices {
+                            let word_offset = word_pos * 2;
+                            let input_word = if word_offset + 1 < slice_data.len() {
+                                u16::from_le_bytes([
+                                    slice_data[word_offset],
+                                    slice_data[word_offset + 1],
+                                ])
+                            } else {
+                                0
+                            };
+
+                            // Get the base value for this global slice
+                            let base = Galois16::new(self.base_values[global_idx]);
+                            // Compute base^exponent
+                            let coefficient = base.pow(exponent);
+                            // Multiply by the input word
+                            let contribution = coefficient * Galois16::new(input_word);
+                            // Subtract from RHS (in GF, subtraction is XOR, same as addition)
+                            rhs_val = rhs_val - contribution;
+                        }
+                    }
+                }
+
+                rhs[eq_idx] = rhs_val;
+
+                // Fill in the matrix coefficients for missing slices
+                for (col_idx, &file_local_missing_idx) in missing_slices.iter().enumerate() {
+                    // Map file-local index to global index
+                    if let Some(&global_idx) = _global_slice_map.get(&file_local_missing_idx) {
+                        let base = Galois16::new(self.base_values[global_idx]);
+                        matrix[eq_idx][col_idx] = base.pow(exponent);
                     }
                 }
             }
 
-            // Process recovery slices with their data
-            for (recovery_idx, recovery_slice) in
-                self.recovery_slices.iter().enumerate().take(recovery_count)
-            {
-                if let Err(e) = rs.process(
-                    (self.total_input_slices + recovery_idx) as u32,
-                    &recovery_slice.recovery_data,
-                    missing_slice_idx as u32,
-                    &mut reconstructed_data,
-                ) {
+            // Solve the linear system using Gaussian elimination in GF(2^16)
+            match self.solve_gf_system(&matrix, &rhs) {
+                Ok(solution) => {
+                    // Store the solved words for each missing slice
+                    for (idx, &missing_idx) in missing_slices.iter().enumerate() {
+                        let word_val = solution[idx].value();
+                        let bytes = word_val.to_le_bytes();
+
+                        reconstructed_slices
+                            .entry(missing_idx)
+                            .or_insert_with(|| vec![0u8; self.slice_size])
+                            .splice(word_pos * 2..word_pos * 2 + 2, bytes.iter().cloned());
+                    }
+                }
+                Err(e) => {
                     return ReconstructionResult {
                         success: false,
                         reconstructed_slices: HashMap::new(),
-                        error_message: Some(format!("Failed to process recovery slice: {}", e)),
+                        error_message: Some(format!(
+                            "Failed to solve linear system at word {}: {}",
+                            word_pos, e
+                        )),
                     };
                 }
             }
-
-            reconstructed_slices.insert(missing_slice_idx, reconstructed_data);
         }
 
         ReconstructionResult {
@@ -606,6 +652,307 @@ impl ReconstructionEngine {
             reconstructed_slices,
             error_message: None,
         }
+    }
+
+    /// Reconstruct missing slices using Reed-Solomon with global slice indexing
+    ///
+    /// This method is specifically for multi-file PAR2 sets where:
+    /// - all_slices: HashMap with global slice indices (0..total_input_slices) as keys
+    /// - global_missing_indices: Global indices of slices to reconstruct
+    /// - Returns: HashMap with global indices as keys
+    pub fn reconstruct_missing_slices_global(
+        &self,
+        all_slices: &HashMap<usize, Vec<u8>>,
+        global_missing_indices: &[usize],
+        _total_input_slices: usize,
+    ) -> ReconstructionResult {
+        if global_missing_indices.is_empty() {
+            return ReconstructionResult {
+                success: true,
+                reconstructed_slices: HashMap::new(),
+                error_message: None,
+            };
+        }
+
+        if !self.can_reconstruct(global_missing_indices.len()) {
+            return ReconstructionResult {
+                success: false,
+                reconstructed_slices: HashMap::new(),
+                error_message: Some("Not enough recovery slices available".to_string()),
+            };
+        }
+
+        let num_missing = global_missing_indices.len();
+        let num_words = self.slice_size / 2;
+        let mut reconstructed_slices: HashMap<usize, Vec<u8>> = HashMap::new();
+
+        debug!("Starting Reed-Solomon reconstruction: {} missing slices, {} words per slice ({} total word positions to solve)", 
+               num_missing, num_words, num_words);
+
+        // PERFORMANCE OPTIMIZATION: Build and invert the matrix once, then reuse for all word positions
+        // This reduces complexity from O(num_words * num_missing^3) to O(num_missing^3 + num_words * num_missing^2)
+
+        debug!("Building coefficient matrix...");
+        // Build the matrix once - it's the same for all word positions
+        let mut matrix = vec![vec![Galois16::new(0); num_missing]; num_missing];
+        for (eq_idx, recovery_slice) in self.recovery_slices.iter().take(num_missing).enumerate() {
+            let exponent = recovery_slice.exponent;
+            for (col_idx, &global_missing_idx) in global_missing_indices.iter().enumerate() {
+                let base = Galois16::new(self.base_values[global_missing_idx]);
+                matrix[eq_idx][col_idx] = base.pow(exponent as u16);
+            }
+        }
+
+        debug!("Inverting matrix...");
+        // Invert the matrix once
+        let matrix_inv = match self.invert_gf_matrix(&matrix) {
+            Ok(inv) => inv,
+            Err(e) => {
+                return ReconstructionResult {
+                    success: false,
+                    reconstructed_slices: HashMap::new(),
+                    error_message: Some(format!("Failed to invert matrix: {}", e)),
+                };
+            }
+        };
+        debug!("Matrix inverted successfully");
+
+        // Precompute all coefficients for present slices - this is a HUGE optimization
+        // because we're computing base^exponent thousands of times for the same slice
+        debug!(
+            "Precomputing coefficients for {} present slices...",
+            all_slices.len()
+        );
+        let mut slice_coefficients: Vec<Vec<Galois16>> = Vec::new();
+        for recovery_slice in self.recovery_slices.iter().take(num_missing) {
+            let exponent = recovery_slice.exponent;
+            let mut coeffs = Vec::new();
+            for &global_idx in all_slices.keys() {
+                if global_idx < self.total_input_slices {
+                    let base = Galois16::new(self.base_values[global_idx]);
+                    let coefficient = base.pow(exponent as u16);
+                    coeffs.push(coefficient);
+                } else {
+                    coeffs.push(Galois16::new(0));
+                }
+            }
+            slice_coefficients.push(coeffs);
+        }
+
+        // Get slice keys in a consistent order for indexing
+        let slice_keys: Vec<usize> = all_slices.keys().copied().collect();
+        debug!("Coefficients precomputed, starting word-by-word reconstruction...");
+
+        // Now process each word position by computing RHS and multiplying by inverted matrix
+        for word_pos in 0..num_words {
+            if word_pos % 10000 == 0 {
+                debug!(
+                    "  Processing word position {}/{} ({:.1}%)",
+                    word_pos,
+                    num_words,
+                    (word_pos as f64 / num_words as f64) * 100.0
+                );
+            }
+
+            // Compute RHS for this word position
+            let mut rhs = vec![Galois16::new(0); num_missing];
+
+            for (eq_idx, recovery_slice) in
+                self.recovery_slices.iter().take(num_missing).enumerate()
+            {
+                let word_offset = word_pos * 2;
+                let recovery_word = if word_offset + 1 < recovery_slice.recovery_data.len() {
+                    u16::from_le_bytes([
+                        recovery_slice.recovery_data[word_offset],
+                        recovery_slice.recovery_data[word_offset + 1],
+                    ])
+                } else {
+                    0
+                };
+                let mut rhs_val = Galois16::new(recovery_word);
+
+                // Subtract contributions from ALL present slices (across all files!)
+                for (idx, &global_idx) in slice_keys.iter().enumerate() {
+                    if global_idx < self.total_input_slices {
+                        let slice_data = &all_slices[&global_idx];
+                        let word_offset = word_pos * 2;
+                        let input_word = if word_offset + 1 < slice_data.len() {
+                            u16::from_le_bytes([
+                                slice_data[word_offset],
+                                slice_data[word_offset + 1],
+                            ])
+                        } else {
+                            0
+                        };
+
+                        // Use precomputed coefficient
+                        let coefficient = slice_coefficients[eq_idx][idx];
+                        // Multiply by the input word
+                        let contribution = coefficient * Galois16::new(input_word);
+                        // Subtract from RHS
+                        rhs_val = rhs_val - contribution;
+                    }
+                }
+
+                rhs[eq_idx] = rhs_val;
+            }
+
+            // Multiply inverted matrix by RHS to get solution
+            let mut solution = vec![Galois16::new(0); num_missing];
+            for i in 0..num_missing {
+                let mut sum = Galois16::new(0);
+                for j in 0..num_missing {
+                    sum = sum + matrix_inv[i][j] * rhs[j];
+                }
+                solution[i] = sum;
+            }
+
+            // Store the solved words for each missing slice (using global indices)
+            for (idx, &missing_global_idx) in global_missing_indices.iter().enumerate() {
+                let word_val = solution[idx].value();
+                let bytes = word_val.to_le_bytes();
+
+                reconstructed_slices
+                    .entry(missing_global_idx)
+                    .or_insert_with(|| vec![0u8; self.slice_size])
+                    .splice(word_pos * 2..word_pos * 2 + 2, bytes.iter().cloned());
+            }
+        }
+
+        ReconstructionResult {
+            success: true,
+            reconstructed_slices,
+            error_message: None,
+        }
+    }
+
+    /// Invert a matrix in GF(2^16) using Gaussian elimination
+    /// Returns the inverted matrix
+    fn invert_gf_matrix(&self, matrix: &[Vec<Galois16>]) -> Result<Vec<Vec<Galois16>>, String> {
+        let n = matrix.len();
+        if n == 0 || matrix[0].len() != n {
+            return Err("Invalid matrix dimensions".to_string());
+        }
+
+        // Create augmented matrix [A | I]
+        let mut aug = vec![vec![Galois16::new(0); n * 2]; n];
+        for i in 0..n {
+            for j in 0..n {
+                aug[i][j] = matrix[i][j];
+            }
+            // Identity matrix on the right side
+            aug[i][n + i] = Galois16::new(1);
+        }
+
+        // Forward elimination with full pivoting
+        for col in 0..n {
+            // Find pivot
+            let mut pivot_row = col;
+            for row in col..n {
+                if aug[row][col].value() != 0 {
+                    pivot_row = row;
+                    break;
+                }
+            }
+
+            if aug[pivot_row][col].value() == 0 {
+                return Err(format!("Singular matrix at column {}", col));
+            }
+
+            // Swap rows if needed
+            if pivot_row != col {
+                aug.swap(col, pivot_row);
+            }
+
+            // Scale pivot row
+            let pivot = aug[col][col];
+            let pivot_inv = Galois16::new(1) / pivot;
+            for j in 0..n * 2 {
+                aug[col][j] = aug[col][j] * pivot_inv;
+            }
+
+            // Eliminate column in other rows
+            for row in 0..n {
+                if row != col {
+                    let factor = aug[row][col];
+                    for j in 0..n * 2 {
+                        aug[row][j] = aug[row][j] - factor * aug[col][j];
+                    }
+                }
+            }
+        }
+
+        // Extract inverse matrix from right half
+        let mut inverse = vec![vec![Galois16::new(0); n]; n];
+        for i in 0..n {
+            for j in 0..n {
+                inverse[i][j] = aug[i][n + j];
+            }
+        }
+
+        Ok(inverse)
+    }
+
+    /// Solve a linear system A * x = b in GF(2^16) using Gaussian elimination
+    fn solve_gf_system(
+        &self,
+        matrix: &[Vec<Galois16>],
+        rhs: &[Galois16],
+    ) -> Result<Vec<Galois16>, String> {
+        let n = matrix.len();
+        if n == 0 || matrix[0].len() != n || rhs.len() != n {
+            return Err("Invalid matrix dimensions".to_string());
+        }
+
+        // Create augmented matrix [A | b]
+        let mut aug = vec![vec![Galois16::new(0); n + 1]; n];
+        for i in 0..n {
+            for j in 0..n {
+                aug[i][j] = matrix[i][j];
+            }
+            aug[i][n] = rhs[i];
+        }
+
+        // Forward elimination
+        for col in 0..n {
+            // Find pivot
+            let mut pivot_row = col;
+            for row in col..n {
+                if aug[row][col].value() != 0 {
+                    pivot_row = row;
+                    break;
+                }
+            }
+
+            if aug[pivot_row][col].value() == 0 {
+                return Err(format!("Singular matrix at column {}", col));
+            }
+
+            // Swap rows if needed
+            if pivot_row != col {
+                aug.swap(col, pivot_row);
+            }
+
+            // Scale pivot row
+            let pivot = aug[col][col];
+            let pivot_inv = Galois16::new(1) / pivot;
+            for j in 0..=n {
+                aug[col][j] = aug[col][j] * pivot_inv;
+            }
+
+            // Eliminate column in other rows
+            for row in 0..n {
+                if row != col {
+                    let factor = aug[row][col];
+                    for j in 0..=n {
+                        aug[row][j] = aug[row][j] - factor * aug[col][j];
+                    }
+                }
+            }
+        }
+
+        // Extract solution from last column
+        Ok((0..n).map(|i| aug[i][n]).collect())
     }
 }
 
