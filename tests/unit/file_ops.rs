@@ -55,13 +55,16 @@ mod file_discovery {
     }
 
     #[test]
-    #[should_panic(expected = "Failed to read directory")]
     fn handles_nonexistent_directory() {
         let nonexistent_dir = Path::new("tests/nonexistent");
         let fake_main_file = nonexistent_dir.join("fake.par2");
 
-        // This should panic because the implementation uses expect()
-        let _par2_files = find_par2_files_in_directory(nonexistent_dir, &fake_main_file);
+        // Should return empty vec and print warning instead of panicking
+        let par2_files = find_par2_files_in_directory(nonexistent_dir, &fake_main_file);
+        assert!(
+            par2_files.is_empty(),
+            "Should return empty vec for nonexistent directory"
+        );
     }
 }
 

@@ -14,6 +14,13 @@ use par2rs::{analysis, file_ops, verify};
 use std::path::Path;
 
 fn main() -> Result<(), ()> {
+    // Initialize the logger
+    env_logger::Builder::from_default_env()
+        .format_timestamp(None)
+        .format_module_path(false)
+        .format_target(false)
+        .init();
+
     let matches = par2rs::parse_args();
 
     let input_file = matches

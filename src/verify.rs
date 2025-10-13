@@ -327,8 +327,7 @@ pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationRe
 
         // Calculate total blocks for this file
         if block_size > 0 {
-            file_result.total_blocks =
-                file_desc.file_length.div_ceil(block_size) as usize;
+            file_result.total_blocks = file_desc.file_length.div_ceil(block_size) as usize;
             results.total_block_count += file_result.total_blocks;
         }
 
@@ -450,7 +449,9 @@ fn verify_file_integrity(
         Some(16 * 1024),
         &desc.md5_16k,
         "first 16 KB of file",
-    ).is_err() {
+    )
+    .is_err()
+    {
         return Ok(false);
     }
 
