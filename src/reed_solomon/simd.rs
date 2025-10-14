@@ -154,7 +154,7 @@ unsafe fn process_slice_multiply_add_avx2_pshufb(
 /// Aggressive AVX2 implementation with 32-word unrolling
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn process_slice_multiply_add_avx2_unrolled(
+pub unsafe fn process_slice_multiply_add_avx2_unrolled(
     input: &[u8],
     output: &mut [u8],
     tables: &SplitMulTable,
@@ -273,7 +273,7 @@ unsafe fn process_slice_multiply_add_avx2_unrolled(
 }
 
 /// Dispatch to the best available SIMD implementation
-pub(crate) fn process_slice_multiply_add_simd(
+pub fn process_slice_multiply_add_simd(
     input: &[u8],
     output: &mut [u8],
     tables: &SplitMulTable,
@@ -282,13 +282,28 @@ pub(crate) fn process_slice_multiply_add_simd(
     match simd_level {
         #[cfg(target_arch = "x86_64")]
         SimdLevel::Avx2 => unsafe {
-            // Use unrolled version - PSHUFB for GF(2^16) is complex and needs more work
-            // The current PSHUFB implementation is incomplete
-            process_slice_multiply_add_avx2_unrolled(input, output, tables);
+            let len = input.len().min(output.len());
+            
+            // Use PSHUFB for the bulk of the data (multiples of 32 bytes)
+            if len >= 32 {
+                crate::reed_solomon::simd_pshufb::process_slice_multiply_add_pshufb(
+                    input, output, tables
+                );
+            }
+            
+            // Handle remaining bytes (< 32 bytes) with unrolled version
+            let remainder_start = (len / 32) * 32;
+            if remainder_start < len {
+                process_slice_multiply_add_avx2_unrolled(
+                    &input[remainder_start..],
+                    &mut output[remainder_start..],
+                    tables
+                );
+            }
         },
         #[cfg(target_arch = "x86_64")]
         SimdLevel::Ssse3 => unsafe {
-            // SSSE3 has PSHUFB but only 128-bit registers
+            // SSSE3 has PSHUFB but only 128-bit registers, use unrolled for now
             process_slice_multiply_add_avx2_unrolled(input, output, tables);
         },
         SimdLevel::None => {

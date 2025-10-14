@@ -16,7 +16,7 @@ static SIMD_LEVEL: OnceLock<SimdLevel> = OnceLock::new();
 /// Process entire slice at once: output = coefficient * input (direct write, no XOR)
 /// ULTRA-OPTIMIZED: Direct pointer access, avoid byte conversions, maximum unrolling
 #[inline]
-fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
+pub fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
     let min_len = input.len().min(output.len());
     let num_words = min_len / 2;
 
@@ -98,7 +98,7 @@ fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &Split
 /// Process entire slice at once: output += coefficient * input (XOR accumulate)
 /// Uses SIMD when available, falls back to optimized scalar code
 #[inline]
-fn process_slice_multiply_add(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
+pub fn process_slice_multiply_add(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
     let min_len = input.len().min(output.len());
     
     // Get SIMD level (cached after first call)
@@ -199,9 +199,9 @@ fn process_slice_multiply_add(input: &[u8], output: &mut [u8], tables: &SplitMul
 }
 
 /// Multiplication table split into low/high byte tables (1KB vs 128KB!)
-pub(crate) struct SplitMulTable {
-    pub(crate) low: Box<[u16; 256]>,  // table[input & 0xFF]
-    pub(crate) high: Box<[u16; 256]>, // table[input >> 8]
+pub struct SplitMulTable {
+    pub low: Box<[u16; 256]>,  // table[input & 0xFF]
+    pub high: Box<[u16; 256]>, // table[input >> 8]
 }
 
 /// Build split multiplication tables for a coefficient
@@ -209,7 +209,7 @@ pub(crate) struct SplitMulTable {
 /// This is 128x smaller and faster to build: 1KB vs 128KB per coefficient!
 /// Result: table_low[x & 0xFF] XOR table_high[x >> 8]
 #[inline]
-fn build_split_mul_table(coefficient: Galois16) -> SplitMulTable {
+pub fn build_split_mul_table(coefficient: Galois16) -> SplitMulTable {
     use crate::reed_solomon::galois::GaloisTable;
     static GALOIS_TABLE: OnceLock<GaloisTable<16, 69643>> = OnceLock::new();
     let galois_table = GALOIS_TABLE.get_or_init(GaloisTable::new);
