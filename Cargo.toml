@@ -16,33 +16,10 @@ bytemuck = "1.24"
 rustc-hash = "2.1"
 
 [dev-dependencies]
-# Test coverage and reporting tools
-cargo-tarpaulin = "0.33"
 # Temporary directory management for tests
 tempfile = "3"
 # Benchmarking framework
 criterion = { version = "0.5", features = ["html_reports"] }
-
-# Tarpaulin configuration
-[package.metadata.tarpaulin]
-# Exclude generated files and certain test directories from coverage
-exclude = [
-    "target/*",
-    "scripts/*",
-]
-# Include all source files by default
-include = [
-    "src/*",
-    "tests/*",
-]
-# Timeout for individual tests (in seconds)
-timeout = 120
-# Follow symbolic links
-follow-links = true
-# Count hits in tests 
-count-hits = true
-# Output timeout for individual tests
-output-timeout = 60
 
 [[bench]]
 name = "repair_benchmark"
