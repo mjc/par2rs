@@ -1,5 +1,4 @@
 use par2rs::file_ops;
-use par2rs::file_verification::calculate_file_md5;
 /// Tests for specific bugs found during repair implementation
 /// These tests document and prevent regression of critical bugs discovered during development
 use par2rs::repair::RepairContext;

@@ -31,6 +31,11 @@ static SIMD_LEVEL: OnceLock<SimdLevel> = OnceLock::new();
 
 /// Process entire slice at once: output = coefficient * input (direct write, no XOR)
 /// ULTRA-OPTIMIZED: Direct pointer access, avoid byte conversions, maximum unrolling
+///
+/// # Safety
+/// Casts byte slices to u16 slices. Requires:
+/// - input/output have valid alignment for u16 access (guaranteed by x86-64 allowing unaligned access)
+/// - Length is pre-checked to ensure we don't read/write beyond slice bounds
 #[inline]
 pub fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
     let min_len = input.len().min(output.len());
@@ -40,11 +45,15 @@ pub fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &S
         return;
     }
 
+    // SAFETY: We're reinterpreting byte slices as u16 slices.
+    // - On x86-64, unaligned loads/stores are supported
+    // - We pre-checked that we have at least num_words * 2 bytes available
+    // - The resulting u16 slice will have length num_words
     unsafe {
-        let in_ptr = input.as_ptr() as *const u16;
-        let out_ptr = output.as_mut_ptr() as *mut u16;
-        let low_ptr = tables.low.as_ptr();
-        let high_ptr = tables.high.as_ptr();
+        let in_words = std::slice::from_raw_parts(input.as_ptr() as *const u16, num_words);
+        let out_words = std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut u16, num_words);
+        let low = &tables.low[..];
+        let high = &tables.high[..];
 
         // Process 16 words at a time for maximum throughput
         let chunks = num_words / 16;
@@ -53,52 +62,51 @@ pub fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &S
         // Fully unroll 16-word chunks - batch loads/stores to reduce memory stalls
         for _ in 0..chunks {
             // Load all 16 input words first (better cache/prefetch behavior)
-            let i0 = *in_ptr.add(idx); let i1 = *in_ptr.add(idx+1);
-            let i2 = *in_ptr.add(idx+2); let i3 = *in_ptr.add(idx+3);
-            let i4 = *in_ptr.add(idx+4); let i5 = *in_ptr.add(idx+5);
-            let i6 = *in_ptr.add(idx+6); let i7 = *in_ptr.add(idx+7);
-            let i8 = *in_ptr.add(idx+8); let i9 = *in_ptr.add(idx+9);
-            let i10 = *in_ptr.add(idx+10); let i11 = *in_ptr.add(idx+11);
-            let i12 = *in_ptr.add(idx+12); let i13 = *in_ptr.add(idx+13);
-            let i14 = *in_ptr.add(idx+14); let i15 = *in_ptr.add(idx+15);
+            let i0 = in_words[idx]; let i1 = in_words[idx+1];
+            let i2 = in_words[idx+2]; let i3 = in_words[idx+3];
+            let i4 = in_words[idx+4]; let i5 = in_words[idx+5];
+            let i6 = in_words[idx+6]; let i7 = in_words[idx+7];
+            let i8 = in_words[idx+8]; let i9 = in_words[idx+9];
+            let i10 = in_words[idx+10]; let i11 = in_words[idx+11];
+            let i12 = in_words[idx+12]; let i13 = in_words[idx+13];
+            let i14 = in_words[idx+14]; let i15 = in_words[idx+15];
             
             // Compute all multiplications (table lookups execute in parallel)
-            let r0 = *low_ptr.add((i0 & 0xFF) as usize) ^ *high_ptr.add((i0 >> 8) as usize);
-            let r1 = *low_ptr.add((i1 & 0xFF) as usize) ^ *high_ptr.add((i1 >> 8) as usize);
-            let r2 = *low_ptr.add((i2 & 0xFF) as usize) ^ *high_ptr.add((i2 >> 8) as usize);
-            let r3 = *low_ptr.add((i3 & 0xFF) as usize) ^ *high_ptr.add((i3 >> 8) as usize);
-            let r4 = *low_ptr.add((i4 & 0xFF) as usize) ^ *high_ptr.add((i4 >> 8) as usize);
-            let r5 = *low_ptr.add((i5 & 0xFF) as usize) ^ *high_ptr.add((i5 >> 8) as usize);
-            let r6 = *low_ptr.add((i6 & 0xFF) as usize) ^ *high_ptr.add((i6 >> 8) as usize);
-            let r7 = *low_ptr.add((i7 & 0xFF) as usize) ^ *high_ptr.add((i7 >> 8) as usize);
-            let r8 = *low_ptr.add((i8 & 0xFF) as usize) ^ *high_ptr.add((i8 >> 8) as usize);
-            let r9 = *low_ptr.add((i9 & 0xFF) as usize) ^ *high_ptr.add((i9 >> 8) as usize);
-            let r10 = *low_ptr.add((i10 & 0xFF) as usize) ^ *high_ptr.add((i10 >> 8) as usize);
-            let r11 = *low_ptr.add((i11 & 0xFF) as usize) ^ *high_ptr.add((i11 >> 8) as usize);
-            let r12 = *low_ptr.add((i12 & 0xFF) as usize) ^ *high_ptr.add((i12 >> 8) as usize);
-            let r13 = *low_ptr.add((i13 & 0xFF) as usize) ^ *high_ptr.add((i13 >> 8) as usize);
-            let r14 = *low_ptr.add((i14 & 0xFF) as usize) ^ *high_ptr.add((i14 >> 8) as usize);
-            let r15 = *low_ptr.add((i15 & 0xFF) as usize) ^ *high_ptr.add((i15 >> 8) as usize);
+            let r0 = low[(i0 & 0xFF) as usize] ^ high[(i0 >> 8) as usize];
+            let r1 = low[(i1 & 0xFF) as usize] ^ high[(i1 >> 8) as usize];
+            let r2 = low[(i2 & 0xFF) as usize] ^ high[(i2 >> 8) as usize];
+            let r3 = low[(i3 & 0xFF) as usize] ^ high[(i3 >> 8) as usize];
+            let r4 = low[(i4 & 0xFF) as usize] ^ high[(i4 >> 8) as usize];
+            let r5 = low[(i5 & 0xFF) as usize] ^ high[(i5 >> 8) as usize];
+            let r6 = low[(i6 & 0xFF) as usize] ^ high[(i6 >> 8) as usize];
+            let r7 = low[(i7 & 0xFF) as usize] ^ high[(i7 >> 8) as usize];
+            let r8 = low[(i8 & 0xFF) as usize] ^ high[(i8 >> 8) as usize];
+            let r9 = low[(i9 & 0xFF) as usize] ^ high[(i9 >> 8) as usize];
+            let r10 = low[(i10 & 0xFF) as usize] ^ high[(i10 >> 8) as usize];
+            let r11 = low[(i11 & 0xFF) as usize] ^ high[(i11 >> 8) as usize];
+            let r12 = low[(i12 & 0xFF) as usize] ^ high[(i12 >> 8) as usize];
+            let r13 = low[(i13 & 0xFF) as usize] ^ high[(i13 >> 8) as usize];
+            let r14 = low[(i14 & 0xFF) as usize] ^ high[(i14 >> 8) as usize];
+            let r15 = low[(i15 & 0xFF) as usize] ^ high[(i15 >> 8) as usize];
             
             // Write all results back
-            *out_ptr.add(idx) = r0; *out_ptr.add(idx+1) = r1;
-            *out_ptr.add(idx+2) = r2; *out_ptr.add(idx+3) = r3;
-            *out_ptr.add(idx+4) = r4; *out_ptr.add(idx+5) = r5;
-            *out_ptr.add(idx+6) = r6; *out_ptr.add(idx+7) = r7;
-            *out_ptr.add(idx+8) = r8; *out_ptr.add(idx+9) = r9;
-            *out_ptr.add(idx+10) = r10; *out_ptr.add(idx+11) = r11;
-            *out_ptr.add(idx+12) = r12; *out_ptr.add(idx+13) = r13;
-            *out_ptr.add(idx+14) = r14; *out_ptr.add(idx+15) = r15;
+            out_words[idx] = r0; out_words[idx+1] = r1;
+            out_words[idx+2] = r2; out_words[idx+3] = r3;
+            out_words[idx+4] = r4; out_words[idx+5] = r5;
+            out_words[idx+6] = r6; out_words[idx+7] = r7;
+            out_words[idx+8] = r8; out_words[idx+9] = r9;
+            out_words[idx+10] = r10; out_words[idx+11] = r11;
+            out_words[idx+12] = r12; out_words[idx+13] = r13;
+            out_words[idx+14] = r14; out_words[idx+15] = r15;
             
             idx += 16;
         }
 
         // Handle remaining words (0-15)
         while idx < num_words {
-            let in_word = *in_ptr.add(idx);
-            let result =
-                *low_ptr.add((in_word & 0xFF) as usize) ^ *high_ptr.add((in_word >> 8) as usize);
-            *out_ptr.add(idx) = result;
+            let in_word = in_words[idx];
+            let result = low[(in_word & 0xFF) as usize] ^ high[(in_word >> 8) as usize];
+            out_words[idx] = result;
             idx += 1;
         }
     }
@@ -132,11 +140,15 @@ pub fn process_slice_multiply_add(input: &[u8], output: &mut [u8], tables: &Spli
         return;
     }
 
+    // SAFETY: We're reinterpreting byte slices as u16 slices.
+    // - On x86-64, unaligned loads/stores are supported
+    // - We pre-checked that we have at least num_words * 2 bytes available
+    // - The resulting u16 slice will have length num_words
     unsafe {
-        let in_ptr = input.as_ptr() as *const u16;
-        let out_ptr = output.as_mut_ptr() as *mut u16;
-        let low_ptr = tables.low.as_ptr();
-        let high_ptr = tables.high.as_ptr();
+        let in_words = std::slice::from_raw_parts(input.as_ptr() as *const u16, num_words);
+        let out_words = std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut u16, num_words);
+        let low = &tables.low[..];
+        let high = &tables.high[..];
 
         // Process 16 words at a time for maximum throughput
         let chunks = num_words / 16;
@@ -145,63 +157,62 @@ pub fn process_slice_multiply_add(input: &[u8], output: &mut [u8], tables: &Spli
         // Fully unroll 16-word chunks - batch loads/stores to reduce memory stalls
         for _ in 0..chunks {
             // Load all 16 input words first (better cache/prefetch behavior)
-            let i0 = *in_ptr.add(idx); let i1 = *in_ptr.add(idx+1);
-            let i2 = *in_ptr.add(idx+2); let i3 = *in_ptr.add(idx+3);
-            let i4 = *in_ptr.add(idx+4); let i5 = *in_ptr.add(idx+5);
-            let i6 = *in_ptr.add(idx+6); let i7 = *in_ptr.add(idx+7);
-            let i8 = *in_ptr.add(idx+8); let i9 = *in_ptr.add(idx+9);
-            let i10 = *in_ptr.add(idx+10); let i11 = *in_ptr.add(idx+11);
-            let i12 = *in_ptr.add(idx+12); let i13 = *in_ptr.add(idx+13);
-            let i14 = *in_ptr.add(idx+14); let i15 = *in_ptr.add(idx+15);
+            let i0 = in_words[idx]; let i1 = in_words[idx+1];
+            let i2 = in_words[idx+2]; let i3 = in_words[idx+3];
+            let i4 = in_words[idx+4]; let i5 = in_words[idx+5];
+            let i6 = in_words[idx+6]; let i7 = in_words[idx+7];
+            let i8 = in_words[idx+8]; let i9 = in_words[idx+9];
+            let i10 = in_words[idx+10]; let i11 = in_words[idx+11];
+            let i12 = in_words[idx+12]; let i13 = in_words[idx+13];
+            let i14 = in_words[idx+14]; let i15 = in_words[idx+15];
             
             // Load all 16 output words
-            let o0 = *out_ptr.add(idx); let o1 = *out_ptr.add(idx+1);
-            let o2 = *out_ptr.add(idx+2); let o3 = *out_ptr.add(idx+3);
-            let o4 = *out_ptr.add(idx+4); let o5 = *out_ptr.add(idx+5);
-            let o6 = *out_ptr.add(idx+6); let o7 = *out_ptr.add(idx+7);
-            let o8 = *out_ptr.add(idx+8); let o9 = *out_ptr.add(idx+9);
-            let o10 = *out_ptr.add(idx+10); let o11 = *out_ptr.add(idx+11);
-            let o12 = *out_ptr.add(idx+12); let o13 = *out_ptr.add(idx+13);
-            let o14 = *out_ptr.add(idx+14); let o15 = *out_ptr.add(idx+15);
+            let o0 = out_words[idx]; let o1 = out_words[idx+1];
+            let o2 = out_words[idx+2]; let o3 = out_words[idx+3];
+            let o4 = out_words[idx+4]; let o5 = out_words[idx+5];
+            let o6 = out_words[idx+6]; let o7 = out_words[idx+7];
+            let o8 = out_words[idx+8]; let o9 = out_words[idx+9];
+            let o10 = out_words[idx+10]; let o11 = out_words[idx+11];
+            let o12 = out_words[idx+12]; let o13 = out_words[idx+13];
+            let o14 = out_words[idx+14]; let o15 = out_words[idx+15];
             
             // Compute all multiplications (table lookups execute in parallel)
-            let r0 = *low_ptr.add((i0 & 0xFF) as usize) ^ *high_ptr.add((i0 >> 8) as usize);
-            let r1 = *low_ptr.add((i1 & 0xFF) as usize) ^ *high_ptr.add((i1 >> 8) as usize);
-            let r2 = *low_ptr.add((i2 & 0xFF) as usize) ^ *high_ptr.add((i2 >> 8) as usize);
-            let r3 = *low_ptr.add((i3 & 0xFF) as usize) ^ *high_ptr.add((i3 >> 8) as usize);
-            let r4 = *low_ptr.add((i4 & 0xFF) as usize) ^ *high_ptr.add((i4 >> 8) as usize);
-            let r5 = *low_ptr.add((i5 & 0xFF) as usize) ^ *high_ptr.add((i5 >> 8) as usize);
-            let r6 = *low_ptr.add((i6 & 0xFF) as usize) ^ *high_ptr.add((i6 >> 8) as usize);
-            let r7 = *low_ptr.add((i7 & 0xFF) as usize) ^ *high_ptr.add((i7 >> 8) as usize);
-            let r8 = *low_ptr.add((i8 & 0xFF) as usize) ^ *high_ptr.add((i8 >> 8) as usize);
-            let r9 = *low_ptr.add((i9 & 0xFF) as usize) ^ *high_ptr.add((i9 >> 8) as usize);
-            let r10 = *low_ptr.add((i10 & 0xFF) as usize) ^ *high_ptr.add((i10 >> 8) as usize);
-            let r11 = *low_ptr.add((i11 & 0xFF) as usize) ^ *high_ptr.add((i11 >> 8) as usize);
-            let r12 = *low_ptr.add((i12 & 0xFF) as usize) ^ *high_ptr.add((i12 >> 8) as usize);
-            let r13 = *low_ptr.add((i13 & 0xFF) as usize) ^ *high_ptr.add((i13 >> 8) as usize);
-            let r14 = *low_ptr.add((i14 & 0xFF) as usize) ^ *high_ptr.add((i14 >> 8) as usize);
-            let r15 = *low_ptr.add((i15 & 0xFF) as usize) ^ *high_ptr.add((i15 >> 8) as usize);
+            let r0 = low[(i0 & 0xFF) as usize] ^ high[(i0 >> 8) as usize];
+            let r1 = low[(i1 & 0xFF) as usize] ^ high[(i1 >> 8) as usize];
+            let r2 = low[(i2 & 0xFF) as usize] ^ high[(i2 >> 8) as usize];
+            let r3 = low[(i3 & 0xFF) as usize] ^ high[(i3 >> 8) as usize];
+            let r4 = low[(i4 & 0xFF) as usize] ^ high[(i4 >> 8) as usize];
+            let r5 = low[(i5 & 0xFF) as usize] ^ high[(i5 >> 8) as usize];
+            let r6 = low[(i6 & 0xFF) as usize] ^ high[(i6 >> 8) as usize];
+            let r7 = low[(i7 & 0xFF) as usize] ^ high[(i7 >> 8) as usize];
+            let r8 = low[(i8 & 0xFF) as usize] ^ high[(i8 >> 8) as usize];
+            let r9 = low[(i9 & 0xFF) as usize] ^ high[(i9 >> 8) as usize];
+            let r10 = low[(i10 & 0xFF) as usize] ^ high[(i10 >> 8) as usize];
+            let r11 = low[(i11 & 0xFF) as usize] ^ high[(i11 >> 8) as usize];
+            let r12 = low[(i12 & 0xFF) as usize] ^ high[(i12 >> 8) as usize];
+            let r13 = low[(i13 & 0xFF) as usize] ^ high[(i13 >> 8) as usize];
+            let r14 = low[(i14 & 0xFF) as usize] ^ high[(i14 >> 8) as usize];
+            let r15 = low[(i15 & 0xFF) as usize] ^ high[(i15 >> 8) as usize];
             
             // Write all results back
-            *out_ptr.add(idx) = o0 ^ r0; *out_ptr.add(idx+1) = o1 ^ r1;
-            *out_ptr.add(idx+2) = o2 ^ r2; *out_ptr.add(idx+3) = o3 ^ r3;
-            *out_ptr.add(idx+4) = o4 ^ r4; *out_ptr.add(idx+5) = o5 ^ r5;
-            *out_ptr.add(idx+6) = o6 ^ r6; *out_ptr.add(idx+7) = o7 ^ r7;
-            *out_ptr.add(idx+8) = o8 ^ r8; *out_ptr.add(idx+9) = o9 ^ r9;
-            *out_ptr.add(idx+10) = o10 ^ r10; *out_ptr.add(idx+11) = o11 ^ r11;
-            *out_ptr.add(idx+12) = o12 ^ r12; *out_ptr.add(idx+13) = o13 ^ r13;
-            *out_ptr.add(idx+14) = o14 ^ r14; *out_ptr.add(idx+15) = o15 ^ r15;
+            out_words[idx] = o0 ^ r0; out_words[idx+1] = o1 ^ r1;
+            out_words[idx+2] = o2 ^ r2; out_words[idx+3] = o3 ^ r3;
+            out_words[idx+4] = o4 ^ r4; out_words[idx+5] = o5 ^ r5;
+            out_words[idx+6] = o6 ^ r6; out_words[idx+7] = o7 ^ r7;
+            out_words[idx+8] = o8 ^ r8; out_words[idx+9] = o9 ^ r9;
+            out_words[idx+10] = o10 ^ r10; out_words[idx+11] = o11 ^ r11;
+            out_words[idx+12] = o12 ^ r12; out_words[idx+13] = o13 ^ r13;
+            out_words[idx+14] = o14 ^ r14; out_words[idx+15] = o15 ^ r15;
             
             idx += 16;
         }
 
         // Handle remaining words (0-15)
         while idx < num_words {
-            let in_word = *in_ptr.add(idx);
-            let out_word = *out_ptr.add(idx);
-            let mul_result =
-                *low_ptr.add((in_word & 0xFF) as usize) ^ *high_ptr.add((in_word >> 8) as usize);
-            *out_ptr.add(idx) = out_word ^ mul_result;
+            let in_word = in_words[idx];
+            let out_word = out_words[idx];
+            let mul_result = low[(in_word & 0xFF) as usize] ^ high[(in_word >> 8) as usize];
+            out_words[idx] = out_word ^ mul_result;
             idx += 1;
         }
     }
@@ -227,7 +238,7 @@ pub struct SplitMulTable {
 #[inline]
 pub fn build_split_mul_table(coefficient: Galois16) -> SplitMulTable {
     use crate::reed_solomon::galois::GaloisTable;
-    static GALOIS_TABLE: OnceLock<GaloisTable<16, 69643>> = OnceLock::new();
+    static GALOIS_TABLE: OnceLock<GaloisTable> = OnceLock::new();
     let galois_table = GALOIS_TABLE.get_or_init(GaloisTable::new);
 
     let mut low = Box::new([0u16; 256]);
