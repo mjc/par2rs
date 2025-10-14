@@ -199,10 +199,10 @@ cargo bench reed_solomon_reconstruct
 ### Running Real-World Benchmark
 ```bash
 # Single run benchmark (with flamegraph generation)
-./benchmark_repair.sh
+./scripts/benchmark_repair.sh
 
 # Averaged benchmark (10 iterations, more reliable)
-./benchmark_repair_averaged.sh
+./scripts/benchmark_repair_averaged.sh
 ```
 
 **Single run script** (`benchmark_repair.sh`):
