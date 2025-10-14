@@ -1,3 +1,4 @@
+
 use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0FileDesc";
@@ -81,8 +82,9 @@ impl FileDescriptionPacket {
 
         let set_id_start = 24; // Magic (8 bytes) + MD5 (16 bytes)
         let packet_data_for_md5 = serialized_packet.get_ref()[set_id_start..].to_vec();
-        let computed_md5 = md5::compute(&packet_data_for_md5);
-        if computed_md5.as_ref() != self.md5 {
+        use md5::Digest;
+        let computed_md5: [u8; 16] = md5::Md5::digest(&packet_data_for_md5).into();
+        if computed_md5 != self.md5 {
             println!(
                 "MD5 mismatch: expected {:?}, got {:?}",
                 self.md5, computed_md5

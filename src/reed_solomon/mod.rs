@@ -7,6 +7,8 @@
 
 pub mod galois;
 pub mod reedsolomon;
+pub mod simd;
 
 pub use galois::*;
 pub use reedsolomon::*;
+pub use simd::*;

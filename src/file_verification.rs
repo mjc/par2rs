@@ -26,21 +26,38 @@ pub fn format_display_name(file_name: &str) -> String {
         )
 }
 
+/// Calculate MD5 hash of the first 16KB of a file (fast integrity check)
+pub fn calculate_file_md5_16k(file_path: &Path) -> Result<[u8; 16], std::io::Error> {
+    use md5::{Digest, Md5};
+    let mut file = fs::File::open(file_path)?;
+    let mut hasher = Md5::new();
+    let mut buffer = [0; 16384]; // Read exactly 16KB
+
+    let bytes_read = file.read(&mut buffer)?;
+    hasher.update(&buffer[..bytes_read]);
+
+    Ok(hasher.finalize().into())
+}
+
 /// Calculate MD5 hash of a file
 pub fn calculate_file_md5(file_path: &Path) -> Result<[u8; 16], std::io::Error> {
+    use md5::{Digest, Md5};
     let mut file = fs::File::open(file_path)?;
-    let mut hasher = md5::Context::new();
-    let mut buffer = [0; 8192]; // 8KB buffer for reading
+    let mut hasher = Md5::new();
+
+    // Use 1MB buffer for maximum throughput (reduces system calls)
+    // Hardware-accelerated MD5 (asm feature) can process this very fast
+    let mut buffer = vec![0u8; 1024 * 1024];
 
     loop {
         let bytes_read = file.read(&mut buffer)?;
         if bytes_read == 0 {
             break;
         }
-        hasher.consume(&buffer[..bytes_read]);
+        hasher.update(&buffer[..bytes_read]);
     }
 
-    Ok(hasher.compute().0)
+    Ok(hasher.finalize().into())
 }
 
 /// Verify a single file by comparing its MD5 hash with the expected value

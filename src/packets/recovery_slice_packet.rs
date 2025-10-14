@@ -1,3 +1,4 @@
+
 use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0RecvSlic";
@@ -41,8 +42,9 @@ impl RecoverySlicePacket {
         data.extend_from_slice(TYPE_OF_PACKET);
         data.extend_from_slice(&self.exponent.to_le_bytes());
         data.extend_from_slice(&self.recovery_data);
-        let computed_md5 = md5::compute(&data);
-        if computed_md5.as_ref() != self.md5 {
+        use md5::Digest;
+        let computed_md5: [u8; 16] = md5::Md5::digest(&data).into();
+        if computed_md5 != self.md5 {
             println!("MD5 verification failed");
             return false;
         }

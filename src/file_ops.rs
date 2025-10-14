@@ -4,8 +4,9 @@
 //! loading packets from multiple files, and handling deduplication.
 
 use crate::Packet;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 use std::fs;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 /// Find all PAR2 files in a directory, excluding the specified file
@@ -69,8 +70,10 @@ pub fn parse_par2_file(
     par2_file: &Path,
     seen_packet_hashes: &mut HashSet<[u8; 16]>,
 ) -> Vec<Packet> {
-    let mut file = fs::File::open(par2_file).expect("Failed to open .par2 file");
-    let all_packets = crate::parse_packets(&mut file);
+    let file = fs::File::open(par2_file).expect("Failed to open .par2 file");
+    // Use 1MB buffer - recovery slices can be 100KB+ each
+    let mut buffered = BufReader::with_capacity(1024 * 1024, file);
+    let all_packets = crate::parse_packets(&mut buffered);
 
     // Filter out packets we've already seen (based on packet MD5)
     let mut new_packets = Vec::new();
@@ -132,7 +135,7 @@ fn print_packet_load_result(_filename: &str, packet_count: usize, recovery_block
 pub fn load_all_par2_packets(par2_files: &[PathBuf], show_progress: bool) -> (Vec<Packet>, usize) {
     let mut all_packets = Vec::new();
     let mut total_recovery_blocks = 0;
-    let mut seen_packet_hashes = HashSet::new();
+    let mut seen_packet_hashes = HashSet::default();
 
     for par2_file in par2_files {
         let (packets, recovery_blocks) =

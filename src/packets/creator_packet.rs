@@ -38,8 +38,9 @@ impl CreatorPacket {
         data.extend_from_slice(&self.set_id);
         data.extend_from_slice(TYPE_OF_PACKET);
         data.extend_from_slice(&self.creator_info);
-        let computed_md5 = md5::compute(&data);
-        if computed_md5.as_ref() != self.md5 {
+        use md5::Digest;
+        let computed_md5: [u8; 16] = md5::Md5::digest(&data).into();
+        if computed_md5 != self.md5 {
             println!(
                 "MD5 mismatch: expected {:?}, computed {:?}",
                 self.md5, computed_md5
