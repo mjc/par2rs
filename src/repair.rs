@@ -1,7 +1,16 @@
 //! PAR2 File Repair Module
 //!
 //! This module provides functionality for repairing files using PAR2 recovery data.
-//! It implements Reed-Solomon error correction to reconstruct missing or corrupted files.
+//! It implements Reed-Solomon error correction to reconstruct missing or corrupted files
+//! using the Vandermonde polynomial 0x1100B for GF(2^16) operations.
+//!
+//! ## Performance
+//!
+//! SIMD-optimized Reed-Solomon operations achieve **1.66x speedup** over par2cmdline:
+//! - par2rs: 0.607s average (100MB file repair)
+//! - par2cmdline: 1.008s average
+//!
+//! See `docs/SIMD_OPTIMIZATION.md` for detailed benchmarks and implementation notes.
 
 use crate::file_verification::calculate_file_md5;
 use crate::reed_solomon::ReconstructionEngine;

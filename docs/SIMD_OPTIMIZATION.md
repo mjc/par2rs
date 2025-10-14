@@ -34,8 +34,6 @@ Speedup: 1.66x
 - **par2cmdline**: 1.008s average
 - **Speedup**: **1.66x faster**
 
-Note: Earlier single-run results showed higher variance (2.237s for par2cmdline). Averaging over 10 runs provides more reliable performance metrics.
-
 ### Microbenchmark Results (528-byte PAR2 blocks)
 
 ```
@@ -83,7 +81,11 @@ reed_solomon_reconstruct/with_pshufb/10
 
 ### Why We Can't Use Existing Crates
 
-**PAR2 uses a specific irreducible polynomial: `0x1100B`** for GF(2^16).
+**PAR2 uses specific Vandermonde polynomials:**
+- **GF(2^16)**: polynomial **0x1100B** (x¹⁶ + x¹² + x³ + x + 1) - primary for Reed-Solomon
+- **GF(2^8)**: polynomial **0x11D** (x⁸ + x⁴ + x³ + x² + 1) - also supported
+
+These are **primitive irreducible polynomials** used as the field generator to construct the Vandermonde matrix for Reed-Solomon encoding/decoding.
 
 Existing Rust crates are incompatible:
 

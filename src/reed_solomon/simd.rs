@@ -7,9 +7,6 @@
 
 use super::reedsolomon::SplitMulTable;
 
-#[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
-
 /// Runtime detection of CPU SIMD features
 pub fn detect_simd_support() -> SimdLevel {
     #[cfg(target_arch = "x86_64")]
@@ -29,126 +26,6 @@ pub enum SimdLevel {
     None,
     Ssse3,
     Avx2,
-}
-
-/// Build nibble-split tables for PSHUFB-based lookups
-/// 
-/// PSHUFB can only handle 16 entries (4 bits), so we split each byte table
-/// into low nibble (0-15) and high nibble (0-15) tables.
-#[cfg(target_arch = "x86_64")]
-unsafe fn build_nibble_tables(byte_table: &[u16; 256]) -> ([u16; 16], [u16; 16]) {
-    let mut low_nibble = [0u16; 16];
-    let mut high_nibble = [0u16; 16];
-    
-    // Split into nibbles
-    for i in 0..16 {
-        low_nibble[i] = byte_table[i];  // Low nibble: byte & 0x0F
-        high_nibble[i] = byte_table[i << 4];  // High nibble: byte & 0xF0
-    }
-    
-    (low_nibble, high_nibble)
-}
-
-/// SIMD-optimized multiply-add using AVX2 + PSHUFB: output ^= coefficient * input
-/// 
-/// This uses PSHUFB (parallel byte shuffle) for in-register table lookups.
-/// Processes 16-bit words by splitting into bytes, then bytes into nibbles,
-/// performing parallel lookups, and XORing results.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2", enable = "ssse3")]
-unsafe fn process_slice_multiply_add_avx2_pshufb(
-    input: &[u8],
-    output: &mut [u8],
-    tables: &SplitMulTable,
-) {
-    let len = input.len().min(output.len());
-    
-    // Need at least 32 bytes for AVX2
-    if len < 32 {
-        return;
-    }
-
-    // Build nibble-split lookup tables for PSHUFB
-    let (low_byte_lo_nib, low_byte_hi_nib) = build_nibble_tables(&tables.low);
-    let (high_byte_lo_nib, high_byte_hi_nib) = build_nibble_tables(&tables.high);
-    
-    // Convert to bytes for PSHUFB (we'll use the low byte of each u16)
-    let mut low_lo_bytes = [0u8; 16];
-    let mut low_hi_bytes = [0u8; 16];
-    let mut high_lo_bytes = [0u8; 16];
-    let mut high_hi_bytes = [0u8; 16];
-    
-    for i in 0..16 {
-        low_lo_bytes[i] = (low_byte_lo_nib[i] & 0xFF) as u8;
-        low_hi_bytes[i] = (low_byte_hi_nib[i] & 0xFF) as u8;
-        high_lo_bytes[i] = (high_byte_lo_nib[i] & 0xFF) as u8;
-        high_hi_bytes[i] = (high_byte_hi_nib[i] & 0xFF) as u8;
-    }
-    
-    // Load lookup tables into AVX2 registers (broadcast 128-bit to 256-bit)
-    let low_lo_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(low_lo_bytes.as_ptr() as *const __m128i));
-    let low_hi_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(low_hi_bytes.as_ptr() as *const __m128i));
-    let high_lo_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(high_lo_bytes.as_ptr() as *const __m128i));
-    let high_hi_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(high_hi_bytes.as_ptr() as *const __m128i));
-    
-    let mask_low = _mm256_set1_epi8(0x0F);
-    
-    // Process 32 bytes at a time
-    let mut pos = 0;
-    let avx_end = (len / 32) * 32;
-    
-    while pos < avx_end {
-        // Load 32 bytes of input and output
-        let in_vec = _mm256_loadu_si256(input.as_ptr().add(pos) as *const __m256i);
-        let out_vec = _mm256_loadu_si256(output.as_ptr().add(pos) as *const __m256i);
-        
-        // For each 16-bit word, we need to process both bytes
-        // This is complex with PSHUFB, so let's use a hybrid approach:
-        // Use PSHUFB for byte lookups but still do some scalar work
-        
-        // Extract low nibbles and high nibbles
-        let low_nibbles = _mm256_and_si256(in_vec, mask_low);
-        let high_nibbles = _mm256_and_si256(_mm256_srli_epi16(in_vec, 4), mask_low);
-        
-        // Perform parallel lookups using PSHUFB
-        let lookup_low = _mm256_shuffle_epi8(low_lo_vec, low_nibbles);
-        let lookup_high = _mm256_shuffle_epi8(low_hi_vec, high_nibbles);
-        
-        // XOR the results
-        let result = _mm256_xor_si256(lookup_low, lookup_high);
-        let final_result = _mm256_xor_si256(out_vec, result);
-        
-        // Store result
-        _mm256_storeu_si256(output.as_mut_ptr().add(pos) as *mut __m256i, final_result);
-        
-        pos += 32;
-    }
-    
-    // Handle remaining bytes with scalar fallback
-    let num_words = len / 2;
-    let in_ptr = input.as_ptr() as *const u16;
-    let out_ptr = output.as_mut_ptr() as *mut u16;
-    let low_ptr = tables.low.as_ptr();
-    let high_ptr = tables.high.as_ptr();
-    
-    let mut idx = pos / 2;
-    while idx < num_words {
-        let in_word = *in_ptr.add(idx);
-        let out_word = *out_ptr.add(idx);
-        let result = *low_ptr.add((in_word & 0xFF) as usize) 
-                   ^ *high_ptr.add((in_word >> 8) as usize);
-        *out_ptr.add(idx) = out_word ^ result;
-        idx += 1;
-    }
-    
-    // Handle odd trailing byte if any
-    if len % 2 == 1 {
-        let last_idx = len - 1;
-        let in_byte = *input.get_unchecked(last_idx);
-        let out_byte = *output.get_unchecked(last_idx);
-        let result_low = *low_ptr.add(in_byte as usize);
-        *output.get_unchecked_mut(last_idx) = out_byte ^ (result_low & 0xFF) as u8;
-    }
 }
 
 /// Aggressive AVX2 implementation with 32-word unrolling

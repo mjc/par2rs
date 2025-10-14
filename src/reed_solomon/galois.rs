@@ -1,15 +1,34 @@
 //! Galois Field GF(2^16) arithmetic for PAR2 Reed-Solomon operations
 //!
-//! This module implements 16-bit Galois Field arithmetic using the PAR2 standard
-//! generator polynomial 0x1100B (binary: 1 0001 0000 0000 1011).
+//! ## Vandermonde Polynomials
 //!
-//! Ported from par2cmdline galois.h implementation.
+//! This module implements 16-bit Galois Field arithmetic using the PAR2 standard
+//! **Vandermonde polynomials** (primitive irreducible polynomials):
+//!
+//! - **GF(2^16)**: 0x1100B (x¹⁶ + x¹² + x³ + x + 1) - primary for Reed-Solomon
+//! - **GF(2^8)**: 0x11D (x⁸ + x⁴ + x³ + x² + 1) - also supported
+//!
+//! These polynomials are used as field generators to construct the Vandermonde matrix
+//! for Reed-Solomon encoding/decoding. The specific polynomial 0x1100B is mandated by
+//! the PAR2 specification and cannot be changed without breaking compatibility.
+//!
+//! ## Performance
+//!
+//! SIMD-optimized multiply-add operations achieve **2.76x speedup** over scalar code.
+//! See `docs/SIMD_OPTIMIZATION.md` for detailed performance analysis.
+//!
+//! ## Implementation Notes
+//!
+//! Ported from par2cmdline galois.h implementation with AVX2 SIMD enhancements.
 
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 
-/// PAR2 uses GF(2^16) with generator polynomial 0x1100B
+/// PAR2 GF(2^16) Vandermonde polynomial: 0x1100B (x¹⁶ + x¹² + x³ + x + 1)
+/// Primitive irreducible polynomial used as field generator for Reed-Solomon codes
 const GF16_GENERATOR: u32 = 0x1100B;
-/// PAR2 also supports GF(2^8) with generator polynomial 0x11D  
+
+/// PAR2 GF(2^8) Vandermonde polynomial: 0x11D (x⁸ + x⁴ + x³ + x² + 1)
+/// Also supported for compatibility
 const GF8_GENERATOR: u32 = 0x11D;
 
 /// Galois Field lookup tables for fast arithmetic
