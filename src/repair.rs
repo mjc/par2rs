@@ -968,11 +968,27 @@ pub fn repair_files(
     par2_file: &str,
     _target_files: &[String],
 ) -> Result<RepairResult, Box<dyn std::error::Error>> {
+    repair_files_impl(par2_file, _target_files, false)
+}
+
+/// Repair files with optional quiet mode (for benchmarking)
+pub fn repair_files_quiet(
+    par2_file: &str,
+    _target_files: &[String],
+) -> Result<RepairResult, Box<dyn std::error::Error>> {
+    repair_files_impl(par2_file, _target_files, true)
+}
+
+fn repair_files_impl(
+    par2_file: &str,
+    _target_files: &[String],
+    quiet: bool,
+) -> Result<RepairResult, Box<dyn std::error::Error>> {
     let par2_path = Path::new(par2_file);
 
     // Load PAR2 files and packets (this prints loading messages)
     let par2_files = crate::file_ops::collect_par2_files(par2_path);
-    let (packets, recovery_blocks) = crate::file_ops::load_all_par2_packets(&par2_files, true);
+    let (packets, recovery_blocks) = crate::file_ops::load_all_par2_packets(&par2_files, !quiet);
 
     if packets.is_empty() {
         return Err("No valid PAR2 packets found".into());
@@ -989,39 +1005,42 @@ pub fn repair_files(
         }
     };
 
-    // Print statistics (matching par2cmdline format)
-    println!();
-    let recoverable_files = repair_context.recovery_set.files.len();
-    let other_files = 0; // We don't track non-recoverable files currently
-    println!(
-        "There are {} recoverable files and {} other files.",
-        recoverable_files, other_files
-    );
-    println!(
-        "The block size used was {} bytes.",
-        repair_context.recovery_set.slice_size
-    );
-
+    // Calculate total blocks (needed for repair check later)
     let total_blocks: usize = repair_context
         .recovery_set
         .files
         .iter()
         .map(|f| f.slice_count)
         .sum();
-    println!("There are a total of {} data blocks.", total_blocks);
 
-    let total_size: u64 = repair_context
-        .recovery_set
-        .files
-        .iter()
-        .map(|f| f.file_length)
-        .sum();
-    println!("The total size of the data files is {} bytes.", total_size);
+    // Print statistics (matching par2cmdline format)
+    if !quiet {
+        println!();
+        let recoverable_files = repair_context.recovery_set.files.len();
+        let other_files = 0; // We don't track non-recoverable files currently
+        println!(
+            "There are {} recoverable files and {} other files.",
+            recoverable_files, other_files
+        );
+        println!(
+            "The block size used was {} bytes.",
+            repair_context.recovery_set.slice_size
+        );
+        println!("There are a total of {} data blocks.", total_blocks);
 
-    // Verifying source files section
-    println!();
-    println!("Verifying source files:");
-    println!();
+        let total_size: u64 = repair_context
+            .recovery_set
+            .files
+            .iter()
+            .map(|f| f.file_length)
+            .sum();
+        println!("The total size of the data files is {} bytes.", total_size);
+
+        // Verifying source files section
+        println!();
+        println!("Verifying source files:");
+        println!();
+    }
 
     // Check each file and print status
     let file_status = repair_context.check_file_status();
@@ -1035,14 +1054,18 @@ pub fn repair_files(
     let mut preloaded_slices = HashMap::default();
 
     for file_info in &repair_context.recovery_set.files {
-        println!("Opening: \"{}\"", file_info.file_name);
+        if !quiet {
+            println!("Opening: \"{}\"", file_info.file_name);
+        }
 
         let status = file_status
             .get(&file_info.file_name)
             .unwrap_or(&FileStatus::Missing);
         match status {
             FileStatus::Present => {
-                println!("Target: \"{}\" - found.", file_info.file_name);
+                if !quiet {
+                    println!("Target: \"{}\" - found.", file_info.file_name);
+                }
                 ok_files.push(file_info.file_name.clone());
                 total_available_blocks += file_info.slice_count;
             }
@@ -1060,14 +1083,18 @@ pub fn repair_files(
                 let available = file_info.slice_count - corrupted_count;
                 total_available_blocks += available;
                 total_damaged_blocks += corrupted_count;
-                println!(
-                    "Target: \"{}\" - damaged. Found {} of {} data blocks.",
-                    file_info.file_name, available, file_info.slice_count
-                );
+                if !quiet {
+                    println!(
+                        "Target: \"{}\" - damaged. Found {} of {} data blocks.",
+                        file_info.file_name, available, file_info.slice_count
+                    );
+                }
                 damaged_files.push(file_info.file_name.clone());
             }
             FileStatus::Missing => {
-                println!("Target: \"{}\" - missing.", file_info.file_name);
+                if !quiet {
+                    println!("Target: \"{}\" - missing.", file_info.file_name);
+                }
                 missing_files.push(file_info.file_name.clone());
                 total_damaged_blocks += file_info.slice_count;
             }
@@ -1076,8 +1103,10 @@ pub fn repair_files(
 
     // If there are no damaged or missing files, we're done
     if damaged_files.is_empty() && missing_files.is_empty() {
-        println!();
-        println!("All files are correct, repair is not required.");
+        if !quiet {
+            println!();
+            println!("All files are correct, repair is not required.");
+        }
         return Ok(RepairResult {
             success: true,
             files_repaired: 0,
@@ -1090,41 +1119,48 @@ pub fn repair_files(
     }
 
     // Repair is needed
-    println!();
-    println!("Scanning extra files:");
-    println!();
-    println!();
-    println!("Repair is required.");
+    if !quiet {
+        println!();
+        println!("Scanning extra files:");
+        println!();
+        println!();
+        println!("Repair is required.");
 
-    if !damaged_files.is_empty() {
-        println!("{} file(s) exist but are damaged.", damaged_files.len());
-    }
-    if !missing_files.is_empty() {
-        println!("{} file(s) are missing.", missing_files.len());
-    }
-
-    println!(
-        "You have {} out of {} data blocks available.",
-        total_available_blocks, total_blocks
-    );
-    println!("You have {} recovery blocks available.", recovery_blocks);
-
-    if recovery_blocks >= total_damaged_blocks {
-        println!("Repair is possible.");
-        let excess = recovery_blocks - total_damaged_blocks;
-        if excess > 0 {
-            println!("You have an excess of {} recovery blocks.", excess);
+        if !damaged_files.is_empty() {
+            println!("{} file(s) exist but are damaged.", damaged_files.len());
         }
+        if !missing_files.is_empty() {
+            println!("{} file(s) are missing.", missing_files.len());
+        }
+    }
+
+    if !quiet {
         println!(
-            "{} recovery blocks will be used to repair.",
-            total_damaged_blocks
+            "You have {} out of {} data blocks available.",
+            total_available_blocks, total_blocks
         );
-    } else {
-        println!("Repair is not possible.");
-        println!(
-            "You need {} more recovery blocks to be able to repair.",
-            total_damaged_blocks - recovery_blocks
-        );
+        println!("You have {} recovery blocks available.", recovery_blocks);
+
+        if recovery_blocks >= total_damaged_blocks {
+            println!("Repair is possible.");
+            let excess = recovery_blocks - total_damaged_blocks;
+            if excess > 0 {
+                println!("You have an excess of {} recovery blocks.", excess);
+            }
+            println!(
+                "{} recovery blocks will be used to repair.",
+                total_damaged_blocks
+            );
+        } else {
+            println!("Repair is not possible.");
+            println!(
+                "You need {} more recovery blocks to be able to repair.",
+                total_damaged_blocks - recovery_blocks
+            );
+        }
+    }
+    
+    if recovery_blocks < total_damaged_blocks {
         return Ok(RepairResult {
             success: false,
             files_repaired: 0,
@@ -1141,10 +1177,12 @@ pub fn repair_files(
     }
 
     // Reed Solomon reconstruction
-    println!();
-    println!("Computing Reed Solomon matrix.");
-    println!("Constructing: done.");
-    println!("Solving: done.");
+    if !quiet {
+        println!();
+        println!("Computing Reed Solomon matrix.");
+        println!("Constructing: done.");
+        println!("Solving: done.");
+    }
 
     // Perform actual repair (passing preloaded slices to avoid duplicate CRC32 calculations)
     let result = repair_context.repair_with_slices(Some(preloaded_slices))?;
@@ -1163,18 +1201,22 @@ pub fn repair_files(
         })
         .sum();
 
-    if bytes_written > 0 {
+    if !quiet && bytes_written > 0 {
         println!();
         println!("Wrote {} bytes to disk", bytes_written);
     }
 
     // Verify repaired files
-    println!();
-    println!("Verifying repaired files:");
-    println!();
+    if !quiet {
+        println!();
+        println!("Verifying repaired files:");
+        println!();
+    }
 
     for file_name in damaged_files.iter().chain(missing_files.iter()) {
-        println!("Opening: \"{}\"", file_name);
+        if !quiet {
+            println!("Opening: \"{}\"", file_name);
+        }
 
         // Re-check the file
         if let Some(file_info) = repair_context
@@ -1185,15 +1227,21 @@ pub fn repair_files(
         {
             let file_path = repair_context.base_path.join(&file_info.file_name);
             if repair_context.verify_repaired_file(&file_path, file_info)? {
-                println!("Target: \"{}\" - found.", file_name);
+                if !quiet {
+                    println!("Target: \"{}\" - found.", file_name);
+                }
             } else {
-                println!("Target: \"{}\" - damaged.", file_name);
+                if !quiet {
+                    println!("Target: \"{}\" - damaged.", file_name);
+                }
             }
         }
     }
 
-    println!();
-    println!("Repair complete.");
+    if !quiet {
+        println!();
+        println!("Repair complete.");
+    }
 
     Ok(result)
 }
