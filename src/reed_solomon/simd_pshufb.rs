@@ -1,6 +1,11 @@
 //! Proper PSHUFB-based GF(2^16) multiplication
 //!
-//! This implements the "Screaming Fast Galois Field Arithmetic" technique.
+//! This implements the "Screaming Fast Galois Field Arithmetic" technique from
+//! James Plank's paper: "Screaming Fast Galois Field Arithmetic Using Intel SIMD Instructions"
+//! (http://web.eecs.utk.edu/~plank/plank/papers/FAST-2013-GF.html)
+//!
+//! Implementation inspired by the galois_2p8 crate (https://github.com/djsweet/galois_2p8)
+//! which is MIT licensed. This implementation has been adapted for GF(2^16) with AVX2.
 //! 
 //! Key insight: PSHUFB can handle 16-entry (4-bit) lookups. We have 256-entry (8-bit) tables.
 //! Solution: Split each byte into two nibbles and do two lookups.
