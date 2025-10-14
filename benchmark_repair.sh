@@ -9,6 +9,26 @@ PROJECT_ROOT="$SCRIPT_DIR"
 PAR2RS="$PROJECT_ROOT/target/release/par2repair"
 PAR2CMDLINE="par2"
 
+# Temporary directories to clean up
+TEMP=""
+TEMP_PAR2CMD=""
+TEMP_PAR2RS=""
+TEMP_FLAMEGRAPH=""
+
+# Cleanup function
+cleanup() {
+    echo ""
+    echo -e "${BLUE}Cleaning up temporary files...${NC}"
+    [ -n "$TEMP" ] && rm -rf "$TEMP" 2>/dev/null || true
+    [ -n "$TEMP_PAR2CMD" ] && rm -rf "$TEMP_PAR2CMD" 2>/dev/null || true
+    [ -n "$TEMP_PAR2RS" ] && rm -rf "$TEMP_PAR2RS" 2>/dev/null || true
+    [ -n "$TEMP_FLAMEGRAPH" ] && rm -rf "$TEMP_FLAMEGRAPH" 2>/dev/null || true
+    echo "Done!"
+}
+
+# Register cleanup on exit (including errors)
+trap cleanup EXIT
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -105,7 +125,4 @@ else
     echo -e "${RED}✗ Repairs produced different outputs!${NC}"
 fi
 
-echo ""
-echo -e "${BLUE}Cleaning up...${NC}"
-rm -rf "$TEMP" "$TEMP_PAR2CMD" "$TEMP_PAR2RS" "$TEMP_FLAMEGRAPH"
-echo "Done!"
+# Cleanup happens automatically via trap EXIT

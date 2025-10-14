@@ -4,9 +4,251 @@
 //! Reed-Solomon encoding and decoding operations.
 
 use crate::reed_solomon::galois::{gcd, Galois16};
+use crate::reed_solomon::simd::{detect_simd_support, process_slice_multiply_add_simd, SimdLevel};
 use crate::RecoverySlicePacket;
 use log::debug;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
+use std::sync::OnceLock;
+
+// Global SIMD level detection (done once at first use)
+static SIMD_LEVEL: OnceLock<SimdLevel> = OnceLock::new();
+
+/// Process entire slice at once: output = coefficient * input (direct write, no XOR)
+/// ULTRA-OPTIMIZED: Direct pointer access, avoid byte conversions, maximum unrolling
+#[inline]
+fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
+    let min_len = input.len().min(output.len());
+    let num_words = min_len / 2;
+
+    if num_words == 0 {
+        return;
+    }
+
+    unsafe {
+        let in_ptr = input.as_ptr() as *const u16;
+        let out_ptr = output.as_mut_ptr() as *mut u16;
+        let low_ptr = tables.low.as_ptr();
+        let high_ptr = tables.high.as_ptr();
+
+        // Process 16 words at a time for maximum throughput
+        let chunks = num_words / 16;
+        let mut idx = 0;
+
+        // Fully unroll 16-word chunks - batch loads/stores to reduce memory stalls
+        for _ in 0..chunks {
+            // Load all 16 input words first (better cache/prefetch behavior)
+            let i0 = *in_ptr.add(idx); let i1 = *in_ptr.add(idx+1);
+            let i2 = *in_ptr.add(idx+2); let i3 = *in_ptr.add(idx+3);
+            let i4 = *in_ptr.add(idx+4); let i5 = *in_ptr.add(idx+5);
+            let i6 = *in_ptr.add(idx+6); let i7 = *in_ptr.add(idx+7);
+            let i8 = *in_ptr.add(idx+8); let i9 = *in_ptr.add(idx+9);
+            let i10 = *in_ptr.add(idx+10); let i11 = *in_ptr.add(idx+11);
+            let i12 = *in_ptr.add(idx+12); let i13 = *in_ptr.add(idx+13);
+            let i14 = *in_ptr.add(idx+14); let i15 = *in_ptr.add(idx+15);
+            
+            // Compute all multiplications (table lookups execute in parallel)
+            let r0 = *low_ptr.add((i0 & 0xFF) as usize) ^ *high_ptr.add((i0 >> 8) as usize);
+            let r1 = *low_ptr.add((i1 & 0xFF) as usize) ^ *high_ptr.add((i1 >> 8) as usize);
+            let r2 = *low_ptr.add((i2 & 0xFF) as usize) ^ *high_ptr.add((i2 >> 8) as usize);
+            let r3 = *low_ptr.add((i3 & 0xFF) as usize) ^ *high_ptr.add((i3 >> 8) as usize);
+            let r4 = *low_ptr.add((i4 & 0xFF) as usize) ^ *high_ptr.add((i4 >> 8) as usize);
+            let r5 = *low_ptr.add((i5 & 0xFF) as usize) ^ *high_ptr.add((i5 >> 8) as usize);
+            let r6 = *low_ptr.add((i6 & 0xFF) as usize) ^ *high_ptr.add((i6 >> 8) as usize);
+            let r7 = *low_ptr.add((i7 & 0xFF) as usize) ^ *high_ptr.add((i7 >> 8) as usize);
+            let r8 = *low_ptr.add((i8 & 0xFF) as usize) ^ *high_ptr.add((i8 >> 8) as usize);
+            let r9 = *low_ptr.add((i9 & 0xFF) as usize) ^ *high_ptr.add((i9 >> 8) as usize);
+            let r10 = *low_ptr.add((i10 & 0xFF) as usize) ^ *high_ptr.add((i10 >> 8) as usize);
+            let r11 = *low_ptr.add((i11 & 0xFF) as usize) ^ *high_ptr.add((i11 >> 8) as usize);
+            let r12 = *low_ptr.add((i12 & 0xFF) as usize) ^ *high_ptr.add((i12 >> 8) as usize);
+            let r13 = *low_ptr.add((i13 & 0xFF) as usize) ^ *high_ptr.add((i13 >> 8) as usize);
+            let r14 = *low_ptr.add((i14 & 0xFF) as usize) ^ *high_ptr.add((i14 >> 8) as usize);
+            let r15 = *low_ptr.add((i15 & 0xFF) as usize) ^ *high_ptr.add((i15 >> 8) as usize);
+            
+            // Write all results back
+            *out_ptr.add(idx) = r0; *out_ptr.add(idx+1) = r1;
+            *out_ptr.add(idx+2) = r2; *out_ptr.add(idx+3) = r3;
+            *out_ptr.add(idx+4) = r4; *out_ptr.add(idx+5) = r5;
+            *out_ptr.add(idx+6) = r6; *out_ptr.add(idx+7) = r7;
+            *out_ptr.add(idx+8) = r8; *out_ptr.add(idx+9) = r9;
+            *out_ptr.add(idx+10) = r10; *out_ptr.add(idx+11) = r11;
+            *out_ptr.add(idx+12) = r12; *out_ptr.add(idx+13) = r13;
+            *out_ptr.add(idx+14) = r14; *out_ptr.add(idx+15) = r15;
+            
+            idx += 16;
+        }
+
+        // Handle remaining words (0-15)
+        while idx < num_words {
+            let in_word = *in_ptr.add(idx);
+            let result =
+                *low_ptr.add((in_word & 0xFF) as usize) ^ *high_ptr.add((in_word >> 8) as usize);
+            *out_ptr.add(idx) = result;
+            idx += 1;
+        }
+    }
+
+    // Handle odd trailing byte
+    if min_len % 2 == 1 {
+        let last_idx = num_words * 2;
+        let in_byte = input[last_idx];
+        output[last_idx] = tables.low[in_byte as usize].to_le_bytes()[0];
+    }
+}
+
+/// Process entire slice at once: output += coefficient * input (XOR accumulate)
+/// Uses SIMD when available, falls back to optimized scalar code
+#[inline]
+fn process_slice_multiply_add(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
+    let min_len = input.len().min(output.len());
+    
+    // Get SIMD level (cached after first call)
+    let simd_level = *SIMD_LEVEL.get_or_init(detect_simd_support);
+    
+    // Try SIMD first for large enough buffers
+    if min_len >= 32 && simd_level != SimdLevel::None {
+        process_slice_multiply_add_simd(input, output, tables, simd_level);
+        return;
+    }
+    
+    // Fall back to scalar implementation
+    let num_words = min_len / 2;
+    if num_words == 0 {
+        return;
+    }
+
+    unsafe {
+        let in_ptr = input.as_ptr() as *const u16;
+        let out_ptr = output.as_mut_ptr() as *mut u16;
+        let low_ptr = tables.low.as_ptr();
+        let high_ptr = tables.high.as_ptr();
+
+        // Process 16 words at a time for maximum throughput
+        let chunks = num_words / 16;
+        let mut idx = 0;
+
+        // Fully unroll 16-word chunks - batch loads/stores to reduce memory stalls
+        for _ in 0..chunks {
+            // Load all 16 input words first (better cache/prefetch behavior)
+            let i0 = *in_ptr.add(idx); let i1 = *in_ptr.add(idx+1);
+            let i2 = *in_ptr.add(idx+2); let i3 = *in_ptr.add(idx+3);
+            let i4 = *in_ptr.add(idx+4); let i5 = *in_ptr.add(idx+5);
+            let i6 = *in_ptr.add(idx+6); let i7 = *in_ptr.add(idx+7);
+            let i8 = *in_ptr.add(idx+8); let i9 = *in_ptr.add(idx+9);
+            let i10 = *in_ptr.add(idx+10); let i11 = *in_ptr.add(idx+11);
+            let i12 = *in_ptr.add(idx+12); let i13 = *in_ptr.add(idx+13);
+            let i14 = *in_ptr.add(idx+14); let i15 = *in_ptr.add(idx+15);
+            
+            // Load all 16 output words
+            let o0 = *out_ptr.add(idx); let o1 = *out_ptr.add(idx+1);
+            let o2 = *out_ptr.add(idx+2); let o3 = *out_ptr.add(idx+3);
+            let o4 = *out_ptr.add(idx+4); let o5 = *out_ptr.add(idx+5);
+            let o6 = *out_ptr.add(idx+6); let o7 = *out_ptr.add(idx+7);
+            let o8 = *out_ptr.add(idx+8); let o9 = *out_ptr.add(idx+9);
+            let o10 = *out_ptr.add(idx+10); let o11 = *out_ptr.add(idx+11);
+            let o12 = *out_ptr.add(idx+12); let o13 = *out_ptr.add(idx+13);
+            let o14 = *out_ptr.add(idx+14); let o15 = *out_ptr.add(idx+15);
+            
+            // Compute all multiplications (table lookups execute in parallel)
+            let r0 = *low_ptr.add((i0 & 0xFF) as usize) ^ *high_ptr.add((i0 >> 8) as usize);
+            let r1 = *low_ptr.add((i1 & 0xFF) as usize) ^ *high_ptr.add((i1 >> 8) as usize);
+            let r2 = *low_ptr.add((i2 & 0xFF) as usize) ^ *high_ptr.add((i2 >> 8) as usize);
+            let r3 = *low_ptr.add((i3 & 0xFF) as usize) ^ *high_ptr.add((i3 >> 8) as usize);
+            let r4 = *low_ptr.add((i4 & 0xFF) as usize) ^ *high_ptr.add((i4 >> 8) as usize);
+            let r5 = *low_ptr.add((i5 & 0xFF) as usize) ^ *high_ptr.add((i5 >> 8) as usize);
+            let r6 = *low_ptr.add((i6 & 0xFF) as usize) ^ *high_ptr.add((i6 >> 8) as usize);
+            let r7 = *low_ptr.add((i7 & 0xFF) as usize) ^ *high_ptr.add((i7 >> 8) as usize);
+            let r8 = *low_ptr.add((i8 & 0xFF) as usize) ^ *high_ptr.add((i8 >> 8) as usize);
+            let r9 = *low_ptr.add((i9 & 0xFF) as usize) ^ *high_ptr.add((i9 >> 8) as usize);
+            let r10 = *low_ptr.add((i10 & 0xFF) as usize) ^ *high_ptr.add((i10 >> 8) as usize);
+            let r11 = *low_ptr.add((i11 & 0xFF) as usize) ^ *high_ptr.add((i11 >> 8) as usize);
+            let r12 = *low_ptr.add((i12 & 0xFF) as usize) ^ *high_ptr.add((i12 >> 8) as usize);
+            let r13 = *low_ptr.add((i13 & 0xFF) as usize) ^ *high_ptr.add((i13 >> 8) as usize);
+            let r14 = *low_ptr.add((i14 & 0xFF) as usize) ^ *high_ptr.add((i14 >> 8) as usize);
+            let r15 = *low_ptr.add((i15 & 0xFF) as usize) ^ *high_ptr.add((i15 >> 8) as usize);
+            
+            // Write all results back
+            *out_ptr.add(idx) = o0 ^ r0; *out_ptr.add(idx+1) = o1 ^ r1;
+            *out_ptr.add(idx+2) = o2 ^ r2; *out_ptr.add(idx+3) = o3 ^ r3;
+            *out_ptr.add(idx+4) = o4 ^ r4; *out_ptr.add(idx+5) = o5 ^ r5;
+            *out_ptr.add(idx+6) = o6 ^ r6; *out_ptr.add(idx+7) = o7 ^ r7;
+            *out_ptr.add(idx+8) = o8 ^ r8; *out_ptr.add(idx+9) = o9 ^ r9;
+            *out_ptr.add(idx+10) = o10 ^ r10; *out_ptr.add(idx+11) = o11 ^ r11;
+            *out_ptr.add(idx+12) = o12 ^ r12; *out_ptr.add(idx+13) = o13 ^ r13;
+            *out_ptr.add(idx+14) = o14 ^ r14; *out_ptr.add(idx+15) = o15 ^ r15;
+            
+            idx += 16;
+        }
+
+        // Handle remaining words (0-15)
+        while idx < num_words {
+            let in_word = *in_ptr.add(idx);
+            let out_word = *out_ptr.add(idx);
+            let mul_result =
+                *low_ptr.add((in_word & 0xFF) as usize) ^ *high_ptr.add((in_word >> 8) as usize);
+            *out_ptr.add(idx) = out_word ^ mul_result;
+            idx += 1;
+        }
+    }
+
+    // Handle odd trailing byte
+    if min_len % 2 == 1 {
+        let last_idx = num_words * 2;
+        let in_byte = input[last_idx];
+        output[last_idx] ^= tables.low[in_byte as usize].to_le_bytes()[0];
+    }
+}
+
+/// Multiplication table split into low/high byte tables (1KB vs 128KB!)
+pub(crate) struct SplitMulTable {
+    pub(crate) low: Box<[u16; 256]>,  // table[input & 0xFF]
+    pub(crate) high: Box<[u16; 256]>, // table[input >> 8]
+}
+
+/// Build split multiplication tables for a coefficient
+/// BREAKTHROUGH: Use 2x 256-entry tables instead of 1x 65536-entry table
+/// This is 128x smaller and faster to build: 1KB vs 128KB per coefficient!
+/// Result: table_low[x & 0xFF] XOR table_high[x >> 8]
+#[inline]
+fn build_split_mul_table(coefficient: Galois16) -> SplitMulTable {
+    use crate::reed_solomon::galois::GaloisTable;
+    static GALOIS_TABLE: OnceLock<GaloisTable<16, 69643>> = OnceLock::new();
+    let galois_table = GALOIS_TABLE.get_or_init(GaloisTable::new);
+
+    let mut low = Box::new([0u16; 256]);
+    let mut high = Box::new([0u16; 256]);
+    let coeff_val = coefficient.value();
+
+    if coeff_val == 0 {
+        // All zeros, already initialized
+        return SplitMulTable { low, high };
+    }
+
+    if coeff_val == 1 {
+        // Identity mapping
+        for i in 0..256 {
+            low[i] = i as u16;
+            high[i] = (i as u16) << 8;
+        }
+        return SplitMulTable { low, high };
+    }
+
+    let coeff_log = galois_table.log[coeff_val as usize] as usize;
+
+    // Build low byte table: coefficient * (0x00 to 0xFF)
+    for i in 1..256 {
+        let log_sum = (galois_table.log[i] as usize + coeff_log) % 65535;
+        low[i] = galois_table.antilog[log_sum];
+    }
+
+    // Build high byte table: coefficient * (0x0100 to 0xFF00)
+    for i in 1..256 {
+        let val = (i as u16) << 8;
+        let log_sum = (galois_table.log[val as usize] as usize + coeff_log) % 65535;
+        high[i] = galois_table.antilog[log_sum];
+    }
+
+    SplitMulTable { low, high }
+}
 
 /// Output row specification for Reed-Solomon matrix
 #[derive(Debug, Clone)]
@@ -514,7 +756,7 @@ impl ReconstructionEngine {
         if missing_slices.is_empty() {
             return ReconstructionResult {
                 success: true,
-                reconstructed_slices: HashMap::new(),
+                reconstructed_slices: HashMap::default(),
                 error_message: None,
             };
         }
@@ -522,7 +764,7 @@ impl ReconstructionEngine {
         if !self.can_reconstruct(missing_slices.len()) {
             return ReconstructionResult {
                 success: false,
-                reconstructed_slices: HashMap::new(),
+                reconstructed_slices: HashMap::default(),
                 error_message: Some("Not enough recovery slices available".to_string()),
             };
         }
@@ -550,7 +792,7 @@ impl ReconstructionEngine {
         //       x[m] = input[missing[m]]  (unknown)
         //       b[k] = recovery[k] - contribution from present slices
 
-        let mut reconstructed_slices = HashMap::new();
+        let mut reconstructed_slices = HashMap::default();
 
         // Process each 2-byte word position independently
         let num_words = self.slice_size / 2;
@@ -637,7 +879,7 @@ impl ReconstructionEngine {
                 Err(e) => {
                     return ReconstructionResult {
                         success: false,
-                        reconstructed_slices: HashMap::new(),
+                        reconstructed_slices: HashMap::default(),
                         error_message: Some(format!(
                             "Failed to solve linear system at word {}: {}",
                             word_pos, e
@@ -669,7 +911,7 @@ impl ReconstructionEngine {
         if global_missing_indices.is_empty() {
             return ReconstructionResult {
                 success: true,
-                reconstructed_slices: HashMap::new(),
+                reconstructed_slices: HashMap::default(),
                 error_message: None,
             };
         }
@@ -677,14 +919,14 @@ impl ReconstructionEngine {
         if !self.can_reconstruct(global_missing_indices.len()) {
             return ReconstructionResult {
                 success: false,
-                reconstructed_slices: HashMap::new(),
+                reconstructed_slices: HashMap::default(),
                 error_message: Some("Not enough recovery slices available".to_string()),
             };
         }
 
         let num_missing = global_missing_indices.len();
         let num_words = self.slice_size / 2;
-        let mut reconstructed_slices: HashMap<usize, Vec<u8>> = HashMap::new();
+        let mut reconstructed_slices: HashMap<usize, Vec<u8>> = HashMap::default();
 
         debug!("Starting Reed-Solomon reconstruction: {} missing slices, {} words per slice ({} total word positions to solve)", 
                num_missing, num_words, num_words);
@@ -710,7 +952,7 @@ impl ReconstructionEngine {
             Err(e) => {
                 return ReconstructionResult {
                     success: false,
-                    reconstructed_slices: HashMap::new(),
+                    reconstructed_slices: HashMap::default(),
                     error_message: Some(format!("Failed to invert matrix: {}", e)),
                 };
             }
@@ -741,82 +983,187 @@ impl ReconstructionEngine {
 
         // Get slice keys in a consistent order for indexing
         let slice_keys: Vec<usize> = all_slices.keys().copied().collect();
-        debug!("Coefficients precomputed, starting word-by-word reconstruction...");
 
-        // Now process each word position by computing RHS and multiplying by inverted matrix
-        for word_pos in 0..num_words {
-            if word_pos % 10000 == 0 {
-                debug!(
-                    "  Processing word position {}/{} ({:.1}%)",
-                    word_pos,
-                    num_words,
-                    (word_pos as f64 / num_words as f64) * 100.0
-                );
+        // ALGORITHMIC CHANGE: Process entire slices at once like par2cmdline, not word-by-word
+        debug!("Starting slice-by-slice reconstruction (par2cmdline algorithm)...");
+
+        // OPTIMIZATION: Build cache of multiplication tables (many coefficients are duplicates)
+        debug!("Collecting all unique coefficient values...");
+        let mut table_cache: HashMap<u16, SplitMulTable> = HashMap::default();
+
+        // Collect recovery coefficients
+        for out_idx in 0..num_missing {
+            for eq_idx in 0..num_missing {
+                let coeff_val = matrix_inv[out_idx][eq_idx].value();
+                if coeff_val != 0 && coeff_val != 1 && !table_cache.contains_key(&coeff_val) {
+                    table_cache.insert(
+                        coeff_val,
+                        build_split_mul_table(matrix_inv[out_idx][eq_idx]),
+                    );
+                }
             }
+        }
 
-            // Compute RHS for this word position
-            let mut rhs = vec![Galois16::new(0); num_missing];
+        // Compute combined coefficients for present slices and add to cache
+        debug!("Computing combined coefficients for present slices...");
+        let mut present_coeffs: Vec<Vec<u16>> = Vec::new();
+        for out_idx in 0..num_missing {
+            let mut coeff_row = Vec::new();
+            for (idx, &global_idx) in slice_keys.iter().enumerate() {
+                if global_idx >= self.total_input_slices {
+                    coeff_row.push(0);
+                    continue;
+                }
 
+                // Compute combined coefficient: sum of (matrix_inv * slice_coefficient)
+                let mut combined_coeff = Galois16::new(0);
+                for eq_idx in 0..num_missing {
+                    combined_coeff = combined_coeff
+                        + matrix_inv[out_idx][eq_idx] * slice_coefficients[eq_idx][idx];
+                }
+
+                let coeff_val = combined_coeff.value();
+                coeff_row.push(coeff_val);
+
+                // Add to cache if not already present
+                if coeff_val != 0 && coeff_val != 1 && !table_cache.contains_key(&coeff_val) {
+                    table_cache.insert(coeff_val, build_split_mul_table(combined_coeff));
+                }
+            }
+            present_coeffs.push(coeff_row);
+        }
+
+        debug!("Built {} unique multiplication tables", table_cache.len());
+
+        // Now build lookup tables pointing into cache (all insertions done, safe to take refs)
+        let mut recovery_mul_tables: Vec<Vec<Option<&SplitMulTable>>> = Vec::new();
+        for out_idx in 0..num_missing {
+            let mut row = Vec::new();
+            for eq_idx in 0..num_missing {
+                let coeff_val = matrix_inv[out_idx][eq_idx].value();
+                if coeff_val == 0 || coeff_val == 1 {
+                    row.push(None);
+                } else {
+                    row.push(table_cache.get(&coeff_val));
+                }
+            }
+            recovery_mul_tables.push(row);
+        }
+
+        let mut present_mul_tables: Vec<Vec<Option<&SplitMulTable>>> = Vec::new();
+        for out_idx in 0..num_missing {
+            let mut row = Vec::new();
+            for idx in 0..slice_keys.len() {
+                let coeff_val = present_coeffs[out_idx][idx];
+                if coeff_val == 0 || coeff_val == 1 {
+                    row.push(None);
+                } else {
+                    row.push(table_cache.get(&coeff_val));
+                }
+            }
+            present_mul_tables.push(row);
+        }
+
+        // For each missing slice output
+        for (out_idx, &missing_global_idx) in global_missing_indices.iter().enumerate() {
+            debug!(
+                "Reconstructing missing slice {}/{}",
+                out_idx + 1,
+                num_missing
+            );
+
+            // OPTIMIZATION: Use uninitialized memory and write directly on first contribution
+            // This avoids the memset that vec![0; n] does
+            let mut output_buffer = Vec::with_capacity(self.slice_size);
+            unsafe {
+                output_buffer.set_len(self.slice_size);
+            }
+            let mut first_write = true;
+
+            // Process recovery slices (RHS of equation system)
             for (eq_idx, recovery_slice) in
                 self.recovery_slices.iter().take(num_missing).enumerate()
             {
-                let word_offset = word_pos * 2;
-                let recovery_word = if word_offset + 1 < recovery_slice.recovery_data.len() {
-                    u16::from_le_bytes([
-                        recovery_slice.recovery_data[word_offset],
-                        recovery_slice.recovery_data[word_offset + 1],
-                    ])
+                let coeff_val = matrix_inv[out_idx][eq_idx].value();
+
+                if coeff_val == 0 {
+                    continue;
+                }
+
+                if first_write {
+                    // First contribution: direct write instead of XOR (works with uninitialized memory)
+                    first_write = false;
+                    match &recovery_mul_tables[out_idx][eq_idx] {
+                        Some(table) => process_slice_multiply_direct(
+                            &recovery_slice.recovery_data,
+                            &mut output_buffer,
+                            table,
+                        ),
+                        None => output_buffer
+                            .copy_from_slice(&recovery_slice.recovery_data[..self.slice_size]), // coeff_val == 1
+                    }
                 } else {
-                    0
-                };
-                let mut rhs_val = Galois16::new(recovery_word);
-
-                // Subtract contributions from ALL present slices (across all files!)
-                for (idx, &global_idx) in slice_keys.iter().enumerate() {
-                    if global_idx < self.total_input_slices {
-                        let slice_data = &all_slices[&global_idx];
-                        let word_offset = word_pos * 2;
-                        let input_word = if word_offset + 1 < slice_data.len() {
-                            u16::from_le_bytes([
-                                slice_data[word_offset],
-                                slice_data[word_offset + 1],
-                            ])
-                        } else {
-                            0
-                        };
-
-                        // Use precomputed coefficient
-                        let coefficient = slice_coefficients[eq_idx][idx];
-                        // Multiply by the input word
-                        let contribution = coefficient * Galois16::new(input_word);
-                        // Subtract from RHS
-                        rhs_val = rhs_val - contribution;
+                    // Subsequent contributions: XOR accumulate
+                    match &recovery_mul_tables[out_idx][eq_idx] {
+                        Some(table) => process_slice_multiply_add(
+                            &recovery_slice.recovery_data,
+                            &mut output_buffer,
+                            table,
+                        ),
+                        None => {
+                            // coeff_val == 1
+                            for (out_byte, in_byte) in output_buffer
+                                .iter_mut()
+                                .zip(recovery_slice.recovery_data.iter())
+                            {
+                                *out_byte ^= *in_byte;
+                            }
+                        }
                     }
                 }
-
-                rhs[eq_idx] = rhs_val;
             }
 
-            // Multiply inverted matrix by RHS to get solution
-            let mut solution = vec![Galois16::new(0); num_missing];
-            for i in 0..num_missing {
-                let mut sum = Galois16::new(0);
-                for j in 0..num_missing {
-                    sum = sum + matrix_inv[i][j] * rhs[j];
+            // Subtract contributions from present input slices
+            for (idx, &global_idx) in slice_keys.iter().enumerate() {
+                if global_idx >= self.total_input_slices {
+                    continue;
                 }
-                solution[i] = sum;
+
+                let slice_data = &all_slices[&global_idx];
+                let coeff_val = present_coeffs[out_idx][idx];
+
+                if coeff_val == 0 {
+                    continue;
+                }
+
+                if first_write {
+                    // First contribution: direct write
+                    first_write = false;
+                    match &present_mul_tables[out_idx][idx] {
+                        Some(table) => {
+                            process_slice_multiply_direct(slice_data, &mut output_buffer, table)
+                        }
+                        None => output_buffer.copy_from_slice(&slice_data[..self.slice_size]), // coeff_val == 1
+                    }
+                } else {
+                    // Subsequent contributions: XOR accumulate
+                    match &present_mul_tables[out_idx][idx] {
+                        Some(table) => {
+                            process_slice_multiply_add(slice_data, &mut output_buffer, table)
+                        }
+                        None => {
+                            // coeff_val == 1
+                            for (out_byte, in_byte) in
+                                output_buffer.iter_mut().zip(slice_data.iter())
+                            {
+                                *out_byte ^= *in_byte;
+                            }
+                        }
+                    }
+                }
             }
 
-            // Store the solved words for each missing slice (using global indices)
-            for (idx, &missing_global_idx) in global_missing_indices.iter().enumerate() {
-                let word_val = solution[idx].value();
-                let bytes = word_val.to_le_bytes();
-
-                reconstructed_slices
-                    .entry(missing_global_idx)
-                    .or_insert_with(|| vec![0u8; self.slice_size])
-                    .splice(word_pos * 2..word_pos * 2 + 2, bytes.iter().cloned());
-            }
+            reconstructed_slices.insert(missing_global_idx, output_buffer);
         }
 
         ReconstructionResult {

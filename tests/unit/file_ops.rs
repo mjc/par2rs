@@ -4,7 +4,7 @@
 //! Organized into logical groups: file discovery, packet parsing, deduplication, and collection.
 
 use par2rs::file_ops::*;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -74,7 +74,7 @@ mod packet_parsing {
     #[test]
     fn parses_packets_from_par2_file() {
         let main_file = Path::new("tests/fixtures/testfile.par2");
-        let mut seen_hashes = HashSet::new();
+        let mut seen_hashes = HashSet::default();
 
         let packets = parse_par2_file(main_file, &mut seen_hashes);
 
@@ -86,7 +86,7 @@ mod packet_parsing {
     #[test]
     fn parses_with_progress_tracking() {
         let main_file = Path::new("tests/fixtures/testfile.par2");
-        let mut seen_hashes = HashSet::new();
+        let mut seen_hashes = HashSet::default();
 
         // Test with progress enabled
         let (packets_with_progress, recovery_count) =
@@ -121,7 +121,7 @@ mod packet_parsing {
     #[should_panic(expected = "Failed to open .par2 file")]
     fn handles_corrupted_file_gracefully() {
         let nonexistent_file = Path::new("tests/fixtures/nonexistent.par2");
-        let mut seen_hashes = HashSet::new();
+        let mut seen_hashes = HashSet::default();
 
         // This should panic because the implementation uses expect()
         let _packets = parse_par2_file(nonexistent_file, &mut seen_hashes);
@@ -134,7 +134,7 @@ mod deduplication {
     #[test]
     fn prevents_duplicate_packet_processing() {
         let main_file = Path::new("tests/fixtures/testfile.par2");
-        let mut seen_hashes = HashSet::new();
+        let mut seen_hashes = HashSet::default();
 
         // Parse the same file twice
         let packets1 = parse_par2_file(main_file, &mut seen_hashes);
@@ -151,7 +151,7 @@ mod deduplication {
     fn accumulates_unique_packets_across_files() {
         let main_file = Path::new("tests/fixtures/testfile.par2");
         let volume_file = Path::new("tests/fixtures/testfile.vol00+01.par2");
-        let mut seen_hashes = HashSet::new();
+        let mut seen_hashes = HashSet::default();
 
         let main_packets = parse_par2_file(main_file, &mut seen_hashes);
         let volume_packets = parse_par2_file(volume_file, &mut seen_hashes);
@@ -175,7 +175,7 @@ mod deduplication {
         assert!(!packets.is_empty());
 
         // Verify no duplicate hashes by checking each packet's hash
-        let mut packet_hashes = HashSet::new();
+        let mut packet_hashes = HashSet::default();
         for packet in &packets {
             let hash = get_packet_hash(packet);
             assert!(packet_hashes.insert(hash), "Found duplicate packet hash");
