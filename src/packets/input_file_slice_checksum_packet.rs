@@ -55,17 +55,16 @@ impl BinRead for InputFileSliceChecksumPacket {
             .read_exact(&mut buffer)
             .map_err(binrw::Error::Io)?;
 
-        // Parse checksums from buffer - safe slice operations compile to same code
+        // Parse checksums from buffer using chunks_exact for better performance
         let mut slice_checksums = Vec::with_capacity(num_checksums);
-        for i in 0..num_checksums {
-            let offset = i * 20;
+        for chunk in buffer.chunks_exact(20) {
             let mut md5 = [0u8; 16];
-            md5.copy_from_slice(&buffer[offset..offset + 16]);
+            md5.copy_from_slice(&chunk[0..16]);
             let crc32 = u32::from_le_bytes([
-                buffer[offset + 16],
-                buffer[offset + 17],
-                buffer[offset + 18],
-                buffer[offset + 19],
+                chunk[16],
+                chunk[17],
+                chunk[18],
+                chunk[19],
             ]);
             slice_checksums.push((md5, crc32));
         }

@@ -1105,6 +1105,12 @@ impl ReconstructionEngine {
             let mut output_buffer = Vec::with_capacity(self.slice_size);
             #[allow(clippy::uninit_vec)]
             unsafe {
+                // SAFETY: It is safe to call set_len here because:
+                // - The buffer was allocated with Vec::with_capacity(self.slice_size), so the memory is valid for self.slice_size bytes.
+                // - The logic below ensures that the first write to output_buffer (when first_write == true)
+                //   always fully initializes all bytes, either via process_slice_multiply_direct or copy_from_slice.
+                // - No reads from output_buffer occur before it is fully initialized.
+                // - After initialization, only safe operations are performed.
                 output_buffer.set_len(self.slice_size);
             }
             let mut first_write = true;
