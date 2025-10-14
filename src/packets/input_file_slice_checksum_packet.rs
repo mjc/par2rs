@@ -1,17 +1,86 @@
+
 use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0IFSC\0\0\0\0";
 
-#[derive(Debug, BinRead)]
-#[br(magic = b"PAR2\0PKT")]
+#[derive(Debug)]
 pub struct InputFileSliceChecksumPacket {
-    pub length: u64,   // Length of the packet
-    pub md5: [u8; 16], // MD5 hash of the packet
-    #[br(pad_after = 16)] // Skip the `type_of_packet` field
-    pub set_id: [u8; 16], // Unique identifier for the PAR2 set
-    pub file_id: [u8; 16], // File ID of the file
-    #[br(count = (length - 64 - 16) / 20)]
+    pub length: u64,                           // Length of the packet
+    pub md5: [u8; 16],                         // MD5 hash of the packet
+    pub set_id: [u8; 16],                      // Unique identifier for the PAR2 set
+    pub file_id: [u8; 16],                     // File ID of the file
     pub slice_checksums: Vec<([u8; 16], u32)>, // MD5 and CRC32 pairs for slices
+}
+
+impl BinRead for InputFileSliceChecksumPacket {
+    type Args<'a> = ();
+
+    fn read_options<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        _endian: binrw::Endian,
+        _args: Self::Args<'_>,
+    ) -> binrw::BinResult<Self> {
+        // OPTIMIZED: Read header in one bulk operation
+        let mut header = [0u8; 64];
+        reader
+            .read_exact(&mut header)
+            .map_err(|e| binrw::Error::Io(e))?;
+
+        // Verify magic
+        if &header[0..8] != b"PAR2\0PKT" {
+            return Err(binrw::Error::AssertFail {
+                pos: 0,
+                message: "Invalid magic".to_string(),
+            });
+        }
+
+        let length = u64::from_le_bytes(header[8..16].try_into().unwrap());
+        let mut md5 = [0u8; 16];
+        md5.copy_from_slice(&header[16..32]);
+        let mut set_id = [0u8; 16];
+        set_id.copy_from_slice(&header[32..48]);
+        // Skip type_of_packet at 48..64
+
+        // Read file_id
+        let mut file_id = [0u8; 16];
+        reader
+            .read_exact(&mut file_id)
+            .map_err(|e| binrw::Error::Io(e))?;
+
+        // Calculate number of checksums and read them in bulk
+        let num_checksums = ((length - 64 - 16) / 20) as usize;
+        let checksum_bytes = num_checksums * 20;
+        let mut buffer = vec![0u8; checksum_bytes];
+        reader
+            .read_exact(&mut buffer)
+            .map_err(|e| binrw::Error::Io(e))?;
+
+        // Parse checksums from buffer using unsafe for speed
+        let mut slice_checksums = Vec::with_capacity(num_checksums);
+        unsafe {
+            let ptr = buffer.as_ptr();
+            for i in 0..num_checksums {
+                let offset = i * 20;
+                let mut md5 = [0u8; 16];
+                std::ptr::copy_nonoverlapping(ptr.add(offset), md5.as_mut_ptr(), 16);
+                let crc32 = u32::from_le_bytes([
+                    *ptr.add(offset + 16),
+                    *ptr.add(offset + 17),
+                    *ptr.add(offset + 18),
+                    *ptr.add(offset + 19),
+                ]);
+                slice_checksums.push((md5, crc32));
+            }
+        }
+
+        Ok(InputFileSliceChecksumPacket {
+            length,
+            md5,
+            set_id,
+            file_id,
+            slice_checksums,
+        })
+    }
 }
 
 impl InputFileSliceChecksumPacket {
@@ -43,8 +112,9 @@ impl InputFileSliceChecksumPacket {
             data.extend_from_slice(md5);
             data.extend_from_slice(&crc32.to_le_bytes());
         }
-        let computed_md5 = md5::compute(&data);
-        if computed_md5.as_ref() != self.md5 {
+        use md5::Digest;
+        let computed_md5: [u8; 16] = md5::Md5::digest(&data).into();
+        if computed_md5 != self.md5 {
             println!(
                 "MD5 mismatch: computed {:?}, expected {:?}",
                 computed_md5, self.md5

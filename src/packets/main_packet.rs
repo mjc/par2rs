@@ -1,3 +1,4 @@
+
 use std::fmt::{Debug, Display};
 
 use binrw::{BinRead, BinWrite};
@@ -147,8 +148,9 @@ impl MainPacket {
         }
 
         // Compute MD5 hash and compare with stored MD5
-        let computed_md5 = md5::compute(&data);
-        if computed_md5.as_ref() != self.md5 {
+        use md5::Digest;
+        let computed_md5: [u8; 16] = md5::Md5::digest(&data).into();
+        if computed_md5 != self.md5 {
             return false;
         }
 
