@@ -920,9 +920,10 @@ impl RepairContext {
         // Truncate to exact file size (last slice may have padding)
         file_data.truncate(total_size);
 
+        // Write all data in one operation (faster than many small writes)
+        // File is automatically flushed when dropped, so no explicit flush needed
         let mut file = File::create(file_path)?;
         file.write_all(&file_data)?;
-        file.flush()?;
         
         debug!(
             "Wrote {} bytes total to {:?}",
