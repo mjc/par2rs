@@ -282,13 +282,28 @@ pub(crate) fn process_slice_multiply_add_simd(
     match simd_level {
         #[cfg(target_arch = "x86_64")]
         SimdLevel::Avx2 => unsafe {
-            // Use unrolled version - PSHUFB for GF(2^16) is complex and needs more work
-            // The current PSHUFB implementation is incomplete
-            process_slice_multiply_add_avx2_unrolled(input, output, tables);
+            // Try PSHUFB version first for potential better performance
+            // Falls back to unrolled for remaining bytes
+            let len = input.len().min(output.len());
+            if len >= 32 {
+                // Use proper PSHUFB implementation from simd_pshufb module
+                crate::reed_solomon::simd_pshufb::process_slice_multiply_add_pshufb(
+                    input, output, tables
+                );
+            }
+            // Handle remaining bytes with unrolled version
+            if len % 32 != 0 {
+                let remainder_start = (len / 32) * 32;
+                process_slice_multiply_add_avx2_unrolled(
+                    &input[remainder_start..],
+                    &mut output[remainder_start..],
+                    tables
+                );
+            }
         },
         #[cfg(target_arch = "x86_64")]
         SimdLevel::Ssse3 => unsafe {
-            // SSSE3 has PSHUFB but only 128-bit registers
+            // SSSE3 has PSHUFB but only 128-bit registers, use unrolled for now
             process_slice_multiply_add_avx2_unrolled(input, output, tables);
         },
         SimdLevel::None => {
