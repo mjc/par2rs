@@ -71,7 +71,9 @@ impl TestEnv {
     fn count_corrupted(&self) -> usize {
         let context = self.load_context();
         let file_info = &context.recovery_set.files[0];
-        context.count_corrupted_slices(&self.test_file, file_info)
+        // Load slices and get corrupted count (returns tuple with slices and count)
+        let (_slices, corrupted_count) = context.load_file_slices(file_info).unwrap();
+        corrupted_count
     }
 
     fn repair(&self) -> par2rs::repair::RepairResult {

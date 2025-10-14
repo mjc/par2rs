@@ -4,10 +4,14 @@
 //! Reed-Solomon encoding and decoding operations.
 
 use crate::reed_solomon::galois::{gcd, Galois16};
+use crate::reed_solomon::simd::{detect_simd_support, process_slice_multiply_add_simd, SimdLevel};
 use crate::RecoverySlicePacket;
 use log::debug;
 use rustc_hash::FxHashMap as HashMap;
 use std::sync::OnceLock;
+
+// Global SIMD level detection (done once at first use)
+static SIMD_LEVEL: OnceLock<SimdLevel> = OnceLock::new();
 
 /// Process entire slice at once: output = coefficient * input (direct write, no XOR)
 /// ULTRA-OPTIMIZED: Direct pointer access, avoid byte conversions, maximum unrolling
@@ -92,12 +96,22 @@ fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &Split
 }
 
 /// Process entire slice at once: output += coefficient * input (XOR accumulate)
-/// ULTRA-OPTIMIZED: Direct pointer access, avoid byte conversions, maximum unrolling
+/// Uses SIMD when available, falls back to optimized scalar code
 #[inline]
 fn process_slice_multiply_add(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
     let min_len = input.len().min(output.len());
+    
+    // Get SIMD level (cached after first call)
+    let simd_level = *SIMD_LEVEL.get_or_init(detect_simd_support);
+    
+    // Try SIMD first for large enough buffers
+    if min_len >= 32 && simd_level != SimdLevel::None {
+        process_slice_multiply_add_simd(input, output, tables, simd_level);
+        return;
+    }
+    
+    // Fall back to scalar implementation
     let num_words = min_len / 2;
-
     if num_words == 0 {
         return;
     }
@@ -185,9 +199,9 @@ fn process_slice_multiply_add(input: &[u8], output: &mut [u8], tables: &SplitMul
 }
 
 /// Multiplication table split into low/high byte tables (1KB vs 128KB!)
-struct SplitMulTable {
-    low: Box<[u16; 256]>,  // table[input & 0xFF]
-    high: Box<[u16; 256]>, // table[input >> 8]
+pub(crate) struct SplitMulTable {
+    pub(crate) low: Box<[u16; 256]>,  // table[input & 0xFF]
+    pub(crate) high: Box<[u16; 256]>, // table[input >> 8]
 }
 
 /// Build split multiplication tables for a coefficient

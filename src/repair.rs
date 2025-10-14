@@ -536,7 +536,7 @@ impl RepairContext {
 
     /// Load slices from an existing file
     /// Returns (valid_slices, corrupted_count)
-    fn load_file_slices(
+    pub fn load_file_slices(
         &self,
         file_info: &FileInfo,
     ) -> Result<(HashMap<usize, Vec<u8>>, usize), Box<dyn std::error::Error>> {

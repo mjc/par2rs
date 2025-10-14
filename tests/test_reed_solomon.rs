@@ -5,7 +5,7 @@
 
 use par2rs::reed_solomon::{ReconstructionEngine, ReedSolomon};
 use par2rs::RecoverySlicePacket;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 #[test]
 fn test_reed_solomon_basic_setup() {
@@ -95,7 +95,7 @@ fn test_reconstruction_with_simple_case() {
     let engine = ReconstructionEngine::new(4, 4, recovery_slices);
 
     // Simulate having 2 present slices and 2 missing slices
-    let mut existing_slices = HashMap::new();
+    let mut existing_slices = HashMap::default();
     existing_slices.insert(0, vec![0x01, 0x02, 0x03, 0x04]);
     existing_slices.insert(1, vec![0x05, 0x06, 0x07, 0x08]);
 
