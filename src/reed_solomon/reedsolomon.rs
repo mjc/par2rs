@@ -1087,8 +1087,15 @@ impl ReconstructionEngine {
                 num_missing
             );
 
-            // Allocate output buffer - use zeroed memory for safety
-            let mut output_buffer = vec![0u8; self.slice_size];
+            // OPTIMIZATION: Use uninitialized memory to avoid memset
+            // Safety: The first contribution (first_write=true) initializes ALL bytes
+            // via either process_slice_multiply_direct or copy_from_slice, ensuring
+            // all bytes are written before any read occurs.
+            let mut output_buffer = Vec::with_capacity(self.slice_size);
+            #[allow(clippy::uninit_vec)]
+            unsafe {
+                output_buffer.set_len(self.slice_size);
+            }
             let mut first_write = true;
 
             // Process recovery slices (RHS of equation system)
@@ -1172,6 +1179,20 @@ impl ReconstructionEngine {
                         }
                     }
                 }
+            }
+
+            // Safety check: ensure buffer was initialized
+            // This should never happen if the linear system is properly solvable,
+            // but we check to maintain memory safety guarantees
+            if first_write {
+                return ReconstructionResult {
+                    success: false,
+                    reconstructed_slices: HashMap::default(),
+                    error_message: Some(format!(
+                        "Internal error: no coefficients found for slice {}",
+                        missing_global_idx
+                    )),
+                };
             }
 
             reconstructed_slices.insert(missing_global_idx, output_buffer);
