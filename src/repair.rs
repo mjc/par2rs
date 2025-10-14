@@ -1,7 +1,16 @@
 //! PAR2 File Repair Module
 //!
 //! This module provides functionality for repairing files using PAR2 recovery data.
-//! It implements Reed-Solomon error correction to reconstruct missing or corrupted files.
+//! It implements Reed-Solomon error correction to reconstruct missing or corrupted files
+//! using the Vandermonde polynomial 0x1100B for GF(2^16) operations.
+//!
+//! ## Performance
+//!
+//! SIMD-optimized Reed-Solomon operations achieve **1.66x speedup** over par2cmdline:
+//! - par2rs: 0.607s average (100MB file repair)
+//! - par2cmdline: 1.008s average
+//!
+//! See `docs/SIMD_OPTIMIZATION.md` for detailed benchmarks and implementation notes.
 
 use crate::file_verification::calculate_file_md5;
 use crate::reed_solomon::ReconstructionEngine;
@@ -44,6 +53,9 @@ pub enum FileStatus {
     Missing,   // File doesn't exist
     Corrupted, // File exists but is corrupted
 }
+
+/// Type alias for preloaded slice data: file_id -> (slices, corrupted_count)
+type PreloadedSlices = HashMap<[u8; 16], (HashMap<usize, Vec<u8>>, usize)>;
 
 /// Result of a repair operation
 #[derive(Debug)]
@@ -207,12 +219,15 @@ impl RepairContext {
             return FileStatus::Corrupted;
         }
 
-        // SKIP MD5 checks during repair scan - too expensive!
-        // We'll use CRC32 on slices instead (50x faster)
-        // Only verify MD5 AFTER repair is complete
-        //
-        // For now, assume file exists and has correct size means we need to check slices
-        // The slice loading code will use CRC32 to validate which slices are good
+        // Check MD5 hash to determine if file is intact
+        // This is necessary to avoid incorrectly marking perfect files as corrupted
+        if let Ok(file_md5) = calculate_file_md5(file_path) {
+            if file_md5 == file_info.md5_hash {
+                return FileStatus::Present;
+            }
+        }
+        
+        // File exists with correct size but wrong MD5 - it's corrupted
         FileStatus::Corrupted
     }
 
@@ -221,7 +236,7 @@ impl RepairContext {
     pub fn can_repair_with_preloaded(
         &self,
         file_status: &HashMap<String, FileStatus>,
-        preloaded_slices: &HashMap<[u8; 16], (HashMap<usize, Vec<u8>>, usize)>,
+        preloaded_slices: &PreloadedSlices,
     ) -> bool {
         // For files that are missing, we need all their slices
         let missing_slices: usize = self
@@ -300,10 +315,10 @@ impl RepairContext {
 
 
     /// Perform repair operation
-    /// Optionally accepts pre-loaded slices to avoid duplicate CRC32 calculations
+    /// Requires pre-loaded slices to avoid worst-case estimates and duplicate CRC32 calculations
     pub fn repair_with_slices(
         &self,
-        preloaded_slices: Option<HashMap<[u8; 16], (HashMap<usize, Vec<u8>>, usize)>>,
+        preloaded_slices: Option<PreloadedSlices>,
     ) -> Result<RepairResult, Box<dyn std::error::Error>> {
         let file_status = self.check_file_status();
 
@@ -323,16 +338,14 @@ impl RepairContext {
             });
         }
 
-        // Check if repair is possible
-        let can_repair = match &preloaded_slices {
-            Some(slices) => {
-                // Use preloaded data for accurate check (avoids duplicate load_file_slices call)
-                self.can_repair_with_preloaded(&file_status, slices)
-            }
-            None => {
-                // Fall back to worst-case estimate
-                self.can_repair(&file_status)
-            }
+        // Check if repair is possible - use preloaded data if available, otherwise worst-case
+        let can_repair = if let Some(slices) = &preloaded_slices {
+            self.can_repair_with_preloaded(&file_status, slices)
+        } else {
+            // This shouldn't happen - repair() always loads slices first
+            // But keep the fallback for safety
+            eprintln!("Warning: repair_with_slices called without preloaded slices - using worst-case estimate");
+            self.can_repair(&file_status)
         };
 
         if !can_repair {
@@ -352,9 +365,32 @@ impl RepairContext {
         self.perform_reed_solomon_repair(&file_status, preloaded_slices)
     }
 
-    /// Perform repair operation (convenience method)
+    /// Perform repair operation (loads slices and calls repair_with_slices)
     pub fn repair(&self) -> Result<RepairResult, Box<dyn std::error::Error>> {
-        self.repair_with_slices(None)
+        let file_status = self.check_file_status();
+        
+        // Always load slices for corrupted files to get accurate counts
+        // This avoids worst-case estimates and duplicate loading later
+        let mut preloaded_slices = HashMap::default();
+        
+        for file_info in &self.recovery_set.files {
+            let status = file_status
+                .get(&file_info.file_name)
+                .unwrap_or(&FileStatus::Missing);
+            
+            if *status == FileStatus::Corrupted {
+                // Load slices and cache for repair phase
+                let (slices, corrupted_count) = if let Ok(result) = self.load_file_slices(file_info) {
+                    result
+                } else {
+                    (HashMap::default(), file_info.slice_count) // If we can't load, assume all corrupted
+                };
+                
+                preloaded_slices.insert(file_info.file_id, (slices, corrupted_count));
+            }
+        }
+        
+        self.repair_with_slices(Some(preloaded_slices))
     }
 
     /// Perform Reed-Solomon repair using available recovery data
@@ -362,7 +398,7 @@ impl RepairContext {
     fn perform_reed_solomon_repair(
         &self,
         file_status: &HashMap<String, FileStatus>,
-        preloaded_slices: Option<HashMap<[u8; 16], (HashMap<usize, Vec<u8>>, usize)>>,
+        preloaded_slices: Option<PreloadedSlices>,
     ) -> Result<RepairResult, Box<dyn std::error::Error>> {
         let mut repaired_files = Vec::new();
         let mut verified_files = Vec::new();
@@ -1230,10 +1266,8 @@ fn repair_files_impl(
                 if !quiet {
                     println!("Target: \"{}\" - found.", file_name);
                 }
-            } else {
-                if !quiet {
-                    println!("Target: \"{}\" - damaged.", file_name);
-                }
+            } else if !quiet {
+                println!("Target: \"{}\" - damaged.", file_name);
             }
         }
     }
