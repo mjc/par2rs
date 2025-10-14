@@ -20,6 +20,8 @@ rustc-hash = "2.1"
 cargo-tarpaulin = "0.33"
 # Temporary directory management for tests
 tempfile = "3"
+# Benchmarking framework
+criterion = { version = "0.5", features = ["html_reports"] }
 
 # Tarpaulin configuration
 [package.metadata.tarpaulin]
@@ -41,3 +43,7 @@ follow-links = true
 count-hits = true
 # Output timeout for individual tests
 output-timeout = 60
+
+[[bench]]
+name = "repair_benchmark"
+harness = false
