@@ -53,14 +53,12 @@ fn bench_simd_comparison(c: &mut Criterion) {
     group.bench_function("with_pshufb", |b| {
         let mut output = vec![0x55u8; size];
         b.iter(|| {
-            unsafe {
-                process_slice_multiply_add_simd(
-                    black_box(&input),
-                    black_box(&mut output),
-                    black_box(&tables),
-                    SimdLevel::Avx2
-                );
-            }
+            process_slice_multiply_add_simd(
+                black_box(&input),
+                black_box(&mut output),
+                black_box(&tables),
+                SimdLevel::Avx2
+            );
         });
     });
     

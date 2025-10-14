@@ -3,12 +3,11 @@
 //! ## Vandermonde Polynomials
 //!
 //! This module implements 16-bit Galois Field arithmetic using the PAR2 standard
-//! **Vandermonde polynomials** (primitive irreducible polynomials):
+//! **Vandermonde polynomial** (primitive irreducible polynomial):
 //!
-//! - **GF(2^16)**: 0x1100B (x¹⁶ + x¹² + x³ + x + 1) - primary for Reed-Solomon
-//! - **GF(2^8)**: 0x11D (x⁸ + x⁴ + x³ + x² + 1) - also supported
+//! - **GF(2^16)**: 0x1100B (x¹⁶ + x¹² + x³ + x + 1) - for Reed-Solomon encoding/decoding
 //!
-//! These polynomials are used as field generators to construct the Vandermonde matrix
+//! This polynomial is used as the field generator to construct the Vandermonde matrix
 //! for Reed-Solomon encoding/decoding. The specific polynomial 0x1100B is mandated by
 //! the PAR2 specification and cannot be changed without breaking compatibility.
 //!
@@ -20,37 +19,34 @@
 //! ## Implementation Notes
 //!
 //! Ported from par2cmdline galois.h implementation with AVX2 SIMD enhancements.
+//! Only GF(2^16) is implemented as PAR2 doesn't use other Galois fields.
 
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 
 /// PAR2 GF(2^16) Vandermonde polynomial: 0x1100B (x¹⁶ + x¹² + x³ + x + 1)
 /// Primitive irreducible polynomial used as field generator for Reed-Solomon codes
 const GF16_GENERATOR: u32 = 0x1100B;
-
-/// PAR2 GF(2^8) Vandermonde polynomial: 0x11D (x⁸ + x⁴ + x³ + x² + 1)
-/// Also supported for compatibility
-const GF8_GENERATOR: u32 = 0x11D;
+const BITS: usize = 16;
+const COUNT: usize = 1 << BITS;
+const LIMIT: usize = COUNT - 1;
 
 /// Galois Field lookup tables for fast arithmetic
-pub struct GaloisTable<const BITS: usize, const GENERATOR: u32> {
+pub struct GaloisTable {
     pub log: Vec<u16>,
     pub antilog: Vec<u16>,
 }
 
-impl<const BITS: usize, const GENERATOR: u32> Default for GaloisTable<BITS, GENERATOR> {
+impl Default for GaloisTable {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const BITS: usize, const GENERATOR: u32> GaloisTable<BITS, GENERATOR> {
-    const COUNT: usize = 1 << BITS;
-    const LIMIT: usize = Self::COUNT - 1;
-
+impl GaloisTable {
     pub fn new() -> Self {
         let mut table = GaloisTable {
-            log: vec![0; Self::COUNT],
-            antilog: vec![0; Self::COUNT],
+            log: vec![0; COUNT],
+            antilog: vec![0; COUNT],
         };
         table.build_tables();
         table
@@ -59,31 +55,28 @@ impl<const BITS: usize, const GENERATOR: u32> GaloisTable<BITS, GENERATOR> {
     fn build_tables(&mut self) {
         let mut b = 1u32;
 
-        for l in 0..Self::LIMIT {
+        for l in 0..LIMIT {
             self.log[b as usize] = l as u16;
             self.antilog[l] = b as u16;
 
             b <<= 1;
-            if b & Self::COUNT as u32 != 0 {
-                b ^= GENERATOR;
+            if b & COUNT as u32 != 0 {
+                b ^= GF16_GENERATOR;
             }
         }
 
-        self.log[0] = Self::LIMIT as u16;
-        self.antilog[Self::LIMIT] = 0;
+        self.log[0] = LIMIT as u16;
+        self.antilog[LIMIT] = 0;
     }
 }
 
-/// Galois Field element
+/// Galois Field GF(2^16) element
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Galois<const BITS: usize, const GENERATOR: u32> {
+pub struct Galois16 {
     value: u16,
 }
 
-impl<const BITS: usize, const GENERATOR: u32> Galois<BITS, GENERATOR> {
-    const COUNT: usize = 1 << BITS;
-    const LIMIT: usize = Self::COUNT - 1;
-
+impl Galois16 {
     pub fn new(value: u16) -> Self {
         Self { value }
     }
@@ -100,7 +93,7 @@ impl<const BITS: usize, const GENERATOR: u32> Galois<BITS, GENERATOR> {
 
         let table = Self::get_table();
         let log_val = table.log[self.value as usize] as u32;
-        let result_log = (log_val * exponent as u32) % Self::LIMIT as u32;
+        let result_log = (log_val * exponent as u32) % LIMIT as u32;
         Self::new(table.antilog[result_log as usize])
     }
 
@@ -123,24 +116,16 @@ impl<const BITS: usize, const GENERATOR: u32> Galois<BITS, GENERATOR> {
         table.antilog[self.value as usize]
     }
 
-    /// Get the global table (using thread-local storage for safety)
-    fn get_table() -> &'static GaloisTable<BITS, GENERATOR> {
+    /// Get the global table (no unsafe needed - direct static initialization)
+    fn get_table() -> &'static GaloisTable {
         use std::sync::OnceLock;
-        static TABLE_16: OnceLock<GaloisTable<16, GF16_GENERATOR>> = OnceLock::new();
-        static TABLE_8: OnceLock<GaloisTable<8, GF8_GENERATOR>> = OnceLock::new();
-
-        if BITS == 16 && GENERATOR == GF16_GENERATOR {
-            unsafe { std::mem::transmute(TABLE_16.get_or_init(GaloisTable::new)) }
-        } else if BITS == 8 && GENERATOR == GF8_GENERATOR {
-            unsafe { std::mem::transmute(TABLE_8.get_or_init(GaloisTable::new)) }
-        } else {
-            panic!("Unsupported Galois field configuration");
-        }
+        static TABLE: OnceLock<GaloisTable> = OnceLock::new();
+        TABLE.get_or_init(GaloisTable::new)
     }
 }
 
 // Addition (XOR in Galois fields)
-impl<const BITS: usize, const GENERATOR: u32> Add for Galois<BITS, GENERATOR> {
+impl Add for Galois16 {
     type Output = Self;
 
     #[allow(clippy::suspicious_arithmetic_impl)] // XOR is addition in Galois fields
@@ -149,7 +134,7 @@ impl<const BITS: usize, const GENERATOR: u32> Add for Galois<BITS, GENERATOR> {
     }
 }
 
-impl<const BITS: usize, const GENERATOR: u32> AddAssign for Galois<BITS, GENERATOR> {
+impl AddAssign for Galois16 {
     #[allow(clippy::suspicious_op_assign_impl)] // XOR is addition in Galois fields
     fn add_assign(&mut self, rhs: Self) {
         self.value ^= rhs.value;
@@ -157,7 +142,7 @@ impl<const BITS: usize, const GENERATOR: u32> AddAssign for Galois<BITS, GENERAT
 }
 
 // Subtraction (same as addition in GF(2^n))
-impl<const BITS: usize, const GENERATOR: u32> Sub for Galois<BITS, GENERATOR> {
+impl Sub for Galois16 {
     type Output = Self;
 
     #[allow(clippy::suspicious_arithmetic_impl)] // XOR is subtraction in Galois fields
@@ -166,7 +151,7 @@ impl<const BITS: usize, const GENERATOR: u32> Sub for Galois<BITS, GENERATOR> {
     }
 }
 
-impl<const BITS: usize, const GENERATOR: u32> SubAssign for Galois<BITS, GENERATOR> {
+impl SubAssign for Galois16 {
     #[allow(clippy::suspicious_op_assign_impl)] // XOR is subtraction in Galois fields
     fn sub_assign(&mut self, rhs: Self) {
         self.value ^= rhs.value;
@@ -174,7 +159,7 @@ impl<const BITS: usize, const GENERATOR: u32> SubAssign for Galois<BITS, GENERAT
 }
 
 // Multiplication using log tables
-impl<const BITS: usize, const GENERATOR: u32> Mul for Galois<BITS, GENERATOR> {
+impl Mul for Galois16 {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self::Output {
@@ -185,19 +170,19 @@ impl<const BITS: usize, const GENERATOR: u32> Mul for Galois<BITS, GENERATOR> {
         let table = Self::get_table();
         let log_sum = (table.log[self.value as usize] as usize
             + table.log[rhs.value as usize] as usize)
-            % Self::LIMIT;
+            % LIMIT;
         Self::new(table.antilog[log_sum])
     }
 }
 
-impl<const BITS: usize, const GENERATOR: u32> MulAssign for Galois<BITS, GENERATOR> {
+impl MulAssign for Galois16 {
     fn mul_assign(&mut self, rhs: Self) {
         *self = *self * rhs;
     }
 }
 
 // Division using log tables
-impl<const BITS: usize, const GENERATOR: u32> Div for Galois<BITS, GENERATOR> {
+impl Div for Galois16 {
     type Output = Self;
 
     fn div(self, rhs: Self) -> Self::Output {
@@ -211,41 +196,37 @@ impl<const BITS: usize, const GENERATOR: u32> Div for Galois<BITS, GENERATOR> {
         let table = Self::get_table();
         let log_diff = (table.log[self.value as usize] as i32
             - table.log[rhs.value as usize] as i32
-            + Self::LIMIT as i32)
-            % Self::LIMIT as i32;
+            + LIMIT as i32)
+            % LIMIT as i32;
         Self::new(table.antilog[log_diff as usize])
     }
 }
 
-impl<const BITS: usize, const GENERATOR: u32> DivAssign for Galois<BITS, GENERATOR> {
+impl DivAssign for Galois16 {
     fn div_assign(&mut self, rhs: Self) {
         *self = *self / rhs;
     }
 }
 
 // Conversion traits
-impl<const BITS: usize, const GENERATOR: u32> From<u16> for Galois<BITS, GENERATOR> {
+impl From<u16> for Galois16 {
     fn from(value: u16) -> Self {
         Self::new(value)
     }
 }
 
-impl<const BITS: usize, const GENERATOR: u32> From<Galois<BITS, GENERATOR>> for u16 {
-    fn from(val: Galois<BITS, GENERATOR>) -> Self {
+impl From<Galois16> for u16 {
+    fn from(val: Galois16) -> Self {
         val.value
     }
 }
 
 // Display traits
-impl<const BITS: usize, const GENERATOR: u32> std::fmt::Display for Galois<BITS, GENERATOR> {
+impl std::fmt::Display for Galois16 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.value)
     }
 }
-
-// Type aliases for PAR2 standard fields
-pub type Galois8 = Galois<8, GF8_GENERATOR>;
-pub type Galois16 = Galois<16, GF16_GENERATOR>;
 
 /// GCD function as used in par2cmdline
 pub fn gcd(mut a: u32, mut b: u32) -> u32 {
