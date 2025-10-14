@@ -1,5 +1,5 @@
 use binrw::BinReaderExt;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek};
 
 pub mod creator_packet;
 pub mod file_description_packet;
@@ -40,14 +40,8 @@ impl Packet {
     }
 
     pub fn parse<R: Read + Seek>(reader: &mut R) -> Option<Self> {
-        let (type_of_packet, _packet_length) = Self::get_packet_type(reader)?;
-
-        let packet = Self::match_packet_type(reader, &type_of_packet)?;
-
-        Some(packet)
-    }
-
-    fn get_packet_type<R: Read + Seek>(reader: &mut R) -> Option<([u8; 16], u64)> {
+        // OPTIMIZATION: Read entire packet into memory buffer first
+        // This is much faster than letting binrw do many small reads
         let mut header = [0u8; 64];
         if reader.read_exact(&mut header).is_err() {
             return None;
@@ -59,12 +53,24 @@ impl Packet {
         }
 
         let type_of_packet: [u8; 16] = header[48..64].try_into().ok()?;
-        let packet_length = u64::from_le_bytes(header[8..16].try_into().ok()?);
+        let packet_length = u64::from_le_bytes(header[8..16].try_into().ok()?) as usize;
 
-        // Rewind to start of packet so the packet struct can read the magic bytes again
-        reader.seek(SeekFrom::Current(-64)).ok()?;
+        // Validate packet length
+        if packet_length < 64 || packet_length > 100 * 1024 * 1024 {
+            return None;
+        }
 
-        Some((type_of_packet, packet_length))
+        // Read the entire packet into a buffer (we already have the first 64 bytes)
+        let mut packet_data = vec![0u8; packet_length];
+        packet_data[..64].copy_from_slice(&header);
+
+        if reader.read_exact(&mut packet_data[64..]).is_err() {
+            return None;
+        }
+
+        // Parse from memory buffer (much faster than streaming)
+        let mut cursor = std::io::Cursor::new(&packet_data);
+        Self::match_packet_type(&mut cursor, &type_of_packet)
     }
 
     fn match_packet_type<R: Read + Seek>(reader: &mut R, type_of_packet: &[u8]) -> Option<Self> {

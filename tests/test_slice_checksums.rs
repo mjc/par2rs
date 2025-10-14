@@ -1,3 +1,4 @@
+use hex;
 /// Tests for PAR2 slice checksum computation
 ///
 /// PAR2 spec requires that slices be zero-padded to the slice size when computing checksums.
@@ -14,15 +15,16 @@ fn test_slice_checksum_requires_padding() {
     assert_eq!(test_data.len(), 32); // "This is file 1 with some content" is actually 32 bytes
 
     // Compute MD5 without padding (incorrect)
-    let unpadded_md5 = md5::compute(test_data);
-    let unpadded_hex = format!("{:x}", unpadded_md5);
+    use md5::Digest;
+    let unpadded_md5: [u8; 16] = md5::Md5::digest(test_data).into();
+    let unpadded_hex = hex::encode(unpadded_md5);
     println!("Unpadded MD5 (33 bytes): {}", unpadded_hex);
 
     // Compute MD5 with zero-padding to 512 bytes (correct for PAR2)
     let mut padded_data = vec![0u8; 512];
     padded_data[..32].copy_from_slice(test_data);
-    let padded_md5 = md5::compute(&padded_data);
-    let padded_hex = format!("{:x}", padded_md5);
+    let padded_md5: [u8; 16] = md5::Md5::digest(&padded_data).into();
+    let padded_hex = hex::encode(padded_md5);
     println!("Padded MD5 (512 bytes):  {}", padded_hex);
 
     // These should be different!
@@ -69,14 +71,15 @@ fn test_actual_par2_slice_checksums() {
         println!("\nFile: {} ({} bytes)", file_path, file_size);
 
         // Compute unpadded MD5
-        let unpadded_md5 = md5::compute(&file_data);
-        println!("  Unpadded MD5: {:x}", unpadded_md5);
+        use md5::Digest;
+        let unpadded_md5: [u8; 16] = md5::Md5::digest(&file_data).into();
+        println!("  Unpadded MD5: {}", hex::encode(unpadded_md5));
 
         // Compute padded MD5 (PAR2 uses 512-byte slices for these files)
         let mut padded_data = vec![0u8; 512];
         padded_data[..file_size].copy_from_slice(&file_data);
-        let padded_md5 = md5::compute(&padded_data);
-        let padded_hex = format!("{:x}", padded_md5);
+        let padded_md5: [u8; 16] = md5::Md5::digest(&padded_data).into();
+        let padded_hex = hex::encode(padded_md5);
         println!("  Padded MD5:   {}", padded_hex);
         println!("  Expected:     {}", expected_md5);
 

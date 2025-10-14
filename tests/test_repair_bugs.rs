@@ -1,4 +1,5 @@
 use par2rs::file_ops;
+use par2rs::file_verification::calculate_file_md5;
 /// Tests for specific bugs found during repair implementation
 /// These tests document and prevent regression of critical bugs discovered during development
 use par2rs::repair::RepairContext;
@@ -78,10 +79,12 @@ impl TestEnv {
     }
 
     fn verify_md5(&self) -> bool {
+        use md5::Digest;
         let context = self.load_context();
         let file_info = &context.recovery_set.files[0];
         let contents = self.read_file();
-        md5::compute(&contents).0 == file_info.md5_hash
+        let computed: [u8; 16] = md5::Md5::digest(&contents).into();
+        computed == file_info.md5_hash
     }
 }
 

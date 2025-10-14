@@ -1,5 +1,5 @@
+
 use crate::Packet;
-use md5;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fs::File;
@@ -148,9 +148,10 @@ fn compute_md5(
         }
     };
 
+    use md5::{Digest, Md5};
     let file = File::open(&file_path).map_err(|_| format!("Failed to open file: {}", file_path))?;
     let mut reader = std::io::BufReader::new(file);
-    let mut hasher = md5::Context::new();
+    let mut hasher = Md5::new();
     let mut buffer = vec![0u8; 256 * 1024 * 1024]; // 256MB buffer size
 
     let mut total_read = 0;
@@ -166,7 +167,7 @@ fn compute_md5(
         if bytes_read == 0 {
             break;
         }
-        hasher.consume(&buffer[..bytes_read]);
+        hasher.update(&buffer[..bytes_read]);
         total_read += bytes_read;
 
         if let Some(len) = length {
@@ -176,7 +177,7 @@ fn compute_md5(
         }
     }
 
-    let file_md5 = hasher.compute();
+    let file_md5: [u8; 16] = hasher.finalize().into();
     file_md5
         .as_slice()
         .try_into()
@@ -525,13 +526,14 @@ fn verify_blocks_in_file(
         }
 
         // Compute MD5 of the block
-        let block_md5 = md5::compute(&buffer[..bytes_to_read]);
+        use md5::Digest;
+        let block_md5: [u8; 16] = md5::Md5::digest(&buffer[..bytes_to_read]).into();
 
         // Compute CRC32 of the block
         let block_crc = crc32fast::hash(&buffer[..bytes_to_read]);
 
         // Check if block is valid
-        if block_md5.as_ref() == expected_md5 && block_crc == *expected_crc {
+        if block_md5 == *expected_md5 && block_crc == *expected_crc {
             available_blocks += 1;
         } else {
             damaged_blocks.push(block_index as u32);

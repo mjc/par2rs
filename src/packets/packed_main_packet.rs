@@ -1,3 +1,4 @@
+
 use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0PkdMain\0";
@@ -51,8 +52,9 @@ impl PackedMainPacket {
         for id in &self.non_recovery_set_ids {
             data.extend_from_slice(id);
         }
-        let computed_md5 = md5::compute(&data);
-        if computed_md5.as_ref() != self.md5 {
+        use md5::Digest;
+        let computed_md5: [u8; 16] = md5::Md5::digest(&data).into();
+        if computed_md5 != self.md5 {
             return false;
         }
 
