@@ -73,8 +73,7 @@ let results = file_verification::verify_files_and_collect_results(&file_info, tr
 
 - **Rust**: 1.70+ (see `rust-toolchain.toml` for exact version)
 - **Optional Tools**:
-  - `cargo-tarpaulin`: `cargo install cargo-tarpaulin`
-  - `cargo-llvm-cov`: `cargo install cargo-llvm-cov`
+  - `cargo-llvm-cov`: `cargo install cargo-llvm-cov` (for code coverage)
 
 ### Building
 
@@ -206,8 +205,8 @@ Development utility to split PAR2 files into individual packets for analysis.
 - **hex**: Hexadecimal encoding/decoding
 
 ### Development Dependencies
-- **cargo-tarpaulin**: Code coverage analysis
-- **cargo-llvm-cov**: LLVM-based coverage analysis
+- **cargo-llvm-cov**: Code coverage analysis
+- **criterion**: Benchmarking framework
 
 ## Contributing
 

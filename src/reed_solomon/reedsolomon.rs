@@ -1,7 +1,23 @@
-//! Reed-Solomon implementation ported from par2cmdline
+//! Reed-Solomon implementation for PAR2 error correction
 //!
-//! This module provides the ReedSolomon struct and methods for PAR2-compatible
-//! Reed-Solomon encoding and decoding operations.
+//! ## Overview
+//!
+//! This module provides PAR2-compatible Reed-Solomon encoding and decoding using
+//! the Vandermonde polynomial 0x1100B (x¹⁶ + x¹² + x³ + x + 1) for GF(2^16).
+//!
+//! ## Performance
+//!
+//! SIMD-optimized operations achieve:
+//! - **2.76x speedup** in microbenchmarks (54.7ns vs 150.9ns per 528-byte block)
+//! - **1.66x faster** than par2cmdline in real-world repair (0.607s vs 1.008s for 100MB)
+//!
+//! See `docs/SIMD_OPTIMIZATION.md` for detailed benchmarks and analysis.
+//!
+//! ## Implementation Notes
+//!
+//! Ported from par2cmdline with AVX2 PSHUFB optimizations for GF(2^16) multiply-add.
+//! Uses James Plank's "Screaming Fast Galois Field Arithmetic" technique adapted
+//! for 16-bit fields (see `simd_pshufb.rs` for details).
 
 use crate::reed_solomon::galois::{gcd, Galois16};
 use crate::reed_solomon::simd::{detect_simd_support, process_slice_multiply_add_simd, SimdLevel};
@@ -845,7 +861,7 @@ impl ReconstructionEngine {
                             // Multiply by the input word
                             let contribution = coefficient * Galois16::new(input_word);
                             // Subtract from RHS (in GF, subtraction is XOR, same as addition)
-                            rhs_val = rhs_val - contribution;
+                            rhs_val -= contribution;
                         }
                     }
                 }
@@ -1018,8 +1034,7 @@ impl ReconstructionEngine {
                 // Compute combined coefficient: sum of (matrix_inv * slice_coefficient)
                 let mut combined_coeff = Galois16::new(0);
                 for eq_idx in 0..num_missing {
-                    combined_coeff = combined_coeff
-                        + matrix_inv[out_idx][eq_idx] * slice_coefficients[eq_idx][idx];
+                    combined_coeff += matrix_inv[out_idx][eq_idx] * slice_coefficients[eq_idx][idx];
                 }
 
                 let coeff_val = combined_coeff.value();
@@ -1072,12 +1087,8 @@ impl ReconstructionEngine {
                 num_missing
             );
 
-            // OPTIMIZATION: Use uninitialized memory and write directly on first contribution
-            // This avoids the memset that vec![0; n] does
-            let mut output_buffer = Vec::with_capacity(self.slice_size);
-            unsafe {
-                output_buffer.set_len(self.slice_size);
-            }
+            // Allocate output buffer - use zeroed memory for safety
+            let mut output_buffer = vec![0u8; self.slice_size];
             let mut first_write = true;
 
             // Process recovery slices (RHS of equation system)
@@ -1215,7 +1226,7 @@ impl ReconstructionEngine {
             let pivot = aug[col][col];
             let pivot_inv = Galois16::new(1) / pivot;
             for j in 0..n * 2 {
-                aug[col][j] = aug[col][j] * pivot_inv;
+                aug[col][j] *= pivot_inv;
             }
 
             // Eliminate column in other rows
@@ -1284,7 +1295,7 @@ impl ReconstructionEngine {
             let pivot = aug[col][col];
             let pivot_inv = Galois16::new(1) / pivot;
             for j in 0..=n {
-                aug[col][j] = aug[col][j] * pivot_inv;
+                aug[col][j] *= pivot_inv;
             }
 
             // Eliminate column in other rows

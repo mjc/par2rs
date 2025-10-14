@@ -40,6 +40,7 @@
             yamllint
             cargo-flamegraph
             perf
+            bc # for benchmark averaging calculations
           ];
 
           RUSTC_VERSION = overrides.toolchain.channel;

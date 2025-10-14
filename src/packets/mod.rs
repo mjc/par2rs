@@ -56,7 +56,7 @@ impl Packet {
         let packet_length = u64::from_le_bytes(header[8..16].try_into().ok()?) as usize;
 
         // Validate packet length
-        if packet_length < 64 || packet_length > 100 * 1024 * 1024 {
+        if !(64..=100 * 1024 * 1024).contains(&packet_length) {
             return None;
         }
 
