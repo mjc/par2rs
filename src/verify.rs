@@ -75,7 +75,6 @@ pub struct FileVerificationResult {
 //         }
 //     }).collect()
 // }
-
 /// Quickly verifies a set of files from the par2 md5sums
 ///
 /// # Arguments

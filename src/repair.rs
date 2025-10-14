@@ -54,6 +54,9 @@ pub enum FileStatus {
     Corrupted, // File exists but is corrupted
 }
 
+/// Type alias for preloaded slice data: file_id -> (slices, corrupted_count)
+type PreloadedSlices = HashMap<[u8; 16], (HashMap<usize, Vec<u8>>, usize)>;
+
 /// Result of a repair operation
 #[derive(Debug)]
 pub struct RepairResult {
@@ -233,7 +236,7 @@ impl RepairContext {
     pub fn can_repair_with_preloaded(
         &self,
         file_status: &HashMap<String, FileStatus>,
-        preloaded_slices: &HashMap<[u8; 16], (HashMap<usize, Vec<u8>>, usize)>,
+        preloaded_slices: &PreloadedSlices,
     ) -> bool {
         // For files that are missing, we need all their slices
         let missing_slices: usize = self
@@ -315,7 +318,7 @@ impl RepairContext {
     /// Requires pre-loaded slices to avoid worst-case estimates and duplicate CRC32 calculations
     pub fn repair_with_slices(
         &self,
-        preloaded_slices: Option<HashMap<[u8; 16], (HashMap<usize, Vec<u8>>, usize)>>,
+        preloaded_slices: Option<PreloadedSlices>,
     ) -> Result<RepairResult, Box<dyn std::error::Error>> {
         let file_status = self.check_file_status();
 
@@ -395,7 +398,7 @@ impl RepairContext {
     fn perform_reed_solomon_repair(
         &self,
         file_status: &HashMap<String, FileStatus>,
-        preloaded_slices: Option<HashMap<[u8; 16], (HashMap<usize, Vec<u8>>, usize)>>,
+        preloaded_slices: Option<PreloadedSlices>,
     ) -> Result<RepairResult, Box<dyn std::error::Error>> {
         let mut repaired_files = Vec::new();
         let mut verified_files = Vec::new();
@@ -1263,10 +1266,8 @@ fn repair_files_impl(
                 if !quiet {
                     println!("Target: \"{}\" - found.", file_name);
                 }
-            } else {
-                if !quiet {
-                    println!("Target: \"{}\" - damaged.", file_name);
-                }
+            } else if !quiet {
+                println!("Target: \"{}\" - damaged.", file_name);
             }
         }
     }

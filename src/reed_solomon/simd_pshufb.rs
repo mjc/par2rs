@@ -86,6 +86,9 @@ unsafe fn build_pshufb_tables(table: &[u16; 256]) -> ([u8; 16], [u8; 16], [u8; 1
 /// PSHUFB-accelerated GF(2^16) multiply-add using AVX2
 ///
 /// Processes 32 bytes (16 x 16-bit words) per iteration using parallel nibble lookups.
+///
+/// # Safety
+/// Requires AVX2 and SSSE3 CPU support. Caller must ensure CPU has these features before calling.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2", enable = "ssse3")]
 pub unsafe fn process_slice_multiply_add_pshufb(

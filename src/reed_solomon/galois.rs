@@ -143,12 +143,14 @@ impl<const BITS: usize, const GENERATOR: u32> Galois<BITS, GENERATOR> {
 impl<const BITS: usize, const GENERATOR: u32> Add for Galois<BITS, GENERATOR> {
     type Output = Self;
 
+    #[allow(clippy::suspicious_arithmetic_impl)] // XOR is addition in Galois fields
     fn add(self, rhs: Self) -> Self::Output {
         Self::new(self.value ^ rhs.value)
     }
 }
 
 impl<const BITS: usize, const GENERATOR: u32> AddAssign for Galois<BITS, GENERATOR> {
+    #[allow(clippy::suspicious_op_assign_impl)] // XOR is addition in Galois fields
     fn add_assign(&mut self, rhs: Self) {
         self.value ^= rhs.value;
     }
@@ -158,12 +160,14 @@ impl<const BITS: usize, const GENERATOR: u32> AddAssign for Galois<BITS, GENERAT
 impl<const BITS: usize, const GENERATOR: u32> Sub for Galois<BITS, GENERATOR> {
     type Output = Self;
 
+    #[allow(clippy::suspicious_arithmetic_impl)] // XOR is subtraction in Galois fields
     fn sub(self, rhs: Self) -> Self::Output {
         Self::new(self.value ^ rhs.value)
     }
 }
 
 impl<const BITS: usize, const GENERATOR: u32> SubAssign for Galois<BITS, GENERATOR> {
+    #[allow(clippy::suspicious_op_assign_impl)] // XOR is subtraction in Galois fields
     fn sub_assign(&mut self, rhs: Self) {
         self.value ^= rhs.value;
     }

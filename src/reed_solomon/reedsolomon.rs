@@ -861,7 +861,7 @@ impl ReconstructionEngine {
                             // Multiply by the input word
                             let contribution = coefficient * Galois16::new(input_word);
                             // Subtract from RHS (in GF, subtraction is XOR, same as addition)
-                            rhs_val = rhs_val - contribution;
+                            rhs_val -= contribution;
                         }
                     }
                 }
@@ -1034,8 +1034,7 @@ impl ReconstructionEngine {
                 // Compute combined coefficient: sum of (matrix_inv * slice_coefficient)
                 let mut combined_coeff = Galois16::new(0);
                 for eq_idx in 0..num_missing {
-                    combined_coeff = combined_coeff
-                        + matrix_inv[out_idx][eq_idx] * slice_coefficients[eq_idx][idx];
+                    combined_coeff += matrix_inv[out_idx][eq_idx] * slice_coefficients[eq_idx][idx];
                 }
 
                 let coeff_val = combined_coeff.value();
@@ -1088,12 +1087,8 @@ impl ReconstructionEngine {
                 num_missing
             );
 
-            // OPTIMIZATION: Use uninitialized memory and write directly on first contribution
-            // This avoids the memset that vec![0; n] does
-            let mut output_buffer = Vec::with_capacity(self.slice_size);
-            unsafe {
-                output_buffer.set_len(self.slice_size);
-            }
+            // Allocate output buffer - use zeroed memory for safety
+            let mut output_buffer = vec![0u8; self.slice_size];
             let mut first_write = true;
 
             // Process recovery slices (RHS of equation system)
@@ -1231,7 +1226,7 @@ impl ReconstructionEngine {
             let pivot = aug[col][col];
             let pivot_inv = Galois16::new(1) / pivot;
             for j in 0..n * 2 {
-                aug[col][j] = aug[col][j] * pivot_inv;
+                aug[col][j] *= pivot_inv;
             }
 
             // Eliminate column in other rows
@@ -1300,7 +1295,7 @@ impl ReconstructionEngine {
             let pivot = aug[col][col];
             let pivot_inv = Galois16::new(1) / pivot;
             for j in 0..=n {
-                aug[col][j] = aug[col][j] * pivot_inv;
+                aug[col][j] *= pivot_inv;
             }
 
             // Eliminate column in other rows

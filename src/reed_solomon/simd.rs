@@ -29,6 +29,9 @@ pub enum SimdLevel {
 }
 
 /// Aggressive AVX2 implementation with 32-word unrolling
+///
+/// # Safety
+/// Requires AVX2 CPU support. Caller must ensure CPU has AVX2 before calling.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 pub unsafe fn process_slice_multiply_add_avx2_unrolled(
