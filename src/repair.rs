@@ -12,7 +12,7 @@ use crc32fast::Hasher as Crc32;
 use log::{debug, trace};
 use rustc_hash::FxHashMap as HashMap;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// Information about a file in the recovery set
@@ -217,7 +217,12 @@ impl RepairContext {
     }
 
     /// Determine if repair is possible for the given file statuses
-    pub fn can_repair(&self, file_status: &HashMap<String, FileStatus>) -> bool {
+    /// Requires preloaded slice data to avoid duplicate CRC32 calculations
+    pub fn can_repair_with_preloaded(
+        &self,
+        file_status: &HashMap<String, FileStatus>,
+        preloaded_slices: &HashMap<[u8; 16], (HashMap<usize, Vec<u8>>, usize)>,
+    ) -> bool {
         // For files that are missing, we need all their slices
         let missing_slices: usize = self
             .recovery_set
@@ -232,7 +237,7 @@ impl RepairContext {
             .map(|f| f.slice_count)
             .sum();
 
-        // For corrupted files, use load_file_slices to get corrupted count (reuses CRC32 calculations)
+        // For corrupted files, use preloaded corrupted count
         let mut corrupted_slices = 0;
         for file_info in &self.recovery_set.files {
             let status = file_status
@@ -240,8 +245,8 @@ impl RepairContext {
                 .unwrap_or(&FileStatus::Missing);
 
             if *status == FileStatus::Corrupted {
-                // Use load_file_slices to count corrupted slices (doesn't duplicate CRC32 work later)
-                if let Ok((_slices, corrupted_count)) = self.load_file_slices(file_info) {
+                // Use preloaded corrupted count (must be available)
+                if let Some((_slices, corrupted_count)) = preloaded_slices.get(&file_info.file_id) {
                     corrupted_slices += corrupted_count;
                 }
             }
@@ -254,6 +259,41 @@ impl RepairContext {
                 missing_slices, corrupted_slices, total_needed_slices, available_recovery_slices);
 
         // Can repair if we have enough recovery slices to replace needed slices
+        available_recovery_slices >= total_needed_slices
+    }
+
+    /// Determine if repair is possible (convenience method - uses worst-case estimate)
+    pub fn can_repair(&self, file_status: &HashMap<String, FileStatus>) -> bool {
+        // Worst-case estimate: assume all slices of corrupted files are bad
+        let missing_slices: usize = self
+            .recovery_set
+            .files
+            .iter()
+            .filter(|f| {
+                let status = file_status
+                    .get(&f.file_name)
+                    .unwrap_or(&FileStatus::Missing);
+                *status == FileStatus::Missing
+            })
+            .map(|f| f.slice_count)
+            .sum();
+
+        let corrupted_slices: usize = self
+            .recovery_set
+            .files
+            .iter()
+            .filter(|f| {
+                let status = file_status
+                    .get(&f.file_name)
+                    .unwrap_or(&FileStatus::Missing);
+                *status == FileStatus::Corrupted
+            })
+            .map(|f| f.slice_count)
+            .sum();
+
+        let total_needed_slices = missing_slices + corrupted_slices;
+        let available_recovery_slices = self.recovery_set.recovery_slices.len();
+
         available_recovery_slices >= total_needed_slices
     }
 
@@ -283,8 +323,19 @@ impl RepairContext {
             });
         }
 
-        // Check if repair is possible (will load slices if not preloaded)
-        if !self.can_repair(&file_status) {
+        // Check if repair is possible
+        let can_repair = match &preloaded_slices {
+            Some(slices) => {
+                // Use preloaded data for accurate check (avoids duplicate load_file_slices call)
+                self.can_repair_with_preloaded(&file_status, slices)
+            }
+            None => {
+                // Fall back to worst-case estimate
+                self.can_repair(&file_status)
+            }
+        };
+
+        if !can_repair {
             return Ok(RepairResult {
                 success: false,
                 files_repaired: 0,
@@ -497,9 +548,13 @@ impl RepairContext {
             return Ok((slices, file_info.slice_count)); // All slices missing = all corrupted
         }
 
-        let mut file = File::open(&file_path)?;
+        let file = File::open(&file_path)?;
+        let mut reader = BufReader::with_capacity(1024 * 1024, file); // 1MB buffer
         let slice_size = self.recovery_set.slice_size as usize;
 
+        // Reuse a single buffer for all slices to avoid allocations
+        let mut slice_data = vec![0u8; slice_size];
+        
         for slice_index in 0..file_info.slice_count {
             let actual_slice_size = if slice_index == file_info.slice_count - 1 {
                 let remaining_bytes = file_info.file_length % self.recovery_set.slice_size;
@@ -512,11 +567,14 @@ impl RepairContext {
                 slice_size
             };
 
-            let mut slice_data = vec![0u8; actual_slice_size];
-            file.seek(SeekFrom::Start((slice_index * slice_size) as u64))?;
-
-            let bytes_read = file.read(&mut slice_data)?;
-            if bytes_read == actual_slice_size {
+            // Zero out padding area (only needed if this slice is shorter than slice_size)
+            if actual_slice_size < slice_size {
+                slice_data[actual_slice_size..].fill(0);
+            }
+            
+            // Sequential read (no seeking needed with BufReader)
+            // Use read_exact to ensure we get all bytes in one call
+            if reader.read_exact(&mut slice_data[..actual_slice_size]).is_ok() {
                 // Verify slice checksum if available
                 if let Some(checksums) = self
                     .recovery_set
@@ -525,33 +583,31 @@ impl RepairContext {
                 {
                     if slice_index < checksums.slice_checksums.len() {
                         // Use CRC32 for fast slice validation (like par2cmdline does)
+                        // CRC32 is computed on the full padded buffer (PAR2 spec requirement)
                         let mut hasher = Crc32::new();
                         hasher.update(&slice_data);
                         let slice_crc = hasher.finalize();
                         let expected_crc = checksums.slice_checksums[slice_index].1;
 
                         if slice_crc == expected_crc {
-                            slices.insert(slice_index, slice_data);
+                            // Store only the actual data (not the padding)
+                            slices.insert(slice_index, slice_data[..actual_slice_size].to_vec());
                         } else {
                             corrupted_count += 1;
                             trace!("Slice {} failed CRC32 verification", slice_index);
                         }
                     } else {
                         // No checksum available for this slice, assume it's good if size matches
-                        slices.insert(slice_index, slice_data);
+                        slices.insert(slice_index, slice_data[..actual_slice_size].to_vec());
                     }
                 } else {
                     // No checksums available, assume slice is valid if size matches
-                    slices.insert(slice_index, slice_data);
+                    slices.insert(slice_index, slice_data[..actual_slice_size].to_vec());
                 }
             } else {
+                // read_exact failed - couldn't read the expected number of bytes
                 corrupted_count += 1;
-                trace!(
-                    "Slice {} has incorrect size: expected {}, got {}",
-                    slice_index,
-                    actual_slice_size,
-                    bytes_read
-                );
+                trace!("Slice {} failed to read {} bytes", slice_index, actual_slice_size);
             }
         }
 
