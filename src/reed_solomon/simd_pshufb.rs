@@ -61,7 +61,7 @@ use std::arch::x86_64::*;
 /// - High nibble (0-15) → result low byte
 /// - High nibble (0-15) → result high byte
 #[cfg(target_arch = "x86_64")]
-unsafe fn build_pshufb_tables(table: &[u16; 256]) -> ([u8; 16], [u8; 16], [u8; 16], [u8; 16]) {
+fn build_pshufb_tables(table: &[u16; 256]) -> ([u8; 16], [u8; 16], [u8; 16], [u8; 16]) {
     let mut lo_nib_lo_byte = [0u8; 16];
     let mut lo_nib_hi_byte = [0u8; 16];
     let mut hi_nib_lo_byte = [0u8; 16];
@@ -88,7 +88,13 @@ unsafe fn build_pshufb_tables(table: &[u16; 256]) -> ([u8; 16], [u8; 16], [u8; 1
 /// Processes 32 bytes (16 x 16-bit words) per iteration using parallel nibble lookups.
 ///
 /// # Safety
-/// Requires AVX2 and SSSE3 CPU support. Caller must ensure CPU has these features before calling.
+/// - Requires AVX2 and SSSE3 CPU support. Caller must ensure CPU has these features before calling.
+/// - `input` and `output` slices must each be at least 32 bytes long for full processing.
+/// - Only the first `min(input.len(), output.len())` bytes are processed; if less than 32, the function returns immediately.
+/// - The memory pointed to by `input` and `output` must be valid for reads and writes of the required length.
+/// - The function uses unaligned loads/stores, so alignment is not strictly required, but for best performance, 16- or 32-byte alignment is recommended.
+/// - `input` and `output` must not alias (i.e., must not overlap in memory).
+/// - The `tables` argument must point to valid lookup tables as expected by the function.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2", enable = "ssse3")]
 pub unsafe fn process_slice_multiply_add_pshufb(
