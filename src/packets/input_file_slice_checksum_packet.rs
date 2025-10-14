@@ -24,7 +24,7 @@ impl BinRead for InputFileSliceChecksumPacket {
         let mut header = [0u8; 64];
         reader
             .read_exact(&mut header)
-            .map_err(|e| binrw::Error::Io(e))?;
+            .map_err(binrw::Error::Io)?;
 
         // Verify magic
         if &header[0..8] != b"PAR2\0PKT" {
@@ -45,7 +45,7 @@ impl BinRead for InputFileSliceChecksumPacket {
         let mut file_id = [0u8; 16];
         reader
             .read_exact(&mut file_id)
-            .map_err(|e| binrw::Error::Io(e))?;
+            .map_err(binrw::Error::Io)?;
 
         // Calculate number of checksums and read them in bulk
         let num_checksums = ((length - 64 - 16) / 20) as usize;
@@ -53,7 +53,7 @@ impl BinRead for InputFileSliceChecksumPacket {
         let mut buffer = vec![0u8; checksum_bytes];
         reader
             .read_exact(&mut buffer)
-            .map_err(|e| binrw::Error::Io(e))?;
+            .map_err(binrw::Error::Io)?;
 
         // Parse checksums from buffer using unsafe for speed
         let mut slice_checksums = Vec::with_capacity(num_checksums);

@@ -1,16 +1,38 @@
-//! Proper PSHUFB-based GF(2^16) multiplication
+//! PSHUFB-based GF(2^16) multiplication for Reed-Solomon error correction
 //!
-//! This implements the "Screaming Fast Galois Field Arithmetic" technique.
+//! ## Performance
+//!
+//! Achieves **2.76x speedup** over scalar code (54.7ns vs 150.9ns per 528-byte block).
+//! Real-world: **1.66x faster** than par2cmdline (0.607s vs 1.008s for 100MB file repair).
+//!
+//! See `docs/SIMD_OPTIMIZATION.md` for detailed performance analysis and benchmarks.
+//!
+//! ## Vandermonde Polynomial
+//!
+//! PAR2 uses the primitive irreducible polynomial **0x1100B** (x¹⁶ + x¹² + x³ + x + 1)
+//! as the generator for GF(2^16) to construct the Vandermonde matrix for Reed-Solomon codes.
+//! This specific polynomial is mandated by the PAR2 specification and cannot be changed.
+//!
+//! ## PSHUFB Technique
+//!
+//! This implements the "Screaming Fast Galois Field Arithmetic" technique from
+//! James Plank's paper: "Screaming Fast Galois Field Arithmetic Using Intel SIMD Instructions"
+//! (http://web.eecs.utk.edu/~plank/plank/papers/FAST-2013-GF.html)
+//!
+//! Implementation inspired by the galois_2p8 crate (https://github.com/djsweet/galois_2p8)
+//! which is MIT licensed. This implementation has been adapted for GF(2^16) with AVX2.
 //! 
-//! Key insight: PSHUFB can handle 16-entry (4-bit) lookups. We have 256-entry (8-bit) tables.
-//! Solution: Split each byte into two nibbles and do two lookups.
+//! ### Algorithm Overview
+//!
+//! **Key insight**: PSHUFB can handle 16-entry (4-bit) lookups. We have 256-entry (8-bit) tables.
+//! **Solution**: Split each byte into two nibbles and do two lookups.
 //!
 //! For GF(2^16) multiplication with 16-bit words:
 //! - Input: 16-bit word = [high_byte:low_byte]
 //! - tables.low[low_byte] ^ tables.high[high_byte] = result (16 bits)
 //!
 //! PSHUFB approach:
-//! 1. Build 8 nibble tables (each 16 bytes):
+//! 1. Build 8 nibble tables (each 16 bytes) from 256-entry tables:
 //!    - For tables.low[0-255] (produces u16):
 //!      - low_input_lo_nibble -> [result_lo_byte, result_hi_byte]
 //!      - low_input_hi_nibble -> [result_lo_byte, result_hi_byte]
@@ -23,6 +45,8 @@
 //!    - Extract nibbles with masks and shifts
 //!    - PSHUFB lookups for each nibble
 //!    - XOR results together
+//!
+//! **Memory savings**: 8 tables × 16 bytes = 128 bytes (vs 2 tables × 256 × 2 bytes = 1024 bytes)
 
 use super::reedsolomon::SplitMulTable;
 
@@ -62,6 +86,9 @@ unsafe fn build_pshufb_tables(table: &[u16; 256]) -> ([u8; 16], [u8; 16], [u8; 1
 /// PSHUFB-accelerated GF(2^16) multiply-add using AVX2
 ///
 /// Processes 32 bytes (16 x 16-bit words) per iteration using parallel nibble lookups.
+///
+/// # Safety
+/// Requires AVX2 and SSSE3 CPU support. Caller must ensure CPU has these features before calling.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2", enable = "ssse3")]
 pub unsafe fn process_slice_multiply_add_pshufb(
