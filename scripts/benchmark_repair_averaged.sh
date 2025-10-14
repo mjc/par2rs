@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Benchmark par2rs repair performance against par2cmdline with averaging
 # Runs 10 iterations and computes averages
+# Usage: ./benchmark_repair_averaged.sh [size_in_mb] [temp_dir]
+# Example: ./benchmark_repair_averaged.sh 1000  # for 1GB in /tmp
+# Example: ./benchmark_repair_averaged.sh 10000 /mnt/scratch  # for 10GB in /mnt/scratch
 
 set -e
 
@@ -8,7 +11,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PAR2RS="$PROJECT_ROOT/target/release/par2repair"
 PAR2CMDLINE="par2"
-ITERATIONS=10
+ITERATIONS=${ITERATIONS:-10}
+SIZE_MB=${1:-100}  # Default to 100MB if no argument provided
+TEMP_BASE=${2:-}   # Optional: base directory for temp files
 
 # Colors
 RED='\033[0;31m'
@@ -19,8 +24,11 @@ NC='\033[0m'
 
 echo -e "${BLUE}================================${NC}"
 echo -e "${BLUE}PAR2 Repair Benchmark (Averaged)${NC}"
-echo -e "${BLUE}Testing 100MB file repair${NC}"
+echo -e "${BLUE}Testing ${SIZE_MB}MB file repair${NC}"
 echo -e "${BLUE}Iterations: $ITERATIONS${NC}"
+if [ -n "$TEMP_BASE" ]; then
+    echo -e "${BLUE}Temp directory: $TEMP_BASE${NC}"
+fi
 echo -e "${BLUE}================================${NC}"
 echo ""
 
@@ -30,60 +38,63 @@ cd "$PROJECT_ROOT"
 cargo build --release 2>&1 | grep -E "(Compiling par2rs|Finished|error)" || true
 echo ""
 
-# Create test file once
-TEMP=$(mktemp -d)
-echo -e "${YELLOW}Creating 100MB test file in $TEMP...${NC}"
-dd if=/dev/urandom of="$TEMP/testfile_100mb" bs=1M count=100 2>&1 | tail -2
-echo ""
-
-# Create PAR2 files once
-echo -e "${YELLOW}Creating PAR2 files with 5% redundancy...${NC}"
-$PAR2CMDLINE c -r5 "$TEMP/testfile_100mb.par2" "$TEMP/testfile_100mb" 2>&1 | tail -5
-echo ""
-
-# Save original MD5
-MD5_ORIGINAL=$(md5sum "$TEMP/testfile_100mb" | awk '{print $1}')
-echo "Original MD5: $MD5_ORIGINAL"
-echo ""
-
 # Arrays to store times
 declare -a PAR2CMD_TIMES
 declare -a PAR2RS_TIMES
 
+CORRUPT_OFFSET=$((SIZE_MB / 2))
+
+# Generate test file once for all iterations
+if [ -n "$TEMP_BASE" ]; then
+    TEMP=$(mktemp -d -p "$TEMP_BASE")
+else
+    TEMP=$(mktemp -d)
+fi
+echo -e "${YELLOW}Generating ${SIZE_MB}MB test file in $TEMP...${NC}"
+dd if=/dev/urandom of="$TEMP/testfile_${SIZE_MB}mb" bs=1M count=${SIZE_MB} 2>&1 | tail -1
+echo ""
+
+# Create PAR2 files once for all iterations
+echo -e "${YELLOW}Creating PAR2 files...${NC}"
+$PAR2CMDLINE c -q -r5 "$TEMP/testfile_${SIZE_MB}mb.par2" "$TEMP/testfile_${SIZE_MB}mb" 2>&1 | tail -3
+echo ""
+
+# Save original MD5
+MD5_ORIGINAL=$(md5sum "$TEMP/testfile_${SIZE_MB}mb" | awk '{print $1}')
+echo "Original MD5: $MD5_ORIGINAL"
+echo ""
+
 for i in $(seq 1 $ITERATIONS); do
     echo -e "${GREEN}=== Iteration $i/$ITERATIONS ===${NC}"
     
-    # Create working directory for this iteration
-    TEMP_ITER=$(mktemp -d)
-    cp "$TEMP/testfile_100mb" "$TEMP_ITER/"
-    cp "$TEMP"/*.par2 "$TEMP_ITER/"
+    # === Test par2cmdline ===
+    echo -e "${YELLOW}  Corrupting file for par2cmdline...${NC}"
+    dd if=/dev/zero of="$TEMP/testfile_${SIZE_MB}mb" bs=1M count=1 seek=$CORRUPT_OFFSET conv=notrunc 2>&1 > /dev/null
     
-    # Corrupt the file (1MB at offset 50MB)
-    dd if=/dev/zero of="$TEMP_ITER/testfile_100mb" bs=1M count=1 seek=50 conv=notrunc 2>&1 > /dev/null
-    
-    # Benchmark par2cmdline
-    cd "$TEMP_ITER"
+    echo -e "${YELLOW}  Running par2cmdline repair...${NC}"
+    cd "$TEMP"
     START=$(date +%s.%N)
-    $PAR2CMDLINE r testfile_100mb.par2 > /dev/null 2>&1
+    $PAR2CMDLINE r -q testfile_${SIZE_MB}mb.par2 > /dev/null 2>&1
     END=$(date +%s.%N)
     PAR2CMD_TIME=$(echo "$END - $START" | bc)
     PAR2CMD_TIMES+=($PAR2CMD_TIME)
     
     # Verify par2cmdline repair
-    MD5_PAR2CMD=$(md5sum "$TEMP_ITER/testfile_100mb" | awk '{print $1}')
+    MD5_PAR2CMD=$(md5sum "$TEMP/testfile_${SIZE_MB}mb" | awk '{print $1}')
     
-    # Corrupt again for par2rs
-    dd if=/dev/zero of="$TEMP_ITER/testfile_100mb" bs=1M count=1 seek=50 conv=notrunc 2>&1 > /dev/null
+    # === Test par2rs ===
+    echo -e "${YELLOW}  Corrupting file for par2rs...${NC}"
+    dd if=/dev/zero of="$TEMP/testfile_${SIZE_MB}mb" bs=1M count=1 seek=$CORRUPT_OFFSET conv=notrunc 2>&1 > /dev/null
     
-    # Benchmark par2rs
+    echo -e "${YELLOW}  Running par2rs repair...${NC}"
     START=$(date +%s.%N)
-    $PAR2RS testfile_100mb.par2 > /dev/null 2>&1
+    $PAR2RS testfile_${SIZE_MB}mb.par2 > /dev/null 2>&1
     END=$(date +%s.%N)
     PAR2RS_TIME=$(echo "$END - $START" | bc)
     PAR2RS_TIMES+=($PAR2RS_TIME)
     
     # Verify par2rs repair
-    MD5_PAR2RS=$(md5sum "$TEMP_ITER/testfile_100mb" | awk '{print $1}')
+    MD5_PAR2RS=$(md5sum "$TEMP/testfile_${SIZE_MB}mb" | awk '{print $1}')
     
     echo "  par2cmdline: ${PAR2CMD_TIME}s"
     echo "  par2rs:      ${PAR2RS_TIME}s"
@@ -91,13 +102,17 @@ for i in $(seq 1 $ITERATIONS); do
     # Verify correctness
     if [ "$MD5_PAR2CMD" != "$MD5_ORIGINAL" ] || [ "$MD5_PAR2RS" != "$MD5_ORIGINAL" ]; then
         echo -e "${RED}✗ Repair verification failed in iteration $i!${NC}"
+        echo "  Expected: $MD5_ORIGINAL"
+        echo "  par2cmdline: $MD5_PAR2CMD"
+        echo "  par2rs: $MD5_PAR2RS"
         exit 1
     fi
     
-    # Cleanup iteration
-    rm -rf "$TEMP_ITER"
     echo ""
 done
+
+# Cleanup
+rm -rf "$TEMP"
 
 # Calculate averages
 PAR2CMD_SUM=0

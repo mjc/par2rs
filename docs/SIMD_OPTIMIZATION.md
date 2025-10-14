@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the SIMD optimizations implemented in par2rs for Reed-Solomon error correction, achieving **1.66x speedup** over par2cmdline (0.607s vs 1.008s average for 100MB file repair, averaged over 10 runs).
+This document describes the SIMD optimizations implemented in par2rs for Reed-Solomon error correction. Performance advantage scales with file size, from **1.24x speedup** for 100MB files to **1.52x speedup** for 1GB files over par2cmdline.
 
 ## Test System
 
@@ -13,26 +13,50 @@ This document describes the SIMD optimizations implemented in par2rs for Reed-So
 
 ## Performance Results
 
-### Real-World Performance (100MB File Repair, Averaged over 10 runs)
+### Real-World Performance Scaling
+
+#### 100MB File Repair (30 iterations, typical system load)
 
 ```
 par2cmdline:
-  Average: 1.008s
-  Min:     0.991s
-  Max:     1.044s
+  Average: 1.119s
+  Min:     1.035s
+  Max:     1.411s
 
 par2rs:
-  Average: 0.607s
-  Min:     0.596s
-  Max:     0.624s
+  Average: 0.898s
+  Min:     0.872s
+  Max:     0.963s
 
-Speedup: 1.66x
+Speedup: 1.24x
 ```
 
 **Results:**
-- **par2rs (with PSHUFB)**: 0.607s average
-- **par2cmdline**: 1.008s average
-- **Speedup**: **1.66x faster**
+- **par2rs**: 0.898s average (±90ms variance)
+- **par2cmdline**: 1.119s average (±376ms variance)
+- **Speedup**: **1.24x faster** with **4x better consistency**
+
+#### 1GB File Repair (10 iterations)
+
+```
+par2cmdline:
+  Average: 12.337s
+  Min:     10.338s
+  Max:     20.119s
+
+par2rs:
+  Average: 8.084s
+  Min:     7.802s
+  Max:     8.629s
+
+Speedup: 1.52x
+```
+
+**Results:**
+- **par2rs**: 8.084s average (±0.8s variance)
+- **par2cmdline**: 12.337s average (±10s variance)
+- **Speedup**: **1.52x faster** with **12x better consistency**
+- **Scaling**: Linear performance scaling (10x data = 10x time)
 
 ### Microbenchmark Results (528-byte PAR2 blocks)
 

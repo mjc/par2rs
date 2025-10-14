@@ -55,22 +55,18 @@ impl BinRead for InputFileSliceChecksumPacket {
             .read_exact(&mut buffer)
             .map_err(binrw::Error::Io)?;
 
-        // Parse checksums from buffer using unsafe for speed
+        // Parse checksums from buffer using chunks_exact for better performance
         let mut slice_checksums = Vec::with_capacity(num_checksums);
-        unsafe {
-            let ptr = buffer.as_ptr();
-            for i in 0..num_checksums {
-                let offset = i * 20;
-                let mut md5 = [0u8; 16];
-                std::ptr::copy_nonoverlapping(ptr.add(offset), md5.as_mut_ptr(), 16);
-                let crc32 = u32::from_le_bytes([
-                    *ptr.add(offset + 16),
-                    *ptr.add(offset + 17),
-                    *ptr.add(offset + 18),
-                    *ptr.add(offset + 19),
-                ]);
-                slice_checksums.push((md5, crc32));
-            }
+        for chunk in buffer.chunks_exact(20) {
+            let mut md5 = [0u8; 16];
+            md5.copy_from_slice(&chunk[0..16]);
+            let crc32 = u32::from_le_bytes([
+                chunk[16],
+                chunk[17],
+                chunk[18],
+                chunk[19],
+            ]);
+            slice_checksums.push((md5, crc32));
         }
 
         Ok(InputFileSliceChecksumPacket {
