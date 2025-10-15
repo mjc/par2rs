@@ -39,6 +39,7 @@
             clippy
             yamllint
             cargo-flamegraph
+            heaptrack
             perf
             bc # for benchmark averaging calculations
             gh # GitHub CLI
