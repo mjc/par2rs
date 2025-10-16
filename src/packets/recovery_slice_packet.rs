@@ -1,19 +1,22 @@
 
 use binrw::{BinRead, BinWrite};
+use crate::repair::{Md5Hash, RecoverySetId};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0RecvSlic";
 
 #[derive(Debug, Clone, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct RecoverySlicePacket {
-    pub length: u64,              // Length of the packet
-    pub md5: [u8; 16],            // MD5 hash of the packet
-    pub set_id: [u8; 16],         // Unique identifier for the PAR2 set
-    pub type_of_packet: [u8; 16], // Type of packet - should be "PAR 2.0\0RecvSlic"
-    pub exponent: u32,            // Exponent used to generate recovery data
+    pub length: u64,                                // Length of the packet
+    #[br(map = |x: [u8; 16]| Md5Hash::new(x))]
+    pub md5: Md5Hash,                               // MD5 hash of the packet
+    #[br(map = |x: [u8; 16]| RecoverySetId::new(x))]
+    pub set_id: RecoverySetId,                      // Unique identifier for the PAR2 set
+    pub type_of_packet: [u8; 16],                   // Type of packet - should be "PAR 2.0\0RecvSlic"
+    pub exponent: u32,                              // Exponent used to generate recovery data
     #[br(count = length as usize - (8 + 8 + 16 + 16 + 16 + 4))]
     // Calculate recovery data size: total length - (magic + length + md5 + set_id + type + exponent)
-    pub recovery_data: Vec<u8>, // Recovery data
+    pub recovery_data: Vec<u8>,                     // Recovery data
 }
 
 impl RecoverySlicePacket {
@@ -38,13 +41,13 @@ impl RecoverySlicePacket {
             return false;
         }
         let mut data = Vec::new();
-        data.extend_from_slice(&self.set_id);
+        data.extend_from_slice(self.set_id.as_bytes());
         data.extend_from_slice(TYPE_OF_PACKET);
         data.extend_from_slice(&self.exponent.to_le_bytes());
         data.extend_from_slice(&self.recovery_data);
         use md5::Digest;
         let computed_md5: [u8; 16] = md5::Md5::digest(&data).into();
-        if computed_md5 != self.md5 {
+        if computed_md5 != *self.md5.as_bytes() {
             println!("MD5 verification failed");
             return false;
         }
@@ -85,10 +88,10 @@ impl BinWrite for RecoverySlicePacket {
         writer.write_all(&self.length.to_le_bytes())?;
 
         // Write the MD5 hash
-        writer.write_all(&self.md5)?;
+        writer.write_all(self.md5.as_bytes())?;
 
         // Write the set_id field
-        writer.write_all(&self.set_id)?;
+        writer.write_all(self.set_id.as_bytes())?;
 
         // Write the type of packet
         writer.write_all(&self.type_of_packet)?;

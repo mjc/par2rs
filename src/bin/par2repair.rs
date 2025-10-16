@@ -24,8 +24,8 @@ fn main() {
 
     match repair_files(par2_file, &target_files) {
         Ok(result) => {
-            // Exit with success if repair was successful, error otherwise
-            if result.success {
+            // Exit with success if repair was successful or not needed, error otherwise
+            if result.is_success() {
                 process::exit(0);
             } else {
                 process::exit(1);

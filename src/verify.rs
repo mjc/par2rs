@@ -1,7 +1,7 @@
 
 use crate::Packet;
+use crate::repair::{FileId, Md5Hash, Crc32Value};
 use std::collections::HashMap;
-use std::convert::TryInto;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -19,10 +19,10 @@ pub enum FileStatus {
 #[derive(Debug, Clone)]
 pub struct BlockVerificationResult {
     pub block_number: u32,
-    pub file_id: [u8; 16],
+    pub file_id: FileId,
     pub is_valid: bool,
-    pub expected_hash: Option<[u8; 16]>,
-    pub expected_crc: Option<u32>,
+    pub expected_hash: Option<Md5Hash>,
+    pub expected_crc: Option<Crc32Value>,
 }
 
 /// Comprehensive verification results
@@ -46,7 +46,7 @@ pub struct VerificationResults {
 #[derive(Debug, Clone)]
 pub struct FileVerificationResult {
     pub file_name: String,
-    pub file_id: [u8; 16],
+    pub file_id: FileId,
     pub status: FileStatus,
     pub blocks_available: usize,
     pub total_blocks: usize,
@@ -132,7 +132,7 @@ fn compute_md5(
     file_name: &str,
     directory: Option<&str>,
     length: Option<usize>,
-) -> Result<[u8; 16], String> {
+) -> Result<Md5Hash, String> {
     let file_path = match directory {
         Some(dir) => Path::new(dir)
             .join(file_name.trim_end_matches(char::from(0)))
@@ -176,11 +176,8 @@ fn compute_md5(
         }
     }
 
-    let file_md5: [u8; 16] = hasher.finalize().into();
-    file_md5
-        .as_slice()
-        .try_into()
-        .map_err(|_| "MD5 hash should be 16 bytes".to_string())
+    let file_md5 = Md5Hash::new(hasher.finalize().into());
+    Ok(file_md5)
 }
 
 /// Helper function to verify MD5 checksum
@@ -188,14 +185,14 @@ fn verify_md5(
     file_name: &str,
     directory: Option<&str>,
     length: Option<usize>,
-    expected_md5: &[u8; 16],
+    expected_md5: &Md5Hash,
     description: &str,
 ) -> Result<(), String> {
     let computed_md5 = compute_md5(file_name, directory, length)?;
     if &computed_md5 != expected_md5 {
         return Err(format!(
             "MD5 mismatch for {} {}: expected {:?}, got {:?}",
-            description, file_name, expected_md5, computed_md5
+            description, file_name, expected_md5.as_bytes(), &computed_md5.as_bytes()
         ));
     }
     Ok(())
@@ -295,7 +292,7 @@ pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationRe
         .collect();
 
     // Collect slice checksum packets indexed by file ID
-    let slice_checksums: HashMap<[u8; 16], Vec<([u8; 16], u32)>> = packets
+    let slice_checksums: HashMap<FileId, Vec<(Md5Hash, Crc32Value)>> = packets
         .iter()
         .filter_map(|p| {
             if let Packet::InputFileSliceChecksum(ifsc) = p {
@@ -466,7 +463,7 @@ fn verify_file_integrity(
 /// Verify individual blocks within a file using slice checksums
 fn verify_blocks_in_file(
     file_path: &str,
-    slice_checksums: &[([u8; 16], u32)],
+    slice_checksums: &[(Md5Hash, Crc32Value)],
     block_size: usize,
 ) -> (usize, Vec<u32>) {
     let mut available_blocks = 0;
@@ -526,13 +523,13 @@ fn verify_blocks_in_file(
 
         // Compute MD5 of the block
         use md5::Digest;
-        let block_md5: [u8; 16] = md5::Md5::digest(&buffer[..bytes_to_read]).into();
+        let block_md5 = Md5Hash::new(md5::Md5::digest(&buffer[..bytes_to_read]).into());
 
         // Compute CRC32 of the block
-        let block_crc = crc32fast::hash(&buffer[..bytes_to_read]);
+        let block_crc = Crc32Value::new(crc32fast::hash(&buffer[..bytes_to_read]));
 
         // Check if block is valid
-        if block_md5 == *expected_md5 && block_crc == *expected_crc {
+        if &block_md5 == expected_md5 && &block_crc == expected_crc {
             available_blocks += 1;
         } else {
             damaged_blocks.push(block_index as u32);
@@ -638,14 +635,15 @@ mod tests {
     use super::*;
     use crate::packets::main_packet::MainPacket;
     use crate::Packet;
+    use crate::repair::{Md5Hash, RecoverySetId};
 
     #[test]
     fn test_quick_check_files() {
         // Create mock packets for testing
         let mock_packets = vec![Packet::Main(MainPacket {
             length: 0,
-            md5: [0; 16],
-            set_id: [0; 16],
+            md5: Md5Hash::new([0; 16]),
+            set_id: RecoverySetId::new([0; 16]),
             slice_size: 0,
             file_count: 0,
             file_ids: vec![],

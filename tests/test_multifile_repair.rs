@@ -41,9 +41,9 @@ fn test_multifile_all_files_present() {
     let result = repair_files(par2_file.to_str().unwrap(), &[]).unwrap();
 
     // All files should verify successfully
-    assert_eq!(result.files_repaired, 0, "No files should need repair");
-    assert_eq!(result.files_verified, 3, "All 3 files should be verified");
-    assert!(result.files_failed.is_empty(), "No files should fail");
+    assert!(result.repaired_files().is_empty(), "No files should need repair");
+    assert!(result.is_success(), "Should succeed");
+    assert!(result.failed_files().is_empty(), "No files should fail");
 }
 
 #[test]
@@ -71,13 +71,12 @@ fn test_multifile_one_file_corrupted() {
     // CURRENT BEHAVIOR (before fix): repair fails because we don't load slices from file1.txt and file3.txt
 
     println!("\n=== Multi-file Repair Test Result ===");
-    println!("Files repaired: {:?}", result.repaired_files);
-    println!("Files failed: {:?}", result.files_failed);
-    println!("Files verified: {} files", result.files_verified);
+    println!("Files repaired: {:?}", result.repaired_files());
+    println!("Files failed: {:?}", result.failed_files());
 
     // Document the current state: this test SHOULD pass after the fix
     // For now, we just document what happens
-    if result.repaired_files.contains(&"file2.txt".to_string()) {
+    if result.repaired_files().contains(&"file2.txt".to_string()) {
         println!("✓ Multi-file repair WORKS: file2.txt was repaired successfully!");
 
         // Verify the repaired content matches the original
@@ -95,7 +94,7 @@ fn test_multifile_one_file_corrupted() {
 
         // For now, just check that it at least tried to repair
         assert!(
-            result.files_failed.contains(&"file2.txt".to_string()),
+            result.failed_files().contains(&"file2.txt".to_string()),
             "file2.txt should be in failed files list"
         );
     }
@@ -119,8 +118,8 @@ fn test_multifile_first_file_corrupted() {
 
     // Should repair successfully
     assert!(
-        result.repaired_files.contains(&"file1.txt".to_string())
-            || result.files_failed.contains(&"file1.txt".to_string()),
+        result.repaired_files().contains(&"file1.txt".to_string())
+            || result.failed_files().contains(&"file1.txt".to_string()),
         "file1.txt should be processed"
     );
 }
@@ -143,8 +142,8 @@ fn test_multifile_last_file_corrupted() {
 
     // Should repair successfully
     assert!(
-        result.repaired_files.contains(&"file3.txt".to_string())
-            || result.files_failed.contains(&"file3.txt".to_string()),
+        result.repaired_files().contains(&"file3.txt".to_string())
+            || result.failed_files().contains(&"file3.txt".to_string()),
         "file3.txt should be processed"
     );
 }
@@ -176,7 +175,7 @@ fn test_single_file_repair_still_works() {
 
     // Single-file repair should still work
     assert!(
-        result.repaired_files.contains(&"testfile".to_string()),
+        result.repaired_files().contains(&"testfile".to_string()),
         "Single-file repair should work"
     );
 }
