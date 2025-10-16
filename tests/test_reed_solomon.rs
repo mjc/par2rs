@@ -4,6 +4,7 @@
 //! to ensure the matrix setup and computation work correctly.
 
 use par2rs::reed_solomon::{ReconstructionEngine, ReedSolomon};
+use par2rs::repair::{Md5Hash, RecoverySetId};
 use par2rs::RecoverySlicePacket;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -41,16 +42,16 @@ fn test_reconstruction_engine_basic() {
     let recovery_slices = vec![
         RecoverySlicePacket {
             length: 64,
-            md5: [0; 16],
-            set_id: [0; 16],
+            md5: Md5Hash::new([0; 16]),
+            set_id: RecoverySetId::new([0; 16]),
             type_of_packet: *b"PAR 2.0\0RecvSlic",
             exponent: 0,
             recovery_data: vec![0x01, 0x02, 0x03, 0x04],
         },
         RecoverySlicePacket {
             length: 64,
-            md5: [0; 16],
-            set_id: [0; 16],
+            md5: Md5Hash::new([0; 16]),
+            set_id: RecoverySetId::new([0; 16]),
             type_of_packet: *b"PAR 2.0\0RecvSlic",
             exponent: 1,
             recovery_data: vec![0x05, 0x06, 0x07, 0x08],
@@ -76,16 +77,16 @@ fn test_reconstruction_with_simple_case() {
     let recovery_slices = vec![
         RecoverySlicePacket {
             length: 64,
-            md5: [0; 16],
-            set_id: [0; 16],
+            md5: Md5Hash::new([0; 16]),
+            set_id: RecoverySetId::new([0; 16]),
             type_of_packet: *b"PAR 2.0\0RecvSlic",
             exponent: 0,
             recovery_data: vec![0x10, 0x20, 0x30, 0x40],
         },
         RecoverySlicePacket {
             length: 64,
-            md5: [0; 16],
-            set_id: [0; 16],
+            md5: Md5Hash::new([0; 16]),
+            set_id: RecoverySetId::new([0; 16]),
             type_of_packet: *b"PAR 2.0\0RecvSlic",
             exponent: 1,
             recovery_data: vec![0x11, 0x21, 0x31, 0x41],

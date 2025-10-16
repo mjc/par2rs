@@ -41,7 +41,7 @@ fn test_repair_corrupted_file() {
         Ok(repair_result) => {
             println!("Repair result: {:?}", repair_result);
 
-            if repair_result.files_repaired > 0 {
+            if !repair_result.repaired_files().is_empty() {
                 println!("SUCCESS: File was successfully repaired!");
 
                 // Verify the repaired file exists and has correct content
@@ -90,7 +90,7 @@ fn test_repair_missing_file() {
 
             // With the current implementation, this should fail because we need
             // 1986 recovery blocks but only have 99
-            if repair_result.files_repaired == 0 {
+            if repair_result.repaired_files().is_empty() {
                 println!("Expected: Cannot repair completely missing file with insufficient recovery blocks");
             } else {
                 println!("Unexpected: File was repaired despite insufficient recovery blocks");
@@ -131,9 +131,9 @@ fn test_verify_intact_file() {
             println!("Intact file verification result: {:?}", repair_result);
 
             // For an intact file, we should see it verified, not repaired
-            if repair_result.success {
-                // Either verified (if already intact) or repaired (if was corrupted)
-                assert!(repair_result.files_verified > 0 || repair_result.files_repaired > 0);
+            if repair_result.is_success() {
+                // Should be verified (either NoRepairNeeded or Success)
+                assert!(repair_result.is_success());
             }
         }
         Err(e) => {

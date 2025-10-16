@@ -4,6 +4,7 @@
 //! against their expected MD5 hashes.
 
 use crate::Packet;
+use crate::repair::{FileId, Md5Hash};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
@@ -27,7 +28,7 @@ pub fn format_display_name(file_name: &str) -> String {
 }
 
 /// Calculate MD5 hash of the first 16KB of a file (fast integrity check)
-pub fn calculate_file_md5_16k(file_path: &Path) -> Result<[u8; 16], std::io::Error> {
+pub fn calculate_file_md5_16k(file_path: &Path) -> Result<Md5Hash, std::io::Error> {
     use md5::{Digest, Md5};
     let mut file = fs::File::open(file_path)?;
     let mut hasher = Md5::new();
@@ -36,11 +37,11 @@ pub fn calculate_file_md5_16k(file_path: &Path) -> Result<[u8; 16], std::io::Err
     let bytes_read = file.read(&mut buffer)?;
     hasher.update(&buffer[..bytes_read]);
 
-    Ok(hasher.finalize().into())
+    Ok(Md5Hash::new(hasher.finalize().into()))
 }
 
 /// Calculate MD5 hash of a file
-pub fn calculate_file_md5(file_path: &Path) -> Result<[u8; 16], std::io::Error> {
+pub fn calculate_file_md5(file_path: &Path) -> Result<Md5Hash, std::io::Error> {
     use md5::{Digest, Md5};
     let mut file = fs::File::open(file_path)?;
     let mut hasher = Md5::new();
@@ -57,18 +58,18 @@ pub fn calculate_file_md5(file_path: &Path) -> Result<[u8; 16], std::io::Error> 
         hasher.update(&buffer[..bytes_read]);
     }
 
-    Ok(hasher.finalize().into())
+    Ok(Md5Hash::new(hasher.finalize().into()))
 }
 
 /// Verify a single file by comparing its MD5 hash with the expected value
-pub fn verify_single_file(file_name: &str, expected_md5: [u8; 16]) -> bool {
+pub fn verify_single_file(file_name: &str, expected_md5: &Md5Hash) -> bool {
     verify_single_file_with_base_dir(file_name, expected_md5, None)
 }
 
 /// Verify a single file with optional base directory for path resolution
 pub fn verify_single_file_with_base_dir(
     file_name: &str,
-    expected_md5: [u8; 16],
+    expected_md5: &Md5Hash,
     base_dir: Option<&Path>,
 ) -> bool {
     let file_path = if let Some(base) = base_dir {
@@ -84,7 +85,7 @@ pub fn verify_single_file_with_base_dir(
 
     // Calculate actual MD5 hash
     match calculate_file_md5(&file_path) {
-        Ok(actual_md5) => actual_md5 == expected_md5,
+        Ok(actual_md5) => &actual_md5 == expected_md5,
         Err(_) => false,
     }
 }
@@ -93,15 +94,15 @@ pub fn verify_single_file_with_base_dir(
 #[derive(Debug, Clone)]
 pub struct FileVerificationResult {
     pub file_name: String,
-    pub file_id: [u8; 16],
-    pub expected_md5: [u8; 16],
+    pub file_id: FileId,
+    pub expected_md5: Md5Hash,
     pub is_valid: bool,
     pub exists: bool,
 }
 
 /// Verify files and collect results
 pub fn verify_files_and_collect_results(
-    file_info: &HashMap<String, ([u8; 16], [u8; 16], u64)>,
+    file_info: &HashMap<String, (FileId, Md5Hash, u64)>,
     show_progress: bool,
 ) -> Vec<FileVerificationResult> {
     verify_files_and_collect_results_with_base_dir(file_info, show_progress, None)
@@ -109,13 +110,13 @@ pub fn verify_files_and_collect_results(
 
 /// Verify files and collect results with optional base directory for path resolution
 pub fn verify_files_and_collect_results_with_base_dir(
-    file_info: &HashMap<String, ([u8; 16], [u8; 16], u64)>,
+    file_info: &HashMap<String, (FileId, Md5Hash, u64)>,
     show_progress: bool,
     base_dir: Option<&Path>,
 ) -> Vec<FileVerificationResult> {
     let mut results = Vec::new();
 
-    for (file_name, &(file_id, expected_md5, _file_length)) in file_info {
+    for (file_name, (file_id, expected_md5, _file_length)) in file_info {
         if show_progress {
             let truncated_name = format_display_name(file_name);
             println!("Opening: \"{}\"", truncated_name);
@@ -146,8 +147,8 @@ pub fn verify_files_and_collect_results_with_base_dir(
 
         results.push(FileVerificationResult {
             file_name: file_name.clone(),
-            file_id,
-            expected_md5,
+            file_id: *file_id,
+            expected_md5: *expected_md5,
             is_valid,
             exists,
         });
@@ -159,7 +160,7 @@ pub fn verify_files_and_collect_results_with_base_dir(
 /// Find FileDescription packets for files that failed verification
 pub fn find_broken_file_descriptors(
     packets: Vec<Packet>,
-    broken_file_ids: &[[u8; 16]],
+    broken_file_ids: &[FileId],
 ) -> Vec<Packet> {
     packets
         .into_iter()

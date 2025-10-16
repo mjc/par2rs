@@ -4,6 +4,7 @@
 //! loading packets from multiple files, and handling deduplication.
 
 use crate::Packet;
+use crate::repair::Md5Hash;
 use rustc_hash::FxHashSet as HashSet;
 use std::fs;
 use std::io::BufReader;
@@ -54,7 +55,7 @@ pub fn collect_par2_files(file_path: &Path) -> Vec<PathBuf> {
 }
 
 /// Get a unique hash for a packet to detect duplicates
-pub fn get_packet_hash(packet: &Packet) -> [u8; 16] {
+pub fn get_packet_hash(packet: &Packet) -> Md5Hash {
     match packet {
         Packet::Main(p) => p.md5,
         Packet::FileDescription(p) => p.md5,
@@ -68,7 +69,7 @@ pub fn get_packet_hash(packet: &Packet) -> [u8; 16] {
 /// Parse a single PAR2 file and return new packets (with deduplication)
 pub fn parse_par2_file(
     par2_file: &Path,
-    seen_packet_hashes: &mut HashSet<[u8; 16]>,
+    seen_packet_hashes: &mut HashSet<Md5Hash>,
 ) -> Vec<Packet> {
     let file = fs::File::open(par2_file).expect("Failed to open .par2 file");
     // Use 1MB buffer - recovery slices can be 100KB+ each
@@ -90,7 +91,7 @@ pub fn parse_par2_file(
 /// Parse a single PAR2 file with progress output
 pub fn parse_par2_file_with_progress(
     par2_file: &Path,
-    seen_packet_hashes: &mut HashSet<[u8; 16]>,
+    seen_packet_hashes: &mut HashSet<Md5Hash>,
     show_progress: bool,
 ) -> (Vec<Packet>, usize) {
     let filename = par2_file.file_name().unwrap().to_string_lossy();

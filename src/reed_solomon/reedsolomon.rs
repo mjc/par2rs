@@ -1222,6 +1222,300 @@ impl ReconstructionEngine {
         }
     }
 
+    /// Reconstruct missing slices using chunked I/O (memory-efficient)
+    ///
+    /// This method processes data in chunks (default 64KB) rather than loading
+    /// entire slices into memory. This reduces memory usage from ~3x file size
+    /// to ~1GB for large files.
+    ///
+    /// # Arguments
+    /// * `input_provider` - Provider for reading input slice data
+    /// * `recovery_provider` - Provider for reading recovery slice data
+    /// * `global_missing_indices` - Global indices of slices to reconstruct
+    /// * `output_writers` - HashMap of global_index -> Write trait for output
+    /// * `chunk_size` - Size of chunks to process (default 64KB)
+    pub fn reconstruct_missing_slices_chunked<W: std::io::Write>(
+        &self,
+        input_provider: &mut dyn crate::slice_provider::SliceProvider,
+        recovery_provider: &crate::slice_provider::RecoverySliceProvider,
+        global_missing_indices: &[usize],
+        output_writers: &mut HashMap<usize, W>,
+        chunk_size: usize,
+    ) -> ReconstructionResult {
+        use crate::slice_provider::DEFAULT_CHUNK_SIZE;
+        
+        if global_missing_indices.is_empty() {
+            return ReconstructionResult {
+                success: true,
+                reconstructed_slices: HashMap::default(),
+                error_message: None,
+            };
+        }
+
+        if !self.can_reconstruct(global_missing_indices.len()) {
+            return ReconstructionResult {
+                success: false,
+                reconstructed_slices: HashMap::default(),
+                error_message: Some("Not enough recovery slices available".to_string()),
+            };
+        }
+
+        let num_missing = global_missing_indices.len();
+        let chunk_size = if chunk_size == 0 { DEFAULT_CHUNK_SIZE } else { chunk_size };
+
+        debug!("Starting chunked Reed-Solomon reconstruction: {} missing slices, chunk size {} bytes", 
+               num_missing, chunk_size);
+
+        // Build and invert matrix (same as regular reconstruction)
+        debug!("Building coefficient matrix...");
+        let mut matrix = vec![vec![Galois16::new(0); num_missing]; num_missing];
+        for (eq_idx, recovery_slice) in self.recovery_slices.iter().take(num_missing).enumerate() {
+            let exponent = recovery_slice.exponent;
+            for (col_idx, &global_missing_idx) in global_missing_indices.iter().enumerate() {
+                let base = Galois16::new(self.base_values[global_missing_idx]);
+                matrix[eq_idx][col_idx] = base.pow(exponent as u16);
+            }
+        }
+
+        debug!("Inverting matrix...");
+        let matrix_inv = match self.invert_gf_matrix(&matrix) {
+            Ok(inv) => inv,
+            Err(e) => {
+                return ReconstructionResult {
+                    success: false,
+                    reconstructed_slices: HashMap::default(),
+                    error_message: Some(format!("Failed to invert matrix: {}", e)),
+                };
+            }
+        };
+        debug!("Matrix inverted successfully");
+
+        // Precompute coefficients for present slices
+        debug!("Precomputing coefficients for present slices...");
+        let available_slices = input_provider.available_slices();
+        let mut slice_coefficients: Vec<Vec<Galois16>> = Vec::new();
+        for recovery_slice in self.recovery_slices.iter().take(num_missing) {
+            let exponent = recovery_slice.exponent;
+            let mut coeffs = Vec::new();
+            for &global_idx in &available_slices {
+                if global_idx < self.total_input_slices {
+                    let base = Galois16::new(self.base_values[global_idx]);
+                    let coefficient = base.pow(exponent as u16);
+                    coeffs.push(coefficient);
+                } else {
+                    coeffs.push(Galois16::new(0));
+                }
+            }
+            slice_coefficients.push(coeffs);
+        }
+
+        // Compute combined coefficients for present slices
+        debug!("Computing combined coefficients...");
+        let mut present_coeffs: Vec<Vec<u16>> = Vec::new();
+        let mut table_cache: HashMap<u16, SplitMulTable> = HashMap::default();
+        
+        for out_idx in 0..num_missing {
+            let mut coeff_row = Vec::new();
+            for (idx, &global_idx) in available_slices.iter().enumerate() {
+                if global_idx >= self.total_input_slices {
+                    coeff_row.push(0);
+                    continue;
+                }
+
+                let mut combined_coeff = Galois16::new(0);
+                for eq_idx in 0..num_missing {
+                    combined_coeff += matrix_inv[out_idx][eq_idx] * slice_coefficients[eq_idx][idx];
+                }
+
+                let coeff_val = combined_coeff.value();
+                coeff_row.push(coeff_val);
+
+                if coeff_val != 0 && coeff_val != 1 && !table_cache.contains_key(&coeff_val) {
+                    table_cache.insert(coeff_val, build_split_mul_table(combined_coeff));
+                }
+            }
+            present_coeffs.push(coeff_row);
+        }
+
+        // Add recovery coefficient tables to cache
+        for out_idx in 0..num_missing {
+            for eq_idx in 0..num_missing {
+                let coeff_val = matrix_inv[out_idx][eq_idx].value();
+                if coeff_val != 0 && coeff_val != 1 && !table_cache.contains_key(&coeff_val) {
+                    table_cache.insert(coeff_val, build_split_mul_table(matrix_inv[out_idx][eq_idx]));
+                }
+            }
+        }
+
+        debug!("Built {} unique multiplication tables", table_cache.len());
+
+        // Process data in chunks
+        let num_chunks = (self.slice_size + chunk_size - 1) / chunk_size;
+        debug!("Processing {} chunks of {} bytes each", num_chunks, chunk_size);
+
+        for chunk_idx in 0..num_chunks {
+            let chunk_offset = chunk_idx * chunk_size;
+            let current_chunk_size = (self.slice_size - chunk_offset).min(chunk_size);
+            
+            if chunk_idx % 100 == 0 && chunk_idx > 0 {
+                debug!("Processing chunk {}/{}", chunk_idx, num_chunks);
+            }
+
+            // Allocate output buffers for this chunk
+            let mut output_buffers: Vec<Vec<u8>> = vec![vec![0u8; current_chunk_size]; num_missing];
+            let mut first_writes: Vec<bool> = vec![true; num_missing];
+
+            // Process recovery slices
+            for (eq_idx, recovery_slice) in self.recovery_slices.iter().take(num_missing).enumerate() {
+                let recovery_chunk = match recovery_provider.get_recovery_chunk(
+                    recovery_slice.exponent as usize,
+                    chunk_offset,
+                    current_chunk_size,
+                ) {
+                    Ok(chunk) => chunk,
+                    Err(e) => {
+                        return ReconstructionResult {
+                            success: false,
+                            reconstructed_slices: HashMap::default(),
+                            error_message: Some(format!("Failed to read recovery chunk: {}", e)),
+                        };
+                    }
+                };
+
+                if recovery_chunk.valid_bytes < current_chunk_size {
+                    // Pad with zeros if needed
+                    let mut padded = recovery_chunk.data;
+                    padded.resize(current_chunk_size, 0);
+                    
+                    for out_idx in 0..num_missing {
+                        let coeff_val = matrix_inv[out_idx][eq_idx].value();
+                        if coeff_val == 0 {
+                            continue;
+                        }
+
+                        if first_writes[out_idx] {
+                            first_writes[out_idx] = false;
+                            if coeff_val == 1 {
+                                output_buffers[out_idx].copy_from_slice(&padded);
+                            } else if let Some(table) = table_cache.get(&coeff_val) {
+                                process_slice_multiply_direct(&padded, &mut output_buffers[out_idx], table);
+                            }
+                        } else {
+                            if coeff_val == 1 {
+                                for (out_byte, in_byte) in output_buffers[out_idx].iter_mut().zip(padded.iter()) {
+                                    *out_byte ^= *in_byte;
+                                }
+                            } else if let Some(table) = table_cache.get(&coeff_val) {
+                                process_slice_multiply_add(&padded, &mut output_buffers[out_idx], table);
+                            }
+                        }
+                    }
+                } else {
+                    for out_idx in 0..num_missing {
+                        let coeff_val = matrix_inv[out_idx][eq_idx].value();
+                        if coeff_val == 0 {
+                            continue;
+                        }
+
+                        if first_writes[out_idx] {
+                            first_writes[out_idx] = false;
+                            if coeff_val == 1 {
+                                output_buffers[out_idx].copy_from_slice(&recovery_chunk.data);
+                            } else if let Some(table) = table_cache.get(&coeff_val) {
+                                process_slice_multiply_direct(&recovery_chunk.data, &mut output_buffers[out_idx], table);
+                            }
+                        } else {
+                            if coeff_val == 1 {
+                                for (out_byte, in_byte) in output_buffers[out_idx].iter_mut().zip(recovery_chunk.data.iter()) {
+                                    *out_byte ^= *in_byte;
+                                }
+                            } else if let Some(table) = table_cache.get(&coeff_val) {
+                                process_slice_multiply_add(&recovery_chunk.data, &mut output_buffers[out_idx], table);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Process present input slices
+            for (idx, &global_idx) in available_slices.iter().enumerate() {
+                if global_idx >= self.total_input_slices {
+                    continue;
+                }
+
+                let input_chunk = match input_provider.read_chunk(global_idx, chunk_offset, current_chunk_size) {
+                    Ok(chunk) => chunk,
+                    Err(e) => {
+                        return ReconstructionResult {
+                            success: false,
+                            reconstructed_slices: HashMap::default(),
+                            error_message: Some(format!("Failed to read input chunk from slice {}: {}", global_idx, e)),
+                        };
+                    }
+                };
+
+                if input_chunk.valid_bytes == 0 {
+                    continue;
+                }
+
+                // Pad if necessary
+                let chunk_data = if input_chunk.valid_bytes < current_chunk_size {
+                    let mut padded = input_chunk.data;
+                    padded.resize(current_chunk_size, 0);
+                    padded
+                } else {
+                    input_chunk.data
+                };
+
+                for out_idx in 0..num_missing {
+                    let coeff_val = present_coeffs[out_idx][idx];
+                    if coeff_val == 0 {
+                        continue;
+                    }
+
+                    if first_writes[out_idx] {
+                        first_writes[out_idx] = false;
+                        if coeff_val == 1 {
+                            output_buffers[out_idx].copy_from_slice(&chunk_data);
+                        } else if let Some(table) = table_cache.get(&coeff_val) {
+                            process_slice_multiply_direct(&chunk_data, &mut output_buffers[out_idx], table);
+                        }
+                    } else {
+                        if coeff_val == 1 {
+                            for (out_byte, in_byte) in output_buffers[out_idx].iter_mut().zip(chunk_data.iter()) {
+                                *out_byte ^= *in_byte;
+                            }
+                        } else if let Some(table) = table_cache.get(&coeff_val) {
+                            process_slice_multiply_add(&chunk_data, &mut output_buffers[out_idx], table);
+                        }
+                    }
+                }
+            }
+
+            // Write output chunks to files
+            for (out_idx, &missing_global_idx) in global_missing_indices.iter().enumerate() {
+                if let Some(writer) = output_writers.get_mut(&missing_global_idx) {
+                    if let Err(e) = writer.write_all(&output_buffers[out_idx]) {
+                        return ReconstructionResult {
+                            success: false,
+                            reconstructed_slices: HashMap::default(),
+                            error_message: Some(format!("Failed to write output chunk: {}", e)),
+                        };
+                    }
+                }
+            }
+        }
+
+        debug!("Chunked reconstruction completed successfully");
+
+        // Return empty reconstructed_slices since we wrote directly to files
+        ReconstructionResult {
+            success: true,
+            reconstructed_slices: HashMap::default(),
+            error_message: None,
+        }
+    }
+
     /// Invert a matrix in GF(2^16) using Gaussian elimination
     /// Returns the inverted matrix
     fn invert_gf_matrix(&self, matrix: &[Vec<Galois16>]) -> Result<Vec<Vec<Galois16>>, String> {

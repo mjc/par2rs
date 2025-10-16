@@ -59,7 +59,7 @@ echo -e "${YELLOW}Creating PAR2 files...${NC}"
 $PAR2CMDLINE c -q -r5 "$TEMP/testfile_${SIZE_MB}mb.par2" "$TEMP/testfile_${SIZE_MB}mb" 2>&1 | tail -3
 echo ""
 
-# Save original MD5
+# Save original MD5 for verification
 MD5_ORIGINAL=$(md5sum "$TEMP/testfile_${SIZE_MB}mb" | awk '{print $1}')
 echo "Original MD5: $MD5_ORIGINAL"
 echo ""
@@ -68,13 +68,18 @@ for i in $(seq 1 $ITERATIONS); do
     echo -e "${GREEN}=== Iteration $i/$ITERATIONS ===${NC}"
     
     # === Test par2cmdline ===
+    # Corrupt file (will be repaired, then used as base for next iteration)
     echo -e "${YELLOW}  Corrupting file for par2cmdline...${NC}"
     dd if=/dev/zero of="$TEMP/testfile_${SIZE_MB}mb" bs=1M count=1 seek=$CORRUPT_OFFSET conv=notrunc 2>&1 > /dev/null
     
     echo -e "${YELLOW}  Running par2cmdline repair...${NC}"
     cd "$TEMP"
     START=$(date +%s.%N)
-    $PAR2CMDLINE r -q testfile_${SIZE_MB}mb.par2 > /dev/null 2>&1
+    if ! $PAR2CMDLINE r -q -N testfile_${SIZE_MB}mb.par2 > /dev/null 2>&1; then
+        echo -e "${RED}✗ par2cmdline repair failed in iteration $i!${NC}"
+        $PAR2CMDLINE r -q -N testfile_${SIZE_MB}mb.par2
+        exit 1
+    fi
     END=$(date +%s.%N)
     PAR2CMD_TIME=$(echo "$END - $START" | bc)
     PAR2CMD_TIMES+=($PAR2CMD_TIME)
@@ -83,12 +88,17 @@ for i in $(seq 1 $ITERATIONS); do
     MD5_PAR2CMD=$(md5sum "$TEMP/testfile_${SIZE_MB}mb" | awk '{print $1}')
     
     # === Test par2rs ===
+    # Corrupt file again (will be repaired, then used as base for next iteration)
     echo -e "${YELLOW}  Corrupting file for par2rs...${NC}"
     dd if=/dev/zero of="$TEMP/testfile_${SIZE_MB}mb" bs=1M count=1 seek=$CORRUPT_OFFSET conv=notrunc 2>&1 > /dev/null
     
     echo -e "${YELLOW}  Running par2rs repair...${NC}"
     START=$(date +%s.%N)
-    $PAR2RS testfile_${SIZE_MB}mb.par2 > /dev/null 2>&1
+    if ! $PAR2RS testfile_${SIZE_MB}mb.par2 > /dev/null 2>&1; then
+        echo -e "${RED}✗ par2rs repair failed in iteration $i!${NC}"
+        $PAR2RS testfile_${SIZE_MB}mb.par2
+        exit 1
+    fi
     END=$(date +%s.%N)
     PAR2RS_TIME=$(echo "$END - $START" | bc)
     PAR2RS_TIMES+=($PAR2RS_TIME)
@@ -110,9 +120,6 @@ for i in $(seq 1 $ITERATIONS); do
     
     echo ""
 done
-
-# Cleanup
-rm -rf "$TEMP"
 
 # Calculate averages
 PAR2CMD_SUM=0
