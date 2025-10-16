@@ -121,16 +121,15 @@ fn test_load_all_slices_with_padding_during_verify() {
     let result = repair_files(par2_file.to_str().unwrap(), &[]).unwrap();
 
     // All files should verify successfully if we're computing slice checksums correctly
-    assert_eq!(
-        result.files_verified, 3,
-        "All 3 files should verify (this will fail if padding is wrong)"
-    );
-    assert_eq!(result.files_repaired, 0, "No repairs needed");
-    assert!(
-        result.files_failed.is_empty(),
-        "No files should fail verification: {:?}",
-        result.files_failed
-    );
+    match result {
+        par2rs::repair::RepairResult::NoRepairNeeded { files_verified, .. } => {
+            assert_eq!(
+                files_verified, 3,
+                "All 3 files should verify (this will fail if padding is wrong)"
+            );
+        }
+        _ => panic!("Expected NoRepairNeeded result"),
+    }
 }
 
 #[test]
@@ -175,19 +174,18 @@ fn test_load_all_slices_during_repair_needs_padding() {
     let result = repair_files(par2_file.to_str().unwrap(), &[]).unwrap();
 
     println!("\n=== Repair Result ===");
-    println!("Files repaired: {:?}", result.repaired_files);
-    println!("Files verified: {}", result.files_verified);
-    println!("Files failed: {:?}", result.files_failed);
+    println!("Files repaired: {:?}", result.repaired_files());
+    println!("Files failed: {:?}", result.failed_files());
 
     // The repair should work if load_all_slices properly loads file1.txt and file3.txt
     // Currently this FAILS because load_all_slices doesn't pad slices for checksum computation
     assert!(
-        result.repaired_files.contains(&"file2.txt".to_string())
-            || result.files_failed.contains(&"file2.txt".to_string()),
+        result.repaired_files().contains(&"file2.txt".to_string())
+            || result.failed_files().contains(&"file2.txt".to_string()),
         "file2.txt should be repaired or marked as failed"
     );
 
-    if result.files_failed.contains(&"file2.txt".to_string()) {
+    if result.failed_files().contains(&"file2.txt".to_string()) {
         panic!(
             "EXPECTED FAILURE: load_all_slices doesn't pad slices for checksum verification, \
                 so it can't load valid slices from file1.txt and file3.txt, \

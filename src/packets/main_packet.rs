@@ -2,6 +2,7 @@
 use std::fmt::{Debug, Display};
 
 use binrw::{BinRead, BinWrite};
+use crate::repair::{FileId, Md5Hash, RecoverySetId};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0Main\0\0\0\0";
 
@@ -21,16 +22,20 @@ pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0Main\0\0\0\0";
 /// assert_eq!(main_packet.file_ids.len(), 1); // Updated assertion
 /// ```
 pub struct MainPacket {
-    pub length: u64,   // Length of the packet
-    pub md5: [u8; 16], // MD5 hash of the packet
-    #[br(pad_after = 16)] // Ensure proper alignment for the `slice_size` field
-    pub set_id: [u8; 16], // Unique identifier for the PAR2 set
-    pub slice_size: u64, // Size of each slice
-    pub file_count: u32, // Number of files in the recovery set
+    pub length: u64,                                    // Length of the packet
+    #[br(map = |x: [u8; 16]| Md5Hash::new(x))]
+    pub md5: Md5Hash,                                   // MD5 hash of the packet
+    #[br(pad_after = 16)]                               // Ensure proper alignment for the `slice_size` field
+    #[br(map = |x: [u8; 16]| RecoverySetId::new(x))]
+    pub set_id: RecoverySetId,                          // Unique identifier for the PAR2 set
+    pub slice_size: u64,                                // Size of each slice
+    pub file_count: u32,                                // Number of files in the recovery set
     #[br(count = (length - 72) / 16)]
-    pub file_ids: Vec<[u8; 16]>, // File IDs of all files in the recovery set
+    #[br(map = |v: Vec<[u8; 16]>| v.into_iter().map(FileId::new).collect())]
+    pub file_ids: Vec<FileId>,                          // File IDs of all files in the recovery set
     #[br(count = (length - 72 - (file_ids.len() as u64 * 16)) / 16)]
-    pub non_recovery_file_ids: Vec<[u8; 16]>, // File IDs of all files in the non-recovery set
+    #[br(map = |v: Vec<[u8; 16]>| v.into_iter().map(FileId::new).collect())]
+    pub non_recovery_file_ids: Vec<FileId>,             // File IDs of all files in the non-recovery set
 }
 
 /// A doctest for testing the `BinWrite` implementation of `MainPacket`.
@@ -40,14 +45,15 @@ pub struct MainPacket {
 /// use std::io::Cursor;
 /// use binrw::{BinWriterExt, BinWrite};
 /// use par2rs::packets::main_packet::MainPacket;
+/// use par2rs::repair::{Md5Hash, RecoverySetId, FileId};
 ///
 /// let main_packet = MainPacket {
 ///     length: 92,
-///     md5: [0; 16],
-///     set_id: [0; 16],
+///     md5: Md5Hash::new([0; 16]),
+///     set_id: RecoverySetId::new([0; 16]),
 ///     slice_size: 1024,
 ///     file_count: 1,
-///     file_ids: vec![[0; 16]],
+///     file_ids: vec![FileId::new([0; 16])],
 ///     non_recovery_file_ids: vec![],
 /// };
 ///
@@ -74,17 +80,17 @@ impl BinWrite for MainPacket {
     ) -> binrw::BinResult<()> {
         writer.write_all(super::MAGIC_BYTES)?;
         writer.write_all(&self.length.to_le_bytes())?;
-        writer.write_all(&self.md5)?;
-        writer.write_all(&self.set_id)?;
+        writer.write_all(self.md5.as_bytes())?;
+        writer.write_all(self.set_id.as_bytes())?;
         writer.write_all(TYPE_OF_PACKET)?;
 
         writer.write_all(&self.slice_size.to_le_bytes())?;
         writer.write_all(&self.file_count.to_le_bytes())?;
         for file_id in &self.file_ids {
-            writer.write_all(file_id)?;
+            writer.write_all(file_id.as_bytes())?;
         }
         for non_recovery_file_id in &self.non_recovery_file_ids {
-            writer.write_all(non_recovery_file_id)?;
+            writer.write_all(non_recovery_file_id.as_bytes())?;
         }
         Ok(())
     }
@@ -92,14 +98,14 @@ impl BinWrite for MainPacket {
 
 impl Display for MainPacket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fn fmt_md5(md5: [u8; 16]) -> String {
-            format!("{:x?}", u128::from_le_bytes(md5))
+        fn fmt_md5(md5: &[u8; 16]) -> String {
+            format!("{:x?}", u128::from_le_bytes(*md5))
         }
 
         write!(
             f,
             "MainPacket {{ length: {}, md5: {}, set_id: {}, slice_size: {}, file_count: {}, file_ids: {:?}, non_recovery_file_ids: {:?} }}",
-            self.length, fmt_md5(self.md5), fmt_md5(self.set_id), self.slice_size, self.file_count, self.file_ids.iter().map(|f| fmt_md5(*f)).collect::<Vec<_>>(), self.non_recovery_file_ids.iter().map(|f| fmt_md5(*f)).collect::<Vec<_>>()
+            self.length, fmt_md5(self.md5.as_bytes()), fmt_md5(self.set_id.as_bytes()), self.slice_size, self.file_count, self.file_ids.iter().map(|f| fmt_md5(f.as_bytes())).collect::<Vec<_>>(), self.non_recovery_file_ids.iter().map(|f| fmt_md5(f.as_bytes())).collect::<Vec<_>>()
         )
     }
 }
@@ -136,21 +142,21 @@ impl MainPacket {
         let mut data = Vec::new();
 
         // Exclude header fields (MAGIC_BYTES, length, md5)
-        data.extend_from_slice(&self.set_id);
+        data.extend_from_slice(self.set_id.as_bytes());
         data.extend_from_slice(TYPE_OF_PACKET);
         data.extend_from_slice(&self.slice_size.to_le_bytes());
         data.extend_from_slice(&self.file_count.to_le_bytes());
         for file_id in &self.file_ids {
-            data.extend_from_slice(file_id);
+            data.extend_from_slice(file_id.as_bytes());
         }
         for non_recovery_file_id in &self.non_recovery_file_ids {
-            data.extend_from_slice(non_recovery_file_id);
+            data.extend_from_slice(non_recovery_file_id.as_bytes());
         }
 
         // Compute MD5 hash and compare with stored MD5
         use md5::Digest;
         let computed_md5: [u8; 16] = md5::Md5::digest(&data).into();
-        if computed_md5 != self.md5 {
+        if computed_md5 != *self.md5.as_bytes() {
             return false;
         }
 

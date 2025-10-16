@@ -54,7 +54,7 @@ impl TestEnv {
 
     fn corrupt_slice(&self, slice_index: usize, data: &[u8]) {
         let context = self.load_context();
-        let slice_size = context.recovery_set.slice_size as u64;
+        let slice_size = context.recovery_set.slice_size;
         self.corrupt_at(slice_index as u64 * slice_size, data);
     }
 
@@ -70,13 +70,22 @@ impl TestEnv {
     fn count_corrupted(&self) -> usize {
         let context = self.load_context();
         let file_info = &context.recovery_set.files[0];
-        // Load slices and get corrupted count (returns tuple with slices and count)
-        let (_slices, corrupted_count) = context.load_file_slices(file_info).unwrap();
-        corrupted_count
+        // Validate slices and count how many are invalid
+        let valid_slices = context.validate_file_slices(file_info).unwrap();
+        file_info.slice_count - valid_slices.len()
     }
 
     fn repair(&self) -> par2rs::repair::RepairResult {
-        self.load_context().repair().unwrap()
+        let _ = env_logger::builder().is_test(true).try_init();
+        match self.load_context().repair() {
+            Ok(result) => {
+                if !result.is_success() {
+                    eprintln!("Repair returned failure: {:?}", result);
+                }
+                result
+            },
+            Err(e) => panic!("Repair failed with error: {}", e),
+        }
     }
 
     fn verify_md5(&self) -> bool {
@@ -119,35 +128,8 @@ fn test_bug_last_slice_padding_in_count() {
     );
 }
 
-#[test]
-fn test_bug_load_all_slices_excludes_current_file() {
-    // BUG: reconstruct_slices was calling load_all_slices() which loaded slices from
-    //      the DAMAGED file being repaired, getting MD5-verified slices (excluding corrupted ones).
-    //      Then it added current_file_slices on top, creating duplicates and wrong counts.
-    //
-    // Symptom: "Loaded 1984 slices across all files" when there's only 1 file in recovery set
-    //          Should be "Loaded 0 slices from OTHER files" + "Loaded 1983 from current file"
-    //
-    // Root cause: load_all_slices() didn't skip the file being repaired, causing duplicates
-    //
-    // Fix: Created load_slices_except_file() to only load from OTHER files in the recovery set
-
-    let env = TestEnv::new();
-    env.corrupt_at(1000, &vec![0u8; 100]);
-
-    let context = env.load_context();
-    let file_info = &context.recovery_set.files[0];
-    let other_slices = context.load_slices_except_file(&file_info.file_id).unwrap();
-
-    // Since there's only 1 file in the recovery set, should get 0 slices from "other" files
-    assert_eq!(
-        other_slices.len(),
-        0,
-        "Expected 0 slices from other files (only 1 file in set), got {}. \
-         This indicates the load_all_slices bug has regressed.",
-        other_slices.len()
-    );
-}
+// Test removed - load_slices_except_file() no longer exists
+// Chunked reconstruction handles slice loading differently
 
 #[test]
 fn test_bug_reconstruct_slices_needs_valid_slices() {
@@ -169,10 +151,10 @@ fn test_bug_reconstruct_slices_needs_valid_slices() {
 
     let result = env.repair();
     assert!(
-        result.success,
+        result.is_success(),
         "Repair should succeed with 2 corrupted slices and 99 recovery blocks"
     );
-    assert_eq!(result.files_repaired, 1, "Should repair exactly 1 file");
+    assert_eq!(result.repaired_files().len(), 1, "Should repair exactly 1 file");
 
     assert!(
         env.verify_md5(),
@@ -202,7 +184,7 @@ fn test_bug_repair_actually_writes_correct_data() {
     assert_ne!(original, corrupted, "File should be corrupted");
 
     let result = env.repair();
-    assert!(result.success, "Repair should report success");
+    assert!(result.is_success(), "Repair should report success. Got: {:?}", result);
 
     let repaired = env.read_file();
     assert_eq!(
@@ -232,10 +214,10 @@ fn test_bug_multiple_corrupted_slices_repair() {
 
     let result = env.repair();
     assert!(
-        result.success,
+        result.is_success(),
         "Repair should succeed with 5 corrupted slices"
     );
-    assert_eq!(result.files_repaired, 1, "Should repair exactly 1 file");
+    assert_eq!(result.repaired_files().len(), 1, "Should repair exactly 1 file");
 
     assert!(
         env.verify_md5(),
@@ -268,7 +250,7 @@ fn test_bug_last_slice_reconstruction() {
     );
 
     let result = env.repair();
-    assert!(result.success, "Should successfully repair the last slice");
+    assert!(result.is_success(), "Should successfully repair the last slice");
 
     let repaired = env.read_file();
     assert_eq!(

@@ -1,15 +1,16 @@
 
 use binrw::{BinRead, BinWrite};
+use crate::repair::{Crc32Value, Md5Hash, RecoverySetId, FileId};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0IFSC\0\0\0\0";
 
 #[derive(Debug)]
 pub struct InputFileSliceChecksumPacket {
-    pub length: u64,                           // Length of the packet
-    pub md5: [u8; 16],                         // MD5 hash of the packet
-    pub set_id: [u8; 16],                      // Unique identifier for the PAR2 set
-    pub file_id: [u8; 16],                     // File ID of the file
-    pub slice_checksums: Vec<([u8; 16], u32)>, // MD5 and CRC32 pairs for slices
+    pub length: u64,                                 // Length of the packet
+    pub md5: Md5Hash,                                // MD5 hash of the packet
+    pub set_id: RecoverySetId,                       // Unique identifier for the PAR2 set
+    pub file_id: FileId,                             // File ID of the file
+    pub slice_checksums: Vec<(Md5Hash, Crc32Value)>, // MD5 and CRC32 pairs for slices
 }
 
 impl BinRead for InputFileSliceChecksumPacket {
@@ -66,14 +67,14 @@ impl BinRead for InputFileSliceChecksumPacket {
                 chunk[18],
                 chunk[19],
             ]);
-            slice_checksums.push((md5, crc32));
+            slice_checksums.push((Md5Hash::new(md5), Crc32Value::new(crc32)));
         }
 
         Ok(InputFileSliceChecksumPacket {
             length,
-            md5,
-            set_id,
-            file_id,
+            md5: Md5Hash::new(md5),
+            set_id: RecoverySetId::new(set_id),
+            file_id: FileId::new(file_id),
             slice_checksums,
         })
     }
@@ -101,16 +102,16 @@ impl InputFileSliceChecksumPacket {
             return false;
         }
         let mut data = Vec::new();
-        data.extend_from_slice(&self.set_id);
+        data.extend_from_slice(self.set_id.as_bytes());
         data.extend_from_slice(TYPE_OF_PACKET);
-        data.extend_from_slice(&self.file_id);
+        data.extend_from_slice(self.file_id.as_bytes());
         for (md5, crc32) in &self.slice_checksums {
-            data.extend_from_slice(md5);
+            data.extend_from_slice(md5.as_bytes());
             data.extend_from_slice(&crc32.to_le_bytes());
         }
         use md5::Digest;
         let computed_md5: [u8; 16] = md5::Md5::digest(&data).into();
-        if computed_md5 != self.md5 {
+        if computed_md5 != *self.md5.as_bytes() {
             println!(
                 "MD5 mismatch: computed {:?}, expected {:?}",
                 computed_md5, self.md5
@@ -149,12 +150,12 @@ impl BinWrite for InputFileSliceChecksumPacket {
     ) -> binrw::BinResult<()> {
         writer.write_all(super::MAGIC_BYTES)?;
         writer.write_all(&self.length.to_le_bytes())?;
-        writer.write_all(&self.md5)?;
-        writer.write_all(&self.set_id)?;
+        writer.write_all(self.md5.as_bytes())?;
+        writer.write_all(self.set_id.as_bytes())?;
         writer.write_all(TYPE_OF_PACKET)?;
-        writer.write_all(&self.file_id)?;
+        writer.write_all(self.file_id.as_bytes())?;
         for (md5, crc32) in &self.slice_checksums {
-            writer.write_all(md5)?;
+            writer.write_all(md5.as_bytes())?;
             writer.write_all(&crc32.to_le_bytes())?;
         }
         Ok(())
