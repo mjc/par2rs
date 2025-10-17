@@ -5,6 +5,35 @@
 
 use par2rs::analysis::*;
 use std::fs;
+
+// Helper function for tests that need to load all packets including recovery slices
+fn load_packets_with_recovery(par2_files: &[std::path::PathBuf]) -> (Vec<par2rs::Packet>, usize) {
+    use rustc_hash::FxHashSet as HashSet;
+    use std::io::BufReader;
+    let mut all_packets = Vec::new();
+    let mut recovery_count = 0;
+    let mut seen_hashes = HashSet::default();
+    
+    for par2_file in par2_files {
+        let file = fs::File::open(par2_file).expect("Failed to open PAR2 file");
+        let mut reader = BufReader::new(file);
+        let packets = par2rs::parse_packets(&mut reader);
+        
+        // Deduplicate packets
+        for packet in packets {
+            let hash = par2rs::file_ops::get_packet_hash(&packet);
+            if seen_hashes.insert(hash) {
+                if matches!(packet, par2rs::Packet::RecoverySlice(_)) {
+                    recovery_count += 1;
+                }
+                all_packets.push(packet);
+            }
+        }
+    }
+    
+    (all_packets, recovery_count)
+}
+
 use std::path::Path;
 
 mod filename_extraction {
@@ -66,7 +95,7 @@ mod statistics_calculation {
         let main_file = Path::new("tests/fixtures/testfile.par2");
         let par2_files = par2rs::file_ops::collect_par2_files(main_file);
         let (packets, recovery_blocks) =
-            par2rs::file_ops::load_all_par2_packets(&par2_files, false);
+            load_packets_with_recovery(&par2_files);
 
         let stats = calculate_par2_stats(&packets, recovery_blocks);
 
@@ -104,11 +133,11 @@ mod statistics_calculation {
         let par2_files = par2rs::file_ops::collect_par2_files(main_file);
 
         let (packets1, recovery_blocks1) =
-            par2rs::file_ops::load_all_par2_packets(&par2_files, false);
+            load_packets_with_recovery(&par2_files);
         let stats1 = calculate_par2_stats(&packets1, recovery_blocks1);
 
         let (packets2, recovery_blocks2) =
-            par2rs::file_ops::load_all_par2_packets(&par2_files, false);
+            load_packets_with_recovery(&par2_files);
         let stats2 = calculate_par2_stats(&packets2, recovery_blocks2);
 
         // Stats should be identical
@@ -151,7 +180,7 @@ mod file_information {
         // Load all packets from the par2 set
         let main_file = Path::new("tests/fixtures/testfile.par2");
         let par2_files = par2rs::file_ops::collect_par2_files(main_file);
-        let (packets, _) = par2rs::file_ops::load_all_par2_packets(&par2_files, false);
+        let (packets, _) = load_packets_with_recovery(&par2_files);
 
         let file_info = collect_file_info_from_packets(&packets);
 

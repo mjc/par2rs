@@ -7,7 +7,7 @@ use crate::Packet;
 use crate::repair::Md5Hash;
 use rustc_hash::FxHashSet as HashSet;
 use std::fs;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 /// Find all PAR2 files in a directory, excluding the specified file
@@ -132,18 +132,117 @@ fn print_packet_load_result(_filename: &str, packet_count: usize, recovery_block
     }
 }
 
-/// Load all PAR2 packets from multiple files and count recovery blocks
-pub fn load_all_par2_packets(par2_files: &[PathBuf], show_progress: bool) -> (Vec<Packet>, usize) {
+/// Load PAR2 packets EXCLUDING recovery slices (for memory-efficient operation)
+/// Always use this with parse_recovery_slice_metadata() for lazy loading of recovery data
+/// 
+/// This prevents loading gigabytes of recovery data into memory.
+pub fn load_par2_packets(par2_files: &[PathBuf], show_progress: bool) -> Vec<Packet> {
     let mut all_packets = Vec::new();
-    let mut total_recovery_blocks = 0;
     let mut seen_packet_hashes = HashSet::default();
 
     for par2_file in par2_files {
-        let (packets, recovery_blocks) =
-            parse_par2_file_with_progress(par2_file, &mut seen_packet_hashes, show_progress);
-        all_packets.extend(packets);
-        total_recovery_blocks += recovery_blocks;
+        let (packets, _) = parse_par2_file_with_progress(par2_file, &mut seen_packet_hashes, show_progress);
+        
+        // Filter out RecoverySlice packets to save memory
+        let non_recovery_packets: Vec<Packet> = packets
+            .into_iter()
+            .filter(|p| !matches!(p, Packet::RecoverySlice(_)))
+            .collect();
+        
+        all_packets.extend(non_recovery_packets);
     }
 
-    (all_packets, total_recovery_blocks)
+    all_packets
+}
+
+/// Parse recovery slice metadata from PAR2 files without loading data into memory
+/// This is the memory-efficient alternative to loading RecoverySlicePackets
+/// Returns Vec<RecoverySliceMetadata> - one per recovery block found
+pub fn parse_recovery_slice_metadata(
+    par2_files: &[PathBuf],
+    show_progress: bool,
+) -> Vec<crate::RecoverySliceMetadata> {
+    use std::fs::File;
+    use std::io::{BufReader, Seek, SeekFrom};
+    
+    let mut all_metadata = Vec::new();
+    let mut seen_recovery_slices: HashSet<(crate::repair::RecoverySetId, u32)> = HashSet::default();
+    
+    for par2_file in par2_files {
+        let file = match File::open(par2_file) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        
+        let mut reader = BufReader::with_capacity(1024 * 1024, file);
+        let mut recovery_count = 0;
+        
+        // Parse packets and look for recovery slices
+        loop {
+            // Save position before reading header
+            let start_pos = match reader.stream_position() {
+                Ok(pos) => pos,
+                Err(_) => break, // EOF or error
+            };
+            
+            // Try to read packet header to determine type
+            let mut header = [0u8; 64];
+            if reader.read_exact(&mut header).is_err() {
+                break; // EOF
+            }
+            
+            // Check if this is a PAR2 packet
+            if &header[0..8] != b"PAR2\0PKT" {
+                break; // Not a valid packet
+            }
+            
+            // Get packet type
+            let type_bytes: [u8; 16] = match header[48..64].try_into() {
+                Ok(bytes) => bytes,
+                Err(_) => break,
+            };
+            
+            // Check if this is a recovery slice packet
+            if &type_bytes == crate::packets::recovery_slice_packet::TYPE_OF_PACKET {
+                // Rewind to start of packet
+                if reader.seek(SeekFrom::Start(start_pos)).is_err() {
+                    break;
+                }
+                
+                // Parse metadata without loading data
+                match crate::RecoverySliceMetadata::parse_from_reader(&mut reader, par2_file.clone()) {
+                    Ok(metadata) => {
+                        // Deduplicate using (set_id, exponent) pair
+                        let dedup_key = (metadata.set_id, metadata.exponent);
+                        
+                        if seen_recovery_slices.insert(dedup_key) {
+                            all_metadata.push(metadata);
+                            recovery_count += 1;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            } else {
+                // Not a recovery slice - skip to next packet
+                // Get packet length
+                let length = u64::from_le_bytes(match header[8..16].try_into() {
+                    Ok(bytes) => bytes,
+                    Err(_) => break,
+                });
+                
+                // Seek to next packet (length includes the entire packet)
+                let next_pos = start_pos + length;
+                if reader.seek(SeekFrom::Start(next_pos)).is_err() {
+                    break;
+                }
+            }
+        }
+        
+        if show_progress && recovery_count > 0 {
+            let filename = par2_file.file_name().unwrap().to_string_lossy();
+            println!("Loaded {} recovery block metadata from \"{}\"", recovery_count, filename);
+        }
+    }
+    
+    all_metadata
 }

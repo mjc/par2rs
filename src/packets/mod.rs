@@ -13,7 +13,7 @@ pub use file_description_packet::FileDescriptionPacket;
 pub use input_file_slice_checksum_packet::InputFileSliceChecksumPacket;
 pub use main_packet::MainPacket;
 pub use packed_main_packet::PackedMainPacket;
-pub use recovery_slice_packet::RecoverySlicePacket;
+pub use recovery_slice_packet::{RecoverySlicePacket, RecoverySliceMetadata};
 
 pub const MAGIC_BYTES: &[u8] = b"PAR2\0PKT";
 
