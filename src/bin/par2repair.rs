@@ -14,16 +14,12 @@ fn main() {
     let matches = parse_repair_args();
 
     let par2_file = matches.get_one::<String>("par2_file").unwrap();
-    let verbose = matches.get_flag("verbose");
     let quiet = matches.get_flag("quiet");
-
-    // Determine verbosity level: quiet overrides verbose
-    let should_be_verbose = !quiet && verbose;
 
     match repair_files(par2_file) {
         Ok((context, result)) => {
-            // Print output if not in quiet mode
-            if should_be_verbose {
+            // Print output unless quiet mode is enabled
+            if !quiet {
                 context.recovery_set.print_statistics();
                 result.print_result();
             }
