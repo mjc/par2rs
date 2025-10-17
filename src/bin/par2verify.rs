@@ -45,7 +45,19 @@ fn main() -> Result<(), ()> {
     }
 
     let par2_files = file_ops::collect_par2_files(file_path);
-    let (all_packets, total_recovery_blocks) = file_ops::load_all_par2_packets(&par2_files, true);
+    
+    // Parse all packets including recovery slices for verification
+    let mut all_packets = Vec::new();
+    let mut total_recovery_blocks = 0;
+    for par2_file in &par2_files {
+        let file = std::fs::File::open(par2_file).expect("Failed to open PAR2 file");
+        let mut reader = std::io::BufReader::new(file);
+        let packets = par2rs::parse_packets(&mut reader);
+        total_recovery_blocks += packets.iter()
+            .filter(|p| matches!(p, par2rs::Packet::RecoverySlice(_)))
+            .count();
+        all_packets.extend(packets);
+    }
 
     // Show summary statistics
     let stats = analysis::calculate_par2_stats(&all_packets, total_recovery_blocks);

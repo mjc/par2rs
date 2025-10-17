@@ -42,8 +42,9 @@ impl TestEnv {
 
     fn load_context(&self) -> RepairContext {
         let par2_files = file_ops::collect_par2_files(&self.par2_file);
-        let (packets, _) = file_ops::load_all_par2_packets(&par2_files, false);
-        RepairContext::new(packets, self.temp_dir.path().to_path_buf()).unwrap()
+        let metadata = file_ops::parse_recovery_slice_metadata(&par2_files, false);
+        let packets = file_ops::load_par2_packets(&par2_files, false);
+        RepairContext::new_with_metadata(packets, metadata, self.temp_dir.path().to_path_buf()).unwrap()
     }
 
     fn corrupt_at(&self, offset: u64, data: &[u8]) {

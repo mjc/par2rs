@@ -18,6 +18,7 @@ pub mod args;
 pub mod file_ops;
 pub mod file_verification;
 pub mod packets;
+pub mod recovery_loader;
 pub mod reed_solomon;
 pub mod repair;
 pub mod slice_provider;
@@ -25,3 +26,4 @@ pub mod verify;
 
 pub use args::parse_args;
 pub use packets::*; // Add this line to import all public items from packets module
+pub use recovery_loader::{RecoveryDataLoader, FileSystemLoader};

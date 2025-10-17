@@ -1,0 +1,73 @@
+/// Test to verify recovery slice metadata parsing works correctly
+use par2rs::file_ops;
+use std::path::PathBuf;
+
+#[test]
+fn test_metadata_parsing_counts_all_recovery_slices() {
+    // This test uses the sample PAR2 set with multiple recovery blocks
+    // The bug was that parse_recovery_slice_metadata() only found 9 blocks
+    
+    let fixtures = PathBuf::from("sample-dataset");
+    let par2_file = fixtures.join("testfile.vol63+32.par2");
+    
+    if !par2_file.exists() {
+        eprintln!("Skipping test - fixture file not found");
+        return;
+    }
+    
+    let par2_files = file_ops::collect_par2_files(&par2_file);
+    
+    // Parse metadata
+    let metadata = file_ops::parse_recovery_slice_metadata(&par2_files, false);
+    
+    // Should find 32 recovery blocks in this one file
+    assert_eq!(
+        metadata.len(),
+        32,
+        "Should find all 32 recovery blocks in vol63+32.par2, but found {}",
+        metadata.len()
+    );
+    
+    // Verify exponents are correct (should be 63-94)
+    let mut exponents: Vec<u32> = metadata.iter().map(|m| m.exponent).collect();
+    exponents.sort();
+    assert_eq!(exponents[0], 63, "First exponent should be 63");
+    assert_eq!(exponents[31], 94, "Last exponent should be 94");
+}
+
+#[test]
+fn test_metadata_parsing_vs_packet_parsing() {
+    // Compare metadata parsing with direct packet parsing to ensure they find the same count
+    
+    let fixtures = PathBuf::from("tests/fixtures");
+    let par2_file = fixtures.join("testfile.par2");
+    
+    if !par2_file.exists() {
+        eprintln!("Skipping test - fixture file not found");
+        return;
+    }
+    
+    let par2_files = file_ops::collect_par2_files(&par2_file);
+    
+    // Parse with direct method (loads all packets including recovery slices)
+    use std::fs::File;
+    use std::io::BufReader;
+    let mut packet_recovery_count = 0;
+    for par2_file in &par2_files {
+        let file = File::open(par2_file).unwrap();
+        let mut reader = BufReader::new(file);
+        let packets = par2rs::parse_packets(&mut reader);
+        packet_recovery_count += packets.iter()
+            .filter(|p| matches!(p, par2rs::Packet::RecoverySlice(_)))
+            .count();
+    }
+    
+    // Parse with new method (metadata only)
+    let metadata = file_ops::parse_recovery_slice_metadata(&par2_files, false);
+    
+    assert_eq!(
+        metadata.len(),
+        packet_recovery_count,
+        "Metadata parsing should find same number of recovery blocks as packet parsing"
+    );
+}

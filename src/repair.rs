@@ -21,7 +21,8 @@
 
 use crate::file_verification::calculate_file_md5;
 use crate::{
-    FileDescriptionPacket, InputFileSliceChecksumPacket, MainPacket, Packet, RecoverySlicePacket,
+    FileDescriptionPacket, InputFileSliceChecksumPacket, MainPacket, Packet,
+    RecoverySliceMetadata, RecoverySlicePacket,
 };
 use crc32fast::Hasher as Crc32;
 use log::{debug, trace};
@@ -369,7 +370,8 @@ pub struct RecoverySetInfo {
     pub set_id: RecoverySetId,
     pub slice_size: u64,
     pub files: Vec<FileInfo>,
-    pub recovery_slices: Vec<RecoverySlicePacket>,
+    /// Memory-efficient metadata for recovery slices (lazy loading)
+    pub recovery_slices_metadata: Vec<RecoverySliceMetadata>,
     pub file_slice_checksums: HashMap<FileId, InputFileSliceChecksumPacket>,
 }
 
@@ -514,14 +516,27 @@ impl RepairContext {
         })
     }
 
+    /// Create a new repair context with memory-efficient metadata loading
+    pub fn new_with_metadata(
+        packets: Vec<Packet>,
+        metadata: Vec<RecoverySliceMetadata>,
+        base_path: PathBuf,
+    ) -> Result<Self, RepairError> {
+        let mut recovery_set = Self::extract_recovery_set_info(packets)?;
+        recovery_set.recovery_slices_metadata = metadata;
+        Ok(RepairContext {
+            recovery_set,
+            base_path,
+        })
+    }
+
     /// Extract recovery set information from packets
     fn extract_recovery_set_info(packets: Vec<Packet>) -> Result<RecoverySetInfo, RepairError> {
         let mut main_packet: Option<MainPacket> = None;
         let mut file_descriptions: Vec<FileDescriptionPacket> = Vec::new();
-        let mut recovery_slices: Vec<RecoverySlicePacket> = Vec::new();
         let mut input_file_slice_checksums: Vec<InputFileSliceChecksumPacket> = Vec::new();
 
-        // Collect packets by type
+        // Collect packets by type (excluding RecoverySlice - handled via metadata)
         for packet in packets {
             match packet {
                 Packet::Main(main) => {
@@ -530,8 +545,8 @@ impl RepairContext {
                 Packet::FileDescription(fd) => {
                     file_descriptions.push(fd);
                 }
-                Packet::RecoverySlice(rs) => {
-                    recovery_slices.push(rs);
+                Packet::RecoverySlice(_) => {
+                    // Skip - recovery slices are loaded via metadata for memory efficiency
                 }
                 Packet::InputFileSliceChecksum(ifsc) => {
                     input_file_slice_checksums.push(ifsc);
@@ -608,7 +623,7 @@ impl RepairContext {
             set_id: main.set_id,
             slice_size: main.slice_size,
             files,
-            recovery_slices,
+            recovery_slices_metadata: Vec::new(), // Populated later for memory-efficient loading
             file_slice_checksums,
         })
     }
@@ -707,28 +722,28 @@ impl RepairContext {
         }
 
         debug!("  total_damaged_blocks: {}, recovery_blocks: {}", 
-               total_damaged_blocks, self.recovery_set.recovery_slices.len());
+               total_damaged_blocks, self.recovery_set.recovery_slices_metadata.len());
 
         // Print repair information
         println!();
         if total_damaged_blocks > 0 {
-            println!("You have {} recovery blocks available.", self.recovery_set.recovery_slices.len());
-            if total_damaged_blocks > self.recovery_set.recovery_slices.len() {
+            println!("You have {} recovery blocks available.", self.recovery_set.recovery_slices_metadata.len());
+            if total_damaged_blocks > self.recovery_set.recovery_slices_metadata.len() {
                 println!("Repair is not possible.");
                 println!("You need {} more recovery blocks to be able to repair.", 
-                        total_damaged_blocks - self.recovery_set.recovery_slices.len());
+                        total_damaged_blocks - self.recovery_set.recovery_slices_metadata.len());
                 return Ok(RepairResult::Failed {
                     files_failed: file_status.keys().cloned().collect(),
                     files_verified: 0,
                     verified_files: Vec::new(),
                     message: format!("Insufficient recovery data: need {} blocks but only have {}", 
-                                    total_damaged_blocks, self.recovery_set.recovery_slices.len()),
+                                    total_damaged_blocks, self.recovery_set.recovery_slices_metadata.len()),
                 });
             } else {
                 println!("Repair is possible.");
-                if self.recovery_set.recovery_slices.len() > total_damaged_blocks {
+                if self.recovery_set.recovery_slices_metadata.len() > total_damaged_blocks {
                     println!("You have an excess of {} recovery blocks.", 
-                            self.recovery_set.recovery_slices.len() - total_damaged_blocks);
+                            self.recovery_set.recovery_slices_metadata.len() - total_damaged_blocks);
                 }
                 println!("{} recovery blocks will be used to repair.", total_damaged_blocks);
             }
@@ -871,10 +886,10 @@ impl RepairContext {
         );
 
         // Check if we have enough recovery data
-        if missing_slices.len() > self.recovery_set.recovery_slices.len() {
+        if missing_slices.len() > self.recovery_set.recovery_slices_metadata.len() {
             return Err(RepairError::InsufficientRecovery {
                 missing: missing_slices.len(),
-                available: self.recovery_set.recovery_slices.len(),
+                available: self.recovery_set.recovery_slices_metadata.len(),
             });
         }
 
@@ -932,8 +947,11 @@ impl RepairContext {
                 slice_size
             };
 
-            // Zero the buffer for this iteration (PAR2 spec: padding must be zeros)
-            slice_data.fill(0);
+            // Only zero the buffer if we have a partial slice that needs padding
+            // For full slices, read_exact will overwrite all bytes, so no fill needed
+            if actual_slice_size < slice_size {
+                slice_data.fill(0);
+            }
             
             // Sequential read (no seeking needed with BufReader)
             if reader.read_exact(&mut slice_data[..actual_slice_size]).is_ok() {
@@ -1042,10 +1060,12 @@ impl RepairContext {
         
         // Build recovery slice provider
         let mut recovery_provider = RecoverySliceProvider::new(self.recovery_set.slice_size as usize);
-        for recovery_slice in &self.recovery_set.recovery_slices {
-            recovery_provider.add_recovery_slice(
-                recovery_slice.exponent as usize,
-                recovery_slice.recovery_data.clone()
+        
+        // Use metadata-based lazy loading
+        for metadata in &self.recovery_set.recovery_slices_metadata {
+            recovery_provider.add_recovery_metadata(
+                metadata.exponent as usize,
+                metadata.clone(),
             );
         }
         
@@ -1056,11 +1076,25 @@ impl RepairContext {
             .collect();
         
         // Create reconstruction engine
+        // NOTE: ReconstructionEngine still expects RecoverySlicePackets for exponent lookup
+        // Create minimal packets with just exponents (no data, as data comes from provider)
+        let dummy_recovery_slices: Vec<RecoverySlicePacket> = self.recovery_set.recovery_slices_metadata
+            .iter()
+            .map(|metadata| RecoverySlicePacket {
+                length: 68, // Header only
+                md5: Md5Hash::new([0u8; 16]),
+                set_id: metadata.set_id,
+                type_of_packet: *b"PAR 2.0\0RecvSlic",
+                exponent: metadata.exponent,
+                recovery_data: Vec::new(), // Empty! Data comes from provider
+            })
+            .collect();
+        
         let total_input_slices: usize = self.recovery_set.files.iter().map(|f| f.slice_count).sum();
         let reconstruction_engine = crate::reed_solomon::ReconstructionEngine::new(
             self.recovery_set.slice_size as usize,
             total_input_slices,
-            self.recovery_set.recovery_slices.clone(),
+            dummy_recovery_slices,
         );
         
         // Create output writers (in-memory buffers for now)
@@ -1237,9 +1271,14 @@ pub fn repair_files(
 ) -> Result<(RepairContext, RepairResult), RepairError> {
     let par2_path = Path::new(par2_file);
 
-    // Load PAR2 files and packets
+    // Load PAR2 files and collect file list
     let par2_files = crate::file_ops::collect_par2_files(par2_path);
-    let (packets, _recovery_blocks) = crate::file_ops::load_all_par2_packets(&par2_files, true);
+    
+    // Load metadata for memory-efficient recovery slice loading
+    let metadata = crate::file_ops::parse_recovery_slice_metadata(&par2_files, false);
+    
+    // Load packets WITHOUT recovery slices (they're loaded via metadata on-demand)
+    let packets = crate::file_ops::load_par2_packets(&par2_files, true);
 
     if packets.is_empty() {
         return Err(RepairError::NoValidPackets);
@@ -1248,8 +1287,8 @@ pub fn repair_files(
     // Get the base directory for file resolution
     let base_path = par2_path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
-    // Create repair context
-    let repair_context = RepairContext::new(packets, base_path)
+    // Create repair context with metadata
+    let repair_context = RepairContext::new_with_metadata(packets, metadata, base_path)
         .map_err(|e| RepairError::ContextCreation(e.to_string()))?;
 
     let result = repair_context.repair()
@@ -1304,11 +1343,12 @@ mod tests {
         let par2_file = Path::new("tests/fixtures/testfile.par2");
         if par2_file.exists() {
             let par2_files = crate::file_ops::collect_par2_files(par2_file);
-            let (packets, _) = crate::file_ops::load_all_par2_packets(&par2_files, false);
+            let metadata = crate::file_ops::parse_recovery_slice_metadata(&par2_files, false);
+            let packets = crate::file_ops::load_par2_packets(&par2_files, false);
 
             if !packets.is_empty() {
                 let base_path = par2_file.parent().unwrap().to_path_buf();
-                if let Ok(repair_context) = RepairContext::new(packets, base_path) {
+                if let Ok(repair_context) = RepairContext::new_with_metadata(packets, metadata, base_path) {
                     let file_status = repair_context.check_file_status();
                     assert!(!file_status.is_empty());
                 }

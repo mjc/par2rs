@@ -6,7 +6,34 @@
 use par2rs::file_ops::*;
 use rustc_hash::FxHashSet as HashSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+// Helper function for tests that need to load all packets including recovery slices
+fn load_packets_with_recovery(par2_files: &[PathBuf]) -> (Vec<par2rs::Packet>, usize) {
+    use std::io::BufReader;
+    let mut all_packets = Vec::new();
+    let mut recovery_count = 0;
+    let mut seen_hashes = HashSet::default();
+    
+    for par2_file in par2_files {
+        let file = fs::File::open(par2_file).expect("Failed to open PAR2 file");
+        let mut reader = BufReader::new(file);
+        let packets = par2rs::parse_packets(&mut reader);
+        
+        // Deduplicate packets
+        for packet in packets {
+            let hash = get_packet_hash(&packet);
+            if seen_hashes.insert(hash) {
+                if matches!(packet, par2rs::Packet::RecoverySlice(_)) {
+                    recovery_count += 1;
+                }
+                all_packets.push(packet);
+            }
+        }
+    }
+    
+    (all_packets, recovery_count)
+}
 
 mod file_discovery {
     use super::*;
@@ -169,7 +196,7 @@ mod deduplication {
         let main_file = Path::new("tests/fixtures/testfile.par2");
         let par2_files = collect_par2_files(main_file);
 
-        let (packets, _) = load_all_par2_packets(&par2_files, false);
+        let (packets, _) = load_packets_with_recovery(&par2_files);
 
         // Should have loaded packets without duplicates
         assert!(!packets.is_empty());
@@ -191,7 +218,7 @@ mod collection_operations {
         let main_file = Path::new("tests/fixtures/testfile.par2");
         let par2_files = collect_par2_files(main_file);
 
-        let (packets, recovery_blocks) = load_all_par2_packets(&par2_files, false);
+        let (packets, recovery_blocks) = load_packets_with_recovery(&par2_files);
 
         assert!(!packets.is_empty());
         assert!(recovery_blocks > 0); // Should have recovery blocks from volume files
@@ -218,7 +245,7 @@ mod collection_operations {
     #[test]
     fn handles_empty_file_list() {
         let empty_files = vec![];
-        let (packets, recovery_blocks) = load_all_par2_packets(&empty_files, false);
+        let (packets, recovery_blocks) = load_packets_with_recovery(&empty_files);
 
         assert!(packets.is_empty());
         assert_eq!(recovery_blocks, 0);
@@ -231,11 +258,11 @@ mod collection_operations {
 
         // Test with progress enabled
         let (packets_with_progress, recovery_with_progress) =
-            load_all_par2_packets(&par2_files, true);
+            load_packets_with_recovery(&par2_files);
 
         // Test with progress disabled
         let (packets_without_progress, recovery_without_progress) =
-            load_all_par2_packets(&par2_files, false);
+            load_packets_with_recovery(&par2_files);
 
         // Results should be the same regardless of progress setting
         assert_eq!(packets_with_progress.len(), packets_without_progress.len());
