@@ -42,7 +42,8 @@ echo ""
 declare -a PAR2CMD_TIMES
 declare -a PAR2RS_TIMES
 
-CORRUPT_OFFSET=$((SIZE_MB / 2))
+# Corrupt 512 bytes at midpoint of file
+CORRUPT_OFFSET=$((SIZE_MB * 1024 * 1024 / 2))
 
 # Generate test file once for all iterations
 if [ -n "$TEMP_BASE" ]; then
@@ -51,13 +52,33 @@ else
     TEMP=$(mktemp -d)
 fi
 echo -e "${YELLOW}Generating ${SIZE_MB}MB test file in $TEMP...${NC}"
-dd if=/dev/urandom of="$TEMP/testfile_${SIZE_MB}mb" bs=1M count=${SIZE_MB} 2>&1 | tail -1
+if ! dd if=/dev/urandom of="$TEMP/testfile_${SIZE_MB}mb" bs=1M count=${SIZE_MB} 2>&1; then
+    echo -e "${RED}✗ Failed to generate test file!${NC}"
+    echo "This could be due to insufficient disk space."
+    df -h "$TEMP"
+    exit 1
+fi
 echo ""
 
 # Create PAR2 files once for all iterations
 echo -e "${YELLOW}Creating PAR2 files...${NC}"
-$PAR2CMDLINE c -q -r5 "$TEMP/testfile_${SIZE_MB}mb.par2" "$TEMP/testfile_${SIZE_MB}mb" 2>&1 | tail -3
+if ! $PAR2CMDLINE c -q -r5 "$TEMP/testfile_${SIZE_MB}mb.par2" "$TEMP/testfile_${SIZE_MB}mb"; then
+    echo -e "${RED}✗ Failed to create PAR2 files!${NC}"
+    echo "This could be due to insufficient disk space, timeout, or other errors."
+    # Show what's in the temp directory
+    echo "Files in $TEMP:"
+    ls -lh "$TEMP"
+    exit 1
+fi
 echo ""
+
+# Verify PAR2 files were created
+PAR2_FILE_COUNT=$(ls -1 "$TEMP"/*.par2 2>/dev/null | wc -l)
+if [ "$PAR2_FILE_COUNT" -eq 0 ]; then
+    echo -e "${RED}✗ No PAR2 files were created!${NC}"
+    exit 1
+fi
+echo "Created $PAR2_FILE_COUNT PAR2 files"
 
 # Save original MD5 for verification
 MD5_ORIGINAL=$(md5sum "$TEMP/testfile_${SIZE_MB}mb" | awk '{print $1}')
@@ -67,17 +88,28 @@ echo ""
 for i in $(seq 1 $ITERATIONS); do
     echo -e "${GREEN}=== Iteration $i/$ITERATIONS ===${NC}"
     
+    # Verify PAR2 files still exist before iteration
+    PAR2_FILE_COUNT=$(ls -1 "$TEMP"/*.par2 2>/dev/null | wc -l)
+    if [ "$PAR2_FILE_COUNT" -eq 0 ]; then
+        echo -e "${RED}✗ PAR2 files disappeared before iteration $i!${NC}"
+        echo "Files in $TEMP:"
+        ls -lh "$TEMP"
+        exit 1
+    fi
+    echo "  PAR2 files present: $PAR2_FILE_COUNT"
+    
     # === Test par2cmdline ===
     # Corrupt file (will be repaired, then used as base for next iteration)
     echo -e "${YELLOW}  Corrupting file for par2cmdline...${NC}"
-    dd if=/dev/zero of="$TEMP/testfile_${SIZE_MB}mb" bs=1M count=1 seek=$CORRUPT_OFFSET conv=notrunc 2>&1 > /dev/null
+    if ! dd if=/dev/zero of="$TEMP/testfile_${SIZE_MB}mb" bs=512 count=1 seek=$((CORRUPT_OFFSET / 512)) conv=notrunc 2>&1; then
+        echo -e "${RED}✗ Failed to corrupt file!${NC}"
+        exit 1
+    fi
     
     echo -e "${YELLOW}  Running par2cmdline repair...${NC}"
-    cd "$TEMP"
     START=$(date +%s.%N)
-    if ! $PAR2CMDLINE r -q -N testfile_${SIZE_MB}mb.par2 > /dev/null 2>&1; then
+    if ! $PAR2CMDLINE r -q -N "$TEMP/testfile_${SIZE_MB}mb.par2" 2>&1; then
         echo -e "${RED}✗ par2cmdline repair failed in iteration $i!${NC}"
-        $PAR2CMDLINE r -q -N testfile_${SIZE_MB}mb.par2
         exit 1
     fi
     END=$(date +%s.%N)
@@ -90,13 +122,15 @@ for i in $(seq 1 $ITERATIONS); do
     # === Test par2rs ===
     # Corrupt file again (will be repaired, then used as base for next iteration)
     echo -e "${YELLOW}  Corrupting file for par2rs...${NC}"
-    dd if=/dev/zero of="$TEMP/testfile_${SIZE_MB}mb" bs=1M count=1 seek=$CORRUPT_OFFSET conv=notrunc 2>&1 > /dev/null
+    if ! dd if=/dev/zero of="$TEMP/testfile_${SIZE_MB}mb" bs=512 count=1 seek=$((CORRUPT_OFFSET / 512)) conv=notrunc 2>&1; then
+        echo -e "${RED}✗ Failed to corrupt file!${NC}"
+        exit 1
+    fi
     
     echo -e "${YELLOW}  Running par2rs repair...${NC}"
     START=$(date +%s.%N)
-    if ! $PAR2RS testfile_${SIZE_MB}mb.par2 > /dev/null 2>&1; then
+    if ! $PAR2RS "$TEMP/testfile_${SIZE_MB}mb.par2" 2>&1; then
         echo -e "${RED}✗ par2rs repair failed in iteration $i!${NC}"
-        $PAR2RS testfile_${SIZE_MB}mb.par2
         exit 1
     fi
     END=$(date +%s.%N)
