@@ -62,8 +62,13 @@ echo ""
 
 # Create PAR2 files once for all iterations
 echo -e "${YELLOW}Creating PAR2 files...${NC}"
-if ! $PAR2CMDLINE c -q -r5 "$TEMP/testfile_${SIZE_MB}mb.par2" "$TEMP/testfile_${SIZE_MB}mb"; then
+# Capture output to check for errors but suppress verbose messages
+PAR2_OUTPUT=$($PAR2CMDLINE c -q -r5 "$TEMP/testfile_${SIZE_MB}mb.par2" "$TEMP/testfile_${SIZE_MB}mb" 2>&1)
+PAR2_EXIT_CODE=$?
+if [ $PAR2_EXIT_CODE -ne 0 ]; then
     echo -e "${RED}✗ Failed to create PAR2 files!${NC}"
+    echo "PAR2 output:"
+    echo "$PAR2_OUTPUT"
     echo "This could be due to insufficient disk space, timeout, or other errors."
     # Show what's in the temp directory
     echo "Files in $TEMP:"
