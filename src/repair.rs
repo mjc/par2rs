@@ -29,6 +29,71 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use thiserror::Error;
+
+/// Errors that can occur during PAR2 repair operations
+#[derive(Debug, Error)]
+pub enum RepairError {
+    /// No main packet found in PAR2 file
+    #[error("No main packet found in PAR2 file")]
+    NoMainPacket,
+
+    /// No file description packets found
+    #[error("No file description packets found")]
+    NoFileDescriptions,
+
+    /// File ID from main packet not found in file descriptions
+    #[error("File ID {0:?} in main packet not found in file descriptions")]
+    MissingFileDescription(String),
+
+    /// No valid PAR2 packets found
+    #[error("No valid PAR2 packets found")]
+    NoValidPackets,
+
+    /// Failed to create repair context
+    #[error("Failed to create repair context: {0}")]
+    ContextCreation(String),
+
+    /// Insufficient recovery blocks available
+    #[error("Cannot repair: {missing} missing slices but only {available} recovery slices available")]
+    InsufficientRecovery { missing: usize, available: usize },
+
+    /// File validation cache not found
+    #[error("No validation cache for file {0}")]
+    NoValidationCache(String),
+
+    /// File MD5 mismatch despite valid slices
+    #[error("File MD5 mismatch despite all slices being valid")]
+    Md5MismatchWithValidSlices,
+
+    /// Repaired file failed verification
+    #[error("Repaired file failed verification: {0:?}")]
+    VerificationFailed(VerificationResult),
+
+    /// Reconstruction failed
+    #[error("Reconstruction failed: {0}")]
+    ReconstructionFailed(String),
+
+    /// Slice marked valid but source file not available
+    #[error("Slice {0} marked valid but source file not available")]
+    ValidSliceMissingSource(usize),
+
+    /// Slice neither reconstructed nor valid
+    #[error("Slice {0} neither reconstructed nor valid")]
+    SliceNotAvailable(usize),
+
+    /// Written bytes don't match expected file length
+    #[error("Wrote {written} bytes but expected {expected}")]
+    ByteCountMismatch { written: u64, expected: u64 },
+
+    /// I/O error occurred
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Generic error (for backward compatibility during transition)
+    #[error("{0}")]
+    Other(String),
+}
 
 /// Type-safe wrapper for PAR2 file identifiers (16-byte MD5)
 /// Prevents accidentally mixing file IDs with other 16-byte values like hashes or set IDs
@@ -441,7 +506,7 @@ pub struct RepairContext {
 
 impl RepairContext {
     /// Create a new repair context from PAR2 packets
-    pub fn new(packets: Vec<Packet>, base_path: PathBuf) -> Result<Self, String> {
+    pub fn new(packets: Vec<Packet>, base_path: PathBuf) -> Result<Self, RepairError> {
         let recovery_set = Self::extract_recovery_set_info(packets)?;
         Ok(RepairContext {
             recovery_set,
@@ -450,7 +515,7 @@ impl RepairContext {
     }
 
     /// Extract recovery set information from packets
-    fn extract_recovery_set_info(packets: Vec<Packet>) -> Result<RecoverySetInfo, String> {
+    fn extract_recovery_set_info(packets: Vec<Packet>) -> Result<RecoverySetInfo, RepairError> {
         let mut main_packet: Option<MainPacket> = None;
         let mut file_descriptions: Vec<FileDescriptionPacket> = Vec::new();
         let mut recovery_slices: Vec<RecoverySlicePacket> = Vec::new();
@@ -475,10 +540,10 @@ impl RepairContext {
             }
         }
 
-        let main = main_packet.ok_or("No main packet found")?;
+        let main = main_packet.ok_or(RepairError::NoMainPacket)?;
 
         if file_descriptions.is_empty() {
-            return Err("No file description packets found".to_string());
+            return Err(RepairError::NoFileDescriptions);
         }
 
         // Build a map of file_id -> FileDescriptionPacket for easy lookup
@@ -499,10 +564,7 @@ impl RepairContext {
 
         for (idx, file_id) in main.file_ids.iter().enumerate() {
             let fd = fd_map.get(file_id).ok_or_else(|| {
-                format!(
-                    "File ID {:?} in main packet not found in file descriptions",
-                    file_id
-                )
+                RepairError::MissingFileDescription(format!("{:?}", file_id))
             })?;
 
             let file_name = String::from_utf8_lossy(&fd.file_name)
@@ -592,7 +654,7 @@ impl RepairContext {
     /// Perform repair operation
     pub fn repair_with_slices(
         &self,
-    ) -> Result<RepairResult, Box<dyn std::error::Error>> {
+    ) -> Result<RepairResult, RepairError> {
         debug!("repair_with_slices");
         let file_status = self.check_file_status();
         debug!("  File statuses: {:?}", file_status);
@@ -649,7 +711,7 @@ impl RepairContext {
     }
 
     /// Perform repair operation
-    pub fn repair(&self) -> Result<RepairResult, Box<dyn std::error::Error>> {
+    pub fn repair(&self) -> Result<RepairResult, RepairError> {
         self.repair_with_slices()
     }
 
@@ -658,7 +720,7 @@ impl RepairContext {
         &self,
         file_status: &HashMap<String, FileStatus>,
         validation_cache: &HashMap<FileId, HashSet<usize>>,
-    ) -> Result<RepairResult, Box<dyn std::error::Error>> {
+    ) -> Result<RepairResult, RepairError> {
         debug!("perform_reed_solomon_repair: processing {} files", self.recovery_set.files.len());
         let mut repaired_files = Vec::new();
         let mut verified_files = Vec::new();
@@ -735,13 +797,13 @@ impl RepairContext {
         file_info: &FileInfo,
         status: &FileStatus,
         validation_cache: &HashMap<FileId, HashSet<usize>>,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    ) -> Result<bool, RepairError> {
         let file_path = self.base_path.join(&file_info.file_name);
         
         debug!("repair_single_file: {} (status: {:?})", file_info.file_name, status);
 
         let valid_slice_indices = validation_cache.get(&file_info.file_id)
-            .ok_or_else(|| format!("No validation cache for file {}", file_info.file_name))?;
+            .ok_or_else(|| RepairError::NoValidationCache(file_info.file_name.clone()))?;
         debug!("  Have {} valid slices out of {} total (from cache)", 
                valid_slice_indices.len(), file_info.slice_count);
         
@@ -757,7 +819,7 @@ impl RepairContext {
                 debug!("All slices valid but file MD5 doesn't match - may have been externally modified");
                 // Could try to rebuild from validated slices, but that requires loading them all
                 // For now, treat as unrepairable
-                return Err("File MD5 mismatch despite all slices being valid".into());
+                return Err(RepairError::Md5MismatchWithValidSlices);
             }
             return Ok(false); // File is valid
         }
@@ -771,12 +833,10 @@ impl RepairContext {
 
         // Check if we have enough recovery data
         if missing_slices.len() > self.recovery_set.recovery_slices.len() {
-            return Err(format!(
-                "Cannot repair: {} missing slices but only {} recovery slices available",
-                missing_slices.len(),
-                self.recovery_set.recovery_slices.len()
-            )
-            .into());
+            return Err(RepairError::InsufficientRecovery {
+                missing: missing_slices.len(),
+                available: self.recovery_set.recovery_slices.len(),
+            });
         }
 
         // Reconstruct missing slices using Reed-Solomon
@@ -797,7 +857,7 @@ impl RepairContext {
         // Verify the repaired file
         match self.verify_repaired_file(&file_path, file_info)? {
             VerificationResult::Verified => Ok(true),
-            result => Err(format!("Repaired file failed verification: {:?}", result).into()),
+            result => Err(RepairError::VerificationFailed(result)),
         }
     }
 
@@ -806,7 +866,7 @@ impl RepairContext {
     pub fn validate_file_slices(
         &self,
         file_info: &FileInfo,
-    ) -> Result<HashSet<usize>, Box<dyn std::error::Error>> {
+    ) -> Result<HashSet<usize>, RepairError> {
         let file_path = self.base_path.join(&file_info.file_name);
         let mut valid_slices = HashSet::default();
 
@@ -886,7 +946,7 @@ impl RepairContext {
         missing_slices: &[LocalSliceIndex],
         file_info: &FileInfo,
         validation_cache: &HashMap<FileId, HashSet<usize>>,
-    ) -> Result<HashMap<usize, Vec<u8>>, Box<dyn std::error::Error>> {
+    ) -> Result<HashMap<usize, Vec<u8>>, RepairError> {
         use crate::slice_provider::{ChunkedSliceProvider, RecoverySliceProvider, SliceLocation};
         use std::io::Cursor;
         
@@ -902,7 +962,7 @@ impl RepairContext {
             }
             
             let valid_slices = validation_cache.get(&other_file_info.file_id)
-                .ok_or_else(|| format!("No validation cache for file {}", other_file_info.file_name))?;
+                .ok_or_else(|| RepairError::NoValidationCache(other_file_info.file_name.clone()))?;
             debug!("  File {} - using {} cached valid slices out of {}", 
                    other_file_info.file_name, valid_slices.len(), other_file_info.slice_count);
             
@@ -980,7 +1040,9 @@ impl RepairContext {
         );
         
         if !result.success {
-            return Err(result.error_message.unwrap_or_else(|| "Reconstruction failed".to_string()).into());
+            return Err(RepairError::ReconstructionFailed(
+                result.error_message.unwrap_or_else(|| "Reconstruction failed".to_string())
+            ));
         }
         
         // Convert global indices back to file-local and extract buffers
@@ -1003,7 +1065,7 @@ impl RepairContext {
         file_info: &FileInfo,
         valid_slice_indices: &HashSet<usize>,
         reconstructed_slices: &HashMap<usize, Vec<u8>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), RepairError> {
         debug!("Writing repaired file with streaming I/O: {:?}", file_path);
         
         // Write to temp file first, then rename to avoid corrupting source while reading
@@ -1051,10 +1113,10 @@ impl RepairContext {
                     writer.write_all(&slice_buffer[..actual_size])?;
                     bytes_written += actual_size as u64;
                 } else {
-                    return Err(format!("Slice {} marked valid but source file not available", slice_index).into());
+                    return Err(RepairError::ValidSliceMissingSource(slice_index));
                 }
             } else {
-                return Err(format!("Slice {} neither reconstructed nor valid", slice_index).into());
+                return Err(RepairError::SliceNotAvailable(slice_index));
             }
         }
         
@@ -1063,10 +1125,10 @@ impl RepairContext {
         drop(source_file); // Close source file before rename
         
         if bytes_written != file_info.file_length {
-            return Err(format!(
-                "Wrote {} bytes but expected {}",
-                bytes_written, file_info.file_length
-            ).into());
+            return Err(RepairError::ByteCountMismatch {
+                written: bytes_written,
+                expected: file_info.file_length,
+            });
         }
         
         // Rename temp file to final destination
@@ -1088,7 +1150,7 @@ impl RepairContext {
         &self,
         file_path: &Path,
         file_info: &FileInfo,
-    ) -> Result<VerificationResult, Box<dyn std::error::Error>> {
+    ) -> Result<VerificationResult, RepairError> {
         // Check file size
         let metadata = fs::metadata(file_path)?;
         if metadata.len() != file_info.file_length {
@@ -1133,7 +1195,7 @@ impl RepairContext {
 /// * `Err(...)` - Failed to load PAR2 files or create repair context
 pub fn repair_files(
     par2_file: &str,
-) -> Result<(RepairContext, RepairResult), Box<dyn std::error::Error>> {
+) -> Result<(RepairContext, RepairResult), RepairError> {
     let par2_path = Path::new(par2_file);
 
     // Load PAR2 files and packets (always quiet mode for library function)
@@ -1141,7 +1203,7 @@ pub fn repair_files(
     let (packets, _recovery_blocks) = crate::file_ops::load_all_par2_packets(&par2_files, false);
 
     if packets.is_empty() {
-        return Err("No valid PAR2 packets found".into());
+        return Err(RepairError::NoValidPackets);
     }
 
     // Get the base directory for file resolution
@@ -1149,9 +1211,10 @@ pub fn repair_files(
 
     // Create repair context
     let repair_context = RepairContext::new(packets, base_path)
-        .map_err(|e| format!("Failed to create repair context: {}", e))?;
+        .map_err(|e| RepairError::ContextCreation(e.to_string()))?;
 
-    let result = repair_context.repair()?;
+    let result = repair_context.repair()
+        .map_err(|e| RepairError::Other(e.to_string()))?;
 
     Ok((repair_context, result))
 }
