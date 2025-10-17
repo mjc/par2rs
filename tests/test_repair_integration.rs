@@ -35,28 +35,21 @@ fn test_repair_corrupted_file() {
     .expect("Failed to create temporary corruption");
 
     // Attempt repair
-    let result = repair_files(&par2_file.to_string_lossy(), &[]);
+    let (_context, result) = repair_files(&par2_file.to_string_lossy()).unwrap();
 
-    match result {
-        Ok(repair_result) => {
-            println!("Repair result: {:?}", repair_result);
+    println!("Repair result: {:?}", result);
 
-            if !repair_result.repaired_files().is_empty() {
-                println!("SUCCESS: File was successfully repaired!");
+    if !result.repaired_files().is_empty() {
+        println!("SUCCESS: File was successfully repaired!");
 
-                // Verify the repaired file exists and has correct content
-                assert!(test_file.exists());
+        // Verify the repaired file exists and has correct content
+        assert!(test_file.exists());
 
-                // Get file size to verify it was properly repaired
-                let metadata = fs::metadata(&test_file).unwrap();
-                assert_eq!(metadata.len(), 1048576, "Repaired file should be 1MB");
-            } else {
-                println!("Expected failure: no files were repaired");
-            }
-        }
-        Err(e) => {
-            panic!("Repair function failed with error: {}", e);
-        }
+        // Get file size to verify it was properly repaired
+        let metadata = fs::metadata(&test_file).unwrap();
+        assert_eq!(metadata.len(), 1048576, "Repaired file should be 1MB");
+    } else {
+        println!("Expected failure: no files were repaired");
     }
 
     // temp_dir is automatically cleaned up when it goes out of scope
@@ -82,24 +75,17 @@ fn test_repair_missing_file() {
     }
 
     // Attempt repair on missing file
-    let result = repair_files(&par2_file.to_string_lossy(), &[]);
+    let (_context, result) = repair_files(&par2_file.to_string_lossy()).unwrap();
 
-    match result {
-        Ok(repair_result) => {
-            println!("Missing file repair result: {:?}", repair_result);
+    println!("Missing file repair result: {:?}", result);
 
-            // With the current implementation, this should fail because we need
-            // 1986 recovery blocks but only have 99
-            if repair_result.repaired_files().is_empty() {
-                println!("Expected: Cannot repair completely missing file with insufficient recovery blocks");
-            } else {
-                println!("Unexpected: File was repaired despite insufficient recovery blocks");
-                // Note: If Reed-Solomon can partially repair, this might succeed
-            }
-        }
-        Err(e) => {
-            println!("Expected error for insufficient recovery blocks: {}", e);
-        }
+    // With the current implementation, this should fail because we need
+    // 1986 recovery blocks but only have 99
+    if result.repaired_files().is_empty() {
+        println!("Expected: Cannot repair completely missing file with insufficient recovery blocks");
+    } else {
+        println!("Unexpected: File was repaired despite insufficient recovery blocks");
+        // Note: If Reed-Solomon can partially repair, this might succeed
     }
 
     // temp_dir is automatically cleaned up
@@ -124,22 +110,12 @@ fn test_verify_intact_file() {
 
     let par2_file = temp_path.join("testfile.par2");
 
-    let result = repair_files(&par2_file.to_string_lossy(), &[]);
+    let (_context, result) = repair_files(&par2_file.to_string_lossy()).unwrap();
 
-    match result {
-        Ok(repair_result) => {
-            println!("Intact file verification result: {:?}", repair_result);
+    println!("Intact file verification result: {:?}", result);
 
-            // For an intact file, we should see it verified, not repaired
-            if repair_result.is_success() {
-                // Should be verified (either NoRepairNeeded or Success)
-                assert!(repair_result.is_success());
-            }
-        }
-        Err(e) => {
-            println!("Error during verification: {}", e);
-        }
-    }
+    // For an intact file, we should see it verified, not repaired
+    assert!(result.is_success());
 
     // temp_dir is automatically cleaned up
 }

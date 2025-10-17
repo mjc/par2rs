@@ -14,16 +14,20 @@ fn main() {
     let matches = parse_repair_args();
 
     let par2_file = matches.get_one::<String>("par2_file").unwrap();
-    let target_files: Vec<String> = matches
-        .get_many::<String>("files")
-        .unwrap_or_default()
-        .map(|s| s.to_string())
-        .collect();
-    let _verbose = matches.get_flag("verbose");
-    let _quiet = matches.get_flag("quiet");
+    let verbose = matches.get_flag("verbose");
+    let quiet = matches.get_flag("quiet");
 
-    match repair_files(par2_file, &target_files) {
-        Ok(result) => {
+    // Determine verbosity level: quiet overrides verbose
+    let should_be_verbose = !quiet && verbose;
+
+    match repair_files(par2_file) {
+        Ok((context, result)) => {
+            // Print output if not in quiet mode
+            if should_be_verbose {
+                context.recovery_set.print_statistics();
+                result.print_result();
+            }
+            
             // Exit with success if repair was successful or not needed, error otherwise
             if result.is_success() {
                 process::exit(0);
@@ -32,7 +36,9 @@ fn main() {
             }
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            if !quiet {
+                eprintln!("Error: {}", e);
+            }
             process::exit(1);
         }
     }
