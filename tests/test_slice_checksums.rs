@@ -118,7 +118,7 @@ fn test_load_all_slices_with_padding_during_verify() {
 
     // Verify files without any corruption
     let par2_file = temp_path.join("multifile.par2");
-    let result = repair_files(par2_file.to_str().unwrap(), &[]).unwrap();
+    let (_context, result) = repair_files(par2_file.to_str().unwrap()).unwrap();
 
     // All files should verify successfully if we're computing slice checksums correctly
     match result {
@@ -171,7 +171,7 @@ fn test_load_all_slices_during_repair_needs_padding() {
 
     // Try to repair
     let par2_file = temp_path.join("multifile.par2");
-    let result = repair_files(par2_file.to_str().unwrap(), &[]).unwrap();
+    let (_context, result) = repair_files(par2_file.to_str().unwrap()).unwrap();
 
     println!("\n=== Repair Result ===");
     println!("Files repaired: {:?}", result.repaired_files());
