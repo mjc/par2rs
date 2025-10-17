@@ -38,7 +38,7 @@ fn test_multifile_all_files_present() {
     let (_temp_dir, temp_path) = setup_multifile_test();
 
     let par2_file = temp_path.join("multifile.par2");
-    let result = repair_files(par2_file.to_str().unwrap(), &[]).unwrap();
+    let (_context, result) = repair_files(par2_file.to_str().unwrap()).unwrap();
 
     // All files should verify successfully
     assert!(result.repaired_files().is_empty(), "No files should need repair");
@@ -65,7 +65,7 @@ fn test_multifile_one_file_corrupted() {
     drop(file2);
 
     let par2_file = temp_path.join("multifile.par2");
-    let result = repair_files(par2_file.to_str().unwrap(), &[]).unwrap();
+    let (_context, result) = repair_files(par2_file.to_str().unwrap()).unwrap();
 
     // EXPECTED BEHAVIOR (after fix): file2.txt should be repaired successfully
     // CURRENT BEHAVIOR (before fix): repair fails because we don't load slices from file1.txt and file3.txt
@@ -114,7 +114,7 @@ fn test_multifile_first_file_corrupted() {
     drop(file1);
 
     let par2_file = temp_path.join("multifile.par2");
-    let result = repair_files(par2_file.to_str().unwrap(), &[]).unwrap();
+    let (_context, result) = repair_files(par2_file.to_str().unwrap()).unwrap();
 
     // Should repair successfully
     assert!(
@@ -138,7 +138,7 @@ fn test_multifile_last_file_corrupted() {
     drop(file3);
 
     let par2_file = temp_path.join("multifile.par2");
-    let result = repair_files(par2_file.to_str().unwrap(), &[]).unwrap();
+    let (_context, result) = repair_files(par2_file.to_str().unwrap()).unwrap();
 
     // Should repair successfully
     assert!(
@@ -171,7 +171,7 @@ fn test_single_file_repair_still_works() {
     drop(file);
 
     let par2_file = temp_path.join("testfile.par2");
-    let result = repair_files(par2_file.to_str().unwrap(), &[]).unwrap();
+    let (_context, result) = repair_files(par2_file.to_str().unwrap()).unwrap();
 
     // Single-file repair should still work
     assert!(
