@@ -619,7 +619,20 @@ impl RepairContext {
 
         for file_info in &self.recovery_set.files {
             let file_path = self.base_path.join(&file_info.file_name);
+            
+            // Print "Opening:" message before checking
+            println!("Opening: \"{}\"", file_info.file_name);
+            
             let status = self.determine_file_status(&file_path, file_info);
+            
+            // Print status in par2cmdline format
+            let status_str = match &status {
+                FileStatus::Present => "found.",
+                FileStatus::Missing => "missing.",
+                FileStatus::Corrupted => "damaged.",
+            };
+            println!("Target: \"{}\" - {}", file_info.file_name, status_str);
+            
             status_map.insert(file_info.file_name.clone(), status);
         }
 
@@ -696,14 +709,29 @@ impl RepairContext {
         debug!("  total_damaged_blocks: {}, recovery_blocks: {}", 
                total_damaged_blocks, self.recovery_set.recovery_slices.len());
 
-        if total_damaged_blocks > self.recovery_set.recovery_slices.len() {
-            return Ok(RepairResult::Failed {
-                files_failed: file_status.keys().cloned().collect(),
-                files_verified: 0,
-                verified_files: Vec::new(),
-                message: format!("Insufficient recovery data: need {} blocks but only have {}", 
-                                total_damaged_blocks, self.recovery_set.recovery_slices.len()),
-            });
+        // Print repair information
+        println!();
+        if total_damaged_blocks > 0 {
+            println!("You have {} recovery blocks available.", self.recovery_set.recovery_slices.len());
+            if total_damaged_blocks > self.recovery_set.recovery_slices.len() {
+                println!("Repair is not possible.");
+                println!("You need {} more recovery blocks to be able to repair.", 
+                        total_damaged_blocks - self.recovery_set.recovery_slices.len());
+                return Ok(RepairResult::Failed {
+                    files_failed: file_status.keys().cloned().collect(),
+                    files_verified: 0,
+                    verified_files: Vec::new(),
+                    message: format!("Insufficient recovery data: need {} blocks but only have {}", 
+                                    total_damaged_blocks, self.recovery_set.recovery_slices.len()),
+                });
+            } else {
+                println!("Repair is possible.");
+                if self.recovery_set.recovery_slices.len() > total_damaged_blocks {
+                    println!("You have an excess of {} recovery blocks.", 
+                            self.recovery_set.recovery_slices.len() - total_damaged_blocks);
+                }
+                println!("{} recovery blocks will be used to repair.", total_damaged_blocks);
+            }
         }
 
         // Perform the actual repair with validation cache
@@ -726,6 +754,11 @@ impl RepairContext {
         let mut verified_files = Vec::new();
         let mut files_failed = Vec::new();
 
+        // Print repair header
+        println!();
+        println!("Repairing files:");
+        println!();
+
         // Process each file that needs repair
         for file_info in &self.recovery_set.files {
             debug!("  Checking file: {}", file_info.file_name);
@@ -739,17 +772,23 @@ impl RepairContext {
             }
 
             // Attempt to repair the file using Reed-Solomon reconstruction
+            print!("Repairing \"{}\"... ", file_info.file_name);
+            std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+            
             match self.repair_single_file(file_info, status, validation_cache) {
                 Ok(repaired) => {
                     if repaired {
+                        println!("done.");
                         repaired_files.push(file_info.file_name.clone());
                         debug!("Successfully repaired: {}", file_info.file_name);
                     } else {
+                        println!("already valid.");
                         verified_files.push(file_info.file_name.clone());
                         debug!("File was already valid: {}", file_info.file_name);
                     }
                 }
                 Err(e) => {
+                    println!("FAILED: {}", e);
                     files_failed.push(file_info.file_name.clone());
                     debug!("Failed to repair {}: {}", file_info.file_name, e);
                 }
@@ -1198,9 +1237,9 @@ pub fn repair_files(
 ) -> Result<(RepairContext, RepairResult), RepairError> {
     let par2_path = Path::new(par2_file);
 
-    // Load PAR2 files and packets (always quiet mode for library function)
+    // Load PAR2 files and packets
     let par2_files = crate::file_ops::collect_par2_files(par2_path);
-    let (packets, _recovery_blocks) = crate::file_ops::load_all_par2_packets(&par2_files, false);
+    let (packets, _recovery_blocks) = crate::file_ops::load_all_par2_packets(&par2_files, true);
 
     if packets.is_empty() {
         return Err(RepairError::NoValidPackets);
