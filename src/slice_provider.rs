@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use crc32fast::Hasher as Crc32;
 use rustc_hash::FxHashMap as HashMap;
 use crate::repair::Crc32Value;
+use crate::RecoverySliceMetadata;
 
 /// Default chunk size for reading data (64KB, same as par2cmdline)
 pub const DEFAULT_CHUNK_SIZE: usize = 64 * 1024;
@@ -204,56 +205,55 @@ impl SliceProvider for ChunkedSliceProvider {
     }
 }
 
-/// A slice provider that reads recovery slice data in chunks
+/// Provider for recovery slice data with memory-efficient lazy loading
+/// 
+/// Uses metadata to load recovery data on-demand from disk in chunks,
+/// avoiding loading all recovery data into memory (saves ~1.8GB for large PAR2 sets)
 pub struct RecoverySliceProvider {
-    /// Map of recovery slice index to data
-    /// We still keep the full recovery data since they're typically much smaller
-    /// and are accessed many times during reconstruction
-    recovery_slices: HashMap<usize, Vec<u8>>,
+    /// Map of recovery slice index to metadata (lazy loading)
+    recovery_metadata: HashMap<usize, RecoverySliceMetadata>,
 }
 
 impl RecoverySliceProvider {
     /// Create a new recovery slice provider
     pub fn new(_slice_size: usize) -> Self {
         RecoverySliceProvider {
-            recovery_slices: HashMap::default(),
+            recovery_metadata: HashMap::default(),
         }
     }
 
-    /// Add a recovery slice
-    pub fn add_recovery_slice(&mut self, exponent: usize, data: Vec<u8>) {
-        self.recovery_slices.insert(exponent, data);
+    /// Add recovery slice metadata for lazy loading
+    pub fn add_recovery_metadata(&mut self, exponent: usize, metadata: RecoverySliceMetadata) {
+        self.recovery_metadata.insert(exponent, metadata);
     }
 
-    /// Get recovery slice data for a specific chunk
+    /// Get recovery slice data for a specific chunk (loads from disk on-demand)
     pub fn get_recovery_chunk(
         &self,
         exponent: usize,
         chunk_offset: usize,
         chunk_size: usize,
     ) -> Result<ChunkData, Box<dyn std::error::Error>> {
-        let data = self.recovery_slices.get(&exponent)
+        // Load only the requested chunk from disk (memory-efficient!)
+        let metadata = self.recovery_metadata.get(&exponent)
             .ok_or_else(|| format!("Recovery slice {} not found", exponent))?;
-
-        if chunk_offset >= data.len() {
-            return Ok(ChunkData {
-                data: vec![],
-                valid_bytes: 0,
-            });
-        }
-
-        let bytes_to_read = (data.len() - chunk_offset).min(chunk_size);
-        let chunk = data[chunk_offset..chunk_offset + bytes_to_read].to_vec();
-
+        
+        let chunk = metadata.load_chunk(chunk_offset, chunk_size)
+            .map_err(|e| format!("Failed to load chunk: {}", e))?;
+        
+        let valid_bytes = chunk.len();
+        
         Ok(ChunkData {
             data: chunk,
-            valid_bytes: bytes_to_read,
+            valid_bytes,
         })
     }
 
     /// Get all available recovery slice exponents
     pub fn available_exponents(&self) -> Vec<usize> {
-        self.recovery_slices.keys().copied().collect()
+        let mut exponents: Vec<usize> = self.recovery_metadata.keys().copied().collect();
+        exponents.sort_unstable();
+        exponents
     }
 }
 
@@ -293,11 +293,28 @@ mod tests {
 
     #[test]
     fn test_recovery_slice_provider() {
-        let mut provider = RecoverySliceProvider::new(1024);
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+        
+        // Create a temporary file with recovery data
+        let mut temp_file = NamedTempFile::new().unwrap();
         let recovery_data = vec![0x55u8; 1024];
-        provider.add_recovery_slice(0, recovery_data.clone());
+        temp_file.write_all(&recovery_data).unwrap();
+        temp_file.flush().unwrap();
+        
+        // Create metadata for lazy loading
+        let metadata = crate::RecoverySliceMetadata::from_file(
+            0,                                  // exponent
+            crate::repair::RecoverySetId::new([0u8; 16]),
+            temp_file.path().to_path_buf(),
+            0,                                  // offset
+            1024,                               // size
+        );
+        
+        let mut provider = RecoverySliceProvider::new(1024);
+        provider.add_recovery_metadata(0, metadata);
 
-        // Read chunk from recovery slice
+        // Read chunk from recovery slice (should load from disk on-demand)
         let chunk = provider.get_recovery_chunk(0, 0, 64).unwrap();
         assert_eq!(chunk.valid_bytes, 64);
         assert!(chunk.data.iter().all(|&b| b == 0x55));
