@@ -44,7 +44,8 @@ impl TestEnv {
         let par2_files = file_ops::collect_par2_files(&self.par2_file);
         let metadata = file_ops::parse_recovery_slice_metadata(&par2_files, false);
         let packets = file_ops::load_par2_packets(&par2_files, false);
-        RepairContext::new_with_metadata(packets, metadata, self.temp_dir.path().to_path_buf()).unwrap()
+        RepairContext::new_with_metadata(packets, metadata, self.temp_dir.path().to_path_buf())
+            .unwrap()
     }
 
     fn corrupt_at(&self, offset: u64, data: &[u8]) {
@@ -84,7 +85,7 @@ impl TestEnv {
                     eprintln!("Repair returned failure: {:?}", result);
                 }
                 result
-            },
+            }
             Err(e) => panic!("Repair failed with error: {}", e),
         }
     }
@@ -155,7 +156,11 @@ fn test_bug_reconstruct_slices_needs_valid_slices() {
         result.is_success(),
         "Repair should succeed with 2 corrupted slices and 99 recovery blocks"
     );
-    assert_eq!(result.repaired_files().len(), 1, "Should repair exactly 1 file");
+    assert_eq!(
+        result.repaired_files().len(),
+        1,
+        "Should repair exactly 1 file"
+    );
 
     assert!(
         env.verify_md5(),
@@ -185,7 +190,11 @@ fn test_bug_repair_actually_writes_correct_data() {
     assert_ne!(original, corrupted, "File should be corrupted");
 
     let result = env.repair();
-    assert!(result.is_success(), "Repair should report success. Got: {:?}", result);
+    assert!(
+        result.is_success(),
+        "Repair should report success. Got: {:?}",
+        result
+    );
 
     let repaired = env.read_file();
     assert_eq!(
@@ -218,7 +227,11 @@ fn test_bug_multiple_corrupted_slices_repair() {
         result.is_success(),
         "Repair should succeed with 5 corrupted slices"
     );
-    assert_eq!(result.repaired_files().len(), 1, "Should repair exactly 1 file");
+    assert_eq!(
+        result.repaired_files().len(),
+        1,
+        "Should repair exactly 1 file"
+    );
 
     assert!(
         env.verify_md5(),
@@ -251,7 +264,10 @@ fn test_bug_last_slice_reconstruction() {
     );
 
     let result = env.repair();
-    assert!(result.is_success(), "Should successfully repair the last slice");
+    assert!(
+        result.is_success(),
+        "Should successfully repair the last slice"
+    );
 
     let repaired = env.read_file();
     assert_eq!(

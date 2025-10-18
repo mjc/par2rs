@@ -3,8 +3,8 @@
 //! This module provides functionality for analyzing PAR2 packets,
 //! extracting metadata, and calculating statistics.
 
-use crate::Packet;
 use crate::repair::{FileId, Md5Hash};
+use crate::Packet;
 use std::collections::HashMap;
 
 /// Extract unique filenames from FileDescription packets

@@ -13,12 +13,12 @@ fn load_packets_with_recovery(par2_files: &[std::path::PathBuf]) -> (Vec<par2rs:
     let mut all_packets = Vec::new();
     let mut recovery_count = 0;
     let mut seen_hashes = HashSet::default();
-    
+
     for par2_file in par2_files {
         let file = fs::File::open(par2_file).expect("Failed to open PAR2 file");
         let mut reader = BufReader::new(file);
         let packets = par2rs::parse_packets(&mut reader);
-        
+
         // Deduplicate packets
         for packet in packets {
             let hash = par2rs::file_ops::get_packet_hash(&packet);
@@ -30,7 +30,7 @@ fn load_packets_with_recovery(par2_files: &[std::path::PathBuf]) -> (Vec<par2rs:
             }
         }
     }
-    
+
     (all_packets, recovery_count)
 }
 
@@ -94,8 +94,7 @@ mod statistics_calculation {
     fn calculates_comprehensive_par2_stats() {
         let main_file = Path::new("tests/fixtures/testfile.par2");
         let par2_files = par2rs::file_ops::collect_par2_files(main_file);
-        let (packets, recovery_blocks) =
-            load_packets_with_recovery(&par2_files);
+        let (packets, recovery_blocks) = load_packets_with_recovery(&par2_files);
 
         let stats = calculate_par2_stats(&packets, recovery_blocks);
 
@@ -132,12 +131,10 @@ mod statistics_calculation {
         let main_file = Path::new("tests/fixtures/testfile.par2");
         let par2_files = par2rs::file_ops::collect_par2_files(main_file);
 
-        let (packets1, recovery_blocks1) =
-            load_packets_with_recovery(&par2_files);
+        let (packets1, recovery_blocks1) = load_packets_with_recovery(&par2_files);
         let stats1 = calculate_par2_stats(&packets1, recovery_blocks1);
 
-        let (packets2, recovery_blocks2) =
-            load_packets_with_recovery(&par2_files);
+        let (packets2, recovery_blocks2) = load_packets_with_recovery(&par2_files);
         let stats2 = calculate_par2_stats(&packets2, recovery_blocks2);
 
         // Stats should be identical

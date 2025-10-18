@@ -3,14 +3,39 @@
 //! This module provides functionality for discovering PAR2 files,
 //! loading packets from multiple files, and handling deduplication.
 
-use crate::Packet;
 use crate::repair::Md5Hash;
+use crate::Packet;
 use rustc_hash::FxHashSet as HashSet;
 use std::fs;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
 
+/// Type alias for I/O results in this module
+type IoResult<T> = std::io::Result<T>;
+
+/// Buffer size for reading PAR2 files (1MB - recovery slices can be 100KB+ each)
+const BUFFER_SIZE: usize = 1024 * 1024;
+
+/// PAR2 packet header size in bytes
+const PACKET_HEADER_SIZE: usize = 64;
+
+/// PAR2 packet magic bytes
+const PAR2_MAGIC: &[u8; 8] = b"PAR2\0PKT";
+
+/// Offset of magic bytes in packet header
+const MAGIC_OFFSET: usize = 0;
+const MAGIC_END: usize = 8;
+
+/// Offset of packet length in header
+const LENGTH_OFFSET: usize = 8;
+const LENGTH_END: usize = 16;
+
+/// Offset of packet type in header
+const TYPE_OFFSET: usize = 48;
+const TYPE_END: usize = 64;
+
 /// Find all PAR2 files in a directory, excluding the specified file
+#[must_use]
 pub fn find_par2_files_in_directory(folder_path: &Path, exclude_file: &Path) -> Vec<PathBuf> {
     match fs::read_dir(folder_path) {
         Ok(entries) => entries
@@ -20,10 +45,11 @@ pub fn find_par2_files_in_directory(folder_path: &Path, exclude_file: &Path) -> 
                     .then_some(path)
             })
             .collect(),
-        Err(_) => {
+        Err(e) => {
             eprintln!(
-                "Warning: Failed to read directory: {}",
-                folder_path.display()
+                "Warning: Failed to read directory {}: {}",
+                folder_path.display(),
+                e
             );
             Vec::new()
         }
@@ -31,6 +57,7 @@ pub fn find_par2_files_in_directory(folder_path: &Path, exclude_file: &Path) -> 
 }
 
 /// Collect all PAR2 files related to the input file (main file + volume files)
+#[must_use]
 pub fn collect_par2_files(file_path: &Path) -> Vec<PathBuf> {
     let mut par2_files = vec![file_path.to_path_buf()];
 
@@ -55,6 +82,7 @@ pub fn collect_par2_files(file_path: &Path) -> Vec<PathBuf> {
 }
 
 /// Get a unique hash for a packet to detect duplicates
+#[must_use]
 pub fn get_packet_hash(packet: &Packet) -> Md5Hash {
     match packet {
         Packet::Main(p) => p.md5,
@@ -70,22 +98,22 @@ pub fn get_packet_hash(packet: &Packet) -> Md5Hash {
 pub fn parse_par2_file(
     par2_file: &Path,
     seen_packet_hashes: &mut HashSet<Md5Hash>,
-) -> Vec<Packet> {
-    let file = fs::File::open(par2_file).expect("Failed to open .par2 file");
+) -> IoResult<Vec<Packet>> {
+    let file = fs::File::open(par2_file)?;
     // Use 1MB buffer - recovery slices can be 100KB+ each
-    let mut buffered = BufReader::with_capacity(1024 * 1024, file);
+    let mut buffered = BufReader::with_capacity(BUFFER_SIZE, file);
     let all_packets = crate::parse_packets(&mut buffered);
 
     // Filter out packets we've already seen (based on packet MD5)
-    let mut new_packets = Vec::new();
-    for packet in all_packets {
-        let packet_hash = get_packet_hash(&packet);
-        if seen_packet_hashes.insert(packet_hash) {
-            new_packets.push(packet);
-        }
-    }
+    let new_packets = all_packets
+        .into_iter()
+        .filter_map(|packet| {
+            let packet_hash = get_packet_hash(&packet);
+            seen_packet_hashes.insert(packet_hash).then_some(packet)
+        })
+        .collect();
 
-    new_packets
+    Ok(new_packets)
 }
 
 /// Parse a single PAR2 file with progress output
@@ -93,24 +121,28 @@ pub fn parse_par2_file_with_progress(
     par2_file: &Path,
     seen_packet_hashes: &mut HashSet<Md5Hash>,
     show_progress: bool,
-) -> (Vec<Packet>, usize) {
-    let filename = par2_file.file_name().unwrap().to_string_lossy();
+) -> IoResult<(Vec<Packet>, usize)> {
+    let filename = par2_file
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_else(|| "unknown".into());
 
     if show_progress {
         println!("Loading \"{}\".", filename);
     }
 
-    let new_packets = parse_par2_file(par2_file, seen_packet_hashes);
+    let new_packets = parse_par2_file(par2_file, seen_packet_hashes)?;
     let recovery_blocks = count_recovery_blocks(&new_packets);
 
     if show_progress {
-        print_packet_load_result(&filename, new_packets.len(), recovery_blocks);
+        print_packet_load_result(new_packets.len(), recovery_blocks);
     }
 
-    (new_packets, recovery_blocks)
+    Ok((new_packets, recovery_blocks))
 }
 
 /// Count the number of recovery slice packets in a collection of packets
+#[must_use]
 pub fn count_recovery_blocks(packets: &[Packet]) -> usize {
     packets
         .iter()
@@ -119,7 +151,7 @@ pub fn count_recovery_blocks(packets: &[Packet]) -> usize {
 }
 
 /// Print the result of loading packets from a file
-fn print_packet_load_result(_filename: &str, packet_count: usize, recovery_blocks: usize) {
+fn print_packet_load_result(packet_count: usize, recovery_blocks: usize) {
     if packet_count == 0 {
         println!("No new packets found");
     } else if recovery_blocks > 0 {
@@ -134,115 +166,166 @@ fn print_packet_load_result(_filename: &str, packet_count: usize, recovery_block
 
 /// Load PAR2 packets EXCLUDING recovery slices (for memory-efficient operation)
 /// Always use this with parse_recovery_slice_metadata() for lazy loading of recovery data
-/// 
+///
 /// This prevents loading gigabytes of recovery data into memory.
+#[must_use]
 pub fn load_par2_packets(par2_files: &[PathBuf], show_progress: bool) -> Vec<Packet> {
-    let mut all_packets = Vec::new();
     let mut seen_packet_hashes = HashSet::default();
 
-    for par2_file in par2_files {
-        let (packets, _) = parse_par2_file_with_progress(par2_file, &mut seen_packet_hashes, show_progress);
-        
-        // Filter out RecoverySlice packets to save memory
-        let non_recovery_packets: Vec<Packet> = packets
-            .into_iter()
-            .filter(|p| !matches!(p, Packet::RecoverySlice(_)))
-            .collect();
-        
-        all_packets.extend(non_recovery_packets);
-    }
-
-    all_packets
+    par2_files
+        .iter()
+        .flat_map(|par2_file| {
+            match parse_par2_file_with_progress(par2_file, &mut seen_packet_hashes, show_progress) {
+                Ok((packets, _)) => packets,
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Failed to parse PAR2 file {}: {}",
+                        par2_file.display(),
+                        e
+                    );
+                    Vec::new()
+                }
+            }
+        })
+        .filter(|p| !matches!(p, Packet::RecoverySlice(_)))
+        .collect()
 }
 
 /// Parse recovery slice metadata from PAR2 files without loading data into memory
 /// This is the memory-efficient alternative to loading RecoverySlicePackets
 /// Returns Vec<RecoverySliceMetadata> - one per recovery block found
+#[must_use]
 pub fn parse_recovery_slice_metadata(
     par2_files: &[PathBuf],
     show_progress: bool,
 ) -> Vec<crate::RecoverySliceMetadata> {
-    use std::fs::File;
-    use std::io::{BufReader, Seek, SeekFrom};
-    
-    let mut all_metadata = Vec::new();
     let mut seen_recovery_slices: HashSet<(crate::repair::RecoverySetId, u32)> = HashSet::default();
-    
-    for par2_file in par2_files {
-        let file = match File::open(par2_file) {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
-        
-        let mut reader = BufReader::with_capacity(1024 * 1024, file);
-        let mut recovery_count = 0;
-        
-        // Parse packets and look for recovery slices
-        loop {
-            // Save position before reading header
-            let start_pos = match reader.stream_position() {
-                Ok(pos) => pos,
-                Err(_) => break, // EOF or error
-            };
-            
-            // Try to read packet header to determine type
-            let mut header = [0u8; 64];
-            if reader.read_exact(&mut header).is_err() {
-                break; // EOF
-            }
-            
-            // Check if this is a PAR2 packet
-            if &header[0..8] != b"PAR2\0PKT" {
-                break; // Not a valid packet
-            }
-            
-            // Get packet type
-            let type_bytes: [u8; 16] = match header[48..64].try_into() {
-                Ok(bytes) => bytes,
-                Err(_) => break,
-            };
-            
-            // Check if this is a recovery slice packet
-            if &type_bytes == crate::packets::recovery_slice_packet::TYPE_OF_PACKET {
-                // Rewind to start of packet
-                if reader.seek(SeekFrom::Start(start_pos)).is_err() {
-                    break;
-                }
-                
-                // Parse metadata without loading data
-                match crate::RecoverySliceMetadata::parse_from_reader(&mut reader, par2_file.clone()) {
-                    Ok(metadata) => {
-                        // Deduplicate using (set_id, exponent) pair
-                        let dedup_key = (metadata.set_id, metadata.exponent);
-                        
-                        if seen_recovery_slices.insert(dedup_key) {
-                            all_metadata.push(metadata);
-                            recovery_count += 1;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            } else {
-                // Not a recovery slice - skip to next packet
-                // Get packet length
-                let length = u64::from_le_bytes(match header[8..16].try_into() {
-                    Ok(bytes) => bytes,
-                    Err(_) => break,
-                });
-                
-                // Seek to next packet (length includes the entire packet)
-                let next_pos = start_pos + length;
-                if reader.seek(SeekFrom::Start(next_pos)).is_err() {
-                    break;
-                }
-            }
-        }
-        
-        if show_progress && recovery_count > 0 {
-            let filename = par2_file.file_name().unwrap().to_string_lossy();
-            println!("Loaded {} recovery block metadata from \"{}\"", recovery_count, filename);
-        }
+
+    par2_files
+        .iter()
+        .flat_map(|par2_file| {
+            parse_recovery_metadata_from_file(par2_file, show_progress).unwrap_or_else(|e| {
+                eprintln!(
+                    "Warning: Failed to parse PAR2 file {}: {}",
+                    par2_file.display(),
+                    e
+                );
+                Vec::new()
+            })
+        })
+        .filter_map(|metadata| {
+            let dedup_key = (metadata.set_id, metadata.exponent);
+            seen_recovery_slices.insert(dedup_key).then_some(metadata)
+        })
+        .collect()
+}
+
+/// Parse recovery slice metadata from a single PAR2 file
+fn parse_recovery_metadata_from_file(
+    par2_file: &Path,
+    show_progress: bool,
+) -> IoResult<Vec<crate::RecoverySliceMetadata>> {
+    use std::fs::File;
+    use std::io::BufReader;
+
+    let file = File::open(par2_file)?;
+    let mut reader = BufReader::with_capacity(BUFFER_SIZE, file);
+
+    let metadata_list: Vec<_> =
+        std::iter::from_fn(|| parse_next_recovery_metadata(&mut reader, par2_file).transpose())
+            .collect::<IoResult<Vec<_>>>()?;
+
+    if show_progress && !metadata_list.is_empty() {
+        let filename = par2_file
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_else(|| "unknown".into());
+        println!(
+            "Loaded {} recovery block metadata from \"{}\"",
+            metadata_list.len(),
+            filename
+        );
     }
-    
-    all_metadata
+
+    Ok(metadata_list)
+}
+
+/// Parse the next recovery slice metadata from a reader, returning None at EOF
+fn parse_next_recovery_metadata<R: Read + Seek>(
+    reader: &mut R,
+    par2_file: &Path,
+) -> IoResult<Option<crate::RecoverySliceMetadata>> {
+    use std::io::{ErrorKind, SeekFrom};
+
+    // Save position before reading header
+    let start_pos = reader.stream_position()?;
+
+    // Try to read packet header to determine type
+    let mut header = [0u8; PACKET_HEADER_SIZE];
+    if let Err(e) = reader.read_exact(&mut header) {
+        return if e.kind() == ErrorKind::UnexpectedEof {
+            Ok(None)
+        } else {
+            Err(e)
+        };
+    }
+
+    // Check if this is a valid PAR2 packet
+    if !is_valid_par2_header(&header) {
+        return Ok(None); // Not a valid packet, end of file
+    }
+
+    // Get packet type and length
+    let type_bytes = get_packet_type(&header)
+        .ok_or_else(|| std::io::Error::new(ErrorKind::InvalidData, "Invalid packet type"))?;
+
+    // Check if this is a recovery slice packet
+    if is_recovery_slice_packet(&type_bytes) {
+        // Rewind to start of packet
+        reader.seek(SeekFrom::Start(start_pos))?;
+
+        // Parse metadata without loading data
+        crate::RecoverySliceMetadata::parse_from_reader(reader, par2_file.to_path_buf())
+            .map(Some)
+            .map_err(|_| {
+                std::io::Error::new(ErrorKind::InvalidData, "Failed to parse recovery metadata")
+            })
+    } else {
+        // Not a recovery slice - skip to next packet
+        let length = get_packet_length(&header)
+            .ok_or_else(|| std::io::Error::new(ErrorKind::InvalidData, "Invalid packet length"))?;
+
+        // Seek to next packet (length includes the entire packet)
+        reader.seek(SeekFrom::Start(start_pos + length))?;
+
+        // Tail recursion to try next packet
+        parse_next_recovery_metadata(reader, par2_file)
+    }
+}
+
+/// Helper function to check if a header is a valid PAR2 packet header
+#[inline]
+fn is_valid_par2_header(header: &[u8; PACKET_HEADER_SIZE]) -> bool {
+    &header[MAGIC_OFFSET..MAGIC_END] == PAR2_MAGIC
+}
+
+/// Helper function to check if packet type is a recovery slice
+#[inline]
+fn is_recovery_slice_packet(type_bytes: &[u8; 16]) -> bool {
+    type_bytes == crate::packets::recovery_slice_packet::TYPE_OF_PACKET
+}
+
+/// Helper function to extract packet type from header
+#[inline]
+fn get_packet_type(header: &[u8; PACKET_HEADER_SIZE]) -> Option<[u8; 16]> {
+    header[TYPE_OFFSET..TYPE_END].try_into().ok()
+}
+
+/// Helper function to get packet length from header
+#[inline]
+fn get_packet_length(header: &[u8; PACKET_HEADER_SIZE]) -> Option<u64> {
+    header[LENGTH_OFFSET..LENGTH_END]
+        .try_into()
+        .ok()
+        .map(u64::from_le_bytes)
 }

@@ -3,8 +3,8 @@
 //! This module provides functionality for verifying individual files
 //! against their expected MD5 hashes.
 
-use crate::Packet;
 use crate::repair::{FileId, Md5Hash};
+use crate::Packet;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;

@@ -14,12 +14,12 @@ fn load_packets_with_recovery(par2_files: &[PathBuf]) -> (Vec<par2rs::Packet>, u
     let mut all_packets = Vec::new();
     let mut recovery_count = 0;
     let mut seen_hashes = HashSet::default();
-    
+
     for par2_file in par2_files {
         let file = fs::File::open(par2_file).expect("Failed to open PAR2 file");
         let mut reader = BufReader::new(file);
         let packets = par2rs::parse_packets(&mut reader);
-        
+
         // Deduplicate packets
         for packet in packets {
             let hash = get_packet_hash(&packet);
@@ -31,7 +31,7 @@ fn load_packets_with_recovery(par2_files: &[PathBuf]) -> (Vec<par2rs::Packet>, u
             }
         }
     }
-    
+
     (all_packets, recovery_count)
 }
 
@@ -103,7 +103,7 @@ mod packet_parsing {
         let main_file = Path::new("tests/fixtures/testfile.par2");
         let mut seen_hashes = HashSet::default();
 
-        let packets = parse_par2_file(main_file, &mut seen_hashes);
+        let packets = parse_par2_file(main_file, &mut seen_hashes).expect("Failed to parse");
 
         assert!(!packets.is_empty());
         // Main file should contain at least a main packet and file description packet
@@ -117,7 +117,8 @@ mod packet_parsing {
 
         // Test with progress enabled
         let (packets_with_progress, recovery_count) =
-            parse_par2_file_with_progress(main_file, &mut seen_hashes, true);
+            parse_par2_file_with_progress(main_file, &mut seen_hashes, true)
+                .expect("Failed to parse with progress");
 
         assert!(!packets_with_progress.is_empty());
         assert_eq!(recovery_count, 0); // Main file should have no recovery blocks
@@ -125,7 +126,8 @@ mod packet_parsing {
         // Test with progress disabled
         seen_hashes.clear();
         let (packets_no_progress, _) =
-            parse_par2_file_with_progress(main_file, &mut seen_hashes, false);
+            parse_par2_file_with_progress(main_file, &mut seen_hashes, false)
+                .expect("Failed to parse without progress");
 
         assert_eq!(packets_with_progress.len(), packets_no_progress.len());
     }
@@ -145,13 +147,13 @@ mod packet_parsing {
     }
 
     #[test]
-    #[should_panic(expected = "Failed to open .par2 file")]
     fn handles_corrupted_file_gracefully() {
         let nonexistent_file = Path::new("tests/fixtures/nonexistent.par2");
         let mut seen_hashes = HashSet::default();
 
-        // This should panic because the implementation uses expect()
-        let _packets = parse_par2_file(nonexistent_file, &mut seen_hashes);
+        // With the improved code, this should return an error, not panic
+        let result = parse_par2_file(nonexistent_file, &mut seen_hashes);
+        assert!(result.is_err());
     }
 }
 
@@ -164,8 +166,8 @@ mod deduplication {
         let mut seen_hashes = HashSet::default();
 
         // Parse the same file twice
-        let packets1 = parse_par2_file(main_file, &mut seen_hashes);
-        let packets2 = parse_par2_file(main_file, &mut seen_hashes);
+        let packets1 = parse_par2_file(main_file, &mut seen_hashes).expect("Failed first parse");
+        let packets2 = parse_par2_file(main_file, &mut seen_hashes).expect("Failed second parse");
 
         // First parse should return packets
         assert!(!packets1.is_empty());
@@ -180,8 +182,10 @@ mod deduplication {
         let volume_file = Path::new("tests/fixtures/testfile.vol00+01.par2");
         let mut seen_hashes = HashSet::default();
 
-        let main_packets = parse_par2_file(main_file, &mut seen_hashes);
-        let volume_packets = parse_par2_file(volume_file, &mut seen_hashes);
+        let main_packets =
+            parse_par2_file(main_file, &mut seen_hashes).expect("Failed to parse main file");
+        let volume_packets =
+            parse_par2_file(volume_file, &mut seen_hashes).expect("Failed to parse volume file");
 
         // Should get packets from both files
         assert!(!main_packets.is_empty());

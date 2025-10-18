@@ -1,7 +1,6 @@
-
-use binrw::{BinRead, BinWrite};
+use crate::recovery_loader::{FileSystemLoader, RecoveryDataLoader};
 use crate::repair::{Md5Hash, RecoverySetId};
-use crate::recovery_loader::{RecoveryDataLoader, FileSystemLoader};
+use binrw::{BinRead, BinWrite};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -36,7 +35,7 @@ impl RecoverySliceMetadata {
             loader,
         }
     }
-    
+
     /// Create metadata with filesystem-based loading
     pub fn from_file(
         exponent: u32,
@@ -52,29 +51,29 @@ impl RecoverySliceMetadata {
         });
         Self::new(exponent, set_id, loader)
     }
-    
+
     /// Read the actual recovery data from the loader when needed
     pub fn load_data(&self) -> std::io::Result<Vec<u8>> {
         self.loader.load_data()
     }
-    
+
     /// Read a chunk of recovery data (memory-efficient)
-    /// 
+    ///
     /// # Arguments
     /// * `chunk_offset` - Byte offset within the recovery data (not file offset)
     /// * `chunk_size` - Number of bytes to read
-    /// 
+    ///
     /// # Returns
     /// Vector containing the requested chunk (may be smaller if at end of data)
     pub fn load_chunk(&self, chunk_offset: usize, chunk_size: usize) -> std::io::Result<Vec<u8>> {
         self.loader.load_chunk(chunk_offset, chunk_size)
     }
-    
+
     /// Get the size of the recovery data
     pub fn data_size(&self) -> usize {
         self.loader.data_size()
     }
-    
+
     /// Parse recovery slice metadata from a reader without loading the data
     /// This is the memory-efficient alternative to parsing RecoverySlicePacket
     pub fn parse_from_reader<R: std::io::Read + std::io::Seek>(
@@ -82,60 +81,56 @@ impl RecoverySliceMetadata {
         file_path: PathBuf,
     ) -> std::io::Result<Self> {
         use std::io::SeekFrom;
-        
+
         // Read packet header (64 bytes)
         let mut header = [0u8; 64];
         reader.read_exact(&mut header)?;
-        
+
         // Check magic
         if &header[0..8] != b"PAR2\0PKT" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Invalid PAR2 packet magic"
+                "Invalid PAR2 packet magic",
             ));
         }
-        
+
         // Parse fields from header
-        let length = u64::from_le_bytes(
-            header[8..16].try_into().map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid length field")
-            })?
-        );
+        let length = u64::from_le_bytes(header[8..16].try_into().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid length field")
+        })?);
         let set_id_bytes: [u8; 16] = header[32..48].try_into().map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid set_id field")
         })?;
         let type_bytes: [u8; 16] = header[48..64].try_into().map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid type field")
         })?;
-        
+
         // Check type
         if &type_bytes != TYPE_OF_PACKET {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Not a recovery slice packet"
+                "Not a recovery slice packet",
             ));
         }
-        
+
         // Read exponent (4 bytes after the header)
         let mut exponent_bytes = [0u8; 4];
         reader.read_exact(&mut exponent_bytes)?;
         let exponent = u32::from_le_bytes(exponent_bytes);
-        
+
         // Calculate data offset and size
         // Header size is 64 (fixed header) + 4 (exponent) = 68 bytes
         let header_size = 68u64;
-        let data_size = length.checked_sub(header_size)
-            .ok_or_else(|| std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Invalid packet length"
-            ))? as usize;
-        
+        let data_size = length.checked_sub(header_size).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid packet length")
+        })? as usize;
+
         // Get current absolute position in file (this is where recovery_data starts)
         let data_offset = reader.stream_position()?;
-        
+
         // Skip past the recovery data without reading it into memory
         reader.seek(SeekFrom::Current(data_size as i64))?;
-        
+
         // Create metadata with filesystem loader
         Ok(Self::from_file(
             exponent,
@@ -153,16 +148,16 @@ impl RecoverySliceMetadata {
 #[derive(Debug, Clone, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct RecoverySlicePacket {
-    pub length: u64,                                // Length of the packet
+    pub length: u64, // Length of the packet
     #[br(map = |x: [u8; 16]| Md5Hash::new(x))]
-    pub md5: Md5Hash,                               // MD5 hash of the packet
+    pub md5: Md5Hash, // MD5 hash of the packet
     #[br(map = |x: [u8; 16]| RecoverySetId::new(x))]
-    pub set_id: RecoverySetId,                      // Unique identifier for the PAR2 set
-    pub type_of_packet: [u8; 16],                   // Type of packet - should be "PAR 2.0\0RecvSlic"
-    pub exponent: u32,                              // Exponent used to generate recovery data
+    pub set_id: RecoverySetId, // Unique identifier for the PAR2 set
+    pub type_of_packet: [u8; 16], // Type of packet - should be "PAR 2.0\0RecvSlic"
+    pub exponent: u32, // Exponent used to generate recovery data
     #[br(count = length as usize - (8 + 8 + 16 + 16 + 16 + 4))]
     // Calculate recovery data size: total length - (magic + length + md5 + set_id + type + exponent)
-    pub recovery_data: Vec<u8>,                     // Recovery data - THIS IS THE MEMORY HOG!
+    pub recovery_data: Vec<u8>, // Recovery data - THIS IS THE MEMORY HOG!
 }
 
 impl RecoverySlicePacket {
