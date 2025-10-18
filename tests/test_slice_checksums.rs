@@ -1,4 +1,3 @@
-use hex;
 /// Tests for PAR2 slice checksum computation
 ///
 /// PAR2 spec requires that slices be zero-padded to the slice size when computing checksums.

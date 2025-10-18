@@ -118,7 +118,7 @@ fn test_bug_last_slice_padding_in_count() {
     // Corrupt slices 1 and 2 (100 bytes at offset 1000)
     // With slice_size=528: slice 1 is bytes 528-1055, slice 2 is bytes 1056-1583
     // Corruption at 1000-1099 affects both slices
-    env.corrupt_at(1000, &vec![0u8; 100]);
+    env.corrupt_at(1000, &[0u8; 100]);
 
     // Should detect exactly 2 corrupted slices, not 3
     let corrupted_count = env.count_corrupted();
@@ -149,7 +149,7 @@ fn test_bug_reconstruct_slices_needs_valid_slices() {
     //     only adding slices from OTHER files in the recovery set
 
     let env = TestEnv::new();
-    env.corrupt_at(1000, &vec![0u8; 100]);
+    env.corrupt_at(1000, &[0u8; 100]);
 
     let result = env.repair();
     assert!(
@@ -185,7 +185,7 @@ fn test_bug_repair_actually_writes_correct_data() {
     let env = TestEnv::new();
     let original = env.read_file();
 
-    env.corrupt_at(1000, &vec![0xFFu8; 100]);
+    env.corrupt_at(1000, &[0xFFu8; 100]);
     let corrupted = env.read_file();
     assert_ne!(original, corrupted, "File should be corrupted");
 
@@ -255,7 +255,7 @@ fn test_bug_last_slice_reconstruction() {
     let last_slice_index = file_info.slice_count - 1;
 
     // Corrupt ONLY the last slice
-    env.corrupt_slice(last_slice_index, &vec![0xFFu8; 100]);
+    env.corrupt_slice(last_slice_index, &[0xFFu8; 100]);
 
     assert_eq!(
         env.count_corrupted(),

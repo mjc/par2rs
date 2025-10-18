@@ -221,8 +221,8 @@ fn test_large_file_with_many_slices() {
 
     // Corrupt a few bytes in the middle
     let mut corrupted = content.clone();
-    for i in 250000..250100 {
-        corrupted[i] = 0xFF;
+    for byte in &mut corrupted[250000..250100] {
+        *byte = 0xFF;
     }
     fs::write(&test_file, &corrupted).unwrap();
 

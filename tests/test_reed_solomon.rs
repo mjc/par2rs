@@ -120,5 +120,4 @@ fn test_reconstruction_with_simple_case() {
     }
 
     // The test passes as long as it doesn't panic
-    assert!(true, "Test completed without panicking");
 }
