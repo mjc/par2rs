@@ -1,7 +1,7 @@
 //! Tests for RecoverySliceMetadata lazy loading functionality
 
+use par2rs::domain::RecoverySetId;
 use par2rs::packets::RecoverySliceMetadata;
-use par2rs::repair::RecoverySetId;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -149,7 +149,7 @@ fn test_parse_from_reader() {
     packet_data.extend_from_slice(&5u32.to_le_bytes());
 
     // Recovery data (100 bytes)
-    packet_data.extend_from_slice(&vec![0xAB; 100]);
+    packet_data.extend_from_slice(&[0xAB; 100]);
 
     let mut cursor = Cursor::new(packet_data);
     let metadata =

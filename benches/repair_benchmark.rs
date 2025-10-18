@@ -113,8 +113,8 @@ fn bench_reed_solomon_reconstruct(c: &mut Criterion) {
         for i in 0..99 {
             recovery_slices.push(RecoverySlicePacket {
                 length: 0,
-                md5: [0; 16],
-                set_id: [0; 16],
+                md5: par2rs::domain::Md5Hash::new([0; 16]),
+                set_id: par2rs::domain::RecoverySetId::new([0; 16]),
                 type_of_packet: [0; 16],
                 exponent: i,
                 recovery_data: vec![0xAAu8; slice_size],

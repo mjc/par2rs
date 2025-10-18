@@ -282,7 +282,7 @@ fn test_parse_par2_file_deduplication() {
 
     // Test the deduplication pattern with mock data
     // We use the HashSet directly since Md5Hash fields are private
-    use par2rs::repair::Md5Hash;
+    use par2rs::domain::Md5Hash;
 
     let hash1: Md5Hash = unsafe { std::mem::transmute([1u8; 16]) };
     let hash2: Md5Hash = unsafe { std::mem::transmute([2u8; 16]) };
