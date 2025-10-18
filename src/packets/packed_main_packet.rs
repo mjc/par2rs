@@ -1,31 +1,30 @@
-
+use crate::repair::{FileId, Md5Hash, RecoverySetId};
 use binrw::{BinRead, BinWrite};
-use crate::repair::{Md5Hash, RecoverySetId, FileId};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0PkdMain\0";
 
 #[derive(Debug)]
 pub struct PackedMainPacket {
-    pub length: u64,                                    // Length of the packet
-    pub md5: Md5Hash,                                   // MD5 hash of the packet
-    pub set_id: RecoverySetId,                          // Unique identifier for the PAR2 set
-    pub subslice_size: u64,                             // Subslice size. Must be a multiple of 4 and equally divide the slice size.
-    pub slice_size: u64,                                // Slice size. Must be a multiple of 4 and a multiple of the subslice size.
-    pub file_count: u32,                                // Number of files in the recovery set.
-    pub recovery_set_ids: Vec<FileId>,                  // File IDs of all files in the recovery set.
-    pub non_recovery_set_ids: Vec<FileId>,              // File IDs of all files in the non-recovery set.
+    pub length: u64,                       // Length of the packet
+    pub md5: Md5Hash,                      // MD5 hash of the packet
+    pub set_id: RecoverySetId,             // Unique identifier for the PAR2 set
+    pub subslice_size: u64, // Subslice size. Must be a multiple of 4 and equally divide the slice size.
+    pub slice_size: u64, // Slice size. Must be a multiple of 4 and a multiple of the subslice size.
+    pub file_count: u32, // Number of files in the recovery set.
+    pub recovery_set_ids: Vec<FileId>, // File IDs of all files in the recovery set.
+    pub non_recovery_set_ids: Vec<FileId>, // File IDs of all files in the non-recovery set.
 }
 
 impl BinRead for PackedMainPacket {
     type Args<'a> = ();
-    
+
     fn read_options<R: std::io::Read + std::io::Seek>(
         reader: &mut R,
         _endian: binrw::Endian,
         _args: Self::Args<'_>,
     ) -> binrw::BinResult<Self> {
         use binrw::BinReaderExt;
-        
+
         // Read magic
         let magic: [u8; 8] = reader.read_le()?;
         if &magic != b"PAR2\0PKT" {
@@ -34,7 +33,7 @@ impl BinRead for PackedMainPacket {
                 message: "Invalid magic".to_string(),
             });
         }
-        
+
         let length: u64 = reader.read_le()?;
         let md5_bytes: [u8; 16] = reader.read_le()?;
         let set_id_bytes: [u8; 16] = reader.read_le()?;
@@ -42,20 +41,21 @@ impl BinRead for PackedMainPacket {
         let subslice_size: u64 = reader.read_le()?;
         let slice_size: u64 = reader.read_le()?;
         let file_count: u32 = reader.read_le()?;
-        
+
         let mut recovery_set_ids = Vec::with_capacity(file_count as usize);
         for _ in 0..file_count {
             let id: [u8; 16] = reader.read_le()?;
             recovery_set_ids.push(FileId::new(id));
         }
-        
-        let non_recovery_count = (length as usize - 64 - 8 - 8 - 4 - (file_count as usize * 16)) / 16;
+
+        let non_recovery_count =
+            (length as usize - 64 - 8 - 8 - 4 - (file_count as usize * 16)) / 16;
         let mut non_recovery_set_ids = Vec::with_capacity(non_recovery_count);
         for _ in 0..non_recovery_count {
             let id: [u8; 16] = reader.read_le()?;
             non_recovery_set_ids.push(FileId::new(id));
         }
-        
+
         Ok(PackedMainPacket {
             length,
             md5: Md5Hash::new(md5_bytes),
@@ -71,7 +71,7 @@ impl BinRead for PackedMainPacket {
 
 impl BinWrite for PackedMainPacket {
     type Args<'a> = ();
-    
+
     fn write_options<W: std::io::Write + std::io::Seek>(
         &self,
         writer: &mut W,

@@ -1,8 +1,7 @@
-
 use std::fmt::{Debug, Display};
 
-use binrw::{BinRead, BinWrite};
 use crate::repair::{FileId, Md5Hash, RecoverySetId};
+use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0Main\0\0\0\0";
 
@@ -22,20 +21,20 @@ pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0Main\0\0\0\0";
 /// assert_eq!(main_packet.file_ids.len(), 1); // Updated assertion
 /// ```
 pub struct MainPacket {
-    pub length: u64,                                    // Length of the packet
+    pub length: u64, // Length of the packet
     #[br(map = |x: [u8; 16]| Md5Hash::new(x))]
-    pub md5: Md5Hash,                                   // MD5 hash of the packet
-    #[br(pad_after = 16)]                               // Ensure proper alignment for the `slice_size` field
+    pub md5: Md5Hash, // MD5 hash of the packet
+    #[br(pad_after = 16)] // Ensure proper alignment for the `slice_size` field
     #[br(map = |x: [u8; 16]| RecoverySetId::new(x))]
-    pub set_id: RecoverySetId,                          // Unique identifier for the PAR2 set
-    pub slice_size: u64,                                // Size of each slice
-    pub file_count: u32,                                // Number of files in the recovery set
+    pub set_id: RecoverySetId, // Unique identifier for the PAR2 set
+    pub slice_size: u64, // Size of each slice
+    pub file_count: u32, // Number of files in the recovery set
     #[br(count = (length - 72) / 16)]
     #[br(map = |v: Vec<[u8; 16]>| v.into_iter().map(FileId::new).collect())]
-    pub file_ids: Vec<FileId>,                          // File IDs of all files in the recovery set
+    pub file_ids: Vec<FileId>, // File IDs of all files in the recovery set
     #[br(count = (length - 72 - (file_ids.len() as u64 * 16)) / 16)]
     #[br(map = |v: Vec<[u8; 16]>| v.into_iter().map(FileId::new).collect())]
-    pub non_recovery_file_ids: Vec<FileId>,             // File IDs of all files in the non-recovery set
+    pub non_recovery_file_ids: Vec<FileId>, // File IDs of all files in the non-recovery set
 }
 
 /// A doctest for testing the `BinWrite` implementation of `MainPacket`.

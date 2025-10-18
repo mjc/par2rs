@@ -62,15 +62,23 @@ pub fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &S
         // Fully unroll 16-word chunks - batch loads/stores to reduce memory stalls
         for _ in 0..chunks {
             // Load all 16 input words first (better cache/prefetch behavior)
-            let i0 = in_words[idx]; let i1 = in_words[idx+1];
-            let i2 = in_words[idx+2]; let i3 = in_words[idx+3];
-            let i4 = in_words[idx+4]; let i5 = in_words[idx+5];
-            let i6 = in_words[idx+6]; let i7 = in_words[idx+7];
-            let i8 = in_words[idx+8]; let i9 = in_words[idx+9];
-            let i10 = in_words[idx+10]; let i11 = in_words[idx+11];
-            let i12 = in_words[idx+12]; let i13 = in_words[idx+13];
-            let i14 = in_words[idx+14]; let i15 = in_words[idx+15];
-            
+            let i0 = in_words[idx];
+            let i1 = in_words[idx + 1];
+            let i2 = in_words[idx + 2];
+            let i3 = in_words[idx + 3];
+            let i4 = in_words[idx + 4];
+            let i5 = in_words[idx + 5];
+            let i6 = in_words[idx + 6];
+            let i7 = in_words[idx + 7];
+            let i8 = in_words[idx + 8];
+            let i9 = in_words[idx + 9];
+            let i10 = in_words[idx + 10];
+            let i11 = in_words[idx + 11];
+            let i12 = in_words[idx + 12];
+            let i13 = in_words[idx + 13];
+            let i14 = in_words[idx + 14];
+            let i15 = in_words[idx + 15];
+
             // Compute all multiplications (table lookups execute in parallel)
             let r0 = low[(i0 & 0xFF) as usize] ^ high[(i0 >> 8) as usize];
             let r1 = low[(i1 & 0xFF) as usize] ^ high[(i1 >> 8) as usize];
@@ -88,17 +96,25 @@ pub fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &S
             let r13 = low[(i13 & 0xFF) as usize] ^ high[(i13 >> 8) as usize];
             let r14 = low[(i14 & 0xFF) as usize] ^ high[(i14 >> 8) as usize];
             let r15 = low[(i15 & 0xFF) as usize] ^ high[(i15 >> 8) as usize];
-            
+
             // Write all results back
-            out_words[idx] = r0; out_words[idx+1] = r1;
-            out_words[idx+2] = r2; out_words[idx+3] = r3;
-            out_words[idx+4] = r4; out_words[idx+5] = r5;
-            out_words[idx+6] = r6; out_words[idx+7] = r7;
-            out_words[idx+8] = r8; out_words[idx+9] = r9;
-            out_words[idx+10] = r10; out_words[idx+11] = r11;
-            out_words[idx+12] = r12; out_words[idx+13] = r13;
-            out_words[idx+14] = r14; out_words[idx+15] = r15;
-            
+            out_words[idx] = r0;
+            out_words[idx + 1] = r1;
+            out_words[idx + 2] = r2;
+            out_words[idx + 3] = r3;
+            out_words[idx + 4] = r4;
+            out_words[idx + 5] = r5;
+            out_words[idx + 6] = r6;
+            out_words[idx + 7] = r7;
+            out_words[idx + 8] = r8;
+            out_words[idx + 9] = r9;
+            out_words[idx + 10] = r10;
+            out_words[idx + 11] = r11;
+            out_words[idx + 12] = r12;
+            out_words[idx + 13] = r13;
+            out_words[idx + 14] = r14;
+            out_words[idx + 15] = r15;
+
             idx += 16;
         }
 
@@ -124,16 +140,16 @@ pub fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &S
 #[inline]
 pub fn process_slice_multiply_add(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
     let min_len = input.len().min(output.len());
-    
+
     // Get SIMD level (cached after first call)
     let simd_level = *SIMD_LEVEL.get_or_init(detect_simd_support);
-    
+
     // Try SIMD first for large enough buffers
     if min_len >= 32 && simd_level != SimdLevel::None {
         process_slice_multiply_add_simd(input, output, tables, simd_level);
         return;
     }
-    
+
     // Fall back to scalar implementation
     let num_words = min_len / 2;
     if num_words == 0 {
@@ -157,25 +173,41 @@ pub fn process_slice_multiply_add(input: &[u8], output: &mut [u8], tables: &Spli
         // Fully unroll 16-word chunks - batch loads/stores to reduce memory stalls
         for _ in 0..chunks {
             // Load all 16 input words first (better cache/prefetch behavior)
-            let i0 = in_words[idx]; let i1 = in_words[idx+1];
-            let i2 = in_words[idx+2]; let i3 = in_words[idx+3];
-            let i4 = in_words[idx+4]; let i5 = in_words[idx+5];
-            let i6 = in_words[idx+6]; let i7 = in_words[idx+7];
-            let i8 = in_words[idx+8]; let i9 = in_words[idx+9];
-            let i10 = in_words[idx+10]; let i11 = in_words[idx+11];
-            let i12 = in_words[idx+12]; let i13 = in_words[idx+13];
-            let i14 = in_words[idx+14]; let i15 = in_words[idx+15];
-            
+            let i0 = in_words[idx];
+            let i1 = in_words[idx + 1];
+            let i2 = in_words[idx + 2];
+            let i3 = in_words[idx + 3];
+            let i4 = in_words[idx + 4];
+            let i5 = in_words[idx + 5];
+            let i6 = in_words[idx + 6];
+            let i7 = in_words[idx + 7];
+            let i8 = in_words[idx + 8];
+            let i9 = in_words[idx + 9];
+            let i10 = in_words[idx + 10];
+            let i11 = in_words[idx + 11];
+            let i12 = in_words[idx + 12];
+            let i13 = in_words[idx + 13];
+            let i14 = in_words[idx + 14];
+            let i15 = in_words[idx + 15];
+
             // Load all 16 output words
-            let o0 = out_words[idx]; let o1 = out_words[idx+1];
-            let o2 = out_words[idx+2]; let o3 = out_words[idx+3];
-            let o4 = out_words[idx+4]; let o5 = out_words[idx+5];
-            let o6 = out_words[idx+6]; let o7 = out_words[idx+7];
-            let o8 = out_words[idx+8]; let o9 = out_words[idx+9];
-            let o10 = out_words[idx+10]; let o11 = out_words[idx+11];
-            let o12 = out_words[idx+12]; let o13 = out_words[idx+13];
-            let o14 = out_words[idx+14]; let o15 = out_words[idx+15];
-            
+            let o0 = out_words[idx];
+            let o1 = out_words[idx + 1];
+            let o2 = out_words[idx + 2];
+            let o3 = out_words[idx + 3];
+            let o4 = out_words[idx + 4];
+            let o5 = out_words[idx + 5];
+            let o6 = out_words[idx + 6];
+            let o7 = out_words[idx + 7];
+            let o8 = out_words[idx + 8];
+            let o9 = out_words[idx + 9];
+            let o10 = out_words[idx + 10];
+            let o11 = out_words[idx + 11];
+            let o12 = out_words[idx + 12];
+            let o13 = out_words[idx + 13];
+            let o14 = out_words[idx + 14];
+            let o15 = out_words[idx + 15];
+
             // Compute all multiplications (table lookups execute in parallel)
             let r0 = low[(i0 & 0xFF) as usize] ^ high[(i0 >> 8) as usize];
             let r1 = low[(i1 & 0xFF) as usize] ^ high[(i1 >> 8) as usize];
@@ -193,17 +225,25 @@ pub fn process_slice_multiply_add(input: &[u8], output: &mut [u8], tables: &Spli
             let r13 = low[(i13 & 0xFF) as usize] ^ high[(i13 >> 8) as usize];
             let r14 = low[(i14 & 0xFF) as usize] ^ high[(i14 >> 8) as usize];
             let r15 = low[(i15 & 0xFF) as usize] ^ high[(i15 >> 8) as usize];
-            
+
             // Write all results back
-            out_words[idx] = o0 ^ r0; out_words[idx+1] = o1 ^ r1;
-            out_words[idx+2] = o2 ^ r2; out_words[idx+3] = o3 ^ r3;
-            out_words[idx+4] = o4 ^ r4; out_words[idx+5] = o5 ^ r5;
-            out_words[idx+6] = o6 ^ r6; out_words[idx+7] = o7 ^ r7;
-            out_words[idx+8] = o8 ^ r8; out_words[idx+9] = o9 ^ r9;
-            out_words[idx+10] = o10 ^ r10; out_words[idx+11] = o11 ^ r11;
-            out_words[idx+12] = o12 ^ r12; out_words[idx+13] = o13 ^ r13;
-            out_words[idx+14] = o14 ^ r14; out_words[idx+15] = o15 ^ r15;
-            
+            out_words[idx] = o0 ^ r0;
+            out_words[idx + 1] = o1 ^ r1;
+            out_words[idx + 2] = o2 ^ r2;
+            out_words[idx + 3] = o3 ^ r3;
+            out_words[idx + 4] = o4 ^ r4;
+            out_words[idx + 5] = o5 ^ r5;
+            out_words[idx + 6] = o6 ^ r6;
+            out_words[idx + 7] = o7 ^ r7;
+            out_words[idx + 8] = o8 ^ r8;
+            out_words[idx + 9] = o9 ^ r9;
+            out_words[idx + 10] = o10 ^ r10;
+            out_words[idx + 11] = o11 ^ r11;
+            out_words[idx + 12] = o12 ^ r12;
+            out_words[idx + 13] = o13 ^ r13;
+            out_words[idx + 14] = o14 ^ r14;
+            out_words[idx + 15] = o15 ^ r15;
+
             idx += 16;
         }
 
@@ -1243,7 +1283,7 @@ impl ReconstructionEngine {
         chunk_size: usize,
     ) -> ReconstructionResult {
         use crate::slice_provider::DEFAULT_CHUNK_SIZE;
-        
+
         if global_missing_indices.is_empty() {
             return ReconstructionResult {
                 success: true,
@@ -1261,10 +1301,16 @@ impl ReconstructionEngine {
         }
 
         let num_missing = global_missing_indices.len();
-        let chunk_size = if chunk_size == 0 { DEFAULT_CHUNK_SIZE } else { chunk_size };
+        let chunk_size = if chunk_size == 0 {
+            DEFAULT_CHUNK_SIZE
+        } else {
+            chunk_size
+        };
 
-        debug!("Starting chunked Reed-Solomon reconstruction: {} missing slices, chunk size {} bytes", 
-               num_missing, chunk_size);
+        debug!(
+            "Starting chunked Reed-Solomon reconstruction: {} missing slices, chunk size {} bytes",
+            num_missing, chunk_size
+        );
 
         // Build and invert matrix (same as regular reconstruction)
         debug!("Building coefficient matrix...");
@@ -1313,7 +1359,7 @@ impl ReconstructionEngine {
         debug!("Computing combined coefficients...");
         let mut present_coeffs: Vec<Vec<u16>> = Vec::new();
         let mut table_cache: HashMap<u16, SplitMulTable> = HashMap::default();
-        
+
         for out_idx in 0..num_missing {
             let mut coeff_row = Vec::new();
             for (idx, &global_idx) in available_slices.iter().enumerate() {
@@ -1342,7 +1388,10 @@ impl ReconstructionEngine {
             for eq_idx in 0..num_missing {
                 let coeff_val = matrix_inv[out_idx][eq_idx].value();
                 if coeff_val != 0 && coeff_val != 1 && !table_cache.contains_key(&coeff_val) {
-                    table_cache.insert(coeff_val, build_split_mul_table(matrix_inv[out_idx][eq_idx]));
+                    table_cache.insert(
+                        coeff_val,
+                        build_split_mul_table(matrix_inv[out_idx][eq_idx]),
+                    );
                 }
             }
         }
@@ -1351,12 +1400,15 @@ impl ReconstructionEngine {
 
         // Process data in chunks
         let num_chunks = (self.slice_size + chunk_size - 1) / chunk_size;
-        debug!("Processing {} chunks of {} bytes each", num_chunks, chunk_size);
+        debug!(
+            "Processing {} chunks of {} bytes each",
+            num_chunks, chunk_size
+        );
 
         for chunk_idx in 0..num_chunks {
             let chunk_offset = chunk_idx * chunk_size;
             let current_chunk_size = (self.slice_size - chunk_offset).min(chunk_size);
-            
+
             if chunk_idx % 100 == 0 && chunk_idx > 0 {
                 debug!("Processing chunk {}/{}", chunk_idx, num_chunks);
             }
@@ -1366,7 +1418,9 @@ impl ReconstructionEngine {
             let mut first_writes: Vec<bool> = vec![true; num_missing];
 
             // Process recovery slices
-            for (eq_idx, recovery_slice) in self.recovery_slices.iter().take(num_missing).enumerate() {
+            for (eq_idx, recovery_slice) in
+                self.recovery_slices.iter().take(num_missing).enumerate()
+            {
                 let recovery_chunk = match recovery_provider.get_recovery_chunk(
                     recovery_slice.exponent as usize,
                     chunk_offset,
@@ -1386,7 +1440,7 @@ impl ReconstructionEngine {
                     // Pad with zeros if needed
                     let mut padded = recovery_chunk.data;
                     padded.resize(current_chunk_size, 0);
-                    
+
                     for out_idx in 0..num_missing {
                         let coeff_val = matrix_inv[out_idx][eq_idx].value();
                         if coeff_val == 0 {
@@ -1398,15 +1452,25 @@ impl ReconstructionEngine {
                             if coeff_val == 1 {
                                 output_buffers[out_idx].copy_from_slice(&padded);
                             } else if let Some(table) = table_cache.get(&coeff_val) {
-                                process_slice_multiply_direct(&padded, &mut output_buffers[out_idx], table);
+                                process_slice_multiply_direct(
+                                    &padded,
+                                    &mut output_buffers[out_idx],
+                                    table,
+                                );
                             }
                         } else {
                             if coeff_val == 1 {
-                                for (out_byte, in_byte) in output_buffers[out_idx].iter_mut().zip(padded.iter()) {
+                                for (out_byte, in_byte) in
+                                    output_buffers[out_idx].iter_mut().zip(padded.iter())
+                                {
                                     *out_byte ^= *in_byte;
                                 }
                             } else if let Some(table) = table_cache.get(&coeff_val) {
-                                process_slice_multiply_add(&padded, &mut output_buffers[out_idx], table);
+                                process_slice_multiply_add(
+                                    &padded,
+                                    &mut output_buffers[out_idx],
+                                    table,
+                                );
                             }
                         }
                     }
@@ -1422,15 +1486,26 @@ impl ReconstructionEngine {
                             if coeff_val == 1 {
                                 output_buffers[out_idx].copy_from_slice(&recovery_chunk.data);
                             } else if let Some(table) = table_cache.get(&coeff_val) {
-                                process_slice_multiply_direct(&recovery_chunk.data, &mut output_buffers[out_idx], table);
+                                process_slice_multiply_direct(
+                                    &recovery_chunk.data,
+                                    &mut output_buffers[out_idx],
+                                    table,
+                                );
                             }
                         } else {
                             if coeff_val == 1 {
-                                for (out_byte, in_byte) in output_buffers[out_idx].iter_mut().zip(recovery_chunk.data.iter()) {
+                                for (out_byte, in_byte) in output_buffers[out_idx]
+                                    .iter_mut()
+                                    .zip(recovery_chunk.data.iter())
+                                {
                                     *out_byte ^= *in_byte;
                                 }
                             } else if let Some(table) = table_cache.get(&coeff_val) {
-                                process_slice_multiply_add(&recovery_chunk.data, &mut output_buffers[out_idx], table);
+                                process_slice_multiply_add(
+                                    &recovery_chunk.data,
+                                    &mut output_buffers[out_idx],
+                                    table,
+                                );
                             }
                         }
                     }
@@ -1443,16 +1518,20 @@ impl ReconstructionEngine {
                     continue;
                 }
 
-                let input_chunk = match input_provider.read_chunk(global_idx, chunk_offset, current_chunk_size) {
-                    Ok(chunk) => chunk,
-                    Err(e) => {
-                        return ReconstructionResult {
-                            success: false,
-                            reconstructed_slices: HashMap::default(),
-                            error_message: Some(format!("Failed to read input chunk from slice {}: {}", global_idx, e)),
-                        };
-                    }
-                };
+                let input_chunk =
+                    match input_provider.read_chunk(global_idx, chunk_offset, current_chunk_size) {
+                        Ok(chunk) => chunk,
+                        Err(e) => {
+                            return ReconstructionResult {
+                                success: false,
+                                reconstructed_slices: HashMap::default(),
+                                error_message: Some(format!(
+                                    "Failed to read input chunk from slice {}: {}",
+                                    global_idx, e
+                                )),
+                            };
+                        }
+                    };
 
                 if input_chunk.valid_bytes == 0 {
                     continue;
@@ -1478,15 +1557,25 @@ impl ReconstructionEngine {
                         if coeff_val == 1 {
                             output_buffers[out_idx].copy_from_slice(&chunk_data);
                         } else if let Some(table) = table_cache.get(&coeff_val) {
-                            process_slice_multiply_direct(&chunk_data, &mut output_buffers[out_idx], table);
+                            process_slice_multiply_direct(
+                                &chunk_data,
+                                &mut output_buffers[out_idx],
+                                table,
+                            );
                         }
                     } else {
                         if coeff_val == 1 {
-                            for (out_byte, in_byte) in output_buffers[out_idx].iter_mut().zip(chunk_data.iter()) {
+                            for (out_byte, in_byte) in
+                                output_buffers[out_idx].iter_mut().zip(chunk_data.iter())
+                            {
                                 *out_byte ^= *in_byte;
                             }
                         } else if let Some(table) = table_cache.get(&coeff_val) {
-                            process_slice_multiply_add(&chunk_data, &mut output_buffers[out_idx], table);
+                            process_slice_multiply_add(
+                                &chunk_data,
+                                &mut output_buffers[out_idx],
+                                table,
+                            );
                         }
                     }
                 }

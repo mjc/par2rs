@@ -1,6 +1,5 @@
-
+use crate::repair::{Crc32Value, FileId, Md5Hash, RecoverySetId};
 use binrw::{BinRead, BinWrite};
-use crate::repair::{Crc32Value, Md5Hash, RecoverySetId, FileId};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0IFSC\0\0\0\0";
 
@@ -23,9 +22,7 @@ impl BinRead for InputFileSliceChecksumPacket {
     ) -> binrw::BinResult<Self> {
         // OPTIMIZED: Read header in one bulk operation
         let mut header = [0u8; 64];
-        reader
-            .read_exact(&mut header)
-            .map_err(binrw::Error::Io)?;
+        reader.read_exact(&mut header).map_err(binrw::Error::Io)?;
 
         // Verify magic
         if &header[0..8] != b"PAR2\0PKT" {
@@ -44,29 +41,20 @@ impl BinRead for InputFileSliceChecksumPacket {
 
         // Read file_id
         let mut file_id = [0u8; 16];
-        reader
-            .read_exact(&mut file_id)
-            .map_err(binrw::Error::Io)?;
+        reader.read_exact(&mut file_id).map_err(binrw::Error::Io)?;
 
         // Calculate number of checksums and read them in bulk
         let num_checksums = ((length - 64 - 16) / 20) as usize;
         let checksum_bytes = num_checksums * 20;
         let mut buffer = vec![0u8; checksum_bytes];
-        reader
-            .read_exact(&mut buffer)
-            .map_err(binrw::Error::Io)?;
+        reader.read_exact(&mut buffer).map_err(binrw::Error::Io)?;
 
         // Parse checksums from buffer using chunks_exact for better performance
         let mut slice_checksums = Vec::with_capacity(num_checksums);
         for chunk in buffer.chunks_exact(20) {
             let mut md5 = [0u8; 16];
             md5.copy_from_slice(&chunk[0..16]);
-            let crc32 = u32::from_le_bytes([
-                chunk[16],
-                chunk[17],
-                chunk[18],
-                chunk[19],
-            ]);
+            let crc32 = u32::from_le_bytes([chunk[16], chunk[17], chunk[18], chunk[19]]);
             slice_checksums.push((Md5Hash::new(md5), Crc32Value::new(crc32)));
         }
 

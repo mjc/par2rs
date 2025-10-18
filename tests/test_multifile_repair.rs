@@ -41,7 +41,10 @@ fn test_multifile_all_files_present() {
     let (_context, result) = repair_files(par2_file.to_str().unwrap()).unwrap();
 
     // All files should verify successfully
-    assert!(result.repaired_files().is_empty(), "No files should need repair");
+    assert!(
+        result.repaired_files().is_empty(),
+        "No files should need repair"
+    );
     assert!(result.is_success(), "Should succeed");
     assert!(result.failed_files().is_empty(), "No files should fail");
 }

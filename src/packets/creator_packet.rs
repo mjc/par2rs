@@ -1,19 +1,19 @@
-use binrw::{BinRead, BinWrite};
 use crate::repair::{Md5Hash, RecoverySetId};
+use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0Creator\0";
 
 #[derive(Debug, BinRead)]
-#[br(magic = b"PAR2\0PKT")]                             // Reverted to using the literal value
+#[br(magic = b"PAR2\0PKT")] // Reverted to using the literal value
 pub struct CreatorPacket {
-    pub length: u64,                                    // Length of the packet
+    pub length: u64, // Length of the packet
     #[br(map = |x: [u8; 16]| Md5Hash::new(x))]
-    pub md5: Md5Hash,                                   // MD5 hash of the packet
-    #[br(pad_after = 16)]                               // Skip the `type_of_packet` field
+    pub md5: Md5Hash, // MD5 hash of the packet
+    #[br(pad_after = 16)] // Skip the `type_of_packet` field
     #[br(map = |x: [u8; 16]| RecoverySetId::new(x))]
-    pub set_id: RecoverySetId,                          // Unique identifier for the PAR2 set
+    pub set_id: RecoverySetId, // Unique identifier for the PAR2 set
     #[br(count = length as usize - (8 + 8 + 16 + 16 + 16))]
-    pub creator_info: Vec<u8>,                          // ASCII text identifying the client
+    pub creator_info: Vec<u8>, // ASCII text identifying the client
 }
 
 impl CreatorPacket {
@@ -46,7 +46,8 @@ impl CreatorPacket {
         if computed_md5 != *self.md5.as_bytes() {
             println!(
                 "MD5 mismatch: expected {:?}, computed {:?}",
-                self.md5.as_bytes(), computed_md5
+                self.md5.as_bytes(),
+                computed_md5
             );
             return false;
         }

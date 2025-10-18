@@ -82,7 +82,9 @@ fn test_repair_missing_file() {
     // With the current implementation, this should fail because we need
     // 1986 recovery blocks but only have 99
     if result.repaired_files().is_empty() {
-        println!("Expected: Cannot repair completely missing file with insufficient recovery blocks");
+        println!(
+            "Expected: Cannot repair completely missing file with insufficient recovery blocks"
+        );
     } else {
         println!("Unexpected: File was repaired despite insufficient recovery blocks");
         // Note: If Reed-Solomon can partially repair, this might succeed

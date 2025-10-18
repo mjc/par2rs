@@ -1,6 +1,5 @@
-
+use crate::repair::{Crc32Value, FileId, Md5Hash};
 use crate::Packet;
-use crate::repair::{FileId, Md5Hash, Crc32Value};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -192,7 +191,10 @@ fn verify_md5(
     if &computed_md5 != expected_md5 {
         return Err(format!(
             "MD5 mismatch for {} {}: expected {:?}, got {:?}",
-            description, file_name, expected_md5.as_bytes(), &computed_md5.as_bytes()
+            description,
+            file_name,
+            expected_md5.as_bytes(),
+            &computed_md5.as_bytes()
         ));
     }
     Ok(())
@@ -634,8 +636,8 @@ pub fn print_verification_results(results: &VerificationResults) {
 mod tests {
     use super::*;
     use crate::packets::main_packet::MainPacket;
-    use crate::Packet;
     use crate::repair::{Md5Hash, RecoverySetId};
+    use crate::Packet;
 
     #[test]
     fn test_quick_check_files() {
