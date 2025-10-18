@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the SIMD optimizations implemented in par2rs for Reed-Solomon error correction. Performance advantage scales with file size, from **1.24x speedup** for 100MB files to **1.52x speedup** for 1GB files over par2cmdline.
+This document describes the SIMD optimizations implemented in par2rs for Reed-Solomon error correction. Combined with I/O optimizations, par2rs achieves **2.61x speedup** for 1GB files and **1.77x speedup** for multi-file PAR2 sets over par2cmdline.
 
 ## Test System
 
@@ -13,50 +13,71 @@ This document describes the SIMD optimizations implemented in par2rs for Reed-So
 
 ## Performance Results
 
-### Real-World Performance Scaling
-
-#### 100MB File Repair (30 iterations, typical system load)
-
-```
-par2cmdline:
-  Average: 1.119s
-  Min:     1.035s
-  Max:     1.411s
-
-par2rs:
-  Average: 0.898s
-  Min:     0.872s
-  Max:     0.963s
-
-Speedup: 1.24x
-```
-
-**Results:**
-- **par2rs**: 0.898s average (±90ms variance)
-- **par2cmdline**: 1.119s average (±376ms variance)
-- **Speedup**: **1.24x faster** with **4x better consistency**
+### Real-World End-to-End Performance
 
 #### 1GB File Repair (10 iterations)
 
 ```
 par2cmdline:
-  Average: 12.337s
-  Min:     10.338s
-  Max:     20.119s
+  Average: 11.388s
+  Min:     9.989s
+  Max:     13.912s
 
 par2rs:
-  Average: 8.084s
-  Min:     7.802s
-  Max:     8.629s
+  Average: 4.350s
+  Min:     4.043s
+  Max:     4.903s
 
-Speedup: 1.52x
+Speedup: 2.61x
 ```
 
 **Results:**
-- **par2rs**: 8.084s average (±0.8s variance)
-- **par2cmdline**: 12.337s average (±10s variance)
-- **Speedup**: **1.52x faster** with **12x better consistency**
-- **Scaling**: Linear performance scaling (10x data = 10x time)
+- **par2rs**: 4.350s average (±860ms variance, 12% variability)
+- **par2cmdline**: 11.388s average (±3.9s variance, 34% variability)
+- **Speedup**: **2.61x faster** with **3x better consistency**
+
+#### Multi-File PAR2 Set - 50 files, ~8GB total (10 iterations)
+
+```
+par2cmdline:
+  Average: 28.901s
+  Min:     24.902s
+  Max:     33.839s
+
+par2rs:
+  Average: 16.248s
+  Min:     14.648s
+  Max:     18.631s
+
+Speedup: 1.77x
+```
+
+**Results:**
+- **par2rs**: 16.248s average (±4s variance, 13% variability)
+- **par2cmdline**: 28.901s average (±9s variance, 31% variability)
+- **Speedup**: **1.77x faster** with **2.4x better consistency**
+- **Multi-File**: Efficient handling of 50 files with minimal overhead
+
+## Performance Factors
+
+The significant speedup comes from multiple optimizations working together:
+
+1. **SIMD Acceleration** (2.76x on Reed-Solomon operations)
+   - PSHUFB-based GF(2^16) multiply-add operations
+   - Hardware-accelerated polynomial evaluation
+   
+2. **I/O Optimization** 
+   - Skip slice validation for files with matching MD5 (instant vs 400MB/s scan)
+   - Sequential read patterns with position tracking (eliminates seeks)
+   - 8MB buffers for optimal throughput
+   
+3. **Memory Efficiency**
+   - Lazy loading of recovery data
+   - ~100MB peak memory usage regardless of file size
+   
+4. **Smart Validation**
+   - Conditional buffer zeroing only for partial slices
+   - HashMap lookup hoisting in hot loops
 
 ### Microbenchmark Results (528-byte PAR2 blocks)
 

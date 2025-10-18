@@ -6,11 +6,13 @@
 //!
 //! ## Performance
 //!
-//! SIMD-optimized Reed-Solomon operations achieve **1.66x speedup** over par2cmdline:
-//! - par2rs: 0.607s average (100MB file repair)
-//! - par2cmdline: 1.008s average
+//! Combined SIMD and I/O optimizations achieve **2.61x speedup** over par2cmdline:
+//! - par2rs: 4.350s average (1GB file repair, 10 iterations)
+//! - par2cmdline: 11.388s average
 //!
-//! See `docs/SIMD_OPTIMIZATION.md` for detailed benchmarks and implementation notes.
+//! Multi-file PAR2 sets (50 files, ~8GB): **1.77x speedup**
+//!
+//! See `docs/SIMD_OPTIMIZATION.md` and `docs/BENCHMARK_RESULTS.md` for detailed analysis.
 //!
 //! ## Type Safety
 //!
@@ -712,11 +714,32 @@ impl RepairContext {
                     // Empty set for missing files
                     validation_cache.insert(file_info.file_id, HashSet::default());
                 }
-                FileStatus::Corrupted | FileStatus::Present => {
+                FileStatus::Present => {
+                    // File MD5 matches - all slices are valid, no need to scan
+                    let all_slices: HashSet<usize> = (0..file_info.slice_count).collect();
+                    validation_cache.insert(file_info.file_id, all_slices);
+                }
+                FileStatus::Corrupted => {
+                    // Show progress for large files
+                    if file_info.slice_count > 100 {
+                        print!("Scanning: \"{}\"", file_info.file_name);
+                        std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+                    }
+                    
                     let valid_slices = self.validate_file_slices(file_info)?;
                     let damaged_slices = file_info.slice_count - valid_slices.len();
                     total_damaged_blocks += damaged_slices;
                     validation_cache.insert(file_info.file_id, valid_slices);
+                    
+                    // Clear progress line for large files
+                    if file_info.slice_count > 100 {
+                        print!("\r");
+                        for _ in 0..(file_info.file_name.len() + 12) {
+                            print!(" ");
+                        }
+                        print!("\r");
+                        std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+                    }
                 }
             }
         }
@@ -929,11 +952,14 @@ impl RepairContext {
         }
 
         let file = File::open(&file_path)?;
-        let mut reader = BufReader::with_capacity(1024 * 1024, file); // 1MB buffer
+        let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file); // 8MB buffer for better throughput
         let slice_size = self.recovery_set.slice_size as usize;
 
         // Reuse single buffer for all slices
         let mut slice_data = vec![0u8; slice_size];
+        
+        // Lookup checksums once outside the loop
+        let checksums_opt = self.recovery_set.file_slice_checksums.get(&file_info.file_id);
 
         for slice_index in 0..file_info.slice_count {
             let actual_slice_size = if slice_index == file_info.slice_count - 1 {
@@ -950,17 +976,13 @@ impl RepairContext {
             // Only zero the buffer if we have a partial slice that needs padding
             // For full slices, read_exact will overwrite all bytes, so no fill needed
             if actual_slice_size < slice_size {
-                slice_data.fill(0);
+                slice_data[actual_slice_size..].fill(0);
             }
             
             // Sequential read (no seeking needed with BufReader)
             if reader.read_exact(&mut slice_data[..actual_slice_size]).is_ok() {
                 // Verify slice checksum if available
-                if let Some(checksums) = self
-                    .recovery_set
-                    .file_slice_checksums
-                    .get(&file_info.file_id)
-                {
+                if let Some(checksums) = checksums_opt {
                     if slice_index < checksums.slice_checksums.len() {
                         // PAR2 CRC32 is computed on full slice with zero padding
                         let mut hasher = Crc32::new();
@@ -1159,6 +1181,7 @@ impl RepairContext {
         let slice_size = self.recovery_set.slice_size as usize;
         let mut slice_buffer = vec![0u8; slice_size];
         let mut bytes_written = 0u64;
+        let mut next_expected_offset: Option<u64> = Some(0);
         
         for slice_index in 0..file_info.slice_count {
             let actual_size = if slice_index == file_info.slice_count - 1 {
@@ -1177,14 +1200,22 @@ impl RepairContext {
                 // Write reconstructed slice
                 writer.write_all(&reconstructed_data[..actual_size])?;
                 bytes_written += actual_size as u64;
+                // Mark that we've broken the sequential read pattern
+                next_expected_offset = None;
             } else if valid_slice_indices.contains(&slice_index) {
-                // Read from source file at specific offset (need to seek for each slice)
+                // Read from source file
                 if let Some(ref mut file) = source_file {
                     let offset = (slice_index * slice_size) as u64;
-                    file.seek(SeekFrom::Start(offset))?;
+                    
+                    // Only seek if we're not already at the right position (optimize sequential reads)
+                    if next_expected_offset != Some(offset) {
+                        file.seek(SeekFrom::Start(offset))?;
+                    }
+                    
                     file.read_exact(&mut slice_buffer[..actual_size])?;
                     writer.write_all(&slice_buffer[..actual_size])?;
                     bytes_written += actual_size as u64;
+                    next_expected_offset = Some(offset + actual_size as u64);
                 } else {
                     return Err(RepairError::ValidSliceMissingSource(slice_index));
                 }
