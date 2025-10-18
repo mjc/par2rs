@@ -7,7 +7,7 @@
 //! The design follows par2cmdline's approach of loading data in small chunks
 //! (default 64KB) rather than loading entire slices or files into memory.
 
-use crate::repair::Crc32Value;
+use crate::domain::Crc32Value;
 use crate::RecoverySliceMetadata;
 use crc32fast::Hasher as Crc32;
 use rustc_hash::FxHashMap as HashMap;
@@ -324,7 +324,7 @@ mod tests {
         // Create metadata for lazy loading
         let metadata = crate::RecoverySliceMetadata::from_file(
             0, // exponent
-            crate::repair::RecoverySetId::new([0u8; 16]),
+            crate::domain::RecoverySetId::new([0u8; 16]),
             temp_file.path().to_path_buf(),
             0,    // offset
             1024, // size

@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Display};
 
-use crate::repair::{FileId, Md5Hash, RecoverySetId};
+use crate::domain::{FileId, Md5Hash, RecoverySetId};
 use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0Main\0\0\0\0";
@@ -44,7 +44,7 @@ pub struct MainPacket {
 /// use std::io::Cursor;
 /// use binrw::{BinWriterExt, BinWrite};
 /// use par2rs::packets::main_packet::MainPacket;
-/// use par2rs::repair::{Md5Hash, RecoverySetId, FileId};
+/// use par2rs::domain::{Md5Hash, RecoverySetId, FileId};
 ///
 /// let main_packet = MainPacket {
 ///     length: 92,

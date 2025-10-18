@@ -1,4 +1,4 @@
-use crate::repair::{Md5Hash, RecoverySetId};
+use crate::domain::{Md5Hash, RecoverySetId};
 use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0Creator\0";

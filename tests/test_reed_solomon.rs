@@ -3,8 +3,8 @@
 //! These tests specifically target the Reed-Solomon implementation
 //! to ensure the matrix setup and computation work correctly.
 
+use par2rs::domain::{Md5Hash, RecoverySetId};
 use par2rs::reed_solomon::{ReconstructionEngine, ReedSolomon};
-use par2rs::repair::{Md5Hash, RecoverySetId};
 use par2rs::RecoverySlicePacket;
 use rustc_hash::FxHashMap as HashMap;
 
