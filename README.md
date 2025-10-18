@@ -6,6 +6,22 @@ A Rust implementation of PAR2 (Parity Archive) for data recovery and verificatio
 
 `par2rs` is a modern, high-performance implementation of the PAR2 (Parity Archive 2.0) format written in Rust. PAR2 files are used to detect and repair corruption in data files, making them invaluable for archival storage, data transmission, and backup verification.
 
+### Performance
+
+par2rs achieves **1.77x - 2.61x speedup** over par2cmdline through:
+- **SIMD-accelerated Reed-Solomon** operations using PSHUFB instructions
+- **Smart validation skipping** for files with matching MD5 checksums
+- **Sequential I/O optimization** to minimize disk seeks
+- **Memory-efficient lazy loading** with 8MB buffers
+
+| File Size | par2cmdline | par2rs  | Speedup |
+|-----------|-------------|---------|---------|
+| 100MB     | 0.984s      | 0.350s  | **2.81x** |
+| 1GB       | 11.388s     | 4.350s  | **2.61x** |
+| 8GB (50 files) | 28.901s | 16.248s | **1.77x** |
+
+See [BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md) for detailed performance analysis.
+
 ## Quick Start
 
 ### Installation
