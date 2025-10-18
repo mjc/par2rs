@@ -1,4 +1,4 @@
-use crate::repair::{Crc32Value, FileId, Md5Hash};
+use crate::domain::{Crc32Value, FileId, Md5Hash};
 use crate::Packet;
 use std::collections::HashMap;
 use std::fs::File;
@@ -635,8 +635,8 @@ pub fn print_verification_results(results: &VerificationResults) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{Md5Hash, RecoverySetId};
     use crate::packets::main_packet::MainPacket;
-    use crate::repair::{Md5Hash, RecoverySetId};
     use crate::Packet;
 
     #[test]

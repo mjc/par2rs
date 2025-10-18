@@ -1,9 +1,10 @@
-//! File discovery and PAR2 file operations
+//! File Operations Module
 //!
-//! This module provides functionality for discovering PAR2 files,
-//! loading packets from multiple files, and handling deduplication.
+//! This module provides functionality for discovering and parsing PAR2 files.
+//! It includes utilities for finding PAR2 files in a directory and parsing their
+//! packet structures from disk with minimal memory overhead.
 
-use crate::repair::Md5Hash;
+use crate::domain::{Md5Hash, RecoverySetId};
 use crate::Packet;
 use rustc_hash::FxHashSet as HashSet;
 use std::fs;
@@ -199,7 +200,7 @@ pub fn parse_recovery_slice_metadata(
     par2_files: &[PathBuf],
     show_progress: bool,
 ) -> Vec<crate::RecoverySliceMetadata> {
-    let mut seen_recovery_slices: HashSet<(crate::repair::RecoverySetId, u32)> = HashSet::default();
+    let mut seen_recovery_slices: HashSet<(RecoverySetId, u32)> = HashSet::default();
 
     par2_files
         .iter()

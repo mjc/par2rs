@@ -1,6 +1,6 @@
 use binrw::{BinReaderExt, BinWrite};
+use par2rs::domain::{FileId, Md5Hash, RecoverySetId};
 use par2rs::packets::main_packet::MainPacket;
-use par2rs::repair::{FileId, Md5Hash, RecoverySetId};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 

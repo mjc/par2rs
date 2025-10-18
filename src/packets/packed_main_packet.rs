@@ -1,4 +1,4 @@
-use crate::repair::{FileId, Md5Hash, RecoverySetId};
+use crate::domain::{FileId, Md5Hash, RecoverySetId};
 use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0PkdMain\0";
