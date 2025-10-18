@@ -1,5 +1,5 @@
+use crate::domain::{Md5Hash, RecoverySetId};
 use crate::recovery_loader::{FileSystemLoader, RecoveryDataLoader};
-use crate::repair::{Md5Hash, RecoverySetId};
 use binrw::{BinRead, BinWrite};
 use std::path::PathBuf;
 use std::sync::Arc;
