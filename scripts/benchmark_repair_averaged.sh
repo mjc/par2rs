@@ -20,7 +20,6 @@ PAR2CMDLINE="par2"
 ITERATIONS=${ITERATIONS:-10}
 
 # Configuration
-USE_EXISTING_DIR=""
 PAR2_FILE=""
 SIZE_MB=${1:-100}
 TEMP_BASE=${2:-}
@@ -28,10 +27,6 @@ TEMP_BASE=${2:-}
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -d|--directory)
-            USE_EXISTING_DIR="$2"
-            shift 2
-            ;;
         -p|--par2)
             PAR2_FILE="$2"
             shift 2
@@ -44,15 +39,15 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS] [SIZE_MB] [TEMP_DIR]"
             echo ""
             echo "Options:"
-            echo "  -d, --directory DIR   Use existing directory with data files and PAR2 volumes"
-            echo "  -p, --par2 FILE      PAR2 file to repair (required with --directory)"
+            echo "  -p, --par2 FILE      PAR2 file path to repair (infers directory automatically)"
             echo "  -i, --iterations N   Number of iterations (default: 10)"
             echo "  -h, --help           Show this help message"
             echo ""
             echo "Examples:"
-            echo "  $0 1000                              # 1GB test file"
-            echo "  $0 10000 /mnt/scratch                # 10GB in /mnt/scratch"
-            echo "  $0 -d /path/to/files -p file.par2    # Use existing files"
+            echo "  $0 1000                                    # 1GB test file"
+            echo "  $0 10000 /mnt/scratch                      # 10GB in /mnt/scratch"
+            echo "  $0 -p /path/to/files/file.par2             # Use existing files"
+            echo "  $0 -p file.par2 -i 5                       # 5 iterations on existing"
             exit 0
             ;;
         *)
@@ -72,16 +67,28 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Validate directory mode arguments
-if [ -n "$USE_EXISTING_DIR" ]; then
-    if [ -z "$PAR2_FILE" ]; then
-        echo "Error: --par2 is required when using --directory"
+# Infer directory from PAR2 file path if provided
+if [ -n "$PAR2_FILE" ]; then
+    if [ ! -f "$PAR2_FILE" ]; then
+        echo "Error: PAR2 file not found: $PAR2_FILE"
         exit 1
     fi
+    
+    # Get the directory and just the filename
+    USE_EXISTING_DIR=$(dirname "$PAR2_FILE")
+    PAR2_FILE=$(basename "$PAR2_FILE")
+    
+    echo "Inferred directory: $USE_EXISTING_DIR"
+    echo "PAR2 filename: $PAR2_FILE"
+fi
+
+# Validate directory mode
+if [ -n "$USE_EXISTING_DIR" ]; then
     if [ ! -d "$USE_EXISTING_DIR" ]; then
         echo "Error: Directory not found: $USE_EXISTING_DIR"
         exit 1
     fi
+    
     if [ ! -f "$USE_EXISTING_DIR/$PAR2_FILE" ]; then
         echo "Error: PAR2 file not found: $USE_EXISTING_DIR/$PAR2_FILE"
         exit 1
@@ -122,16 +129,51 @@ if [ -n "$USE_EXISTING_DIR" ]; then
     echo -e "${YELLOW}PAR2 file: $PAR2_FILE${NC}"
     echo ""
     
-    # Extract data file name from PAR2 file
-    DATA_FILE=$(cd "$USE_EXISTING_DIR" && "$PAR2CMDLINE" v -q "$PAR2_FILE" 2>/dev/null | grep -v "PAR2" | awk '{print $NF}' | head -1 || echo "")
-    if [ -z "$DATA_FILE" ]; then
-        echo -e "${RED}Error: Could not determine data file from PAR2${NC}"
+    # Run par2 verify once and cache output for efficiency
+    echo -e "${YELLOW}Analyzing PAR2 set...${NC}"
+    PAR2_VERIFY_OUTPUT=$(cd "$USE_EXISTING_DIR" && "$PAR2CMDLINE" v -q "$PAR2_FILE" 2>&1)
+    
+    # Extract data file names from PAR2 file (lines starting with "Target:")
+    DATA_FILES=$(echo "$PAR2_VERIFY_OUTPUT" | grep "^Target:" | sed 's/^Target: "\(.*\)" - .*/\1/' || echo "")
+    
+    if [ -z "$DATA_FILES" ]; then
+        echo -e "${RED}Error: Could not determine data files from PAR2${NC}"
         exit 1
     fi
     
-    echo -e "${YELLOW}Data file: $DATA_FILE${NC}"
+    # Count number of data files
+    NUM_FILES=$(echo "$DATA_FILES" | wc -l)
+    echo -e "${YELLOW}Found $NUM_FILES data file(s) protected by PAR2${NC}"
     
-    # Check if data file exists
+    # For multi-file sets, pick one random file that's not already corrupted
+    if [ "$NUM_FILES" -gt 1 ]; then
+        echo -e "${YELLOW}Multi-file PAR2 set detected${NC}"
+        echo -e "${YELLOW}Will select one random file to corrupt for benchmarking${NC}"
+        echo ""
+        
+        # Check which files are already corrupted/missing
+        VALID_FILES=""
+        while IFS= read -r file; do
+            if [ -f "$USE_EXISTING_DIR/$file" ]; then
+                # File exists - check if it's valid by computing its MD5
+                VALID_FILES="$VALID_FILES$file"$'\n'
+            fi
+        done <<< "$DATA_FILES"
+        
+        if [ -z "$VALID_FILES" ]; then
+            echo -e "${RED}Error: No valid files found to corrupt${NC}"
+            exit 1
+        fi
+        
+        # Pick a random valid file
+        DATA_FILE=$(echo "$VALID_FILES" | shuf -n 1)
+        echo -e "${YELLOW}Selected file: $DATA_FILE${NC}"
+    else
+        DATA_FILE="$DATA_FILES"
+        echo -e "${YELLOW}Data file: $DATA_FILE${NC}"
+    fi
+    
+    # Check if selected data file exists
     if [ ! -f "$USE_EXISTING_DIR/$DATA_FILE" ]; then
         echo -e "${RED}Error: Data file not found: $USE_EXISTING_DIR/$DATA_FILE${NC}"
         exit 1
@@ -143,18 +185,22 @@ if [ -n "$USE_EXISTING_DIR" ]; then
     echo -e "${YELLOW}File size: ${SIZE_MB}MB${NC}"
     echo ""
     
-    # Save original file for restoration
-    TEMP=$(mktemp -d)
-    cp "$USE_EXISTING_DIR/$DATA_FILE" "$TEMP/original_$DATA_FILE"
+    # Verify files are valid before we corrupt (use cached output)
+    if ! echo "$PAR2_VERIFY_OUTPUT" | grep -q "All files are correct"; then
+        echo -e "${RED}Error: Files are not valid according to PAR2. Cannot benchmark.${NC}"
+        echo -e "${RED}Please repair files first before benchmarking.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ All files verified correct${NC}"
     
-    # Copy all PAR2 files to temp
-    cp "$USE_EXISTING_DIR"/*.par2 "$TEMP/" 2>/dev/null || true
-    
-    # Compute original MD5
+    # Compute original MD5 of the file we'll corrupt
     echo -e "${YELLOW}Computing original file MD5...${NC}"
     MD5_ORIGINAL=$(md5sum "$USE_EXISTING_DIR/$DATA_FILE" | awk '{print $1}')
     echo "Original MD5: $MD5_ORIGINAL"
     echo ""
+    
+    # Working directory is the existing directory (no temp needed)
+    TEMP="$USE_EXISTING_DIR"
     
     # Corrupt 1MB at 10% offset for testing
     CORRUPT_OFFSET=$((FILE_SIZE / 10))
@@ -362,13 +408,8 @@ for i in $(seq 0 $((ITERATIONS - 1))); do
 done
 echo ""
 
-# Cleanup
-if [ -n "$USE_EXISTING_DIR" ]; then
-    # Restore original file
-    cp "$TEMP/original_$DATA_FILE" "$USE_EXISTING_DIR/$DATA_FILE"
-    rm -rf "$TEMP"
-    echo -e "${YELLOW}Restored original file${NC}"
-else
+# Cleanup (only for generated file mode)
+if [ -z "$USE_EXISTING_DIR" ]; then
     rm -rf "$TEMP"
 fi
 
