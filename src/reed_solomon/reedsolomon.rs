@@ -4,6 +4,7 @@
 //!
 //! This module provides PAR2-compatible Reed-Solomon encoding and decoding using
 //! the Vandermonde polynomial 0x1100B (x¹⁶ + x¹² + x³ + x + 1) for GF(2^16).
+#![allow(clippy::needless_range_loop, clippy::manual_range_contains)]
 //!
 //! ## Performance
 //!
@@ -685,7 +686,7 @@ impl ReedSolomon {
         &mut self,
         rows: u32,
         cols: u32,
-        right_matrix: &mut Vec<Galois16>,
+        right_matrix: &mut [Galois16],
     ) -> RsResult<()> {
         // Gaussian elimination following par2cmdline approach
         for row in 0..self.data_missing {
@@ -1399,7 +1400,7 @@ impl ReconstructionEngine {
         debug!("Built {} unique multiplication tables", table_cache.len());
 
         // Process data in chunks
-        let num_chunks = (self.slice_size + chunk_size - 1) / chunk_size;
+        let num_chunks = self.slice_size.div_ceil(chunk_size);
         debug!(
             "Processing {} chunks of {} bytes each",
             num_chunks, chunk_size
@@ -1458,20 +1459,18 @@ impl ReconstructionEngine {
                                     table,
                                 );
                             }
-                        } else {
-                            if coeff_val == 1 {
-                                for (out_byte, in_byte) in
-                                    output_buffers[out_idx].iter_mut().zip(padded.iter())
-                                {
-                                    *out_byte ^= *in_byte;
-                                }
-                            } else if let Some(table) = table_cache.get(&coeff_val) {
-                                process_slice_multiply_add(
-                                    &padded,
-                                    &mut output_buffers[out_idx],
-                                    table,
-                                );
+                        } else if coeff_val == 1 {
+                            for (out_byte, in_byte) in
+                                output_buffers[out_idx].iter_mut().zip(padded.iter())
+                            {
+                                *out_byte ^= *in_byte;
                             }
+                        } else if let Some(table) = table_cache.get(&coeff_val) {
+                            process_slice_multiply_add(
+                                &padded,
+                                &mut output_buffers[out_idx],
+                                table,
+                            );
                         }
                     }
                 } else {
@@ -1492,21 +1491,19 @@ impl ReconstructionEngine {
                                     table,
                                 );
                             }
-                        } else {
-                            if coeff_val == 1 {
-                                for (out_byte, in_byte) in output_buffers[out_idx]
-                                    .iter_mut()
-                                    .zip(recovery_chunk.data.iter())
-                                {
-                                    *out_byte ^= *in_byte;
-                                }
-                            } else if let Some(table) = table_cache.get(&coeff_val) {
-                                process_slice_multiply_add(
-                                    &recovery_chunk.data,
-                                    &mut output_buffers[out_idx],
-                                    table,
-                                );
+                        } else if coeff_val == 1 {
+                            for (out_byte, in_byte) in output_buffers[out_idx]
+                                .iter_mut()
+                                .zip(recovery_chunk.data.iter())
+                            {
+                                *out_byte ^= *in_byte;
                             }
+                        } else if let Some(table) = table_cache.get(&coeff_val) {
+                            process_slice_multiply_add(
+                                &recovery_chunk.data,
+                                &mut output_buffers[out_idx],
+                                table,
+                            );
                         }
                     }
                 }
@@ -1563,20 +1560,18 @@ impl ReconstructionEngine {
                                 table,
                             );
                         }
-                    } else {
-                        if coeff_val == 1 {
-                            for (out_byte, in_byte) in
-                                output_buffers[out_idx].iter_mut().zip(chunk_data.iter())
-                            {
-                                *out_byte ^= *in_byte;
-                            }
-                        } else if let Some(table) = table_cache.get(&coeff_val) {
-                            process_slice_multiply_add(
-                                &chunk_data,
-                                &mut output_buffers[out_idx],
-                                table,
-                            );
+                    } else if coeff_val == 1 {
+                        for (out_byte, in_byte) in
+                            output_buffers[out_idx].iter_mut().zip(chunk_data.iter())
+                        {
+                            *out_byte ^= *in_byte;
                         }
+                    } else if let Some(table) = table_cache.get(&coeff_val) {
+                        process_slice_multiply_add(
+                            &chunk_data,
+                            &mut output_buffers[out_idx],
+                            table,
+                        );
                     }
                 }
             }

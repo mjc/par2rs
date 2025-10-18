@@ -106,7 +106,7 @@ impl RecoverySliceMetadata {
         })?;
 
         // Check type
-        if &type_bytes != TYPE_OF_PACKET {
+        if type_bytes != *TYPE_OF_PACKET {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Not a recovery slice packet",

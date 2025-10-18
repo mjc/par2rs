@@ -1,6 +1,9 @@
 //! Comprehensive tests to achieve >90% coverage for repair.rs
 //! Focuses on uncovered trait implementations for type-safe wrappers
 
+use par2rs::domain::{
+    Crc32Value, FileId, GlobalSliceIndex, LocalSliceIndex, Md5Hash, RecoverySetId,
+};
 use par2rs::repair::*;
 use std::fs;
 use std::path::PathBuf;

@@ -176,7 +176,7 @@ fn test_temp_file_cleanup() {
     // Ensure .par2_tmp files are cleaned up correctly
     let env = TestEnv::new();
 
-    env.corrupt_at(1000, &vec![0xBBu8; 200]);
+    env.corrupt_at(1000, &[0xBBu8; 200]);
 
     let context = env.load_context();
     let _result = context.repair().unwrap();
