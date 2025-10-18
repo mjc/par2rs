@@ -45,7 +45,7 @@ pub unsafe fn process_slice_multiply_add_avx2_unrolled(
 ) {
     let len = input.len().min(output.len());
     let num_words = len / 2;
-    
+
     if num_words == 0 {
         return;
     }
@@ -65,23 +65,39 @@ pub unsafe fn process_slice_multiply_add_avx2_unrolled(
     // Hyper-aggressive unrolling: 32 words per iteration
     while idx < avx_words {
         // Load 32 input words in batches of 16
-        let i0 = in_words[idx]; let i1 = in_words[idx + 1];
-        let i2 = in_words[idx + 2]; let i3 = in_words[idx + 3];
-        let i4 = in_words[idx + 4]; let i5 = in_words[idx + 5];
-        let i6 = in_words[idx + 6]; let i7 = in_words[idx + 7];
-        let i8 = in_words[idx + 8]; let i9 = in_words[idx + 9];
-        let i10 = in_words[idx + 10]; let i11 = in_words[idx + 11];
-        let i12 = in_words[idx + 12]; let i13 = in_words[idx + 13];
-        let i14 = in_words[idx + 14]; let i15 = in_words[idx + 15];
-        
-        let i16 = in_words[idx + 16]; let i17 = in_words[idx + 17];
-        let i18 = in_words[idx + 18]; let i19 = in_words[idx + 19];
-        let i20 = in_words[idx + 20]; let i21 = in_words[idx + 21];
-        let i22 = in_words[idx + 22]; let i23 = in_words[idx + 23];
-        let i24 = in_words[idx + 24]; let i25 = in_words[idx + 25];
-        let i26 = in_words[idx + 26]; let i27 = in_words[idx + 27];
-        let i28 = in_words[idx + 28]; let i29 = in_words[idx + 29];
-        let i30 = in_words[idx + 30]; let i31 = in_words[idx + 31];
+        let i0 = in_words[idx];
+        let i1 = in_words[idx + 1];
+        let i2 = in_words[idx + 2];
+        let i3 = in_words[idx + 3];
+        let i4 = in_words[idx + 4];
+        let i5 = in_words[idx + 5];
+        let i6 = in_words[idx + 6];
+        let i7 = in_words[idx + 7];
+        let i8 = in_words[idx + 8];
+        let i9 = in_words[idx + 9];
+        let i10 = in_words[idx + 10];
+        let i11 = in_words[idx + 11];
+        let i12 = in_words[idx + 12];
+        let i13 = in_words[idx + 13];
+        let i14 = in_words[idx + 14];
+        let i15 = in_words[idx + 15];
+
+        let i16 = in_words[idx + 16];
+        let i17 = in_words[idx + 17];
+        let i18 = in_words[idx + 18];
+        let i19 = in_words[idx + 19];
+        let i20 = in_words[idx + 20];
+        let i21 = in_words[idx + 21];
+        let i22 = in_words[idx + 22];
+        let i23 = in_words[idx + 23];
+        let i24 = in_words[idx + 24];
+        let i25 = in_words[idx + 25];
+        let i26 = in_words[idx + 26];
+        let i27 = in_words[idx + 27];
+        let i28 = in_words[idx + 28];
+        let i29 = in_words[idx + 29];
+        let i30 = in_words[idx + 30];
+        let i31 = in_words[idx + 31];
 
         // Perform lookups and XOR (compiler will pipeline these heavily)
         let r0 = out_words[idx] ^ (low[(i0 & 0xFF) as usize] ^ high[(i0 >> 8) as usize]);
@@ -100,7 +116,7 @@ pub unsafe fn process_slice_multiply_add_avx2_unrolled(
         let r13 = out_words[idx + 13] ^ (low[(i13 & 0xFF) as usize] ^ high[(i13 >> 8) as usize]);
         let r14 = out_words[idx + 14] ^ (low[(i14 & 0xFF) as usize] ^ high[(i14 >> 8) as usize]);
         let r15 = out_words[idx + 15] ^ (low[(i15 & 0xFF) as usize] ^ high[(i15 >> 8) as usize]);
-        
+
         let r16 = out_words[idx + 16] ^ (low[(i16 & 0xFF) as usize] ^ high[(i16 >> 8) as usize]);
         let r17 = out_words[idx + 17] ^ (low[(i17 & 0xFF) as usize] ^ high[(i17 >> 8) as usize]);
         let r18 = out_words[idx + 18] ^ (low[(i18 & 0xFF) as usize] ^ high[(i18 >> 8) as usize]);
@@ -119,22 +135,38 @@ pub unsafe fn process_slice_multiply_add_avx2_unrolled(
         let r31 = out_words[idx + 31] ^ (low[(i31 & 0xFF) as usize] ^ high[(i31 >> 8) as usize]);
 
         // Store all results
-        out_words[idx] = r0; out_words[idx + 1] = r1;
-        out_words[idx + 2] = r2; out_words[idx + 3] = r3;
-        out_words[idx + 4] = r4; out_words[idx + 5] = r5;
-        out_words[idx + 6] = r6; out_words[idx + 7] = r7;
-        out_words[idx + 8] = r8; out_words[idx + 9] = r9;
-        out_words[idx + 10] = r10; out_words[idx + 11] = r11;
-        out_words[idx + 12] = r12; out_words[idx + 13] = r13;
-        out_words[idx + 14] = r14; out_words[idx + 15] = r15;
-        out_words[idx + 16] = r16; out_words[idx + 17] = r17;
-        out_words[idx + 18] = r18; out_words[idx + 19] = r19;
-        out_words[idx + 20] = r20; out_words[idx + 21] = r21;
-        out_words[idx + 22] = r22; out_words[idx + 23] = r23;
-        out_words[idx + 24] = r24; out_words[idx + 25] = r25;
-        out_words[idx + 26] = r26; out_words[idx + 27] = r27;
-        out_words[idx + 28] = r28; out_words[idx + 29] = r29;
-        out_words[idx + 30] = r30; out_words[idx + 31] = r31;
+        out_words[idx] = r0;
+        out_words[idx + 1] = r1;
+        out_words[idx + 2] = r2;
+        out_words[idx + 3] = r3;
+        out_words[idx + 4] = r4;
+        out_words[idx + 5] = r5;
+        out_words[idx + 6] = r6;
+        out_words[idx + 7] = r7;
+        out_words[idx + 8] = r8;
+        out_words[idx + 9] = r9;
+        out_words[idx + 10] = r10;
+        out_words[idx + 11] = r11;
+        out_words[idx + 12] = r12;
+        out_words[idx + 13] = r13;
+        out_words[idx + 14] = r14;
+        out_words[idx + 15] = r15;
+        out_words[idx + 16] = r16;
+        out_words[idx + 17] = r17;
+        out_words[idx + 18] = r18;
+        out_words[idx + 19] = r19;
+        out_words[idx + 20] = r20;
+        out_words[idx + 21] = r21;
+        out_words[idx + 22] = r22;
+        out_words[idx + 23] = r23;
+        out_words[idx + 24] = r24;
+        out_words[idx + 25] = r25;
+        out_words[idx + 26] = r26;
+        out_words[idx + 27] = r27;
+        out_words[idx + 28] = r28;
+        out_words[idx + 29] = r29;
+        out_words[idx + 30] = r30;
+        out_words[idx + 31] = r31;
 
         idx += 32;
     }
@@ -169,21 +201,21 @@ pub fn process_slice_multiply_add_simd(
         #[cfg(target_arch = "x86_64")]
         SimdLevel::Avx2 => unsafe {
             let len = input.len().min(output.len());
-            
+
             // Use PSHUFB for the bulk of the data (multiples of 32 bytes)
             if len >= 32 {
                 crate::reed_solomon::simd_pshufb::process_slice_multiply_add_pshufb(
-                    input, output, tables
+                    input, output, tables,
                 );
             }
-            
+
             // Handle remaining bytes (< 32 bytes) with unrolled version
             let remainder_start = (len / 32) * 32;
             if remainder_start < len {
                 process_slice_multiply_add_avx2_unrolled(
                     &input[remainder_start..],
                     &mut output[remainder_start..],
-                    tables
+                    tables,
                 );
             }
         },

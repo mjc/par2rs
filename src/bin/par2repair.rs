@@ -23,7 +23,7 @@ fn main() {
                 context.recovery_set.print_statistics();
                 result.print_result();
             }
-            
+
             // Exit with success if repair was successful or not needed, error otherwise
             if result.is_success() {
                 process::exit(0);

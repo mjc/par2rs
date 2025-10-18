@@ -21,7 +21,7 @@
 //!
 //! Implementation inspired by the galois_2p8 crate (https://github.com/djsweet/galois_2p8)
 //! which is MIT licensed. This implementation has been adapted for GF(2^16) with AVX2.
-//! 
+//!
 //! ### Algorithm Overview
 //!
 //! **Key insight**: PSHUFB can handle 16-entry (4-bit) lookups. We have 256-entry (8-bit) tables.
@@ -54,7 +54,7 @@ use super::reedsolomon::SplitMulTable;
 use std::arch::x86_64::*;
 
 /// Build nibble lookup tables for PSHUFB
-/// 
+///
 /// Takes a 256-entry u16 table and splits it into 4 tables of 16 bytes each:
 /// - Low nibble (0-15) → result low byte
 /// - Low nibble (0-15) → result high byte  
@@ -66,21 +66,26 @@ fn build_pshufb_tables(table: &[u16; 256]) -> ([u8; 16], [u8; 16], [u8; 16], [u8
     let mut lo_nib_hi_byte = [0u8; 16];
     let mut hi_nib_lo_byte = [0u8; 16];
     let mut hi_nib_hi_byte = [0u8; 16];
-    
+
     // For each nibble value (0-15)
     for nib in 0..16 {
         // Low nibble: input byte = nib (i.e., 0x0N)
         let result_lo = table[nib];
         lo_nib_lo_byte[nib] = (result_lo & 0xFF) as u8;
         lo_nib_hi_byte[nib] = (result_lo >> 8) as u8;
-        
+
         // High nibble: input byte = nib << 4 (i.e., 0xN0)
         let result_hi = table[nib << 4];
         hi_nib_lo_byte[nib] = (result_hi & 0xFF) as u8;
         hi_nib_hi_byte[nib] = (result_hi >> 8) as u8;
     }
-    
-    (lo_nib_lo_byte, lo_nib_hi_byte, hi_nib_lo_byte, hi_nib_hi_byte)
+
+    (
+        lo_nib_lo_byte,
+        lo_nib_hi_byte,
+        hi_nib_lo_byte,
+        hi_nib_hi_byte,
+    )
 }
 
 /// PSHUFB-accelerated GF(2^16) multiply-add using AVX2
@@ -103,98 +108,111 @@ pub unsafe fn process_slice_multiply_add_pshufb(
     tables: &SplitMulTable,
 ) {
     let len = input.len().min(output.len());
-    
+
     // Need at least 32 bytes for AVX2
     if len < 32 {
         return;
     }
 
     // Build PSHUFB lookup tables (8 tables × 16 bytes = 128 bytes total vs 512 bytes for full tables)
-    let (low_lo_nib_lo, low_lo_nib_hi, low_hi_nib_lo, low_hi_nib_hi) = build_pshufb_tables(&tables.low);
-    let (high_lo_nib_lo, high_lo_nib_hi, high_hi_nib_lo, high_hi_nib_hi) = build_pshufb_tables(&tables.high);
-    
+    let (low_lo_nib_lo, low_lo_nib_hi, low_hi_nib_lo, low_hi_nib_hi) =
+        build_pshufb_tables(&tables.low);
+    let (high_lo_nib_lo, high_lo_nib_hi, high_hi_nib_lo, high_hi_nib_hi) =
+        build_pshufb_tables(&tables.high);
+
     // Load tables into AVX2 registers (broadcast 128-bit to 256-bit for both lanes)
-    let low_lo_nib_lo_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(low_lo_nib_lo.as_ptr() as *const __m128i));
-    let low_lo_nib_hi_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(low_lo_nib_hi.as_ptr() as *const __m128i));
-    let low_hi_nib_lo_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(low_hi_nib_lo.as_ptr() as *const __m128i));
-    let low_hi_nib_hi_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(low_hi_nib_hi.as_ptr() as *const __m128i));
-    
-    let high_lo_nib_lo_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(high_lo_nib_lo.as_ptr() as *const __m128i));
-    let high_lo_nib_hi_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(high_lo_nib_hi.as_ptr() as *const __m128i));
-    let high_hi_nib_lo_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(high_hi_nib_lo.as_ptr() as *const __m128i));
-    let high_hi_nib_hi_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(high_hi_nib_hi.as_ptr() as *const __m128i));
-    
+    let low_lo_nib_lo_vec =
+        _mm256_broadcastsi128_si256(_mm_loadu_si128(low_lo_nib_lo.as_ptr() as *const __m128i));
+    let low_lo_nib_hi_vec =
+        _mm256_broadcastsi128_si256(_mm_loadu_si128(low_lo_nib_hi.as_ptr() as *const __m128i));
+    let low_hi_nib_lo_vec =
+        _mm256_broadcastsi128_si256(_mm_loadu_si128(low_hi_nib_lo.as_ptr() as *const __m128i));
+    let low_hi_nib_hi_vec =
+        _mm256_broadcastsi128_si256(_mm_loadu_si128(low_hi_nib_hi.as_ptr() as *const __m128i));
+
+    let high_lo_nib_lo_vec =
+        _mm256_broadcastsi128_si256(_mm_loadu_si128(high_lo_nib_lo.as_ptr() as *const __m128i));
+    let high_lo_nib_hi_vec =
+        _mm256_broadcastsi128_si256(_mm_loadu_si128(high_lo_nib_hi.as_ptr() as *const __m128i));
+    let high_hi_nib_lo_vec =
+        _mm256_broadcastsi128_si256(_mm_loadu_si128(high_hi_nib_lo.as_ptr() as *const __m128i));
+    let high_hi_nib_hi_vec =
+        _mm256_broadcastsi128_si256(_mm_loadu_si128(high_hi_nib_hi.as_ptr() as *const __m128i));
+
     let mask_0x0f = _mm256_set1_epi8(0x0F);
-    
+
     // Process 32 bytes at a time
     let mut pos = 0;
     let avx_end = (len / 32) * 32;
-    
+
     while pos < avx_end {
         // Load 32 bytes of input and output
         let in_vec = _mm256_loadu_si256(input.as_ptr().add(pos) as *const __m256i);
         let out_vec = _mm256_loadu_si256(output.as_ptr().add(pos) as *const __m256i);
-        
+
         // Separate even bytes (low bytes of u16 words) and odd bytes (high bytes of u16 words)
         // Even bytes: indices 0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30
         // Odd bytes:  indices 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31
-        
+
         // Extract low bytes (even indices) - these are the low bytes of each u16 word
         let low_bytes = _mm256_and_si256(
             in_vec,
-            _mm256_set1_epi16(0x00FF)  // Mask to keep only low byte of each word
+            _mm256_set1_epi16(0x00FF), // Mask to keep only low byte of each word
         );
-        
+
         // Extract high bytes (odd indices) - shift right by 8 to get high bytes
         let high_bytes = _mm256_srli_epi16(in_vec, 8);
-        
+
         // Process low bytes: split into nibbles and lookup
         let low_lo_nib = _mm256_and_si256(low_bytes, mask_0x0f);
-        let low_hi_nib = _mm256_srli_epi16(_mm256_and_si256(low_bytes, _mm256_set1_epi8(0xF0u8 as i8)), 4);
-        
+        let low_hi_nib = _mm256_srli_epi16(
+            _mm256_and_si256(low_bytes, _mm256_set1_epi8(0xF0u8 as i8)),
+            4,
+        );
+
         // PSHUFB lookups for low byte
         let low_lo_nib_result_lo = _mm256_shuffle_epi8(low_lo_nib_lo_vec, low_lo_nib);
         let low_lo_nib_result_hi = _mm256_shuffle_epi8(low_lo_nib_hi_vec, low_lo_nib);
         let low_hi_nib_result_lo = _mm256_shuffle_epi8(low_hi_nib_lo_vec, low_hi_nib);
         let low_hi_nib_result_hi = _mm256_shuffle_epi8(low_hi_nib_hi_vec, low_hi_nib);
-        
+
         // XOR low nibble and high nibble results for low byte
         let low_byte_result_lo = _mm256_xor_si256(low_lo_nib_result_lo, low_hi_nib_result_lo);
         let low_byte_result_hi = _mm256_xor_si256(low_lo_nib_result_hi, low_hi_nib_result_hi);
-        
+
         // Process high bytes: split into nibbles and lookup
         let high_lo_nib = _mm256_and_si256(high_bytes, mask_0x0f);
-        let high_hi_nib = _mm256_srli_epi16(_mm256_and_si256(high_bytes, _mm256_set1_epi8(0xF0u8 as i8)), 4);
-        
+        let high_hi_nib = _mm256_srli_epi16(
+            _mm256_and_si256(high_bytes, _mm256_set1_epi8(0xF0u8 as i8)),
+            4,
+        );
+
         // PSHUFB lookups for high byte
         let high_lo_nib_result_lo = _mm256_shuffle_epi8(high_lo_nib_lo_vec, high_lo_nib);
         let high_lo_nib_result_hi = _mm256_shuffle_epi8(high_lo_nib_hi_vec, high_lo_nib);
         let high_hi_nib_result_lo = _mm256_shuffle_epi8(high_hi_nib_lo_vec, high_hi_nib);
         let high_hi_nib_result_hi = _mm256_shuffle_epi8(high_hi_nib_hi_vec, high_hi_nib);
-        
+
         // XOR low nibble and high nibble results for high byte
         let high_byte_result_lo = _mm256_xor_si256(high_lo_nib_result_lo, high_hi_nib_result_lo);
         let high_byte_result_hi = _mm256_xor_si256(high_lo_nib_result_hi, high_hi_nib_result_hi);
-        
+
         // Combine low_byte_result and high_byte_result into final 16-bit results
         // XOR the contributions from both bytes
         let result_lo = _mm256_xor_si256(low_byte_result_lo, high_byte_result_lo);
         let result_hi = _mm256_xor_si256(low_byte_result_hi, high_byte_result_hi);
-        
+
         // Combine lo and hi bytes back into 16-bit words
-        let result = _mm256_or_si256(
-            result_lo,
-            _mm256_slli_epi16(result_hi, 8)
-        );
-        
+        let result = _mm256_or_si256(result_lo, _mm256_slli_epi16(result_hi, 8));
+
         // XOR with output (multiply-add operation)
         let final_result = _mm256_xor_si256(out_vec, result);
-        
+
         // Store result
         _mm256_storeu_si256(output.as_mut_ptr().add(pos) as *mut __m256i, final_result);
-        
+
         pos += 32;
     }
-    
+
     // Handle remaining bytes with scalar code (fallback in parent function)
 }

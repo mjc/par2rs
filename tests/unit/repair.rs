@@ -16,12 +16,12 @@ fn load_packets_with_recovery(par2_files: &[PathBuf]) -> (Vec<par2rs::Packet>, u
     let mut all_packets = Vec::new();
     let mut recovery_count = 0;
     let mut seen_hashes = HashSet::default();
-    
+
     for par2_file in par2_files {
         let file = fs::File::open(par2_file).expect("Failed to open PAR2 file");
         let mut reader = BufReader::new(file);
         let packets = par2rs::parse_packets(&mut reader);
-        
+
         // Deduplicate packets
         for packet in packets {
             let hash = get_packet_hash(&packet);
@@ -33,7 +33,7 @@ fn load_packets_with_recovery(par2_files: &[PathBuf]) -> (Vec<par2rs::Packet>, u
             }
         }
     }
-    
+
     (all_packets, recovery_count)
 }
 
