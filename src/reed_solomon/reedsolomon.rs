@@ -335,30 +335,153 @@ impl RsOutputRow {
 pub type RsResult<T> = Result<T, RsError>;
 
 /// Errors that can occur during Reed-Solomon operations
-#[derive(Debug, Clone)]
+#[derive(Debug, thiserror::Error)]
 pub enum RsError {
+    #[error("Too many input blocks for Reed Solomon matrix")]
     TooManyInputBlocks,
+
+    #[error("Not enough recovery blocks")]
     NotEnoughRecoveryBlocks,
+
+    #[error("No output blocks specified")]
     NoOutputBlocks,
+
+    #[error("Reed-Solomon computation error")]
     ComputationError,
-    InvalidMatrix,
+
+    #[error("Invalid Reed-Solomon matrix: {0}")]
+    InvalidMatrix(String),
+
+    #[error("Singular matrix at column {0}")]
+    SingularMatrix(usize),
+
+    #[error("I/O error: {0}")]
+    IoError(#[from] std::io::Error),
 }
 
-impl std::fmt::Display for RsError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RsError::TooManyInputBlocks => {
-                write!(f, "Too many input blocks for Reed Solomon matrix")
-            }
-            RsError::NotEnoughRecoveryBlocks => write!(f, "Not enough recovery blocks"),
-            RsError::NoOutputBlocks => write!(f, "No output blocks"),
-            RsError::ComputationError => write!(f, "RS computation error"),
-            RsError::InvalidMatrix => write!(f, "Invalid Reed-Solomon matrix"),
+/// Galois field matrix for Reed-Solomon operations
+/// Generic over field elements, optimized for GF(2^16)
+#[derive(Clone)]
+pub struct Matrix {
+    data: Vec<Galois16>,
+    rows: usize,
+    cols: usize,
+}
+
+impl Matrix {
+    /// Create a new matrix with the given dimensions, initialized to zeros
+    #[inline]
+    pub fn new(rows: usize, cols: usize) -> Self {
+        Self {
+            data: vec![Galois16::new(0); rows * cols],
+            rows,
+            cols,
         }
     }
-}
 
-impl std::error::Error for RsError {}
+    /// Create an identity matrix of the given size
+    pub fn identity(size: usize) -> Self {
+        let mut mat = Self::new(size, size);
+        for i in 0..size {
+            mat.set(i, i, Galois16::new(1));
+        }
+        mat
+    }
+
+    /// Get the element at (row, col)
+    #[inline]
+    pub fn get(&self, row: usize, col: usize) -> Galois16 {
+        debug_assert!(row < self.rows && col < self.cols);
+        self.data[row * self.cols + col]
+    }
+
+    /// Set the element at (row, col)
+    #[inline]
+    pub fn set(&mut self, row: usize, col: usize, val: Galois16) {
+        debug_assert!(row < self.rows && col < self.cols);
+        self.data[row * self.cols + col] = val;
+    }
+
+    /// Get mutable access to a row
+    #[inline]
+    pub fn row_mut(&mut self, row: usize) -> &mut [Galois16] {
+        debug_assert!(row < self.rows);
+        &mut self.data[row * self.cols..(row + 1) * self.cols]
+    }
+
+    /// Get immutable access to a row
+    #[inline]
+    pub fn row(&self, row: usize) -> &[Galois16] {
+        debug_assert!(row < self.rows);
+        &self.data[row * self.cols..(row + 1) * self.cols]
+    }
+
+    /// Swap two rows
+    #[inline]
+    pub fn swap_rows(&mut self, r1: usize, r2: usize) {
+        debug_assert!(r1 < self.rows && r2 < self.rows);
+        let cols = self.cols;
+        let (ptr1, ptr2) = unsafe {
+            (
+                self.data.as_mut_ptr().add(r1 * cols),
+                self.data.as_mut_ptr().add(r2 * cols),
+            )
+        };
+        unsafe {
+            std::ptr::swap_nonoverlapping(ptr1, ptr2, cols);
+        }
+    }
+
+    /// Get dimensions
+    #[inline]
+    pub fn dims(&self) -> (usize, usize) {
+        (self.rows, self.cols)
+    }
+
+    /// Convert to augmented matrix [self | identity]
+    pub fn augment_with_identity(&self) -> Self {
+        debug_assert_eq!(self.rows, self.cols, "Can only augment square matrices");
+        let size = self.rows;
+        let mut aug = Self::new(size, size * 2);
+
+        for i in 0..size {
+            for j in 0..size {
+                aug.set(i, j, self.get(i, j));
+                aug.set(
+                    i,
+                    size + j,
+                    if i == j {
+                        Galois16::new(1)
+                    } else {
+                        Galois16::new(0)
+                    },
+                );
+            }
+        }
+
+        aug
+    }
+
+    /// Extract the right half of an augmented matrix
+    pub fn extract_right_half(&self) -> Self {
+        debug_assert_eq!(self.cols % 2, 0);
+        let half = self.cols / 2;
+        let mut result = Self::new(self.rows, half);
+
+        for i in 0..self.rows {
+            for j in 0..half {
+                result.set(i, j, self.get(i, half + j));
+            }
+        }
+
+        result
+    }
+
+    /// Check if matrix is singular (all elements are zero)
+    pub fn is_singular(&self) -> bool {
+        self.data.iter().all(|&v| v.value() == 0)
+    }
+}
 
 /// Reed-Solomon encoder/decoder following par2cmdline approach
 pub struct ReedSolomon {
@@ -572,7 +695,9 @@ impl ReedSolomon {
             }
 
             if output_row_iter >= self.output_rows.len() {
-                return Err(RsError::InvalidMatrix);
+                return Err(RsError::InvalidMatrix(
+                    "Present recovery block not found".to_string(),
+                ));
             }
 
             let exponent = self.output_rows[output_row_iter].exponent;
@@ -630,7 +755,9 @@ impl ReedSolomon {
             }
 
             if output_row_iter >= self.output_rows.len() {
-                return Err(RsError::InvalidMatrix);
+                return Err(RsError::InvalidMatrix(
+                    "Missing recovery block not found".to_string(),
+                ));
             }
 
             let exponent = self.output_rows[output_row_iter].exponent;
@@ -692,7 +819,9 @@ impl ReedSolomon {
         for row in 0..self.data_missing {
             let pivot_idx = (row * rows + row) as usize;
             if pivot_idx >= right_matrix.len() {
-                return Err(RsError::InvalidMatrix);
+                return Err(RsError::InvalidMatrix(
+                    "Pivot index out of bounds".to_string(),
+                ));
             }
 
             let pivot = right_matrix[pivot_idx];
