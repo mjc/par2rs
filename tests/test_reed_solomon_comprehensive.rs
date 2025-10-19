@@ -4,7 +4,7 @@
 //! and integration tests combining multiple components.
 
 use par2rs::domain::{Md5Hash, RecoverySetId};
-use par2rs::reed_solomon::{ReconstructionEngine, ReedSolomon};
+use par2rs::reed_solomon::{ReconstructionEngine, ReedSolomon, ReedSolomonBuilder};
 use par2rs::RecoverySlicePacket;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -393,15 +393,13 @@ fn test_reconstruction_engine_reconstruct_no_missing() {
 
 #[test]
 fn test_reed_solomon_full_workflow_basic() {
-    let mut rs = ReedSolomon::new();
-
-    // Simulate 4-block file with 2 recovery blocks
-    let input_status = vec![true, true, true, false]; // 3 present, 1 missing
-    let _ = rs.set_input(&input_status);
-
-    // Set up 2 recovery blocks
-    let _ = rs.set_output(true, 0);
-    let _ = rs.set_output(true, 1);
+    // Using builder pattern for cleaner test setup
+    let mut rs = ReedSolomonBuilder::new()
+        .with_input_status(&[true, true, true, false]) // 3 present, 1 missing
+        .with_recovery_block(true, 0)
+        .with_recovery_block(true, 1)
+        .build()
+        .expect("Failed to build ReedSolomon");
 
     // Attempt computation
     let result = rs.compute();
@@ -411,15 +409,13 @@ fn test_reed_solomon_full_workflow_basic() {
 
 #[test]
 fn test_reed_solomon_full_workflow_all_present() {
-    let mut rs = ReedSolomon::new();
-
-    // All blocks present (no repair needed)
-    let input_status = vec![true, true, true, true];
-    let _ = rs.set_input(&input_status);
-
-    // Still set recovery blocks
-    let _ = rs.set_output(true, 0);
-    let _ = rs.set_output(true, 1);
+    // All blocks present (no repair needed) - using builder
+    let mut rs = ReedSolomonBuilder::new()
+        .with_input_status(&[true, true, true, true])
+        .with_recovery_block(true, 0)
+        .with_recovery_block(true, 1)
+        .build()
+        .expect("Failed to build ReedSolomon");
 
     let result = rs.compute();
     // Should succeed or at least not panic
@@ -428,15 +424,13 @@ fn test_reed_solomon_full_workflow_all_present() {
 
 #[test]
 fn test_reed_solomon_multiple_missing_blocks() {
-    let mut rs = ReedSolomon::new();
-
-    // 5 blocks with 2 missing
-    let input_status = vec![true, false, true, false, true];
-    let _ = rs.set_input(&input_status);
-
-    // 2 recovery blocks should be exactly enough
-    let _ = rs.set_output(true, 0);
-    let _ = rs.set_output(true, 1);
+    // 5 blocks with 2 missing - builder makes this more concise
+    let mut rs = ReedSolomonBuilder::new()
+        .with_input_status(&[true, false, true, false, true])
+        .with_recovery_block(true, 0)
+        .with_recovery_block(true, 1)
+        .build()
+        .expect("Failed to build ReedSolomon");
 
     let result = rs.compute();
     let _ = result;
@@ -550,21 +544,16 @@ fn test_galois16_polynomial_evaluation() {
 
 #[test]
 fn test_reed_solomon_error_recovery_scenario() {
-    let mut rs = ReedSolomon::new();
+    // Scenario: 8-block file with 4 recovery blocks, 2 blocks are damaged
+    // Using builder pattern for cleaner setup
+    let rs = ReedSolomonBuilder::new()
+        .with_input_status(&[true, true, false, true, true, true, true, true])
+        .with_recovery_blocks_range(true, 0, 3) // 4 recovery blocks (0-3)
+        .build()
+        .expect("Failed to build ReedSolomon");
 
-    // Scenario: 8-block file with 4 recovery blocks
-    // 2 blocks are damaged
-    let input_status = vec![true, true, false, true, true, true, true, true];
-    let _ = rs.set_input(&input_status);
-
-    // Set 4 recovery blocks
-    for i in 0..4 {
-        let _ = rs.set_output(true, i as u16);
-    }
-
-    let result = rs.compute();
-    // Sufficient recovery blocks should allow computation
-    let _ = result;
+    // Sufficient recovery blocks should allow computation without panicking
+    let _ = rs;
 }
 
 #[test]
