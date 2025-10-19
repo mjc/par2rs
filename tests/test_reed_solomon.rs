@@ -4,12 +4,29 @@
 //! to ensure the matrix setup and computation work correctly.
 
 use par2rs::domain::{Md5Hash, RecoverySetId};
-use par2rs::reed_solomon::{ReconstructionEngine, ReedSolomon};
+use par2rs::reed_solomon::{ReconstructionEngine, ReedSolomon, ReedSolomonBuilder};
 use par2rs::RecoverySlicePacket;
 use rustc_hash::FxHashMap as HashMap;
 
 #[test]
 fn test_reed_solomon_basic_setup() {
+    // Using the builder pattern for cleaner setup
+    let rs = ReedSolomonBuilder::new()
+        .with_input_status(&[true, true, false, true, false]) // 3 present, 2 missing
+        .with_recovery_block(true, 0)
+        .with_recovery_block(true, 1)
+        .with_recovery_block(false, 2)
+        .with_recovery_block(false, 4)
+        .build()
+        .expect("Failed to build ReedSolomon");
+
+    // Verify it built successfully - just ensure no panic
+    let _ = rs;
+}
+
+#[test]
+fn test_reed_solomon_basic_setup_traditional() {
+    // Keep one test using traditional approach for backwards compatibility verification
     let mut rs = ReedSolomon::new();
 
     // Test basic setup with some present and missing blocks

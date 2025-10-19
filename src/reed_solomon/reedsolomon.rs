@@ -30,15 +30,37 @@ use std::sync::OnceLock;
 // Global SIMD level detection (done once at first use)
 static SIMD_LEVEL: OnceLock<SimdLevel> = OnceLock::new();
 
-/// Process entire slice at once: output = coefficient * input (direct write, no XOR)
-/// ULTRA-OPTIMIZED: Direct pointer access, avoid byte conversions, maximum unrolling
+/// Specifies how to combine the multiplication result with the output buffer
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteOp {
+    /// Direct write: output = coefficient * input (replaces contents)
+    Direct,
+    /// Accumulate: output = output XOR (coefficient * input)
+    Add,
+}
+
+/// Internal helper: multiply a slice and write/accumulate result
+///
+/// This consolidates the logic from process_slice_multiply_direct and
+/// process_slice_multiply_add to reduce code duplication while maintaining
+/// performance through inlining and specialization.
+///
+/// # Arguments
+/// * `input` - Input data (typically a recovery slice)
+/// * `output` - Output buffer to write to
+/// * `tables` - Precomputed multiplication tables for the coefficient
+/// * `mode` - Whether to directly write or XOR-accumulate the result
 ///
 /// # Safety
-/// Casts byte slices to u16 slices. Requires:
-/// - input/output have valid alignment for u16 access (guaranteed by x86-64 allowing unaligned access)
-/// - Length is pre-checked to ensure we don't read/write beyond slice bounds
+/// Same as the individual functions: casts byte slices to u16 slices with
+/// unaligned access assumptions valid on x86-64.
 #[inline]
-pub fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
+pub(crate) fn process_slice_multiply_mode(
+    input: &[u8],
+    output: &mut [u8],
+    tables: &SplitMulTable,
+    mode: WriteOp,
+) {
     let min_len = input.len().min(output.len());
     let num_words = min_len / 2;
 
@@ -46,10 +68,7 @@ pub fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &S
         return;
     }
 
-    // SAFETY: We're reinterpreting byte slices as u16 slices.
-    // - On x86-64, unaligned loads/stores are supported
-    // - We pre-checked that we have at least num_words * 2 bytes available
-    // - The resulting u16 slice will have length num_words
+    // SAFETY: Same reasoning as the individual functions above
     unsafe {
         let in_words = std::slice::from_raw_parts(input.as_ptr() as *const u16, num_words);
         let out_words = std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut u16, num_words);
@@ -62,7 +81,7 @@ pub fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &S
 
         // Fully unroll 16-word chunks - batch loads/stores to reduce memory stalls
         for _ in 0..chunks {
-            // Load all 16 input words first (better cache/prefetch behavior)
+            // Load all 16 input words first
             let i0 = in_words[idx];
             let i1 = in_words[idx + 1];
             let i2 = in_words[idx + 2];
@@ -98,23 +117,62 @@ pub fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &S
             let r14 = low[(i14 & 0xFF) as usize] ^ high[(i14 >> 8) as usize];
             let r15 = low[(i15 & 0xFF) as usize] ^ high[(i15 >> 8) as usize];
 
-            // Write all results back
-            out_words[idx] = r0;
-            out_words[idx + 1] = r1;
-            out_words[idx + 2] = r2;
-            out_words[idx + 3] = r3;
-            out_words[idx + 4] = r4;
-            out_words[idx + 5] = r5;
-            out_words[idx + 6] = r6;
-            out_words[idx + 7] = r7;
-            out_words[idx + 8] = r8;
-            out_words[idx + 9] = r9;
-            out_words[idx + 10] = r10;
-            out_words[idx + 11] = r11;
-            out_words[idx + 12] = r12;
-            out_words[idx + 13] = r13;
-            out_words[idx + 14] = r14;
-            out_words[idx + 15] = r15;
+            // Write results back - choice depends on mode
+            match mode {
+                WriteOp::Direct => {
+                    out_words[idx] = r0;
+                    out_words[idx + 1] = r1;
+                    out_words[idx + 2] = r2;
+                    out_words[idx + 3] = r3;
+                    out_words[idx + 4] = r4;
+                    out_words[idx + 5] = r5;
+                    out_words[idx + 6] = r6;
+                    out_words[idx + 7] = r7;
+                    out_words[idx + 8] = r8;
+                    out_words[idx + 9] = r9;
+                    out_words[idx + 10] = r10;
+                    out_words[idx + 11] = r11;
+                    out_words[idx + 12] = r12;
+                    out_words[idx + 13] = r13;
+                    out_words[idx + 14] = r14;
+                    out_words[idx + 15] = r15;
+                }
+                WriteOp::Add => {
+                    let o0 = out_words[idx];
+                    let o1 = out_words[idx + 1];
+                    let o2 = out_words[idx + 2];
+                    let o3 = out_words[idx + 3];
+                    let o4 = out_words[idx + 4];
+                    let o5 = out_words[idx + 5];
+                    let o6 = out_words[idx + 6];
+                    let o7 = out_words[idx + 7];
+                    let o8 = out_words[idx + 8];
+                    let o9 = out_words[idx + 9];
+                    let o10 = out_words[idx + 10];
+                    let o11 = out_words[idx + 11];
+                    let o12 = out_words[idx + 12];
+                    let o13 = out_words[idx + 13];
+                    let o14 = out_words[idx + 14];
+                    let o15 = out_words[idx + 15];
+
+                    out_words[idx] = o0 ^ r0;
+                    out_words[idx + 1] = o1 ^ r1;
+                    out_words[idx + 2] = o2 ^ r2;
+                    out_words[idx + 3] = o3 ^ r3;
+                    out_words[idx + 4] = o4 ^ r4;
+                    out_words[idx + 5] = o5 ^ r5;
+                    out_words[idx + 6] = o6 ^ r6;
+                    out_words[idx + 7] = o7 ^ r7;
+                    out_words[idx + 8] = o8 ^ r8;
+                    out_words[idx + 9] = o9 ^ r9;
+                    out_words[idx + 10] = o10 ^ r10;
+                    out_words[idx + 11] = o11 ^ r11;
+                    out_words[idx + 12] = o12 ^ r12;
+                    out_words[idx + 13] = o13 ^ r13;
+                    out_words[idx + 14] = o14 ^ r14;
+                    out_words[idx + 15] = o15 ^ r15;
+                }
+            }
 
             idx += 16;
         }
@@ -123,7 +181,14 @@ pub fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &S
         while idx < num_words {
             let in_word = in_words[idx];
             let result = low[(in_word & 0xFF) as usize] ^ high[(in_word >> 8) as usize];
-            out_words[idx] = result;
+            match mode {
+                WriteOp::Direct => {
+                    out_words[idx] = result;
+                }
+                WriteOp::Add => {
+                    out_words[idx] ^= result;
+                }
+            }
             idx += 1;
         }
     }
@@ -132,8 +197,28 @@ pub fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &S
     if min_len % 2 == 1 {
         let last_idx = num_words * 2;
         let in_byte = input[last_idx];
-        output[last_idx] = tables.low[in_byte as usize].to_le_bytes()[0];
+        let low_byte = tables.low[in_byte as usize].to_le_bytes()[0];
+        match mode {
+            WriteOp::Direct => {
+                output[last_idx] = low_byte;
+            }
+            WriteOp::Add => {
+                output[last_idx] ^= low_byte;
+            }
+        }
     }
+}
+
+/// Process entire slice at once: output = coefficient * input (direct write, no XOR)
+/// ULTRA-OPTIMIZED: Direct pointer access, avoid byte conversions, maximum unrolling
+///
+/// # Safety
+/// Casts byte slices to u16 slices. Requires:
+/// - input/output have valid alignment for u16 access (guaranteed by x86-64 allowing unaligned access)
+/// - Length is pre-checked to ensure we don't read/write beyond slice bounds
+#[inline]
+pub fn process_slice_multiply_direct(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
+    process_slice_multiply_mode(input, output, tables, WriteOp::Direct);
 }
 
 /// Process entire slice at once: output += coefficient * input (XOR accumulate)
@@ -152,118 +237,7 @@ pub fn process_slice_multiply_add(input: &[u8], output: &mut [u8], tables: &Spli
     }
 
     // Fall back to scalar implementation
-    let num_words = min_len / 2;
-    if num_words == 0 {
-        return;
-    }
-
-    // SAFETY: We're reinterpreting byte slices as u16 slices.
-    // - On x86-64, unaligned loads/stores are supported
-    // - We pre-checked that we have at least num_words * 2 bytes available
-    // - The resulting u16 slice will have length num_words
-    unsafe {
-        let in_words = std::slice::from_raw_parts(input.as_ptr() as *const u16, num_words);
-        let out_words = std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut u16, num_words);
-        let low = &tables.low[..];
-        let high = &tables.high[..];
-
-        // Process 16 words at a time for maximum throughput
-        let chunks = num_words / 16;
-        let mut idx = 0;
-
-        // Fully unroll 16-word chunks - batch loads/stores to reduce memory stalls
-        for _ in 0..chunks {
-            // Load all 16 input words first (better cache/prefetch behavior)
-            let i0 = in_words[idx];
-            let i1 = in_words[idx + 1];
-            let i2 = in_words[idx + 2];
-            let i3 = in_words[idx + 3];
-            let i4 = in_words[idx + 4];
-            let i5 = in_words[idx + 5];
-            let i6 = in_words[idx + 6];
-            let i7 = in_words[idx + 7];
-            let i8 = in_words[idx + 8];
-            let i9 = in_words[idx + 9];
-            let i10 = in_words[idx + 10];
-            let i11 = in_words[idx + 11];
-            let i12 = in_words[idx + 12];
-            let i13 = in_words[idx + 13];
-            let i14 = in_words[idx + 14];
-            let i15 = in_words[idx + 15];
-
-            // Load all 16 output words
-            let o0 = out_words[idx];
-            let o1 = out_words[idx + 1];
-            let o2 = out_words[idx + 2];
-            let o3 = out_words[idx + 3];
-            let o4 = out_words[idx + 4];
-            let o5 = out_words[idx + 5];
-            let o6 = out_words[idx + 6];
-            let o7 = out_words[idx + 7];
-            let o8 = out_words[idx + 8];
-            let o9 = out_words[idx + 9];
-            let o10 = out_words[idx + 10];
-            let o11 = out_words[idx + 11];
-            let o12 = out_words[idx + 12];
-            let o13 = out_words[idx + 13];
-            let o14 = out_words[idx + 14];
-            let o15 = out_words[idx + 15];
-
-            // Compute all multiplications (table lookups execute in parallel)
-            let r0 = low[(i0 & 0xFF) as usize] ^ high[(i0 >> 8) as usize];
-            let r1 = low[(i1 & 0xFF) as usize] ^ high[(i1 >> 8) as usize];
-            let r2 = low[(i2 & 0xFF) as usize] ^ high[(i2 >> 8) as usize];
-            let r3 = low[(i3 & 0xFF) as usize] ^ high[(i3 >> 8) as usize];
-            let r4 = low[(i4 & 0xFF) as usize] ^ high[(i4 >> 8) as usize];
-            let r5 = low[(i5 & 0xFF) as usize] ^ high[(i5 >> 8) as usize];
-            let r6 = low[(i6 & 0xFF) as usize] ^ high[(i6 >> 8) as usize];
-            let r7 = low[(i7 & 0xFF) as usize] ^ high[(i7 >> 8) as usize];
-            let r8 = low[(i8 & 0xFF) as usize] ^ high[(i8 >> 8) as usize];
-            let r9 = low[(i9 & 0xFF) as usize] ^ high[(i9 >> 8) as usize];
-            let r10 = low[(i10 & 0xFF) as usize] ^ high[(i10 >> 8) as usize];
-            let r11 = low[(i11 & 0xFF) as usize] ^ high[(i11 >> 8) as usize];
-            let r12 = low[(i12 & 0xFF) as usize] ^ high[(i12 >> 8) as usize];
-            let r13 = low[(i13 & 0xFF) as usize] ^ high[(i13 >> 8) as usize];
-            let r14 = low[(i14 & 0xFF) as usize] ^ high[(i14 >> 8) as usize];
-            let r15 = low[(i15 & 0xFF) as usize] ^ high[(i15 >> 8) as usize];
-
-            // Write all results back
-            out_words[idx] = o0 ^ r0;
-            out_words[idx + 1] = o1 ^ r1;
-            out_words[idx + 2] = o2 ^ r2;
-            out_words[idx + 3] = o3 ^ r3;
-            out_words[idx + 4] = o4 ^ r4;
-            out_words[idx + 5] = o5 ^ r5;
-            out_words[idx + 6] = o6 ^ r6;
-            out_words[idx + 7] = o7 ^ r7;
-            out_words[idx + 8] = o8 ^ r8;
-            out_words[idx + 9] = o9 ^ r9;
-            out_words[idx + 10] = o10 ^ r10;
-            out_words[idx + 11] = o11 ^ r11;
-            out_words[idx + 12] = o12 ^ r12;
-            out_words[idx + 13] = o13 ^ r13;
-            out_words[idx + 14] = o14 ^ r14;
-            out_words[idx + 15] = o15 ^ r15;
-
-            idx += 16;
-        }
-
-        // Handle remaining words (0-15)
-        while idx < num_words {
-            let in_word = in_words[idx];
-            let out_word = out_words[idx];
-            let mul_result = low[(in_word & 0xFF) as usize] ^ high[(in_word >> 8) as usize];
-            out_words[idx] = out_word ^ mul_result;
-            idx += 1;
-        }
-    }
-
-    // Handle odd trailing byte
-    if min_len % 2 == 1 {
-        let last_idx = num_words * 2;
-        let in_byte = input[last_idx];
-        output[last_idx] ^= tables.low[in_byte as usize].to_le_bytes()[0];
-    }
+    process_slice_multiply_mode(input, output, tables, WriteOp::Add);
 }
 
 /// Multiplication table split into low/high byte tables (1KB vs 128KB!)
@@ -480,6 +454,85 @@ impl Matrix {
     /// Check if matrix is singular (all elements are zero)
     pub fn is_singular(&self) -> bool {
         self.data.iter().all(|&v| v.value() == 0)
+    }
+}
+
+/// Builder for Reed-Solomon encoder/decoder configuration
+///
+/// Provides a fluent API for constructing a ReedSolomon instance with a configured
+/// input and output specification. This is more ergonomic than manually calling
+/// set_input and set_output methods.
+///
+/// # Example
+///
+/// ```ignore
+/// let rs = ReedSolomonBuilder::new()
+///     .with_input_status(&[true, true, false, true])  // 3 present, 1 missing
+///     .with_recovery_block(true, 0)                    // Recovery block 0 is present
+///     .with_recovery_block(false, 1)                   // Recovery block 1 to compute
+///     .build()
+///     .expect("Failed to build ReedSolomon");
+/// ```
+pub struct ReedSolomonBuilder {
+    input_status: Option<Vec<bool>>,
+    recovery_blocks: Vec<(bool, u16)>,
+}
+
+impl ReedSolomonBuilder {
+    /// Create a new builder with default empty configuration
+    pub fn new() -> Self {
+        Self {
+            input_status: None,
+            recovery_blocks: Vec::new(),
+        }
+    }
+
+    /// Set the input block status (which blocks are present/missing)
+    pub fn with_input_status(mut self, status: &[bool]) -> Self {
+        self.input_status = Some(status.to_vec());
+        self
+    }
+
+    /// Add a recovery block with the given exponent
+    pub fn with_recovery_block(mut self, present: bool, exponent: u16) -> Self {
+        self.recovery_blocks.push((present, exponent));
+        self
+    }
+
+    /// Add multiple recovery blocks with exponents in the given range
+    pub fn with_recovery_blocks_range(
+        mut self,
+        present: bool,
+        low_exponent: u16,
+        high_exponent: u16,
+    ) -> Self {
+        for exponent in low_exponent..=high_exponent {
+            self.recovery_blocks.push((present, exponent));
+        }
+        self
+    }
+
+    /// Build the ReedSolomon instance with the configured settings
+    pub fn build(self) -> RsResult<ReedSolomon> {
+        let mut rs = ReedSolomon::new();
+
+        // Set input configuration if provided
+        if let Some(status) = self.input_status {
+            rs.set_input(&status)?;
+        }
+
+        // Add all recovery blocks
+        for (present, exponent) in self.recovery_blocks {
+            rs.set_output(present, exponent)?;
+        }
+
+        Ok(rs)
+    }
+}
+
+impl Default for ReedSolomonBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1888,5 +1941,39 @@ mod tests {
         assert_eq!(gcd(48, 18), 6);
         assert_eq!(gcd(65535, 2), 1);
         assert_eq!(gcd(65535, 3), 3);
+    }
+
+    #[test]
+    fn test_reed_solomon_builder() {
+        // Test the builder pattern for constructing ReedSolomon
+        let rs = ReedSolomonBuilder::new()
+            .with_input_status(&[true, true, false, true])
+            .with_recovery_block(true, 0)
+            .with_recovery_block(false, 1)
+            .build()
+            .expect("Failed to build ReedSolomon");
+
+        // Verify the configuration was applied
+        assert_eq!(rs.input_count, 4);
+        assert_eq!(rs.data_present, 3);
+        assert_eq!(rs.data_missing, 1);
+        assert_eq!(rs.output_count, 2);
+        assert_eq!(rs.par_present, 1);
+        assert_eq!(rs.par_missing, 1);
+    }
+
+    #[test]
+    fn test_reed_solomon_builder_range() {
+        // Test building with a range of recovery blocks
+        let rs = ReedSolomonBuilder::new()
+            .with_input_status(&[true, true, true])
+            .with_recovery_blocks_range(true, 0, 3)
+            .build()
+            .expect("Failed to build ReedSolomon");
+
+        assert_eq!(rs.input_count, 3);
+        assert_eq!(rs.data_present, 3);
+        assert_eq!(rs.output_count, 4);
+        assert_eq!(rs.par_present, 4);
     }
 }
