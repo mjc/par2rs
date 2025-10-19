@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use par2rs::reed_solomon::galois::Galois16;
 use par2rs::reed_solomon::reedsolomon::{
     build_split_mul_table, ReconstructionEngine, SplitMulTable,
@@ -8,6 +8,7 @@ use par2rs::reed_solomon::simd::{
 };
 use par2rs::RecoverySlicePacket;
 use std::collections::HashMap;
+use std::hint::black_box;
 
 /// Pure scalar implementation (no SIMD)
 fn process_slice_multiply_add_scalar(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
