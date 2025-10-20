@@ -33,21 +33,25 @@ fn main() -> Result<()> {
     // Validate file exists
     anyhow::ensure!(file_path.exists(), "File does not exist: {}", input_file);
 
-    // Change to parent directory if it exists
+    // Change to parent directory for file resolution
     if let Some(parent) = file_path.parent() {
         std::env::set_current_dir(parent)
             .with_context(|| format!("Failed to set current directory to {}", parent.display()))?;
     }
 
+    // Collect all PAR2 files in the set
     let par2_files = file_ops::collect_par2_files(file_path);
 
     // Parse all packets including recovery slices for verification (in parallel)
+    println!("Loading PAR2 files...\n");
     let all_packets = file_ops::load_all_par2_packets(&par2_files);
 
     let total_recovery_blocks = all_packets
         .iter()
         .filter(|p| matches!(p, par2rs::Packet::RecoverySlice(_)))
         .count();
+
+    println!(); // Blank line after loading
 
     // Show summary statistics
     let stats = analysis::calculate_par2_stats(&all_packets, total_recovery_blocks);

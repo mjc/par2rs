@@ -23,6 +23,7 @@ pub mod recovery_loader;
 pub mod reed_solomon;
 pub mod repair;
 pub mod slice_provider;
+pub mod validation;
 pub mod verify;
 
 pub use args::parse_args;
