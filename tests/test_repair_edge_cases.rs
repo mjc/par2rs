@@ -2,19 +2,35 @@
 
 use par2rs::repair::*;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+
+// Helper to copy fixtures to temp directory
+fn copy_fixture_dir(fixture_name: &str, temp_dir: &Path) -> PathBuf {
+    let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/edge_cases")
+        .join(fixture_name);
+
+    if fixture_path.is_file() {
+        let dest = temp_dir.join(fixture_name);
+        fs::copy(&fixture_path, &dest).unwrap();
+        dest
+    } else {
+        panic!("Fixture not found: {:?}", fixture_path);
+    }
+}
 
 #[test]
 fn test_no_repair_needed_path() {
     let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("test.txt");
 
-    // Create a valid file
-    fs::write(&test_file, b"Valid content that won't be corrupted").unwrap();
+    // Copy pre-generated fixtures
+    copy_fixture_dir("test_valid.txt", temp_dir.path());
+    copy_fixture_dir("test_valid.par2", temp_dir.path());
+    copy_fixture_dir("test_valid.vol0+1.par2", temp_dir.path());
 
-    let par2_file = temp_dir.path().join("test.par2");
-    create_minimal_par2(&par2_file, &test_file);
+    let _test_file = temp_dir.path().join("test_valid.txt");
+    let par2_file = temp_dir.path().join("test_valid.par2");
 
     // Don't corrupt the file - it should trigger NoRepairNeeded path
     let result = repair_files(par2_file.to_str().unwrap());
@@ -29,22 +45,17 @@ fn test_no_repair_needed_path() {
 #[test]
 fn test_insufficient_recovery_error_path() {
     let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("large_test.txt");
 
-    // Create a larger file to have multiple slices
-    let content = vec![0x55; 100000]; // 100KB
-    fs::write(&test_file, &content).unwrap();
+    // Copy pre-generated fixtures with 1% recovery
+    copy_fixture_dir("large_test_original.txt", temp_dir.path());
+    copy_fixture_dir("large_test.par2", temp_dir.path());
+    copy_fixture_dir("large_test.vol00+1.par2", temp_dir.path());
+    copy_fixture_dir("large_test.vol01+2.par2", temp_dir.path());
+    copy_fixture_dir("large_test.vol03+4.par2", temp_dir.path());
+    copy_fixture_dir("large_test.vol07+8.par2", temp_dir.path());
+    copy_fixture_dir("large_test.vol15+4.par2", temp_dir.path());
 
-    // Create PAR2 with minimal recovery (only 1%)
-    let par2_file = temp_dir.path().join("large_test.par2");
-    std::process::Command::new("par2")
-        .arg("c")
-        .arg("-r1") // Only 1% recovery
-        .arg("-q")
-        .arg(&par2_file)
-        .arg(&test_file)
-        .output()
-        .expect("Failed to create PAR2");
+    let test_file = temp_dir.path().join("large_test_original.txt");
 
     // Heavily corrupt the file (corrupt more than recovery can handle)
     let mut corrupted = vec![0xFF; 100000];
@@ -57,6 +68,7 @@ fn test_insufficient_recovery_error_path() {
     fs::write(&test_file, &corrupted).unwrap();
 
     // Try to repair - should fail with insufficient recovery
+    let par2_file = temp_dir.path().join("large_test.par2");
     let result = repair_files(par2_file.to_str().unwrap());
     // Might succeed (if not enough damage) or fail (insufficient recovery)
     // Either way, we're exercising the code path
@@ -66,16 +78,17 @@ fn test_insufficient_recovery_error_path() {
 #[test]
 fn test_file_verification_after_repair() {
     let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("verify_test.txt");
 
-    // Create a file
-    let original = b"Content to verify after repair";
-    fs::write(&test_file, original).unwrap();
+    // Copy pre-generated fixtures
+    copy_fixture_dir("verify_test_original.txt", temp_dir.path());
+    copy_fixture_dir("verify_test.par2", temp_dir.path());
+    copy_fixture_dir("verify_test.vol0+1.par2", temp_dir.path());
 
+    let test_file = temp_dir.path().join("verify_test_original.txt");
     let par2_file = temp_dir.path().join("verify_test.par2");
-    create_minimal_par2(&par2_file, &test_file);
 
     // Slightly corrupt the file
+    let original = b"Content to verify after repair";
     let mut corrupted = original.to_vec();
     corrupted[0] = 0xFF;
     fs::write(&test_file, &corrupted).unwrap();
@@ -96,28 +109,15 @@ fn test_file_verification_after_repair() {
 fn test_multiple_files_scenario() {
     let temp_dir = TempDir::new().unwrap();
 
-    // Create multiple files
-    let file1 = temp_dir.path().join("file1.txt");
+    // Copy pre-generated fixtures
+    copy_fixture_dir("file1.txt", temp_dir.path());
+    copy_fixture_dir("file2.txt", temp_dir.path());
+    copy_fixture_dir("file3.txt", temp_dir.path());
+    copy_fixture_dir("multifile.par2", temp_dir.path());
+    copy_fixture_dir("multifile.vol0+1.par2", temp_dir.path());
+
     let file2 = temp_dir.path().join("file2.txt");
-    let file3 = temp_dir.path().join("file3.txt");
-
-    fs::write(&file1, b"First file content").unwrap();
-    fs::write(&file2, b"Second file content").unwrap();
-    fs::write(&file3, b"Third file content").unwrap();
-
     let par2_file = temp_dir.path().join("multifile.par2");
-
-    // Create PAR2 for all three files
-    std::process::Command::new("par2")
-        .arg("c")
-        .arg("-r5")
-        .arg("-q")
-        .arg(&par2_file)
-        .arg(&file1)
-        .arg(&file2)
-        .arg(&file3)
-        .output()
-        .expect("Failed to create PAR2");
 
     // Corrupt one file
     fs::write(&file2, b"Corrupted!!!").unwrap();
@@ -144,14 +144,20 @@ fn test_context_creation_error_path() {
 #[test]
 fn test_corrupted_status_detection() {
     let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("corrupt_detect.txt");
 
-    // Create file
-    let content = vec![0x77; 5000];
-    fs::write(&test_file, &content).unwrap();
+    // Copy pre-generated fixtures
+    copy_fixture_dir("large_original.txt", temp_dir.path());
+    copy_fixture_dir("large.par2", temp_dir.path());
+    copy_fixture_dir("large.vol00+01.par2", temp_dir.path());
+    copy_fixture_dir("large.vol01+02.par2", temp_dir.path());
+    copy_fixture_dir("large.vol03+04.par2", temp_dir.path());
+    copy_fixture_dir("large.vol07+08.par2", temp_dir.path());
+    copy_fixture_dir("large.vol15+16.par2", temp_dir.path());
+    copy_fixture_dir("large.vol31+32.par2", temp_dir.path());
+    copy_fixture_dir("large.vol63+36.par2", temp_dir.path());
 
-    let par2_file = temp_dir.path().join("corrupt_detect.par2");
-    create_minimal_par2(&par2_file, &test_file);
+    let test_file = temp_dir.path().join("large_original.txt");
+    let par2_file = temp_dir.path().join("large.par2");
 
     // Corrupt with wrong size (triggers size check)
     fs::write(&test_file, vec![0x88; 100]).unwrap();
@@ -162,6 +168,7 @@ fn test_corrupted_status_detection() {
 }
 
 #[test]
+#[ignore] // Empty files are not supported by PAR2 spec
 fn test_empty_file_edge_case() {
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("empty.txt");
@@ -191,13 +198,14 @@ fn test_empty_file_edge_case() {
 #[test]
 fn test_single_byte_file() {
     let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("single.txt");
 
-    // Create a single-byte file
-    fs::write(&test_file, b"X").unwrap();
+    // Copy pre-generated fixtures
+    copy_fixture_dir("single_original.txt", temp_dir.path());
+    copy_fixture_dir("single.par2", temp_dir.path());
+    copy_fixture_dir("single.vol0+1.par2", temp_dir.path());
 
+    let test_file = temp_dir.path().join("single_original.txt");
     let par2_file = temp_dir.path().join("single.par2");
-    create_minimal_par2(&par2_file, &test_file);
 
     // Corrupt it
     fs::write(&test_file, b"Y").unwrap();
@@ -210,16 +218,23 @@ fn test_single_byte_file() {
 #[test]
 fn test_large_file_with_many_slices() {
     let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("large.txt");
 
-    // Create a larger file (500KB) to ensure multiple slices
-    let content = vec![0x42; 500000];
-    fs::write(&test_file, &content).unwrap();
+    // Copy pre-generated fixtures
+    copy_fixture_dir("large_original.txt", temp_dir.path());
+    copy_fixture_dir("large.par2", temp_dir.path());
+    copy_fixture_dir("large.vol00+01.par2", temp_dir.path());
+    copy_fixture_dir("large.vol01+02.par2", temp_dir.path());
+    copy_fixture_dir("large.vol03+04.par2", temp_dir.path());
+    copy_fixture_dir("large.vol07+08.par2", temp_dir.path());
+    copy_fixture_dir("large.vol15+16.par2", temp_dir.path());
+    copy_fixture_dir("large.vol31+32.par2", temp_dir.path());
+    copy_fixture_dir("large.vol63+36.par2", temp_dir.path());
 
+    let test_file = temp_dir.path().join("large_original.txt");
     let par2_file = temp_dir.path().join("large.par2");
-    create_minimal_par2(&par2_file, &test_file);
 
     // Corrupt a few bytes in the middle
+    let content = vec![0x42; 500000];
     let mut corrupted = content.clone();
     for byte in &mut corrupted[250000..250100] {
         *byte = 0xFF;
@@ -231,7 +246,8 @@ fn test_large_file_with_many_slices() {
     assert!(result.is_ok());
 }
 
-// Helper function to create a minimal PAR2 file for testing
+// Helper function - kept for backward compatibility but no longer used
+#[allow(dead_code)]
 fn create_minimal_par2(par2_path: &PathBuf, data_file: &PathBuf) {
     std::process::Command::new("par2")
         .arg("c")

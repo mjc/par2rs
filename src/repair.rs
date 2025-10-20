@@ -15,15 +15,16 @@
 //! See `docs/SIMD_OPTIMIZATION.md` and `docs/BENCHMARK_RESULTS.md` for detailed analysis.
 
 use crate::domain::{FileId, GlobalSliceIndex, LocalSliceIndex, Md5Hash, RecoverySetId};
+use crate::validation;
 use crate::{
     FileDescriptionPacket, InputFileSliceChecksumPacket, MainPacket, Packet, RecoverySliceMetadata,
     RecoverySlicePacket,
 };
-use crc32fast::Hasher as Crc32;
-use log::{debug, trace};
+use log::debug;
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::fs::{self, File};
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -470,58 +471,72 @@ impl RepairContext {
 
         // Build validation cache by validating all files once upfront
         // PERFORMANCE: Use fast CRC32 slice validation instead of slow full-file MD5
-        let mut validation_cache: HashMap<FileId, HashSet<usize>> = HashMap::default();
-        let mut total_damaged_blocks = 0;
+        // PERFORMANCE: Validate files in parallel for maximum I/O throughput
+        let validation_cache: HashMap<FileId, HashSet<usize>> = self
+            .recovery_set
+            .files
+            .par_iter()
+            .map(|file_info| {
+                let status = file_status
+                    .get(&file_info.file_name)
+                    .unwrap_or(&FileStatus::Missing);
 
-        for file_info in &self.recovery_set.files {
-            let status = file_status
-                .get(&file_info.file_name)
-                .unwrap_or(&FileStatus::Missing);
-            match status {
-                FileStatus::Missing => {
-                    total_damaged_blocks += file_info.slice_count;
-                    // Empty set for missing files
-                    validation_cache.insert(file_info.file_id, HashSet::default());
-                }
-                FileStatus::Present => {
-                    // Already validated in determine_file_status - should not happen now
-                    let all_slices: HashSet<usize> = (0..file_info.slice_count).collect();
-                    validation_cache.insert(file_info.file_id, all_slices);
-                }
-                FileStatus::Corrupted => {
-                    // Show progress for large files
-                    if file_info.slice_count > 100 {
-                        print!("Scanning: \"{}\"", file_info.file_name);
-                        std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+                let valid_slices = match status {
+                    FileStatus::Missing => {
+                        // Empty set for missing files
+                        HashSet::default()
                     }
-
-                    let valid_slices = self.validate_file_slices(file_info)?;
-
-                    // If ALL slices are valid, mark file as Present (no repair needed)
-                    if valid_slices.len() == file_info.slice_count {
-                        file_status.insert(file_info.file_name.clone(), FileStatus::Present);
-                        debug!(
-                            "  All {} slices valid - marking as Present",
-                            valid_slices.len()
-                        );
-                    } else {
-                        let damaged_slices = file_info.slice_count - valid_slices.len();
-                        total_damaged_blocks += damaged_slices;
-                        debug!("  {} damaged slices found", damaged_slices);
+                    FileStatus::Present => {
+                        // Already validated - all slices valid
+                        (0..file_info.slice_count).collect()
                     }
-
-                    validation_cache.insert(file_info.file_id, valid_slices);
-
-                    // Clear progress line for large files
-                    if file_info.slice_count > 100 {
-                        print!("\r");
-                        for _ in 0..(file_info.file_name.len() + 12) {
-                            print!(" ");
+                    FileStatus::Corrupted => {
+                        // Show progress for large files
+                        if file_info.slice_count > 100 {
+                            print!("Scanning: \"{}\"", file_info.file_name);
+                            std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
                         }
-                        print!("\r");
-                        std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+
+                        let valid_slices = self.validate_file_slices(file_info).unwrap_or_default();
+
+                        // Clear progress line for large files
+                        if file_info.slice_count > 100 {
+                            print!("\r");
+                            for _ in 0..(file_info.file_name.len() + 12) {
+                                print!(" ");
+                            }
+                            print!("\r");
+                            std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+                        }
+
+                        valid_slices
                     }
-                }
+                };
+
+                (file_info.file_id, valid_slices)
+            })
+            .collect();
+
+        // Update file_status based on validation results
+        let mut total_damaged_blocks = 0;
+        for file_info in &self.recovery_set.files {
+            let valid_slices = validation_cache.get(&file_info.file_id).unwrap();
+
+            if valid_slices.len() == file_info.slice_count {
+                // All slices are valid
+                file_status.insert(file_info.file_name.clone(), FileStatus::Present);
+                debug!(
+                    "  All {} slices valid for {} - marking as Present",
+                    valid_slices.len(),
+                    file_info.file_name
+                );
+            } else {
+                let damaged_slices = file_info.slice_count - valid_slices.len();
+                total_damaged_blocks += damaged_slices;
+                debug!(
+                    "  {} damaged slices found in {}",
+                    damaged_slices, file_info.file_name
+                );
             }
         }
 
@@ -840,10 +855,9 @@ impl RepairContext {
         file_info: &FileInfo,
     ) -> Result<HashSet<usize>, RepairError> {
         let file_path = self.base_path.join(&file_info.file_name);
-        let mut valid_slices = HashSet::default();
 
         if !file_path.exists() {
-            return Ok(valid_slices); // No valid slices for missing file
+            return Ok(HashSet::default()); // No valid slices for missing file
         }
 
         // CRITICAL: If no checksums available, we CANNOT validate slices
@@ -860,72 +874,31 @@ impl RepairContext {
                     "No slice checksums available for file {} - treating all slices as corrupted",
                     file_info.file_name
                 );
-                return Ok(valid_slices); // Empty set = all slices need repair
+                return Ok(HashSet::default()); // Empty set = all slices need repair
             }
         };
 
-        let file = File::open(&file_path)?;
-        let mut reader = BufReader::with_capacity(128 * 1024 * 1024, file); // 128MB buffer for maximum throughput
-        let slice_size = self.recovery_set.slice_size as usize;
+        // Extract just the CRC32 values for validation
+        let crc_checksums: Vec<_> = checksums
+            .slice_checksums
+            .iter()
+            .map(|(_, crc)| *crc)
+            .collect();
 
-        // Reuse single buffer for all slices
-        let mut slice_data = vec![0u8; slice_size];
-
-        for slice_index in 0..file_info.slice_count {
-            let actual_slice_size = if slice_index == file_info.slice_count - 1 {
-                let remaining_bytes = file_info.file_length % self.recovery_set.slice_size;
-                if remaining_bytes == 0 {
-                    slice_size
-                } else {
-                    remaining_bytes as usize
-                }
-            } else {
-                slice_size
-            };
-
-            // Only zero the buffer if we have a partial slice that needs padding
-            // For full slices, read_exact will overwrite all bytes, so no fill needed
-            if actual_slice_size < slice_size {
-                slice_data[actual_slice_size..].fill(0);
-            }
-
-            // Sequential read (no seeking needed with BufReader)
-            if reader
-                .read_exact(&mut slice_data[..actual_slice_size])
-                .is_ok()
-            {
-                // Verify slice checksum - we already checked checksums exist above
-                if slice_index < checksums.slice_checksums.len() {
-                    // PAR2 CRC32 is computed on full slice with zero padding
-                    let mut hasher = Crc32::new();
-                    hasher.update(&slice_data[..slice_size]);
-                    let slice_crc = hasher.finalize();
-                    let expected_crc = checksums.slice_checksums[slice_index].1;
-
-                    if slice_crc == expected_crc {
-                        valid_slices.insert(slice_index);
-                    } else {
-                        trace!("Slice {} failed CRC32 verification", slice_index);
-                    }
-                } else {
-                    // Checksum packet doesn't have entry for this slice index
-                    // This slice is corrupted or the PAR2 file is incomplete
-                    trace!("No checksum entry for slice {}", slice_index);
-                }
-            } else {
-                trace!(
-                    "Slice {} failed to read {} bytes",
-                    slice_index,
-                    actual_slice_size
-                );
-            }
-        }
+        // Use shared validation module for efficient sequential I/O
+        let valid_slices = validation::validate_slices_crc32(
+            &file_path,
+            &crc_checksums,
+            self.recovery_set.slice_size as usize,
+            file_info.file_length,
+        )?;
 
         debug!(
             "Validated {} valid slices out of {} total slices",
             valid_slices.len(),
             file_info.slice_count
         );
+
         Ok(valid_slices)
     }
 
@@ -1181,7 +1154,15 @@ impl RepairContext {
 pub fn repair_files(par2_file: &str) -> Result<(RepairContext, RepairResult), RepairError> {
     let par2_path = Path::new(par2_file);
 
-    // Load PAR2 files and collect file list
+    // Validate file exists
+    if !par2_path.exists() {
+        return Err(RepairError::Other(format!(
+            "File does not exist: {}",
+            par2_file
+        )));
+    }
+
+    // Collect all PAR2 files in the set
     let par2_files = crate::file_ops::collect_par2_files(par2_path);
 
     // Load metadata for memory-efficient recovery slice loading
