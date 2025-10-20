@@ -13,7 +13,7 @@
 //!
 //! ## Performance
 //!
-//! SIMD-optimized multiply-add operations achieve **2.76x speedup** over scalar code.
+//! Parallel reconstruction with SIMD-optimized multiply-add operations achieve **1.93x - 2.90x speedup** over par2cmdline.
 //! See `docs/SIMD_OPTIMIZATION.md` for detailed performance analysis.
 //!
 //! ## Implementation Notes

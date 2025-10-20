@@ -2,9 +2,10 @@
 //!
 //! ## Performance
 //!
-//! SIMD-optimized Reed-Solomon operations using AVX2 PSHUFB achieve:
-//! - **1.66x faster** than par2cmdline (0.607s vs 1.008s for 100MB file repair)
-//! - **2.76x speedup** in GF(2^16) multiply-add operations
+//! Parallel Reed-Solomon reconstruction and SIMD-optimized operations achieve:
+//! - **1.93x faster** than par2cmdline (0.506s vs 0.980s for 100MB file repair)
+//! - **2.90x faster** for 1GB files (4.704s vs 13.679s)
+//! - **2.00x faster** for 10GB files (57.243s vs 114.526s)
 //!
 //! See `docs/SIMD_OPTIMIZATION.md` for detailed benchmarks and implementation notes.
 //!
