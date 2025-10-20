@@ -2,10 +2,8 @@
 //!
 //! ## Performance
 //!
-//! Parallel reconstruction with SIMD optimizations achieves:
-//! - **1.93x faster** than par2cmdline for 100MB files (0.506s vs 0.980s)
-//! - **2.90x faster** for 1GB files (4.704s vs 13.679s)
-//! - **2.00x faster** for 10GB files (57.243s vs 114.526s)
+//! Parallel reconstruction with PSHUFB SIMD optimizations achieves significant speedups
+//! over par2cmdline on x86_64 systems with AVX2/SSSE3 support.
 //!
 //! See `docs/SIMD_OPTIMIZATION.md` for detailed performance analysis and benchmarks.
 //!
@@ -50,6 +48,7 @@
 //!
 //! **Memory savings**: 8 tables × 16 bytes = 128 bytes (vs 2 tables × 256 × 2 bytes = 1024 bytes)
 
+#[cfg(target_arch = "x86_64")]
 use super::reedsolomon::SplitMulTable;
 
 #[cfg(target_arch = "x86_64")]
@@ -221,8 +220,13 @@ pub unsafe fn process_slice_multiply_add_pshufb(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    #[cfg(target_arch = "x86_64")]
+    use super::{build_pshufb_tables, process_slice_multiply_add_pshufb};
+
+    // These are only used in x86_64 tests
+    #[cfg(target_arch = "x86_64")]
     use crate::reed_solomon::galois::Galois16;
+    #[cfg(target_arch = "x86_64")]
     use crate::reed_solomon::reedsolomon::build_split_mul_table;
 
     #[cfg(target_arch = "x86_64")]

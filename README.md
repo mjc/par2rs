@@ -8,20 +8,18 @@ A Rust implementation of PAR2 (Parity Archive) for data recovery and verificatio
 
 ### Performance
 
-par2rs achieves **1.93x - 2.90x speedup** over par2cmdline through:
-- **Parallel Reed-Solomon reconstruction** using rayon for multi-threaded chunk processing
-- **SIMD-accelerated Reed-Solomon** operations using PSHUFB instructions
+par2rs achieves **1.6x - 2.9x speedup** over par2cmdline through:
+- **Parallel Reed-Solomon reconstruction** using Rayon for multi-threaded chunk processing
+- **SIMD-accelerated operations** (PSHUFB on x86_64, NEON on ARM64, portable_simd cross-platform)
 - **Smart validation skipping** for files with matching MD5 checksums
 - **Sequential I/O optimization** to minimize disk seeks
 - **Memory-efficient lazy loading** with 8MB buffers
 
-| File Size | par2cmdline | par2rs  | Speedup |
-|-----------|-------------|---------|---------|
-| 100MB     | 0.980s      | 0.506s  | **1.93x** |
-| 1GB       | 13.679s     | 4.704s  | **2.90x** |
-| 10GB      | 114.526s    | 57.243s | **2.00x** |
+**Platform-specific results:**
+- **Linux x86_64 (AVX2)**: 1.93x - 2.90x speedup
+- **macOS Apple Silicon (M1)**: 1.57x - 1.99x speedup
 
-See [BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md) for detailed performance analysis.
+See [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md) for comprehensive end-to-end benchmarks and [docs/SIMD_OPTIMIZATION.md](docs/SIMD_OPTIMIZATION.md) for SIMD implementation details.
 
 ## Quick Start
 
@@ -259,9 +257,18 @@ This implementation follows the PAR2 specification and supports:
 
 - [x] **Phase 1**: Complete packet parsing and verification
 - [ ] **Phase 2**: PAR2 file creation (`par2create`)
-- [x] **Phase 3**: File repair functionality (`par2repair`) - **Implemented with known hanging issue**
-- [ ] **Phase 4**: Performance optimizations
-- [ ] **Phase 5**: Advanced features (progress callbacks, custom block sizes)
+- [x] **Phase 3**: File repair functionality (`par2repair`)
+- [x] **Phase 4**: SIMD optimizations (PSHUFB, NEON, portable_simd)
+- [ ] **Phase 5**: Runtime SIMD dispatch
+- [ ] **Phase 6**: Advanced features (progress callbacks, custom block sizes)
+
+## Documentation
+
+- **[README.md](README.md)**: This file - project overview and quick start
+- **[BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md)**: Comprehensive end-to-end performance benchmarks
+- **[SIMD_OPTIMIZATION.md](docs/SIMD_OPTIMIZATION.md)**: Technical details on SIMD implementations
+- **[COVERAGE.md](COVERAGE.md)**: Code coverage tooling and instructions
+- **[par2_parsing.md](par2_parsing.md)**: Internal implementation notes (development reference)
 
 ## License
 

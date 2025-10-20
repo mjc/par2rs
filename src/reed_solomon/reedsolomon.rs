@@ -8,16 +8,14 @@
 //!
 //! ## Performance
 //!
-//! Parallel reconstruction with SIMD-optimized operations achieve:
-//! - **1.93x faster** than par2cmdline for 100MB files (0.506s vs 0.980s)
-//! - **2.90x faster** for 1GB files (4.704s vs 13.679s)
-//! - **2.00x faster** for 10GB files (57.243s vs 114.526s)
+//! Parallel reconstruction with SIMD-optimized operations (PSHUFB on x86_64, NEON on ARM64,
+//! portable_simd cross-platform) achieve significant speedups over par2cmdline.
 //!
 //! See `docs/SIMD_OPTIMIZATION.md` for detailed benchmarks and analysis.
 //!
 //! ## Implementation Notes
 //!
-//! Ported from par2cmdline with AVX2 PSHUFB optimizations for GF(2^16) multiply-add.
+//! Ported from par2cmdline with SIMD optimizations for GF(2^16) multiply-add operations.
 //! Uses James Plank's "Screaming Fast Galois Field Arithmetic" technique adapted
 //! for 16-bit fields (see `simd_pshufb.rs` for details).
 

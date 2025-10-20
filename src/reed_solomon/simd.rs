@@ -190,7 +190,152 @@ pub unsafe fn process_slice_multiply_add_avx2_unrolled(
     }
 }
 
-/// Dispatch to the best available SIMD implementation
+/// Portable SIMD implementation using nibble-based table lookups
+///
+/// Uses the same nibble lookup strategy as PSHUFB/NEON but with portable_simd swizzle operations.
+/// The key insight is using swizzle_dyn() for parallel table lookups instead of scalar loops.
+///
+/// See docs/SIMD_OPTIMIZATION.md for performance benchmarks.
+///
+/// # Safety
+/// - `input` and `output` slices must not alias
+/// - Lengths must be compatible (processes min(input.len(), output.len()) bytes)
+pub unsafe fn process_slice_multiply_add_portable_simd(
+    input: &[u8],
+    output: &mut [u8],
+    tables: &SplitMulTable,
+) {
+    use std::simd::{prelude::*, simd_swizzle, u8x16};
+
+    let len = input.len().min(output.len());
+
+    // Build 16-byte nibble lookup tables
+    // For each nibble value 0x0-0xF, store the multiplication result bytes
+    // We need separate tables for tables.low and tables.high
+    let mut lo_nib_lo = [0u8; 16];
+    let mut lo_nib_hi = [0u8; 16];
+    let mut hi_nib_lo = [0u8; 16];
+    let mut hi_nib_hi = [0u8; 16];
+
+    let mut lo_nib_lo_h = [0u8; 16];
+    let mut lo_nib_hi_h = [0u8; 16];
+    let mut hi_nib_lo_h = [0u8; 16];
+    let mut hi_nib_hi_h = [0u8; 16];
+
+    for nibble in 0..16u8 {
+        // tables.low - for low nibble and high nibble
+        let low_result_lo_nib = tables.low[nibble as usize];
+        lo_nib_lo[nibble as usize] = (low_result_lo_nib & 0xFF) as u8;
+        lo_nib_hi[nibble as usize] = (low_result_lo_nib >> 8) as u8;
+
+        let low_result_hi_nib = tables.low[(nibble << 4) as usize];
+        hi_nib_lo[nibble as usize] = (low_result_hi_nib & 0xFF) as u8;
+        hi_nib_hi[nibble as usize] = (low_result_hi_nib >> 8) as u8;
+
+        // tables.high - for low nibble and high nibble
+        let high_result_lo_nib = tables.high[nibble as usize];
+        lo_nib_lo_h[nibble as usize] = (high_result_lo_nib & 0xFF) as u8;
+        lo_nib_hi_h[nibble as usize] = (high_result_lo_nib >> 8) as u8;
+
+        let high_result_hi_nib = tables.high[(nibble << 4) as usize];
+        hi_nib_lo_h[nibble as usize] = (high_result_hi_nib & 0xFF) as u8;
+        hi_nib_hi_h[nibble as usize] = (high_result_hi_nib >> 8) as u8;
+    }
+
+    let tbl_lo_nib_lo = u8x16::from_array(lo_nib_lo);
+    let tbl_lo_nib_hi = u8x16::from_array(lo_nib_hi);
+    let tbl_hi_nib_lo = u8x16::from_array(hi_nib_lo);
+    let tbl_hi_nib_hi = u8x16::from_array(hi_nib_hi);
+
+    let tbl_lo_nib_lo_h = u8x16::from_array(lo_nib_lo_h);
+    let tbl_lo_nib_hi_h = u8x16::from_array(lo_nib_hi_h);
+    let tbl_hi_nib_lo_h = u8x16::from_array(hi_nib_lo_h);
+    let tbl_hi_nib_hi_h = u8x16::from_array(hi_nib_hi_h);
+
+    let mask_0f = u8x16::splat(0x0F);
+
+    // Process 16 bytes at a time
+    let simd_bytes = (len / 16) * 16;
+    let mut idx = 0;
+
+    while idx < simd_bytes {
+        // Load 16 input bytes
+        let in_vec = u8x16::from_slice(&input[idx..idx + 16]);
+        let out_vec = u8x16::from_slice(&output[idx..idx + 16]);
+
+        // De-interleave into even and odd bytes (same approach as NEON)
+        // even_bytes: bytes at positions 0,2,4,6,8,10,12,14 (low bytes of u16 words)
+        // odd_bytes: bytes at positions 1,3,5,7,9,11,13,15 (high bytes of u16 words)
+        let even_bytes = simd_swizzle!(in_vec, [0, 2, 4, 6, 8, 10, 12, 14, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let odd_bytes = simd_swizzle!(in_vec, [1, 3, 5, 7, 9, 11, 13, 15, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+        // Process even bytes with tables.low
+        let even_lo_nibbles = even_bytes & mask_0f;
+        let even_hi_nibbles = even_bytes >> Simd::splat(4);
+
+        let even_result_low =
+            tbl_lo_nib_lo.swizzle_dyn(even_lo_nibbles) ^ tbl_hi_nib_lo.swizzle_dyn(even_hi_nibbles);
+        let even_result_high =
+            tbl_lo_nib_hi.swizzle_dyn(even_lo_nibbles) ^ tbl_hi_nib_hi.swizzle_dyn(even_hi_nibbles);
+
+        // Process odd bytes with tables.high
+        let odd_lo_nibbles = odd_bytes & mask_0f;
+        let odd_hi_nibbles = odd_bytes >> Simd::splat(4);
+
+        let odd_result_low = tbl_lo_nib_lo_h.swizzle_dyn(odd_lo_nibbles)
+            ^ tbl_hi_nib_lo_h.swizzle_dyn(odd_hi_nibbles);
+        let odd_result_high = tbl_lo_nib_hi_h.swizzle_dyn(odd_lo_nibbles)
+            ^ tbl_hi_nib_hi_h.swizzle_dyn(odd_hi_nibbles);
+
+        // XOR even and odd results together (combine contributions from low/high bytes)
+        let combined_low = even_result_low ^ odd_result_low;
+        let combined_high = even_result_high ^ odd_result_high;
+
+        // Interleave low and high bytes back together
+        // This matches NEON's vzipq_u8(combined_low, combined_high).0
+        // Result should be: [low0, high0, low1, high1, low2, high2, ...]
+        let result = simd_swizzle!(
+            combined_low,
+            combined_high,
+            [0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23]
+        );
+
+        // XOR with output (accumulate)
+        let final_result = out_vec ^ result;
+
+        // Store back
+        final_result.copy_to_slice(&mut output[idx..idx + 16]);
+
+        idx += 16;
+    }
+
+    // Handle remaining bytes with scalar code
+    let in_words =
+        std::slice::from_raw_parts(input.as_ptr().add(idx) as *const u16, (len - idx) / 2);
+    let out_words =
+        std::slice::from_raw_parts_mut(output.as_mut_ptr().add(idx) as *mut u16, (len - idx) / 2);
+    let low = &tables.low[..];
+    let high = &tables.high[..];
+
+    for i in 0..in_words.len() {
+        let in_word = in_words[i];
+        let out_word = out_words[i];
+        let result = low[(in_word & 0xFF) as usize] ^ high[(in_word >> 8) as usize];
+        out_words[i] = out_word ^ result;
+    }
+
+    // Handle odd trailing byte
+    if len % 2 == 1 {
+        let last_idx = len - 1;
+        let in_byte = input[last_idx];
+        let out_byte = output[last_idx];
+        let result_low = low[in_byte as usize];
+        output[last_idx] = out_byte ^ (result_low & 0xFF) as u8;
+    }
+}
+
+/// Dispatch to the best available SIMD implementation (x86_64)
+#[cfg(target_arch = "x86_64")]
 pub fn process_slice_multiply_add_simd(
     input: &[u8],
     output: &mut [u8],
@@ -198,7 +343,6 @@ pub fn process_slice_multiply_add_simd(
     simd_level: SimdLevel,
 ) {
     match simd_level {
-        #[cfg(target_arch = "x86_64")]
         SimdLevel::Avx2 => unsafe {
             let len = input.len().min(output.len());
 
@@ -219,7 +363,6 @@ pub fn process_slice_multiply_add_simd(
                 );
             }
         },
-        #[cfg(target_arch = "x86_64")]
         SimdLevel::Ssse3 => unsafe {
             // SSSE3 has PSHUFB but only 128-bit registers, use unrolled for now
             process_slice_multiply_add_avx2_unrolled(input, output, tables);
@@ -228,6 +371,18 @@ pub fn process_slice_multiply_add_simd(
             // Caller should use scalar fallback
         }
     }
+}
+
+/// Dispatch to the best available SIMD implementation (non-x86_64)
+#[cfg(not(target_arch = "x86_64"))]
+pub fn process_slice_multiply_add_simd(
+    _input: &[u8],
+    _output: &mut [u8],
+    _tables: &SplitMulTable,
+    _simd_level: SimdLevel,
+) {
+    // SIMD not available on non-x86_64 architectures
+    // Caller should use scalar fallback
 }
 
 #[cfg(test)]

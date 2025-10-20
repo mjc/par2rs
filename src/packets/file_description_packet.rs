@@ -6,7 +6,7 @@ pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0FileDesc";
 #[derive(Debug, BinRead, BinWrite)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct FileDescriptionPacket {
-    pub length: u64, // Length of the packet
+    pub length: u64, // Length of  the packet
     #[br(map = |x: [u8; 16]| Md5Hash::new(x))]
     #[bw(map = |x: &Md5Hash| *x.as_bytes())]
     pub md5: Md5Hash, // MD5 hash of the packet type and body

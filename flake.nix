@@ -41,6 +41,7 @@
               yamllint
               cargo-flamegraph
               bc # for benchmark averaging calculations
+              gnuplot # for criterion benchmark graphs
               gh # GitHub CLI
               git-filter-repo # for rewriting git history
             ]
