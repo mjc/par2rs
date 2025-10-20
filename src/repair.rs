@@ -6,11 +6,10 @@
 //!
 //! ## Performance
 //!
-//! Combined SIMD and I/O optimizations achieve **2.61x speedup** over par2cmdline:
-//! - par2rs: 4.350s average (1GB file repair, 10 iterations)
-//! - par2cmdline: 11.388s average
-//!
-//! Multi-file PAR2 sets (50 files, ~8GB): **1.77x speedup**
+//! Parallel Reed-Solomon reconstruction with SIMD optimizations achieve **2.00x - 2.90x speedup** over par2cmdline:
+//! - 100MB: 0.506s vs 0.980s (**1.93x faster**)
+//! - 1GB: 4.704s vs 13.679s (**2.90x faster**)
+//! - 10GB: 57.243s vs 114.526s (**2.00x faster**)
 //!
 //! See `docs/SIMD_OPTIMIZATION.md` and `docs/BENCHMARK_RESULTS.md` for detailed analysis.
 

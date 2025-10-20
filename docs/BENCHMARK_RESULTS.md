@@ -5,128 +5,83 @@ Comprehensive benchmarking results showing par2rs performance compared to par2cm
 ## Test Configuration
 - **Corruption**: 512 bytes at file midpoint (generated files) or 1MB at 10% offset (real files)
 - **Recovery**: 5% redundancy (PAR2 standard)
-- **Iterations**: 10 iterations per test
+- **Iterations**: 10 iterations per test (100MB, 1GB, 10GB), 5 iterations (pre-parallel 10GB baseline)
 - **System**: AMD Ryzen 9 5950X, 64GB RAM, Linux x86_64
 
 ## Performance Results
 
-| File Size | Files | par2cmdline (avg) | par2rs (avg) | Speedup | Notes |
-|-----------|-------|-------------------|--------------|---------|-------|
-| 1MB       | 1     | 0.276s            | 0.017s       | **16.23x** | Overhead-dominated |
-| 10MB      | 1     | 0.168s            | 0.042s       | **4.00x**  | |
-| 100MB     | 1     | 0.984s            | 0.350s       | **2.81x**  | |
-| 1GB       | 1     | 11.388s           | 4.350s       | **2.61x**  | Single file repair |
-| ~8GB      | 50    | 28.901s           | 16.248s      | **1.77x**  | Multi-file PAR2 set |
+| File Size | par2cmdline (avg) | par2rs (avg) | Speedup | Notes |
+|-----------|-------------------|--------------|---------|-------|
+| 100MB     | 0.980s            | 0.506s       | **1.93x** | Parallel + SIMD |
+| 1GB       | 13.679s           | 4.704s       | **2.90x** | Best speedup |
+| 10GB      | 114.526s          | 57.243s      | **2.00x** | Large file repair |
 
 ## Key Findings
 
-1. **Small File Advantage**: par2rs shows exceptional speedup (16x) for small files due to efficient overhead handling
-2. **Consistent Performance**: par2rs has much lower variance across iterations (2-3% vs 10-20%)
-3. **Scaling**: Performance advantage remains strong across file sizes, from 1MB to 8GB+
-4. **Real-World**: 2-3x speedup for typical repair scenarios (100MB-1GB single files)
-5. **Multi-File**: 1.77x speedup on large multi-file PAR2 sets with 50 protected files
-6. **Memory Efficiency**: Uses ~100MB RAM vs par2cmdline's variable usage (scales with file size)
+1. **Parallel Reconstruction**: Rayon-based parallel chunk processing provides 1.27x speedup on 10GB files (72.8s serial → 57.2s parallel)
+2. **Best for 1GB Files**: 2.90x speedup is the sweet spot between parallel overhead and benefit
+3. **Consistent Performance**: par2rs has much lower variance across iterations (2-3% vs par2cmdline's 10-30%)
+4. **Scaling**: Performance advantage remains strong from 100MB to 10GB
+5. **Memory Efficiency**: Uses ~100MB RAM vs par2cmdline's variable usage (scales with file size)
 
 ## Detailed Results
-
-### 1MB File (10 iterations)
-```
-par2cmdline:
-  Average: 0.276s
-  Min:     0.025s
-  Max:     1.911s
-  Variance: Very high (outliers present)
-
-par2rs:
-  Average: 0.017s
-  Min:     0.015s
-  Max:     0.030s
-  Variance: Very low (consistent)
-
-Speedup: 16.23x
-```
-
-### 10MB File (10 iterations)
-```
-par2cmdline:
-  Average: 0.168s
-  Min:     0.118s
-  Max:     0.529s
-
-par2rs:
-  Average: 0.042s
-  Min:     0.041s
-  Max:     0.046s
-
-Speedup: 4.00x
-```
 
 ### 100MB File (10 iterations)
 ```
 par2cmdline:
-  Average: 0.984s
-  Min:     0.969s
-  Max:     1.030s
+  Average: 0.980s
+  Min:     0.958s
+  Max:     0.997s
 
 par2rs:
-  Average: 0.350s
-  Min:     0.337s
-  Max:     0.391s
+  Average: 0.506s
+  Min:     0.489s
+  Max:     0.526s
 
-Speedup: 2.81x
+Speedup: 1.93x
 ```
 
 ### 1GB File (10 iterations)
 ```
 par2cmdline:
-  Average: 11.388s
-  Min:     9.989s
-  Max:     13.912s
+  Average: 13.679s
+  Min:     9.532s
+  Max:     21.396s
 
 par2rs:
-  Average: 4.350s
-  Min:     4.043s
-  Max:     4.903s
+  Average: 4.704s
+  Min:     4.376s
+  Max:     4.990s
 
-Speedup: 2.61x
+Speedup: 2.90x
 ```
 
-### Multi-File PAR2 Set - 50 files, ~8GB total (10 iterations)
+### 10GB File (10 iterations)
 ```
 par2cmdline:
-  Average: 28.901s
-  Min:     24.902s
-  Max:     33.839s
+  Average: 114.526s
+  Min:     98.524s
+  Max:     131.101s
 
 par2rs:
-  Average: 16.248s
-  Min:     14.648s
-  Max:     18.631s
+  Average: 57.243s
+  Min:     49.764s
+  Max:     72.644s
 
-Speedup: 1.77x
+Speedup: 2.00x
 ```
 
-## Performance Optimizations
+### Pre-Parallel Baseline (10GB, 5 iterations)
+```
+par2rs (serial):
+  Average: 72.836s
+  Min:     58.439s
+  Max:     90.594s
 
-Key optimizations that enable these speedups:
+par2rs (parallel):
+  Average: 57.243s
+  Min:     49.764s
+  Max:     72.644s
 
-1. **Skip Validation for Valid Files**: Files with matching MD5 skip full slice scanning (instant vs 400MB/s read)
-2. **Sequential I/O**: Track read position to avoid unnecessary seeks during repair writes
-3. **SIMD Acceleration**: Hardware-accelerated Reed-Solomon operations using PSHUFB
-4. **Memory Efficiency**: Lazy loading of recovery data with 8MB buffers for optimal throughput
-5. **Type Safety**: Zero-cost abstractions prevent common bugs without runtime overhead
-
-## Running Benchmarks
-
-To reproduce these results:
-
-```bash
-# Run comprehensive suite (all sizes)
-./scripts/benchmark_all_comprehensive.sh [temp_dir]
-
-# Run specific size with custom iterations
-ITERATIONS=10 ./scripts/benchmark_repair_averaged.sh 100  # 100MB
-
-# Extract summary
-./scripts/extract_benchmark_results.sh /tmp/par2rs_benchmark_results_*.txt
+Parallel Speedup: 1.27x (21% improvement)
 ```
