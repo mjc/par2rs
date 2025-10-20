@@ -41,28 +41,13 @@ fn main() -> Result<()> {
 
     let par2_files = file_ops::collect_par2_files(file_path);
 
-    // Parse all packets including recovery slices for verification
-    let (all_packets, total_recovery_blocks): (Vec<_>, usize) = par2_files
+    // Parse all packets including recovery slices for verification (in parallel)
+    let all_packets = file_ops::load_all_par2_packets(&par2_files);
+
+    let total_recovery_blocks = all_packets
         .iter()
-        .map(|par2_file| {
-            let file = std::fs::File::open(par2_file)
-                .with_context(|| format!("Failed to open PAR2 file: {}", par2_file.display()))?;
-            let mut reader = std::io::BufReader::new(file);
-            Ok(par2rs::parse_packets(&mut reader))
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .fold(
-            (Vec::new(), 0),
-            |(mut packets, mut recovery_count), parsed| {
-                recovery_count += parsed
-                    .iter()
-                    .filter(|p| matches!(p, par2rs::Packet::RecoverySlice(_)))
-                    .count();
-                packets.extend(parsed);
-                (packets, recovery_count)
-            },
-        );
+        .filter(|p| matches!(p, par2rs::Packet::RecoverySlice(_)))
+        .count();
 
     // Show summary statistics
     let stats = analysis::calculate_par2_stats(&all_packets, total_recovery_blocks);
