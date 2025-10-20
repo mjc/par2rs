@@ -251,11 +251,15 @@ This implementation follows the PAR2 specification and supports:
 - **Variable Block Sizes**: Flexible slice size configuration
 - **Reed-Solomon Codes**: Error correction mathematics
 
+## Known Issues
+
+- **Repair Hanging**: The repair functionality occasionally hangs on small files within large multi-file PAR2 sets. The root cause is still under investigation. Workaround: Process smaller PAR2 sets or single files where possible.
+
 ## Roadmap
 
 - [x] **Phase 1**: Complete packet parsing and verification
 - [ ] **Phase 2**: PAR2 file creation (`par2create`)
-- [ ] **Phase 3**: File repair functionality (`par2repair`)
+- [x] **Phase 3**: File repair functionality (`par2repair`) - **Implemented with known hanging issue**
 - [ ] **Phase 4**: Performance optimizations
 - [ ] **Phase 5**: Advanced features (progress callbacks, custom block sizes)
 

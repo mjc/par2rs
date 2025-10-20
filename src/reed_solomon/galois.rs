@@ -248,41 +248,343 @@ pub fn gcd(mut a: u32, mut b: u32) -> u32 {
 mod tests {
     use super::*;
 
+    // ========================
+    // GaloisTable Tests
+    // ========================
+
     #[test]
-    fn test_galois16_basic_ops() {
+    fn galois_table_log_antilog_consistency() {
+        let table = GaloisTable::new();
+
+        // For any value x (except 0), antilog[log[x]] should equal x
+        for i in 1..COUNT {
+            let log_val = table.log[i];
+            let recovered = table.antilog[log_val as usize];
+            assert_eq!(recovered, i as u16, "Inconsistency at i={}", i);
+        }
+    }
+
+    #[test]
+    fn galois_table_zero_special_case() {
+        let table = GaloisTable::new();
+        assert_eq!(table.log[0], LIMIT as u16);
+        assert_eq!(table.antilog[LIMIT], 0);
+    }
+
+    #[test]
+    fn galois_table_generator_property() {
+        let table = GaloisTable::new();
+        // First antilog value should be 1 (identity element)
+        assert_eq!(table.antilog[0], 1);
+    }
+
+    // ========================
+    // Galois16 Basic Operations
+    // ========================
+
+    #[test]
+    fn galois16_zero_identity() {
+        let zero = Galois16::new(0);
+        let a = Galois16::new(0x1234);
+
+        // 0 + a = a
+        assert_eq!(zero + a, a);
+        // a + 0 = a
+        assert_eq!(a + zero, a);
+        // 0 * a = 0
+        assert_eq!(zero * a, zero);
+        // a * 0 = 0
+        assert_eq!(a * zero, zero);
+    }
+
+    #[test]
+    fn galois16_one_multiplicative_identity() {
+        let one = Galois16::new(1);
+        let a = Galois16::new(0x5678);
+
+        // 1 * a = a
+        assert_eq!(one * a, a);
+        // a * 1 = a
+        assert_eq!(a * one, a);
+    }
+
+    #[test]
+    fn galois16_addition_is_xor() {
         let a = Galois16::new(0x1234);
         let b = Galois16::new(0x5678);
 
-        // Test addition (XOR)
         let sum = a + b;
         assert_eq!(sum.value(), 0x1234 ^ 0x5678);
+    }
 
-        // Test that addition and subtraction are the same
+    #[test]
+    fn galois16_addition_commutative() {
+        let a = Galois16::new(0xABCD);
+        let b = Galois16::new(0x1234);
+
+        assert_eq!(a + b, b + a);
+    }
+
+    #[test]
+    fn galois16_addition_self_is_zero() {
+        let a = Galois16::new(0x1234);
+
+        // a + a = 0 in GF(2^n)
+        assert_eq!(a + a, Galois16::new(0));
+    }
+
+    #[test]
+    fn galois16_subtraction_equals_addition() {
+        let a = Galois16::new(0x1234);
+        let b = Galois16::new(0x5678);
+
+        // Subtraction and addition are the same in GF(2^n)
         assert_eq!(a + b, a - b);
     }
 
     #[test]
-    fn test_galois16_multiplication() {
+    fn galois16_multiplication_commutative() {
+        let a = Galois16::new(7);
+        let b = Galois16::new(13);
+
+        assert_eq!(a * b, b * a);
+    }
+
+    #[test]
+    fn galois16_multiplication_associative() {
+        let a = Galois16::new(3);
+        let b = Galois16::new(5);
+        let c = Galois16::new(7);
+
+        assert_eq!((a * b) * c, a * (b * c));
+    }
+
+    #[test]
+    fn galois16_distributive_property() {
+        let a = Galois16::new(3);
+        let b = Galois16::new(5);
+        let c = Galois16::new(7);
+
+        // a * (b + c) = (a * b) + (a * c)
+        assert_eq!(a * (b + c), (a * b) + (a * c));
+    }
+
+    #[test]
+    fn galois16_division_inverse_of_multiplication() {
         let a = Galois16::new(2);
         let b = Galois16::new(3);
         let product = a * b;
 
-        // In GF(2^16), 2 * 3 should give a specific result
-        // We can verify by checking that (a * b) / a == b
+        // (a * b) / a == b
         assert_eq!(product / a, b);
+        // (a * b) / b == a
+        assert_eq!(product / b, a);
     }
 
     #[test]
-    fn test_galois16_power() {
+    fn galois16_division_by_self_is_one() {
+        let a = Galois16::new(0x1234);
+
+        assert_eq!(a / a, Galois16::new(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "Division by zero")]
+    fn galois16_division_by_zero_panics() {
+        let a = Galois16::new(5);
+        let zero = Galois16::new(0);
+
+        let _ = a / zero;
+    }
+
+    #[test]
+    fn galois16_zero_divided_by_nonzero_is_zero() {
+        let zero = Galois16::new(0);
+        let a = Galois16::new(5);
+
+        assert_eq!(zero / a, zero);
+    }
+
+    // ========================
+    // Power Tests
+    // ========================
+
+    #[test]
+    fn galois16_power_zero_exponent() {
+        let a = Galois16::new(5);
+
+        // Any number to power 0 should be 1
+        assert_eq!(a.pow(0), Galois16::new(1));
+    }
+
+    #[test]
+    fn galois16_power_one_exponent() {
+        let a = Galois16::new(123);
+
+        // Any number to power 1 is itself
+        assert_eq!(a.pow(1), a);
+    }
+
+    #[test]
+    fn galois16_power_two_equals_multiplication() {
         let base = Galois16::new(2);
         let squared = base.pow(2);
+
         assert_eq!(squared, base * base);
     }
 
     #[test]
-    fn test_gcd() {
+    fn galois16_power_of_zero() {
+        let zero = Galois16::new(0);
+
+        // 0 to any power is 0
+        assert_eq!(zero.pow(5), zero);
+        assert_eq!(zero.pow(100), zero);
+    }
+
+    #[test]
+    fn galois16_power_properties() {
+        let a = Galois16::new(3);
+
+        // a^2 * a^3 = a^5
+        assert_eq!(a.pow(2) * a.pow(3), a.pow(5));
+    }
+
+    // ========================
+    // Log/Antilog Tests
+    // ========================
+
+    #[test]
+    fn galois16_log_antilog_roundtrip() {
+        let a = Galois16::new(42);
+
+        let log_val = a.log();
+        let antilog_val = Galois16::new(log_val).antilog();
+
+        assert_eq!(antilog_val, a.value());
+    }
+
+    #[test]
+    fn galois16_alog_equals_antilog() {
+        let a = Galois16::new(10);
+
+        assert_eq!(a.alog(), a.antilog());
+    }
+
+    // ========================
+    // Assignment Operators
+    // ========================
+
+    #[test]
+    fn galois16_add_assign() {
+        let mut a = Galois16::new(0x1234);
+        let b = Galois16::new(0x5678);
+        let expected = a + b;
+
+        a += b;
+        assert_eq!(a, expected);
+    }
+
+    #[test]
+    fn galois16_sub_assign() {
+        let mut a = Galois16::new(0x1234);
+        let b = Galois16::new(0x5678);
+        let expected = a - b;
+
+        a -= b;
+        assert_eq!(a, expected);
+    }
+
+    #[test]
+    fn galois16_mul_assign() {
+        let mut a = Galois16::new(7);
+        let b = Galois16::new(13);
+        let expected = a * b;
+
+        a *= b;
+        assert_eq!(a, expected);
+    }
+
+    #[test]
+    fn galois16_div_assign() {
+        let mut a = Galois16::new(42);
+        let b = Galois16::new(7);
+        let expected = a / b;
+
+        a /= b;
+        assert_eq!(a, expected);
+    }
+
+    // ========================
+    // Conversion Traits
+    // ========================
+
+    #[test]
+    fn galois16_from_u16() {
+        let val: Galois16 = 0x1234u16.into();
+        assert_eq!(val.value(), 0x1234);
+    }
+
+    #[test]
+    fn galois16_into_u16() {
+        let g = Galois16::new(0x5678);
+        let val: u16 = g.into();
+        assert_eq!(val, 0x5678);
+    }
+
+    #[test]
+    fn galois16_display() {
+        let g = Galois16::new(12345);
+        assert_eq!(format!("{}", g), "12345");
+    }
+
+    // ========================
+    // GCD Tests
+    // ========================
+
+    #[test]
+    fn gcd_basic_cases() {
         assert_eq!(gcd(48, 18), 6);
         assert_eq!(gcd(65535, 7), 1);
+        assert_eq!(gcd(100, 50), 50);
+    }
+
+    #[test]
+    fn gcd_coprime_numbers() {
+        // 17 and 19 are both prime
+        assert_eq!(gcd(17, 19), 1);
+        assert_eq!(gcd(65535, 2), 1);
+    }
+
+    #[test]
+    fn gcd_with_zero() {
         assert_eq!(gcd(0, 5), 0);
+        assert_eq!(gcd(5, 0), 0);
+        assert_eq!(gcd(0, 0), 0);
+    }
+
+    #[test]
+    fn gcd_identical_numbers() {
+        assert_eq!(gcd(42, 42), 42);
+        assert_eq!(gcd(1, 1), 1);
+        assert_eq!(gcd(65535, 65535), 65535);
+    }
+
+    #[test]
+    fn gcd_commutative() {
+        assert_eq!(gcd(48, 18), gcd(18, 48));
+        assert_eq!(gcd(100, 35), gcd(35, 100));
+    }
+
+    #[test]
+    fn gcd_with_one() {
+        assert_eq!(gcd(1, 100), 1);
+        assert_eq!(gcd(12345, 1), 1);
+    }
+
+    #[test]
+    fn gcd_powers_of_two() {
+        assert_eq!(gcd(16, 64), 16);
+        assert_eq!(gcd(128, 32), 32);
     }
 }
