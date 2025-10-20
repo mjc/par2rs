@@ -1,6 +1,7 @@
 use crate::domain::{Crc32Value, FileId, Md5Hash};
 use crate::Packet;
-use std::collections::HashMap;
+use rayon::prelude::*;
+use rustc_hash::FxHashMap as HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -307,126 +308,38 @@ pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationRe
 
     println!("Found {} files to verify", file_descriptions.len());
 
-    // Verify each file
-    for file_desc in file_descriptions {
-        let file_name = String::from_utf8_lossy(&file_desc.file_name)
-            .trim_end_matches('\0')
-            .to_string();
+    // Verify files in parallel using Rayon
+    let file_results: Vec<_> = file_descriptions
+        .par_iter()
+        .map(|file_desc| verify_single_file(file_desc, &slice_checksums, block_size))
+        .collect();
 
-        println!("Verifying: \"{}\"", file_name);
+    // Aggregate results from parallel verification
+    for file_result in file_results {
+        results.total_block_count += file_result.total_blocks;
 
-        let mut file_result = FileVerificationResult {
-            file_name: file_name.clone(),
-            file_id: file_desc.file_id,
-            status: FileStatus::Missing,
-            blocks_available: 0,
-            total_blocks: 0,
-            damaged_blocks: Vec::new(),
-        };
-
-        // Calculate total blocks for this file
-        if block_size > 0 {
-            file_result.total_blocks = file_desc.file_length.div_ceil(block_size) as usize;
-            results.total_block_count += file_result.total_blocks;
-        }
-
-        // Check if file exists
-        let file_path = Path::new(&file_name);
-        if !file_path.exists() {
-            println!("Target: \"{}\" - missing.", file_name);
-            file_result.status = FileStatus::Missing;
-            results.missing_file_count += 1;
-
-            // All blocks are missing for this file
-            for block_num in 0..file_result.total_blocks {
-                results.blocks.push(BlockVerificationResult {
-                    block_number: block_num as u32,
-                    file_id: file_desc.file_id,
-                    is_valid: false,
-                    expected_hash: None,
-                    expected_crc: None,
-                });
+        match file_result.status {
+            FileStatus::Missing => {
+                results.missing_file_count += 1;
+                results.missing_block_count += file_result.total_blocks;
             }
-            results.missing_block_count += file_result.total_blocks;
-        } else {
-            // File exists, verify its integrity
-            match verify_file_integrity(file_desc, &file_name) {
-                Ok(true) => {
-                    println!("Target: \"{}\" - found.", file_name);
-                    file_result.status = FileStatus::Complete;
-                    file_result.blocks_available = file_result.total_blocks;
-                    results.complete_file_count += 1;
-                    results.available_block_count += file_result.total_blocks;
-
-                    // Mark all blocks as valid
-                    for block_num in 0..file_result.total_blocks {
-                        results.blocks.push(BlockVerificationResult {
-                            block_number: block_num as u32,
-                            file_id: file_desc.file_id,
-                            is_valid: true,
-                            expected_hash: None,
-                            expected_crc: None,
-                        });
-                    }
-                }
-                Ok(false) | Err(_) => {
-                    println!("Target: \"{}\" - damaged.", file_name);
-                    file_result.status = FileStatus::Damaged;
-                    results.damaged_file_count += 1;
-
-                    // Perform block-level verification if we have slice checksums
-                    if let Some(checksums) = slice_checksums.get(&file_desc.file_id) {
-                        let (available_blocks, damaged_block_numbers) =
-                            verify_blocks_in_file(&file_name, checksums, block_size as usize);
-
-                        file_result.blocks_available = available_blocks;
-                        file_result.damaged_blocks = damaged_block_numbers.clone();
-                        results.available_block_count += available_blocks;
-
-                        // Create block verification results
-                        for (block_num, (expected_hash, expected_crc)) in
-                            checksums.iter().enumerate()
-                        {
-                            let is_valid = !damaged_block_numbers.contains(&(block_num as u32));
-
-                            results.blocks.push(BlockVerificationResult {
-                                block_number: block_num as u32,
-                                file_id: file_desc.file_id,
-                                is_valid,
-                                expected_hash: Some(*expected_hash),
-                                expected_crc: Some(*expected_crc),
-                            });
-                        }
-
-                        results.missing_block_count += damaged_block_numbers.len();
-
-                        if !damaged_block_numbers.is_empty() {
-                            println!(
-                                "  {} of {} blocks are damaged",
-                                damaged_block_numbers.len(),
-                                checksums.len()
-                            );
-                        }
-                    } else {
-                        // No block-level checksums available, assume all blocks are damaged
-                        results.missing_block_count += file_result.total_blocks;
-
-                        for block_num in 0..file_result.total_blocks {
-                            file_result.damaged_blocks.push(block_num as u32);
-                            results.blocks.push(BlockVerificationResult {
-                                block_number: block_num as u32,
-                                file_id: file_desc.file_id,
-                                is_valid: false,
-                                expected_hash: None,
-                                expected_crc: None,
-                            });
-                        }
-                    }
-                }
+            FileStatus::Complete => {
+                results.complete_file_count += 1;
+                results.available_block_count += file_result.total_blocks;
+            }
+            FileStatus::Damaged => {
+                results.damaged_file_count += 1;
+                results.available_block_count += file_result.blocks_available;
+                results.missing_block_count += file_result.damaged_blocks.len();
+            }
+            FileStatus::Renamed => {
+                results.renamed_file_count += 1;
             }
         }
 
-        results.files.push(file_result);
+        // Collect block results
+        results.blocks.extend(file_result.block_results);
+        results.files.push(file_result.file_info);
     }
 
     // Calculate repair requirements
@@ -434,6 +347,170 @@ pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationRe
     results.repair_possible = results.recovery_blocks_available >= results.missing_block_count;
 
     results
+}
+
+/// Result of verifying a single file (for parallel processing)
+struct SingleFileVerificationResult {
+    file_info: FileVerificationResult,
+    block_results: Vec<BlockVerificationResult>,
+    total_blocks: usize,
+    blocks_available: usize,
+    status: FileStatus,
+    damaged_blocks: Vec<u32>,
+}
+
+/// Verify a single file (thread-safe for parallel execution)
+fn verify_single_file(
+    file_desc: &crate::packets::FileDescriptionPacket,
+    slice_checksums: &HashMap<FileId, Vec<(Md5Hash, Crc32Value)>>,
+    block_size: u64,
+) -> SingleFileVerificationResult {
+    let file_name = String::from_utf8_lossy(&file_desc.file_name)
+        .trim_end_matches('\0')
+        .to_string();
+
+    println!("Verifying: \"{}\"", file_name);
+
+    let mut file_result = FileVerificationResult {
+        file_name: file_name.clone(),
+        file_id: file_desc.file_id,
+        status: FileStatus::Missing,
+        blocks_available: 0,
+        total_blocks: 0,
+        damaged_blocks: Vec::new(),
+    };
+
+    let mut block_results = Vec::new();
+
+    // Calculate total blocks for this file
+    let total_blocks = if block_size > 0 {
+        file_desc.file_length.div_ceil(block_size) as usize
+    } else {
+        0
+    };
+    file_result.total_blocks = total_blocks;
+
+    // Check if file exists
+    let file_path = Path::new(&file_name);
+    if !file_path.exists() {
+        println!("Target: \"{}\" - missing.", file_name);
+        file_result.status = FileStatus::Missing;
+
+        // All blocks are missing for this file
+        for block_num in 0..total_blocks {
+            block_results.push(BlockVerificationResult {
+                block_number: block_num as u32,
+                file_id: file_desc.file_id,
+                is_valid: false,
+                expected_hash: None,
+                expected_crc: None,
+            });
+        }
+
+        return SingleFileVerificationResult {
+            file_info: file_result,
+            block_results,
+            total_blocks,
+            blocks_available: 0,
+            status: FileStatus::Missing,
+            damaged_blocks: Vec::new(),
+        };
+    }
+
+    // File exists, verify its integrity
+    match verify_file_integrity(file_desc, &file_name) {
+        Ok(true) => {
+            println!("Target: \"{}\" - found.", file_name);
+            file_result.status = FileStatus::Complete;
+            file_result.blocks_available = total_blocks;
+
+            // Mark all blocks as valid
+            for block_num in 0..total_blocks {
+                block_results.push(BlockVerificationResult {
+                    block_number: block_num as u32,
+                    file_id: file_desc.file_id,
+                    is_valid: true,
+                    expected_hash: None,
+                    expected_crc: None,
+                });
+            }
+
+            SingleFileVerificationResult {
+                file_info: file_result,
+                block_results,
+                total_blocks,
+                blocks_available: total_blocks,
+                status: FileStatus::Complete,
+                damaged_blocks: Vec::new(),
+            }
+        }
+        Ok(false) | Err(_) => {
+            println!("Target: \"{}\" - damaged.", file_name);
+            file_result.status = FileStatus::Damaged;
+
+            // Perform block-level verification if we have slice checksums
+            if let Some(checksums) = slice_checksums.get(&file_desc.file_id) {
+                let (available_blocks, damaged_block_numbers) =
+                    verify_blocks_in_file(&file_name, checksums, block_size as usize);
+
+                file_result.blocks_available = available_blocks;
+                file_result.damaged_blocks = damaged_block_numbers.clone();
+
+                // Create block verification results
+                for (block_num, (expected_hash, expected_crc)) in checksums.iter().enumerate() {
+                    let is_valid = !damaged_block_numbers.contains(&(block_num as u32));
+
+                    block_results.push(BlockVerificationResult {
+                        block_number: block_num as u32,
+                        file_id: file_desc.file_id,
+                        is_valid,
+                        expected_hash: Some(*expected_hash),
+                        expected_crc: Some(*expected_crc),
+                    });
+                }
+
+                if !damaged_block_numbers.is_empty() {
+                    println!(
+                        "  {} of {} blocks are damaged",
+                        damaged_block_numbers.len(),
+                        checksums.len()
+                    );
+                }
+
+                SingleFileVerificationResult {
+                    file_info: file_result,
+                    block_results,
+                    total_blocks,
+                    blocks_available: available_blocks,
+                    status: FileStatus::Damaged,
+                    damaged_blocks: damaged_block_numbers,
+                }
+            } else {
+                // No block-level checksums available, assume all blocks are damaged
+                for block_num in 0..total_blocks {
+                    file_result.damaged_blocks.push(block_num as u32);
+                    block_results.push(BlockVerificationResult {
+                        block_number: block_num as u32,
+                        file_id: file_desc.file_id,
+                        is_valid: false,
+                        expected_hash: None,
+                        expected_crc: None,
+                    });
+                }
+
+                let damaged_blocks = file_result.damaged_blocks.clone();
+
+                SingleFileVerificationResult {
+                    file_info: file_result,
+                    block_results,
+                    total_blocks,
+                    blocks_available: 0,
+                    status: FileStatus::Damaged,
+                    damaged_blocks,
+                }
+            }
+        }
+    }
 }
 
 /// Verify integrity of a single file using MD5 hashes

@@ -6,6 +6,7 @@
 
 use crate::domain::{Md5Hash, RecoverySetId};
 use crate::Packet;
+use rayon::prelude::*;
 use rustc_hash::FxHashSet as HashSet;
 use std::fs;
 use std::io::{BufReader, Read, Seek};
@@ -173,22 +174,59 @@ fn print_packet_load_result(packet_count: usize, recovery_blocks: usize) {
 pub fn load_par2_packets(par2_files: &[PathBuf], show_progress: bool) -> Vec<Packet> {
     let mut seen_packet_hashes = HashSet::default();
 
-    par2_files
-        .iter()
-        .flat_map(|par2_file| {
-            match parse_par2_file_with_progress(par2_file, &mut seen_packet_hashes, show_progress) {
-                Ok((packets, _)) => packets,
+    // Parse files in parallel
+    let all_packets: Vec<Vec<Packet>> = par2_files
+        .par_iter()
+        .filter_map(|par2_file| {
+            let mut local_seen = HashSet::default();
+            match parse_par2_file_with_progress(par2_file, &mut local_seen, show_progress) {
+                Ok((packets, _)) => Some(packets),
                 Err(e) => {
                     eprintln!(
                         "Warning: Failed to parse PAR2 file {}: {}",
                         par2_file.display(),
                         e
                     );
-                    Vec::new()
+                    None
                 }
             }
         })
-        .filter(|p| !matches!(p, Packet::RecoverySlice(_)))
+        .collect();
+
+    // Deduplicate and filter in a single pass
+    all_packets
+        .into_iter()
+        .flatten()
+        .filter(|p| {
+            if matches!(p, Packet::RecoverySlice(_)) {
+                return false;
+            }
+            // Deduplicate based on packet hash
+            let packet_hash = get_packet_hash(p);
+            seen_packet_hashes.insert(packet_hash)
+        })
+        .collect()
+}
+
+/// Load all PAR2 packets INCLUDING recovery slices (in parallel)
+/// This is used by par2verify which needs to count recovery blocks
+#[must_use]
+pub fn load_all_par2_packets(par2_files: &[PathBuf]) -> Vec<Packet> {
+    // Parse files in parallel
+    par2_files
+        .par_iter()
+        .flat_map(|par2_file| {
+            std::fs::File::open(par2_file)
+                .ok()
+                .map(|file| {
+                    let mut reader = std::io::BufReader::new(file);
+                    crate::parse_packets(&mut reader)
+                })
+                .unwrap_or_else(|| {
+                    eprintln!("Warning: Failed to open PAR2 file {}", par2_file.display());
+                    Vec::new()
+                })
+        })
         .collect()
 }
 
@@ -202,18 +240,23 @@ pub fn parse_recovery_slice_metadata(
 ) -> Vec<crate::RecoverySliceMetadata> {
     let mut seen_recovery_slices: HashSet<(RecoverySetId, u32)> = HashSet::default();
 
-    par2_files
-        .iter()
-        .flat_map(|par2_file| {
-            parse_recovery_metadata_from_file(par2_file, show_progress).unwrap_or_else(|e| {
-                eprintln!(
-                    "Warning: Failed to parse PAR2 file {}: {}",
-                    par2_file.display(),
-                    e
-                );
-                Vec::new()
-            })
+    // Parse files in parallel
+    let all_metadata: Vec<Vec<crate::RecoverySliceMetadata>> = par2_files
+        .par_iter()
+        .filter_map(|par2_file| {
+            parse_recovery_metadata_from_file(par2_file, show_progress)
+                .ok()
+                .or_else(|| {
+                    eprintln!("Warning: Failed to parse PAR2 file {}", par2_file.display());
+                    None
+                })
         })
+        .collect();
+
+    // Deduplicate recovery slices
+    all_metadata
+        .into_iter()
+        .flatten()
         .filter_map(|metadata| {
             let dedup_key = (metadata.set_id, metadata.exponent);
             seen_recovery_slices.insert(dedup_key).then_some(metadata)
@@ -228,6 +271,14 @@ fn parse_recovery_metadata_from_file(
 ) -> IoResult<Vec<crate::RecoverySliceMetadata>> {
     use std::fs::File;
     use std::io::BufReader;
+
+    if show_progress {
+        let filename = par2_file
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_else(|| "unknown".into());
+        println!("Loading \"{}\".", filename);
+    }
 
     let file = File::open(par2_file)?;
     let mut reader = BufReader::with_capacity(BUFFER_SIZE, file);
