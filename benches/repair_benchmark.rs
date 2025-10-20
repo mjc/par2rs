@@ -3,15 +3,15 @@ use par2rs::reed_solomon::galois::Galois16;
 use par2rs::reed_solomon::reedsolomon::{
     build_split_mul_table, ReconstructionEngine, SplitMulTable,
 };
-use par2rs::reed_solomon::simd::{
-    process_slice_multiply_add_avx2_unrolled, process_slice_multiply_add_simd, SimdLevel,
-};
+use par2rs::reed_solomon::simd::process_slice_multiply_add_portable_simd;
+#[cfg(target_arch = "x86_64")]
+use par2rs::reed_solomon::simd::{process_slice_multiply_add_simd, SimdLevel};
 use par2rs::RecoverySlicePacket;
 use std::collections::HashMap;
 use std::hint::black_box;
 
-/// Pure scalar implementation (no SIMD)
-fn process_slice_multiply_add_scalar(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
+/// Pure scalar implementation (no SIMD) - for benchmark baseline
+fn scalar_baseline(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
     let min_len = input.len().min(output.len());
     let num_words = min_len / 2;
     if num_words == 0 {
@@ -54,7 +54,8 @@ fn bench_simd_comparison(c: &mut Criterion) {
 
     let input = vec![0xAAu8; size];
 
-    // Benchmark with PSHUFB SIMD (AVX2)
+    // Benchmark with PSHUFB SIMD (AVX2) - x86_64 only
+    #[cfg(target_arch = "x86_64")]
     group.bench_function("with_pshufb", |b| {
         let mut output = vec![0x55u8; size];
         b.iter(|| {
@@ -67,11 +68,11 @@ fn bench_simd_comparison(c: &mut Criterion) {
         });
     });
 
-    // Benchmark with unrolled SIMD (no PSHUFB)
-    group.bench_function("unrolled_only", |b| {
+    // Benchmark the library's scalar fallback function
+    group.bench_function("lib_scalar", |b| {
         let mut output = vec![0x55u8; size];
         b.iter(|| unsafe {
-            process_slice_multiply_add_avx2_unrolled(
+            par2rs::reed_solomon::simd::process_slice_multiply_add_scalar(
                 black_box(&input),
                 black_box(&mut output),
                 black_box(&tables),
@@ -79,17 +80,105 @@ fn bench_simd_comparison(c: &mut Criterion) {
         });
     });
 
-    // Benchmark without SIMD (pure scalar)
+    // Benchmark without SIMD (pure scalar baseline)
     group.bench_function("scalar_fallback", |b| {
         let mut output = vec![0x55u8; size];
         b.iter(|| {
-            process_slice_multiply_add_scalar(
+            scalar_baseline(
                 black_box(&input),
                 black_box(&mut output),
                 black_box(&tables),
             );
         });
     });
+
+    // Benchmark with portable_simd (cross-platform SIMD)
+    group.bench_function("portable_simd", |b| {
+        let mut output = vec![0x55u8; size];
+        b.iter(|| unsafe {
+            process_slice_multiply_add_portable_simd(
+                black_box(&input),
+                black_box(&mut output),
+                black_box(&tables),
+            );
+        });
+    });
+
+    group.finish();
+}
+
+/// Benchmark different SIMD variants across multiple data sizes
+///
+/// See docs/SIMD_OPTIMIZATION.md for detailed performance results and analysis.
+fn bench_simd_variants_by_size(c: &mut Criterion) {
+    let mut group = c.benchmark_group("simd_variants_by_size");
+    group.measurement_time(std::time::Duration::from_secs(20));
+
+    let coefficient = 0x1234u16;
+    let gf = Galois16::new(coefficient);
+    let tables = build_split_mul_table(gf);
+
+    // Test different sizes: small (cache-friendly) to large (memory-bound)
+    for &size in &[528, 4096, 65536, 1_048_576] {
+        let input = vec![0xAAu8; size];
+        let size_label = if size < 1024 {
+            format!("{}B", size)
+        } else if size < 1024 * 1024 {
+            format!("{}KB", size / 1024)
+        } else {
+            format!("{}MB", size / (1024 * 1024))
+        };
+
+        // Scalar baseline
+        group.bench_with_input(
+            BenchmarkId::new("scalar", &size_label),
+            &size,
+            |b, &size| {
+                let mut output = vec![0x55u8; size];
+                b.iter(|| {
+                    scalar_baseline(
+                        black_box(&input),
+                        black_box(&mut output),
+                        black_box(&tables),
+                    );
+                });
+            },
+        );
+
+        // portable_simd
+        group.bench_with_input(
+            BenchmarkId::new("portable_simd", &size_label),
+            &size,
+            |b, &size| {
+                let mut output = vec![0x55u8; size];
+                b.iter(|| unsafe {
+                    process_slice_multiply_add_portable_simd(
+                        black_box(&input),
+                        black_box(&mut output),
+                        black_box(&tables),
+                    );
+                });
+            },
+        );
+
+        // x86_64 PSHUFB (for comparison on x86 systems)
+        #[cfg(target_arch = "x86_64")]
+        group.bench_with_input(
+            BenchmarkId::new("pshufb", &size_label),
+            &size,
+            |b, &size| {
+                let mut output = vec![0x55u8; size];
+                b.iter(|| {
+                    process_slice_multiply_add_simd(
+                        black_box(&input),
+                        black_box(&mut output),
+                        black_box(&tables),
+                        SimdLevel::Avx2,
+                    );
+                });
+            },
+        );
+    }
 
     group.finish();
 }
@@ -123,7 +212,7 @@ fn bench_reed_solomon_reconstruct(c: &mut Criterion) {
         }
 
         group.bench_with_input(
-            BenchmarkId::new("with_pshufb", missing_count),
+            BenchmarkId::new("reconstruct", missing_count),
             &missing_count,
             |b, &missing_count| {
                 let engine =
@@ -156,6 +245,7 @@ fn bench_reed_solomon_reconstruct(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_simd_comparison,
+    bench_simd_variants_by_size,
     bench_reed_solomon_reconstruct
 );
 criterion_main!(benches);

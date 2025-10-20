@@ -2,163 +2,36 @@
 
 ## Overview
 
-This document describes the SIMD optimizations implemented in par2rs for Reed-Solomon error correction. Combined with parallel reconstruction and I/O optimizations, par2rs achieves **2.00x - 2.90x speedup** over par2cmdline.
+This document describes the SIMD (Single Instruction, Multiple Data) optimizations implemented in par2rs for Reed-Solomon error correction operations. These optimizations provide **2.2-2.8x speedup** for GF(2^16) multiply-add operations, which are the computational core of PAR2 repair.
 
-## Test System
+For end-to-end benchmark results, see [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md).
 
-- **CPU**: AMD Ryzen 9 5950X 16-Core Processor (32 threads, up to 5.27 GHz)
-- **RAM**: 64 GB DDR4
-- **OS**: Linux x86_64
-- **Compiler**: rustc with `release` profile (optimized)
+## SIMD Implementations
 
-## Performance Results
+par2rs includes three SIMD implementations, all using the same nibble-based table lookup strategy:
 
-### Real-World End-to-End Performance
+### 1. PSHUFB (x86_64 - AVX2/SSSE3)
 
-#### 100MB File Repair (10 iterations)
+Platform-specific implementation for x86_64 CPUs with AVX2 or SSSE3 support.
 
-```
-par2cmdline:
-  Average: 0.980s
-  Min:     0.958s
-  Max:     0.997s
+**Instructions Used:**
+- `_mm256_shuffle_epi8` (PSHUFB) - 16-byte table lookups
+- `_mm256_xor_si256` - XOR operations
+- `_mm256_and_si256` / `_mm256_srli_epi16` - Nibble extraction
 
-par2rs:
-  Average: 0.506s
-  Min:     0.489s
-  Max:     0.526s
+**Performance:** 2.76x faster than scalar (54.7ns vs 150.9ns for 528B blocks)
 
-Speedup: 1.93x
-```
+### 2. ARM NEON (ARM64/AArch64)
 
-**Results:**
-- **par2rs**: 0.506s average (±37ms variance, 7% variability)
-- **par2cmdline**: 0.980s average (±39ms variance, 4% variability)
-- **Speedup**: **1.93x faster** with similar consistency
+Platform-specific implementation for ARM processors.
 
-#### 1GB File Repair (10 iterations)
+**Instructions Used:**
+- `vqtbl1q_u8` - Table lookup (equivalent to PSHUFB)
+- `vuzpq_u8` - De-interleave even/odd bytes
+- `vzipq_u8` - Re-interleave results
+- `veorq_u8` - XOR operations
 
-```
-par2cmdline:
-  Average: 13.679s
-  Min:     9.532s
-  Max:     21.396s
-
-par2rs:
-  Average: 4.704s
-  Min:     4.376s
-  Max:     4.990s
-
-Speedup: 2.90x
-```
-
-**Results:**
-- **par2rs**: 4.704s average (±614ms variance, 13% variability)
-- **par2cmdline**: 13.679s average (±11.9s variance, 87% variability)
-- **Speedup**: **2.90x faster** with **7x better consistency**
-
-#### 10GB File Repair (10 iterations)
-
-```
-par2cmdline:
-  Average: 114.526s
-  Min:     98.524s
-  Max:     131.101s
-
-par2rs:
-  Average: 57.243s
-  Min:     49.764s
-  Max:     72.644s
-
-Speedup: 2.00x
-```
-
-**Results:**
-- **par2rs**: 57.243s average (±22.9s variance, 40% variability)
-- **par2cmdline**: 114.526s average (±32.6s variance, 28% variability)
-- **Speedup**: **2.00x faster**
-
-#### Parallel Reconstruction Impact (10GB baseline comparison)
-
-**Serial (5 iterations):**
-- Average: 72.836s
-- Min: 58.439s
-- Max: 90.594s
-
-**Parallel (10 iterations):**
-- Average: 57.243s
-- Min: 49.764s
-- Max: 72.644s
-
-**Parallel Speedup**: **1.27x** (21% improvement)
-
-## Performance Factors
-
-The significant speedup comes from multiple optimizations working together:
-
-1. **Parallel Reconstruction** (1.27x on large files)
-   - Rayon-based parallel chunk processing
-   - Multi-threaded Reed-Solomon reconstruction
-   
-2. **SIMD Acceleration** (2.76x on Reed-Solomon operations)
-   - PSHUFB-based GF(2^16) multiply-add operations
-   - Hardware-accelerated polynomial evaluation
-   
-3. **I/O Optimization** 
-   - Skip slice validation for files with matching MD5 (instant vs 400MB/s scan)
-   - Sequential read patterns with position tracking (eliminates seeks)
-   - 8MB buffers for optimal throughput
-   
-4. **Memory Efficiency**
-   - Lazy loading of recovery data
-   - ~100MB peak memory usage regardless of file size
-   
-5. **Smart Validation**
-   - Conditional buffer zeroing only for partial slices
-   - HashMap lookup hoisting in hot loops
-
-### Microbenchmark Results (528-byte PAR2 blocks)
-
-```
-simd_multiply_add_comparison/with_pshufb
-                        time:   [54.622 ns 54.723 ns 54.841 ns]
-
-simd_multiply_add_comparison/unrolled_only
-                        time:   [102.85 ns 103.18 ns 103.56 ns]
-
-simd_multiply_add_comparison/scalar_fallback
-                        time:   [150.58 ns 150.90 ns 151.28 ns]
-```
-
-| Implementation | Time | Speedup vs Scalar |
-|---|---|---|
-| **PSHUFB (AVX2)** | **54.7 ns** | **2.76x faster** ✅ |
-| Unrolled AVX2 | 103.2 ns | 1.46x faster |
-| Scalar baseline | 150.9 ns | 1.00x (baseline) |
-
-**Key findings:**
-- PSHUFB is **2.76x faster** than scalar code
-- PSHUFB is **1.89x faster** than unrolled AVX2
-- Performance scales to real-world workloads
-
-### Reed-Solomon Reconstruction Benchmarks
-
-```
-reed_solomon_reconstruct/with_pshufb/1
-                        time:   [76.549 µs 77.221 µs 77.884 µs]
-
-reed_solomon_reconstruct/with_pshufb/5
-                        time:   [6.8131 ms 6.8540 ms 6.9009 ms]
-
-reed_solomon_reconstruct/with_pshufb/10
-                        time:   [16.821 ms 17.097 ms 17.402 ms]
-```
-
-| Missing Slices | Time (mean) |
-|---|---|
-| 1 slice | 77.2 µs |
-| 5 slices | 6.85 ms |
-| 10 slices | 17.1 ms |
+**Performance:** 2.2-2.4x faster than scalar (matches portable_simd)
 
 ## Implementation Details
 
@@ -194,60 +67,155 @@ Existing Rust crates are incompatible:
 - Adapt SIMD techniques from `galois_2p8` for our specific field
 - This ensures compatibility while achieving maximum performance
 
-### PSHUFB Technique
+### SIMD Techniques
+
+#### PSHUFB (x86_64)
 
 Based on "Screaming Fast Galois Field Arithmetic Using Intel SIMD Instructions" by James Plank:
-- Paper: http://web.eecs.utk.edu/~plank/plank/papers/FAST-2013-GF.html
+
+## Galois Field GF(2^16) Implementation
+
+### Polynomial and Operations
+
+par2rs uses the PAR2 specification's Galois Field GF(2^16):
+- **Polynomial**: `0x1100B` (x^16 + x^12 + x^3 + x + 1)
+- **Operations**: Addition (XOR), Multiplication (polynomial mod reduction)
+- **Vandermonde matrices**: Used for Reed-Solomon error correction
+
+### Split Multiplication Tables
+
+Traditional GF(2^16) multiplication uses 256 KB lookup tables:
+- 65536 entries × 2 bytes = 128 KB per operation
+- High/low byte split: 2 tables × 128 KB = 256 KB total
+- **Problem**: Exceeds L1 cache (32-48 KB typical)
+
+**Nibble-based approach:**
+```
+Result = LOW_TABLE[low_nibble] ^ HIGH_TABLE[high_nibble]
+```
+- 16 entries × 2 bytes = 32 bytes per nibble table
+- 4 nibble tables (2 for low byte, 2 for high byte) = 128 bytes total
+- Actually uses 8 nibble tables for SIMD (16 bytes each) = 128 bytes
+- **8x memory reduction**, fits in L1 cache
+
+### References
+
+- PAR2 Specification: https://parchive.sourceforge.net/docs/specifications/parity-volume-spec/article-spec.html
+- Galois Field arithmetic paper: http://web.eecs.utk.edu/~plank/plank/papers/FAST-2013-GF.html
 - Inspired by: `galois_2p8` crate (MIT licensed)
 
-**Key Insight:**
-- PSHUFB can do 16-entry (4-bit) lookups
-- We have 256-entry (8-bit) tables
-- **Solution**: Split bytes into nibbles, do two lookups per byte
+## Implementation Files
 
-**For GF(2^16) multiplication:**
-```
-Input: 16-bit word = [high_byte:low_byte]
-Result: tables.low[low_byte] ^ tables.high[high_byte]
-```
-
-**PSHUFB approach:**
-1. Build 8 nibble tables (each 16 bytes = 128 bytes total vs 512 bytes for full tables)
-2. For each input byte, split into low/high nibbles
-3. Use `_mm256_shuffle_epi8` (PSHUFB) for parallel lookups
-4. Combine results with XOR
-
-**Memory efficiency:**
-- Traditional: 2 × 256 × 2 bytes = 1024 bytes per coefficient
-- PSHUFB: 8 × 16 bytes = 128 bytes per coefficient
-- **8x reduction** in lookup table size (better cache utilization)
-
-### Implementation Files
-
-- **`src/reed_solomon/simd_pshufb.rs`**: PSHUFB implementation
+- **`src/reed_solomon/simd_pshufb.rs`**: PSHUFB implementation (x86_64)
   - `build_pshufb_tables()`: Convert 256-entry tables to 8 nibble tables
   - `process_slice_multiply_add_pshufb()`: Main AVX2 SIMD loop (32 bytes/iteration)
 
-- **`src/reed_solomon/simd.rs`**: SIMD dispatcher and fallbacks
-  - Runtime CPU feature detection (AVX2/SSSE3)
+- **`src/reed_solomon/simd_neon.rs`**: ARM NEON implementation (ARM64)
+  - `build_neon_tables()`: Build nibble lookup tables for vtbl
+  - `process_slice_multiply_add_neon()`: NEON SIMD loop (16 bytes/iteration)
+  - Byte interleaving using vuzpq_u8/vzipq_u8
+
+- **`src/reed_solomon/simd.rs`**: SIMD dispatcher and portable_simd
+  - Runtime CPU feature detection (AVX2/SSSE3 on x86_64)
+  - `process_slice_multiply_add_portable_simd()`: Cross-platform SIMD using swizzle_dyn
   - Fallback to unrolled AVX2 or scalar code
+  - **TODO**: Implement runtime dispatch to choose best implementation
 
 - **`src/reed_solomon/reedsolomon.rs`**: Core Reed-Solomon operations
   - `build_split_mul_table()`: Creates split low/high byte tables
-  - `reconstruct_missing_slices_global()`: Main reconstruction function (50% of runtime)
+  - `reconstruct_missing_slices_global()`: Main reconstruction function
 
 - **`benches/repair_benchmark.rs`**: Performance benchmarks
-  - Comparison benchmarks: PSHUFB vs unrolled vs scalar
+  - Comparison benchmarks: PSHUFB/NEON/portable_simd vs scalar
   - Reed-Solomon reconstruction benchmarks
-  - 30-second measurement time for accuracy
+  - Multiple data sizes (528B, 4KB, 64KB, 1MB)
+  - See results in [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md)
 
-### Optimization Progression
+## Cross-Platform Support
 
-1. **Initial**: 1.27s (slower than par2cmdline's ~1.0s)
-2. **Eliminated duplicate loads**: ~1.15s
-3. **16-word SIMD unrolling**: ~1.10s
-4. **32-word SIMD unrolling**: ~0.976s
-5. **PSHUFB implementation**: **0.607s** ✅ (1.66x faster than par2cmdline's 1.008s average)
+### Current Status
+
+The codebase supports SIMD optimizations across multiple architectures:
+
+- **x86_64 (Linux/macOS)**: Full AVX2/SSSE3 SIMD optimizations with PSHUFB
+- **ARM64/AArch64 (Apple Silicon)**: ARM NEON + portable_simd (both provide 2.2-2.4x speedup)
+- **Other architectures**: portable_simd provides cross-platform SIMD
+
+### Architecture-Specific Implementation
+
+The SIMD code uses conditional compilation to provide platform-specific implementations:
+
+```rust
+// x86_64: PSHUFB implementation
+#[cfg(target_arch = "x86_64")]
+pub fn process_slice_multiply_add_simd(...) {
+    match simd_level {
+        SimdLevel::Avx2 => { /* AVX2 PSHUFB */ },
+        SimdLevel::Ssse3 => { /* SSSE3 fallback */ },
+        SimdLevel::None => { /* Scalar */ }
+    }
+}
+
+// ARM64: NEON implementation
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn process_slice_multiply_add_neon(...) {
+    // vtbl-based table lookups
+}
+
+// All platforms: portable_simd
+pub unsafe fn process_slice_multiply_add_portable_simd(...) {
+    // swizzle_dyn for cross-platform SIMD
+}
+```
+
+**Benefits:**
+- No warnings on non-x86_64 platforms
+- Clean compilation on all architectures
+- Prepares for future ARM NEON optimizations
+
+### Future Work: ARM NEON Optimizations
+
+Apple Silicon and other ARM processors support NEON SIMD instructions that can achieve similar performance to x86 AVX2:
+
+
+✅ **x86_64 (PSHUFB)**: Fully implemented and tested (2.76x speedup)  
+✅ **ARM64 (NEON)**: Fully implemented and tested (2.2-2.4x speedup)  
+✅ **Cross-platform (portable_simd)**: Fully implemented and tested (matches NEON on M1)  
+✅ **Conditional compilation**: Correct cfg guards for platform-specific code  
+⏳ **Runtime dispatch**: TODO - Currently uses compile-time selection
+
+### Platform-Specific Notes
+
+**x86_64:**
+- Prefers PSHUFB (AVX2) when available (detected at runtime)
+- Falls back to SSSE3 PSHUFB if no AVX2
+- Falls back to scalar if no SIMD support
+
+**ARM64:**
+- Uses NEON intrinsics (always available on ARM64)
+- portable_simd provides identical performance
+- Future: Add runtime dispatch to prefer NEON over portable_simd
+
+**Other platforms (via portable_simd):**
+- RISC-V with vector extensions
+- WebAssembly with SIMD
+- Future x86 platforms
+- Performance depends on backend SIMD support
+
+### Future Improvements
+
+1. **Runtime dispatch for best implementation**
+   - x86_64: PSHUFB → portable_simd → scalar
+   - ARM64: NEON → portable_simd → scalar
+   - Currently uses compile-time selection
+
+2. **AVX-512 support**
+   - 64-byte processing (vs 32-byte AVX2)
+   - Potential for additional speedup on latest CPUs
+
+3. **Auto-vectorization improvements**
+   - Continue optimizing scalar code for better LLVM auto-vectorization
+   - May benefit platforms without explicit SIMD support
 
 ## Attribution
 
@@ -264,74 +232,105 @@ Result: tables.low[low_byte] ^ tables.high[high_byte]
 ## Building and Testing
 
 ### Requirements
-- x86_64 CPU with AVX2 support
-- Rust 1.70+ (for SIMD intrinsics)
-- Linux/macOS/Windows
-- par2cmdline (for comparison benchmarks)
+- **Rust**: nightly toolchain (for portable_simd feature)
+- **Platform**: x86_64 (with AVX2/SSSE3) or ARM64
+- **OS**: Linux, macOS, or Windows
+- **Optional**: par2cmdline (for comparison benchmarks)
 
 ### Running Microbenchmarks
 ```bash
-# All benchmarks
+# All benchmarks (includes SIMD variants)
 cargo bench
 
-# SIMD comparison only (30 second measurement time)
-cargo bench simd_multiply_add_comparison
+# SIMD comparison only
+cargo bench --bench repair_benchmark
 
-# Reed-Solomon reconstruction
-cargo bench reed_solomon_reconstruct
+# With gnuplot visualization (if installed)
+cargo bench --bench repair_benchmark -- --plotting-backend gnuplot
 ```
 
-### Running Real-World Benchmark
+### Running End-to-End Benchmarks
+
+See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for detailed results.
+
 ```bash
-# Single run benchmark (with flamegraph generation)
-./scripts/benchmark_repair.sh
+# Averaged benchmark (recommended for accuracy)
+./scripts/benchmark_repair_averaged.sh [iterations]
 
-# Averaged benchmark (10 iterations, more reliable)
-./scripts/benchmark_repair_averaged.sh
+# Example: 10 iterations on 1GB file
+./scripts/benchmark_repair_averaged.sh 10
 ```
 
-**Single run script** (`benchmark_repair.sh`):
-1. Creates a 100MB test file
+**Benchmark script features:**
+1. Creates test file of specified size
 2. Generates PAR2 files with 5% redundancy
-3. Corrupts 1MB of data
+3. Corrupts data to trigger repair
 4. Repairs with both par2cmdline and par2rs
 5. Verifies correctness
-6. Generates flamegraph for profiling
+6. Reports timing statistics (mean, min, max, stddev)
 
-**Averaged benchmark script** (`benchmark_repair_averaged.sh`):
-- Runs 10 iterations to get reliable averages
-- Reports min/max/average times
-- Calculates speedup
-- Shows individual iteration results
+## Performance Tips
 
-**Example Output (Averaged):**
-```
-par2cmdline:
-  Average: 1.008s
-  Min:     0.991s
-  Max:     1.044s
+### For Maximum Performance
 
-par2rs:
-  Average: 0.607s
-  Min:     0.596s
-  Max:     0.624s
+1. **Use release builds:**
+   ```bash
+   cargo build --release
+   ```
+   Debug builds are ~10-100x slower due to missing optimizations.
 
-Speedup: 1.66x
+2. **Enable CPU-specific optimizations:**
+   ```bash
+   RUSTFLAGS="-C target-cpu=native" cargo build --release
+   ```
+   Allows the compiler to use all available CPU features.
 
-✓ All repairs verified correct
-```
+3. **Run on dedicated hardware:**
+   - Disable CPU frequency scaling
+   - Close background applications
+   - Use averaged benchmarks for statistical significance
+
+4. **File size considerations:**
+   - Speedup increases with file size (better amortization)
+   - Best results on files > 100 MB
+   - I/O becomes dominant factor for very large files (> 10 GB)
 
 ## Future Optimizations
 
-Potential improvements:
-- [ ] AVX-512 support for newer CPUs
-- [ ] ARM NEON SIMD for ARM64
-- [ ] Multi-threading for large files (already using Rayon for file I/O)
-- [ ] Further cache optimization for very large repair operations
+Potential areas for improvement:
+
+1. **Runtime SIMD dispatch**
+   - Auto-detect and select best available SIMD implementation
+   - Priority: PSHUFB (x86_64) → NEON (ARM64) → portable_simd → scalar
+   - Currently uses compile-time selection
+
+2. **AVX-512 support (investigate)**
+   - 64-byte processing (vs 32-byte AVX2, 16-byte NEON)
+   - Unknown if it would provide benefits for this workload
+   - Requires hardware testing and validation
+
+3. **I/O optimization for very large files**
+   - 25GB repair currently reads ~128GB and writes ~26GB (5x read amplification)
+   - Optimize recovery slice loading strategy
+   - Implement streaming reconstruction to minimize memory-to-disk round trips
+   - Better parallelization for NVMe SSDs
+
+4. **Additional platform support**
+   - RISC-V vector extensions
+   - WebAssembly SIMD
+   - Power/POWER9 VSX
+
+5. **Algorithm improvements**
+   - Further cache optimization for Galois Field tables
+   - Explore alternative Reed-Solomon implementations (FFT-based?)
+   - Optimize Vandermonde matrix inversion
 
 ## References
 
 1. [PAR2 Specification](https://parchive.sourceforge.net/docs/specifications/parity-volume-spec/article-spec.html)
 2. [Screaming Fast Galois Field Arithmetic (Plank)](http://web.eecs.utk.edu/~plank/plank/papers/FAST-2013-GF.html)
-3. [galois_2p8 crate](https://github.com/djsweet/galois_2p8)
-4. [par2cmdline](https://github.com/Parchive/par2cmdline)
+3. [galois_2p8 crate](https://github.com/djsweet/galois_2p8) - Original nibble-based technique for GF(2^8)
+4. [par2cmdline](https://github.com/Parchive/par2cmdline) - Reference implementation
+5. [Intel Intrinsics Guide](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html) - PSHUFB and AVX2 documentation
+6. [ARM NEON Intrinsics Reference](https://developer.arm.com/architectures/instruction-sets/intrinsics/) - NEON documentation
+

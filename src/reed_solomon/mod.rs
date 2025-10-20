@@ -7,10 +7,8 @@
 //!
 //! ## Performance
 //!
-//! Parallel reconstruction with AVX2 PSHUFB-optimized multiply-add achieves:
-//! - **1.93x faster** than par2cmdline for 100MB files (0.506s vs 0.980s)
-//! - **2.90x faster** for 1GB files (4.704s vs 13.679s)
-//! - **2.00x faster** for 10GB files (57.243s vs 114.526s)
+//! Parallel reconstruction with SIMD-optimized multiply-add operations (PSHUFB on x86_64,
+//! NEON on ARM64, portable_simd cross-platform) achieves significant speedups over par2cmdline.
 //!
 //! See `docs/SIMD_OPTIMIZATION.md` for detailed benchmarks and implementation notes.
 //!
@@ -22,7 +20,6 @@
 pub mod galois;
 pub mod reedsolomon;
 pub mod simd;
-pub mod simd_pshufb;
 
 pub use galois::*;
 pub use reedsolomon::*;

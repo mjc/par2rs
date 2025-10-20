@@ -2,17 +2,18 @@
 //!
 //! ## Performance
 //!
-//! Parallel Reed-Solomon reconstruction and SIMD-optimized operations achieve:
-//! - **1.93x faster** than par2cmdline (0.506s vs 0.980s for 100MB file repair)
-//! - **2.90x faster** for 1GB files (4.704s vs 13.679s)
-//! - **2.00x faster** for 10GB files (57.243s vs 114.526s)
+//! Parallel Reed-Solomon reconstruction and SIMD-optimized operations (PSHUFB on x86_64,
+//! NEON on ARM64, portable_simd cross-platform) achieve significant speedups over par2cmdline.
 //!
-//! See `docs/SIMD_OPTIMIZATION.md` for detailed benchmarks and implementation notes.
+//! See `docs/BENCHMARK_RESULTS.md` for cross-platform performance results and
+//! `docs/SIMD_OPTIMIZATION.md` for technical implementation details.
 //!
 //! ## Reed-Solomon Implementation
 //!
 //! Uses Vandermonde polynomial 0x1100B (x¹⁶ + x¹² + x³ + x + 1) for GF(2^16) operations,
 //! as mandated by the PAR2 specification for cross-compatibility with other PAR2 clients.
+
+#![feature(portable_simd)]
 
 pub mod analysis;
 pub mod args;
@@ -28,5 +29,5 @@ pub mod validation;
 pub mod verify;
 
 pub use args::parse_args;
-pub use packets::*; // Add this line to import all public items from packets module
+pub use packets::*;
 pub use recovery_loader::{FileSystemLoader, RecoveryDataLoader};
