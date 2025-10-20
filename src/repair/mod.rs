@@ -6,10 +6,8 @@
 //!
 //! ## Performance
 //!
-//! Parallel Reed-Solomon reconstruction with SIMD optimizations achieve **2.00x - 2.90x speedup** over par2cmdline:
-//! - 100MB: 0.506s vs 0.980s (**1.93x faster**)
-//! - 1GB: 4.704s vs 13.679s (**2.90x faster**)
-//! - 10GB: 57.243s vs 114.526s (**2.00x faster**)
+//! Parallel Reed-Solomon reconstruction with SIMD optimizations (PSHUFB on x86_64, NEON on ARM64,
+//! portable_simd cross-platform) achieve significant speedups over par2cmdline.
 //!
 //! See `docs/SIMD_OPTIMIZATION.md` and `docs/BENCHMARK_RESULTS.md` for detailed analysis.
 

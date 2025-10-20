@@ -1,0 +1,3402 @@
+=== Running 10MB benchmark (10 iterations) ===
+[0;34m================================[0m
+[0;34mPAR2 Repair Benchmark (Averaged)[0m
+[0;34mTesting 10MB file repair[0m
+[0;34mIterations: 10[0m
+[0;34m================================[0m
+
+[1;33mBuilding par2rs...[0m
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.46s
+
+[1;33mGenerating 10MB test file in /var/folders/rv/xm_hkw514m55mjx39987zzhm0000gn/T/tmp.gXLJsNpAIu...[0m
+10+0 records in
+10+0 records out
+10485760 bytes (10 MB, 10 MiB) copied, 0.036831 s, 285 MB/s
+
+[1;33mCreating PAR2 files...[0m
+
+Created 8 PAR2 files
+Original MD5: 5c46e89517a025a724b307e46a7d5af6
+
+[0;32m=== Iteration 1/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 7.3e-05 s, 7.0 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Target: "testfile_10mb" - damaged. Found 1999 of 2000 data blocks.
+5116 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 7e-05 s, 7.3 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loaded 20 new packets including 16 recovery blocks
+Loaded 5 new packets including 1 recovery blocks
+Loading "testfile_10mb.par2".
+Loaded 8 new packets including 4 recovery blocks
+Loaded 4 new packets
+Loaded 41 new packets including 37 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5244 bytes.
+
+Opening: "testfile_10mb"
+Target: "testfile_10mb" - damaged.
+Scanning: "testfile_10mb"                         
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5244 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: .319860000s
+  par2rs:      .374164000s
+
+[0;32m=== Iteration 2/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 9.6e-05 s, 5.3 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Target: "testfile_10mb" - damaged. Found 1999 of 2000 data blocks.
+5116 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 7.9e-05 s, 6.5 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loaded 4 new packets
+Loading "testfile_10mb.vol000+01.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loading "testfile_10mb.vol031+32.par2".
+Loaded 12 new packets including 8 recovery blocks
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Loaded 36 new packets including 32 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5244 bytes.
+
+Opening: "testfile_10mb"
+Target: "testfile_10mb" - damaged.
+Scanning: "testfile_10mb"                         
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5244 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: .240672000s
+  par2rs:      .116210000s
+
+[0;32m=== Iteration 3/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 9.1e-05 s, 5.6 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Target: "testfile_10mb" - damaged. Found 1999 of 2000 data blocks.
+5116 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000102 s, 5.0 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loaded 4 new packets
+Loaded 6 new packets including 2 recovery blocks
+Loading "testfile_10mb.vol000+01.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5244 bytes.
+
+Opening: "testfile_10mb"
+Target: "testfile_10mb" - damaged.
+Scanning: "testfile_10mb"                         
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5244 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: .241099000s
+  par2rs:      .126956000s
+
+[0;32m=== Iteration 4/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 8.9e-05 s, 5.8 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Target: "testfile_10mb" - damaged. Found 1999 of 2000 data blocks.
+5116 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 9.7e-05 s, 5.3 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Loaded 4 new packets
+Loading "testfile_10mb.vol000+01.par2".
+Loaded 6 new packets including 2 recovery blocks
+Loaded 5 new packets including 1 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loading "testfile_10mb.vol031+32.par2".
+Loaded 20 new packets including 16 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5244 bytes.
+
+Opening: "testfile_10mb"
+Target: "testfile_10mb" - damaged.
+Scanning: "testfile_10mb"                         
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5244 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: .239751000s
+  par2rs:      .123284000s
+
+[0;32m=== Iteration 5/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 7.7e-05 s, 6.6 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Target: "testfile_10mb" - damaged. Found 1999 of 2000 data blocks.
+5116 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 5.6e-05 s, 9.1 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10mb.vol003+04.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loading "testfile_10mb.vol007+08.par2".
+Loaded 6 new packets including 2 recovery blocks
+Loading "testfile_10mb.par2".
+Loaded 8 new packets including 4 recovery blocks
+Loaded 4 new packets
+Loaded 36 new packets including 32 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5244 bytes.
+
+Opening: "testfile_10mb"
+Target: "testfile_10mb" - damaged.
+Scanning: "testfile_10mb"                         
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5244 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: .254782000s
+  par2rs:      .126773000s
+
+[0;32m=== Iteration 6/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 5.8e-05 s, 8.8 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Target: "testfile_10mb" - damaged. Found 1999 of 2000 data blocks.
+5116 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 5e-05 s, 10 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loaded 4 new packets
+Loading "testfile_10mb.vol001+02.par2".
+Loaded 12 new packets including 8 recovery blocks
+Loading "testfile_10mb.vol003+04.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loaded 6 new packets including 2 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 5 new packets including 1 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5244 bytes.
+
+Opening: "testfile_10mb"
+Target: "testfile_10mb" - damaged.
+Scanning: "testfile_10mb"                         
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5244 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: .239695000s
+  par2rs:      .122988000s
+
+[0;32m=== Iteration 7/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 9.8e-05 s, 5.2 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Target: "testfile_10mb" - damaged. Found 1999 of 2000 data blocks.
+5116 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000101 s, 5.1 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loaded 4 new packets
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loaded 12 new packets including 8 recovery blocks
+Loaded 5 new packets including 1 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5244 bytes.
+
+Opening: "testfile_10mb"
+Target: "testfile_10mb" - damaged.
+Scanning: "testfile_10mb"                         
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5244 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: .241351000s
+  par2rs:      .112813000s
+
+[0;32m=== Iteration 8/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 7.5e-05 s, 6.8 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Target: "testfile_10mb" - damaged. Found 1999 of 2000 data blocks.
+5116 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 9.6e-05 s, 5.3 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.par2".
+Loaded 6 new packets including 2 recovery blocks
+Loading "testfile_10mb.vol003+04.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loaded 12 new packets including 8 recovery blocks
+Loaded 5 new packets including 1 recovery blocks
+Loaded 4 new packets
+Loaded 20 new packets including 16 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5244 bytes.
+
+Opening: "testfile_10mb"
+Target: "testfile_10mb" - damaged.
+Scanning: "testfile_10mb"                         
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5244 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: .252937000s
+  par2rs:      .122758000s
+
+[0;32m=== Iteration 9/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000113 s, 4.5 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Target: "testfile_10mb" - damaged. Found 1999 of 2000 data blocks.
+5116 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.00011 s, 4.7 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10mb.vol003+04.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loaded 12 new packets including 8 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 5 new packets including 1 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 4 new packets
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5244 bytes.
+
+Opening: "testfile_10mb"
+Target: "testfile_10mb" - damaged.
+Scanning: "testfile_10mb"                         
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5244 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: .249246000s
+  par2rs:      .119698000s
+
+[0;32m=== Iteration 10/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000106 s, 4.8 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Target: "testfile_10mb" - damaged. Found 1999 of 2000 data blocks.
+5116 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000108 s, 4.7 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10mb.vol001+02.par2".
+Loading "testfile_10mb.vol063+37.par2".
+Loading "testfile_10mb.par2".
+Loading "testfile_10mb.vol015+16.par2".
+Loading "testfile_10mb.vol003+04.par2".
+Loaded 4 new packets
+Loading "testfile_10mb.vol031+32.par2".
+Loading "testfile_10mb.vol000+01.par2".
+Loading "testfile_10mb.vol007+08.par2".
+Loaded 6 new packets including 2 recovery blocks
+Loaded 5 new packets including 1 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5244 bytes.
+
+Opening: "testfile_10mb"
+Target: "testfile_10mb" - damaged.
+Scanning: "testfile_10mb"                         
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5244 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: .249730000s
+  par2rs:      .118762000s
+
+[0;34m================================[0m
+[0;34mResults (10 iterations)[0m
+[0;34m================================[0m
+
+[1;33mpar2cmdline:[0m
+  Average: .252s
+  Min:     .239695000s
+  Max:     .319860000s
+
+[1;33mpar2rs:[0m
+  Average: .146s
+  Min:     .112813000s
+  Max:     .374164000s
+
+[0;32mSpeedup: 1.72x[0m
+
+[1;33mIndividual times:[0m
+Iteration | par2cmdline | par2rs
+----------|-------------|--------
+        1 |  .319860000s | .374164000s
+        2 |  .240672000s | .116210000s
+        3 |  .241099000s | .126956000s
+        4 |  .239751000s | .123284000s
+        5 |  .254782000s | .126773000s
+        6 |  .239695000s | .122988000s
+        7 |  .241351000s | .112813000s
+        8 |  .252937000s | .122758000s
+        9 |  .249246000s | .119698000s
+       10 |  .249730000s | .118762000s
+
+[0;32m✓ All repairs verified correct[0m
+
+=== Running 100MB benchmark (10 iterations) ===
+[0;34m================================[0m
+[0;34mPAR2 Repair Benchmark (Averaged)[0m
+[0;34mTesting 100MB file repair[0m
+[0;34mIterations: 10[0m
+[0;34m================================[0m
+
+[1;33mBuilding par2rs...[0m
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.08s
+
+[1;33mGenerating 100MB test file in /var/folders/rv/xm_hkw514m55mjx39987zzhm0000gn/T/tmp.jFJxo2wuPL...[0m
+100+0 records in
+100+0 records out
+104857600 bytes (105 MB, 100 MiB) copied, 0.401486 s, 261 MB/s
+
+[1;33mCreating PAR2 files...[0m
+
+Created 8 PAR2 files
+Original MD5: 37f482ccfb079d17cb0e4e7c12746fe5
+
+[0;32m=== Iteration 1/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 8.5e-05 s, 6.0 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Target: "testfile_100mb" - damaged. Found 1999 of 2000 data blocks.
+52304 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_100mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 5.2e-05 s, 9.8 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loaded 4 new packets
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 52432 bytes.
+
+Opening: "testfile_100mb"
+Target: "testfile_100mb" - damaged.
+Scanning: "testfile_100mb"                          
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_100mb"... done.
+
+Verifying source files:
+
+Verified "testfile_100mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 52432 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 104857600 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 1.326726000s
+  par2rs:      .728726000s
+
+[0;32m=== Iteration 2/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 8.6e-05 s, 6.0 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Target: "testfile_100mb" - damaged. Found 1999 of 2000 data blocks.
+52304 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_100mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 8.3e-05 s, 6.2 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loaded 4 new packets
+Loading "testfile_100mb.vol007+08.par2".
+Loaded 8 new packets including 4 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 5 new packets including 1 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 52432 bytes.
+
+Opening: "testfile_100mb"
+Target: "testfile_100mb" - damaged.
+Scanning: "testfile_100mb"                          
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_100mb"... done.
+
+Verifying source files:
+
+Verified "testfile_100mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 52432 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 104857600 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 1.334187000s
+  par2rs:      .490170000s
+
+[0;32m=== Iteration 3/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 9.8e-05 s, 5.2 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Target: "testfile_100mb" - damaged. Found 1999 of 2000 data blocks.
+52304 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_100mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 5.8e-05 s, 8.8 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_100mb.vol000+01.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loaded 4 new packets
+Loaded 12 new packets including 8 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 52432 bytes.
+
+Opening: "testfile_100mb"
+Target: "testfile_100mb" - damaged.
+Scanning: "testfile_100mb"                          
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_100mb"... done.
+
+Verifying source files:
+
+Verified "testfile_100mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 52432 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 104857600 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 1.337055000s
+  par2rs:      .508527000s
+
+[0;32m=== Iteration 4/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 7.9e-05 s, 6.5 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Target: "testfile_100mb" - damaged. Found 1999 of 2000 data blocks.
+52304 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_100mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 9.8e-05 s, 5.2 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loaded 4 new packets
+Loading "testfile_100mb.vol000+01.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loading "testfile_100mb.vol063+37.par2".
+Loaded 8 new packets including 4 recovery blocks
+Loading "testfile_100mb.vol007+08.par2".
+Loaded 6 new packets including 2 recovery blocks
+Loading "testfile_100mb.vol031+32.par2".
+Loaded 41 new packets including 37 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 52432 bytes.
+
+Opening: "testfile_100mb"
+Target: "testfile_100mb" - damaged.
+Scanning: "testfile_100mb"                          
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_100mb"... done.
+
+Verifying source files:
+
+Verified "testfile_100mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 52432 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 104857600 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 1.334741000s
+  par2rs:      .518074000s
+
+[0;32m=== Iteration 5/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 8.6e-05 s, 6.0 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Target: "testfile_100mb" - damaged. Found 1999 of 2000 data blocks.
+52304 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_100mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 6.6e-05 s, 7.8 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loaded 4 new packets
+Loaded 6 new packets including 2 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 5 new packets including 1 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 52432 bytes.
+
+Opening: "testfile_100mb"
+Target: "testfile_100mb" - damaged.
+Scanning: "testfile_100mb"                          
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_100mb"... done.
+
+Verifying source files:
+
+Verified "testfile_100mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 52432 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 104857600 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 1.331384000s
+  par2rs:      .538110000s
+
+[0;32m=== Iteration 6/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 7.9e-05 s, 6.5 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Target: "testfile_100mb" - damaged. Found 1999 of 2000 data blocks.
+52304 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_100mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 7.9e-05 s, 6.5 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 4 new packets
+Loaded 12 new packets including 8 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 52432 bytes.
+
+Opening: "testfile_100mb"
+Target: "testfile_100mb" - damaged.
+Scanning: "testfile_100mb"                          
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_100mb"... done.
+
+Verifying source files:
+
+Verified "testfile_100mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 52432 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 104857600 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 1.332346000s
+  par2rs:      .484422000s
+
+[0;32m=== Iteration 7/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000111 s, 4.6 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Target: "testfile_100mb" - damaged. Found 1999 of 2000 data blocks.
+52304 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_100mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 7.5e-05 s, 6.8 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loaded 4 new packets
+Loaded 6 new packets including 2 recovery blocks
+Loaded 5 new packets including 1 recovery blocks
+Loading "testfile_100mb.vol015+16.par2".
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 52432 bytes.
+
+Opening: "testfile_100mb"
+Target: "testfile_100mb" - damaged.
+Scanning: "testfile_100mb"                          
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_100mb"... done.
+
+Verifying source files:
+
+Verified "testfile_100mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 52432 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 104857600 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 1.328614000s
+  par2rs:      .489289000s
+
+[0;32m=== Iteration 8/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 9.4e-05 s, 5.4 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Target: "testfile_100mb" - damaged. Found 1999 of 2000 data blocks.
+52304 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_100mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 8e-05 s, 6.4 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loaded 4 new packets
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 52432 bytes.
+
+Opening: "testfile_100mb"
+Target: "testfile_100mb" - damaged.
+Scanning: "testfile_100mb"                          
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_100mb"... done.
+
+Verifying source files:
+
+Verified "testfile_100mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 52432 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 104857600 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 1.328195000s
+  par2rs:      .488675000s
+
+[0;32m=== Iteration 9/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 8e-05 s, 6.4 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Target: "testfile_100mb" - damaged. Found 1999 of 2000 data blocks.
+52304 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_100mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 8.6e-05 s, 6.0 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loaded 4 new packets
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 52432 bytes.
+
+Opening: "testfile_100mb"
+Target: "testfile_100mb" - damaged.
+Scanning: "testfile_100mb"                          
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_100mb"... done.
+
+Verifying source files:
+
+Verified "testfile_100mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 52432 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 104857600 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 1.324801000s
+  par2rs:      .482442000s
+
+[0;32m=== Iteration 10/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 8.4e-05 s, 6.1 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Target: "testfile_100mb" - damaged. Found 1999 of 2000 data blocks.
+52304 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_100mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 9.1e-05 s, 5.6 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_100mb.par2".
+Loading "testfile_100mb.vol015+16.par2".
+Loading "testfile_100mb.vol001+02.par2".
+Loading "testfile_100mb.vol007+08.par2".
+Loading "testfile_100mb.vol031+32.par2".
+Loading "testfile_100mb.vol063+37.par2".
+Loading "testfile_100mb.vol003+04.par2".
+Loading "testfile_100mb.vol000+01.par2".
+Loaded 4 new packets
+Loaded 6 new packets including 2 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 5 new packets including 1 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 52432 bytes.
+
+Opening: "testfile_100mb"
+Target: "testfile_100mb" - damaged.
+Scanning: "testfile_100mb"                          
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_100mb"... done.
+
+Verifying source files:
+
+Verified "testfile_100mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 52432 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 104857600 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 1.378383000s
+  par2rs:      .496552000s
+
+[0;34m================================[0m
+[0;34mResults (10 iterations)[0m
+[0;34m================================[0m
+
+[1;33mpar2cmdline:[0m
+  Average: 1.335s
+  Min:     1.324801000s
+  Max:     1.378383000s
+
+[1;33mpar2rs:[0m
+  Average: .522s
+  Min:     .482442000s
+  Max:     .728726000s
+
+[0;32mSpeedup: 2.55x[0m
+
+[1;33mIndividual times:[0m
+Iteration | par2cmdline | par2rs
+----------|-------------|--------
+        1 | 1.326726000s | .728726000s
+        2 | 1.334187000s | .490170000s
+        3 | 1.337055000s | .508527000s
+        4 | 1.334741000s | .518074000s
+        5 | 1.331384000s | .538110000s
+        6 | 1.332346000s | .484422000s
+        7 | 1.328614000s | .489289000s
+        8 | 1.328195000s | .488675000s
+        9 | 1.324801000s | .482442000s
+       10 | 1.378383000s | .496552000s
+
+[0;32m✓ All repairs verified correct[0m
+
+=== Running 1GB benchmark (10 iterations) ===
+[0;34m================================[0m
+[0;34mPAR2 Repair Benchmark (Averaged)[0m
+[0;34mTesting 1000MB file repair[0m
+[0;34mIterations: 10[0m
+[0;34m================================[0m
+
+[1;33mBuilding par2rs...[0m
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.12s
+
+[1;33mGenerating 1000MB test file in /var/folders/rv/xm_hkw514m55mjx39987zzhm0000gn/T/tmp.Pe0u1qtE8b...[0m
+1000+0 records in
+1000+0 records out
+1048576000 bytes (1.0 GB, 1000 MiB) copied, 2.24825 s, 466 MB/s
+
+[1;33mCreating PAR2 files...[0m
+
+Created 8 PAR2 files
+Original MD5: 2cf0d31fbcdea99cbaf1703ea5cd018b
+
+[0;32m=== Iteration 1/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.001023 s, 500 kB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Target: "testfile_1000mb" - damaged. Found 1999 of 2000 data blocks.
+524160 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_1000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 5.3e-05 s, 9.7 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loaded 4 new packets
+Loading "testfile_1000mb.vol063+37.par2".
+Loaded 6 new packets including 2 recovery blocks
+Loaded 5 new packets including 1 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 524288 bytes.
+
+Opening: "testfile_1000mb"
+Target: "testfile_1000mb" - damaged.
+Scanning: "testfile_1000mb"                           
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_1000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_1000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 524288 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 1048576000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 13.365986000s
+  par2rs:      5.254115000s
+
+[0;32m=== Iteration 2/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.00014 s, 3.7 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Target: "testfile_1000mb" - damaged. Found 1999 of 2000 data blocks.
+524160 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_1000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 3.9e-05 s, 13.1 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Loaded 4 new packets
+Loading "testfile_1000mb.vol063+37.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 524288 bytes.
+
+Opening: "testfile_1000mb"
+Target: "testfile_1000mb" - damaged.
+Scanning: "testfile_1000mb"                           
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_1000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_1000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 524288 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 1048576000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 13.467026000s
+  par2rs:      4.881266000s
+
+[0;32m=== Iteration 3/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 7.2e-05 s, 7.1 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Target: "testfile_1000mb" - damaged. Found 1999 of 2000 data blocks.
+524160 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_1000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 6.8e-05 s, 7.5 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Loading "testfile_1000mb.par2".
+Loaded 4 new packets
+Loaded 6 new packets including 2 recovery blocks
+Loaded 5 new packets including 1 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 524288 bytes.
+
+Opening: "testfile_1000mb"
+Target: "testfile_1000mb" - damaged.
+Scanning: "testfile_1000mb"                           
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_1000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_1000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 524288 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 1048576000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 13.113125000s
+  par2rs:      4.663648000s
+
+[0;32m=== Iteration 4/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000153 s, 3.3 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Target: "testfile_1000mb" - damaged. Found 1999 of 2000 data blocks.
+524160 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_1000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 8.9e-05 s, 5.8 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loaded 4 new packets
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loading "testfile_1000mb.vol063+37.par2".
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 524288 bytes.
+
+Opening: "testfile_1000mb"
+Target: "testfile_1000mb" - damaged.
+Scanning: "testfile_1000mb"                           
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_1000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_1000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 524288 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 1048576000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 13.082567000s
+  par2rs:      4.738096000s
+
+[0;32m=== Iteration 5/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000118 s, 4.3 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Target: "testfile_1000mb" - damaged. Found 1999 of 2000 data blocks.
+524160 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_1000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 7.7e-05 s, 6.6 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loaded 4 new packets
+Loading "testfile_1000mb.vol001+02.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 524288 bytes.
+
+Opening: "testfile_1000mb"
+Target: "testfile_1000mb" - damaged.
+Scanning: "testfile_1000mb"                           
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_1000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_1000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 524288 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 1048576000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 13.118598000s
+  par2rs:      4.859411000s
+
+[0;32m=== Iteration 6/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000128 s, 4.0 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Target: "testfile_1000mb" - damaged. Found 1999 of 2000 data blocks.
+524160 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_1000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 8.1e-05 s, 6.3 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Loaded 4 new packets
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 524288 bytes.
+
+Opening: "testfile_1000mb"
+Target: "testfile_1000mb" - damaged.
+Scanning: "testfile_1000mb"                           
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_1000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_1000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 524288 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 1048576000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 13.073837000s
+  par2rs:      4.647387000s
+
+[0;32m=== Iteration 7/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000121 s, 4.2 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Target: "testfile_1000mb" - damaged. Found 1999 of 2000 data blocks.
+524160 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_1000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 4.1e-05 s, 12.5 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Loaded 4 new packets
+Loading "testfile_1000mb.vol001+02.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 524288 bytes.
+
+Opening: "testfile_1000mb"
+Target: "testfile_1000mb" - damaged.
+Scanning: "testfile_1000mb"                           
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_1000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_1000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 524288 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 1048576000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 13.007479000s
+  par2rs:      4.807250000s
+
+[0;32m=== Iteration 8/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000128 s, 4.0 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Target: "testfile_1000mb" - damaged. Found 1999 of 2000 data blocks.
+524160 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_1000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 8.7e-05 s, 5.9 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Loaded 4 new packets
+Loading "testfile_1000mb.vol015+16.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 524288 bytes.
+
+Opening: "testfile_1000mb"
+Target: "testfile_1000mb" - damaged.
+Scanning: "testfile_1000mb"                           
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_1000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_1000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 524288 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 1048576000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 13.155219000s
+  par2rs:      4.788019000s
+
+[0;32m=== Iteration 9/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000144 s, 3.6 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Target: "testfile_1000mb" - damaged. Found 1999 of 2000 data blocks.
+524160 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_1000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 9.6e-05 s, 5.3 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_1000mb.vol000+01.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.par2".
+Loaded 4 new packets
+Loading "testfile_1000mb.vol031+32.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 524288 bytes.
+
+Opening: "testfile_1000mb"
+Target: "testfile_1000mb" - damaged.
+Scanning: "testfile_1000mb"                           
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_1000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_1000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 524288 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 1048576000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 13.062907000s
+  par2rs:      4.853499000s
+
+[0;32m=== Iteration 10/10 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000142 s, 3.6 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_1000mb.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Target: "testfile_1000mb" - damaged. Found 1999 of 2000 data blocks.
+524160 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_1000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 9.4e-05 s, 5.4 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_1000mb.vol063+37.par2".
+Loading "testfile_1000mb.vol003+04.par2".
+Loading "testfile_1000mb.vol000+01.par2".
+Loading "testfile_1000mb.vol001+02.par2".
+Loading "testfile_1000mb.vol031+32.par2".
+Loading "testfile_1000mb.vol007+08.par2".
+Loading "testfile_1000mb.vol015+16.par2".
+Loading "testfile_1000mb.par2".
+Loaded 4 new packets
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 524288 bytes.
+
+Opening: "testfile_1000mb"
+Target: "testfile_1000mb" - damaged.
+Scanning: "testfile_1000mb"                           
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_1000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_1000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 524288 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 1048576000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 13.019634000s
+  par2rs:      4.723564000s
+
+[0;34m================================[0m
+[0;34mResults (10 iterations)[0m
+[0;34m================================[0m
+
+[1;33mpar2cmdline:[0m
+  Average: 13.146s
+  Min:     13.007479000s
+  Max:     13.467026000s
+
+[1;33mpar2rs:[0m
+  Average: 4.821s
+  Min:     4.647387000s
+  Max:     5.254115000s
+
+[0;32mSpeedup: 2.72x[0m
+
+[1;33mIndividual times:[0m
+Iteration | par2cmdline | par2rs
+----------|-------------|--------
+        1 | 13.365986000s | 5.254115000s
+        2 | 13.467026000s | 4.881266000s
+        3 | 13.113125000s | 4.663648000s
+        4 | 13.082567000s | 4.738096000s
+        5 | 13.118598000s | 4.859411000s
+        6 | 13.073837000s | 4.647387000s
+        7 | 13.007479000s | 4.807250000s
+        8 | 13.155219000s | 4.788019000s
+        9 | 13.062907000s | 4.853499000s
+       10 | 13.019634000s | 4.723564000s
+
+[0;32m✓ All repairs verified correct[0m
+
+=== Running 10GB benchmark (5 iterations) ===
+[0;34m================================[0m
+[0;34mPAR2 Repair Benchmark (Averaged)[0m
+[0;34mTesting 10000MB file repair[0m
+[0;34mIterations: 5[0m
+[0;34m================================[0m
+
+[1;33mBuilding par2rs...[0m
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.14s
+
+[1;33mGenerating 10000MB test file in /var/folders/rv/xm_hkw514m55mjx39987zzhm0000gn/T/tmp.thKysO1Uvm...[0m
+10000+0 records in
+10000+0 records out
+10485760000 bytes (10 GB, 9.8 GiB) copied, 22.9007 s, 458 MB/s
+
+[1;33mCreating PAR2 files...[0m
+
+Created 8 PAR2 files
+Original MD5: 41c6929f6578c3ce3d4f0058949d62bc
+
+[0;32m=== Iteration 1/5 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000244 s, 2.1 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10000mb.par2".
+Loading "testfile_10000mb.vol000+01.par2".
+Loading "testfile_10000mb.vol007+08.par2".
+Loading "testfile_10000mb.vol063+37.par2".
+Loading "testfile_10000mb.vol031+32.par2".
+Loading "testfile_10000mb.vol015+16.par2".
+Loading "testfile_10000mb.vol001+02.par2".
+Loading "testfile_10000mb.vol003+04.par2".
+Target: "testfile_10000mb" - damaged. Found 1999 of 2000 data blocks.
+5242752 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000221 s, 2.3 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10000mb.vol000+01.par2".
+Loading "testfile_10000mb.vol031+32.par2".
+Loading "testfile_10000mb.vol015+16.par2".
+Loading "testfile_10000mb.vol063+37.par2".
+Loading "testfile_10000mb.vol001+02.par2".
+Loading "testfile_10000mb.vol007+08.par2".
+Loading "testfile_10000mb.vol003+04.par2".
+Loading "testfile_10000mb.par2".
+Loaded 4 new packets
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5242880 bytes.
+
+Opening: "testfile_10000mb"
+Target: "testfile_10000mb" - damaged.
+Scanning: "testfile_10000mb"                            
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5242880 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 137.865874000s
+  par2rs:      73.615743000s
+
+[0;32m=== Iteration 2/5 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 4.9e-05 s, 10.4 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10000mb.par2".
+Loading "testfile_10000mb.vol000+01.par2".
+Loading "testfile_10000mb.vol007+08.par2".
+Loading "testfile_10000mb.vol063+37.par2".
+Loading "testfile_10000mb.vol031+32.par2".
+Loading "testfile_10000mb.vol015+16.par2".
+Loading "testfile_10000mb.vol001+02.par2".
+Loading "testfile_10000mb.vol003+04.par2".
+Target: "testfile_10000mb" - damaged. Found 1999 of 2000 data blocks.
+5242752 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000199 s, 2.6 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10000mb.vol031+32.par2".
+Loading "testfile_10000mb.par2".
+Loading "testfile_10000mb.vol007+08.par2".
+Loading "testfile_10000mb.vol003+04.par2".
+Loading "testfile_10000mb.vol063+37.par2".
+Loading "testfile_10000mb.vol001+02.par2".
+Loading "testfile_10000mb.vol000+01.par2".
+Loaded 4 new packets
+Loading "testfile_10000mb.vol015+16.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5242880 bytes.
+
+Opening: "testfile_10000mb"
+Target: "testfile_10000mb" - damaged.
+Scanning: "testfile_10000mb"                            
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5242880 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 138.379179000s
+  par2rs:      75.086577000s
+
+[0;32m=== Iteration 3/5 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 4.4e-05 s, 11.6 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10000mb.par2".
+Loading "testfile_10000mb.vol000+01.par2".
+Loading "testfile_10000mb.vol007+08.par2".
+Loading "testfile_10000mb.vol063+37.par2".
+Loading "testfile_10000mb.vol031+32.par2".
+Loading "testfile_10000mb.vol015+16.par2".
+Loading "testfile_10000mb.vol001+02.par2".
+Loading "testfile_10000mb.vol003+04.par2".
+Target: "testfile_10000mb" - damaged. Found 1999 of 2000 data blocks.
+5242752 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000404 s, 1.3 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10000mb.vol003+04.par2".
+Loading "testfile_10000mb.vol031+32.par2".
+Loading "testfile_10000mb.vol015+16.par2".
+Loading "testfile_10000mb.par2".
+Loading "testfile_10000mb.vol000+01.par2".
+Loading "testfile_10000mb.vol063+37.par2".
+Loading "testfile_10000mb.vol001+02.par2".
+Loading "testfile_10000mb.vol007+08.par2".
+Loaded 4 new packets
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5242880 bytes.
+
+Opening: "testfile_10000mb"
+Target: "testfile_10000mb" - damaged.
+Scanning: "testfile_10000mb"                            
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5242880 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 138.851262000s
+  par2rs:      76.219157000s
+
+[0;32m=== Iteration 4/5 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 7.3e-05 s, 7.0 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10000mb.par2".
+Loading "testfile_10000mb.vol000+01.par2".
+Loading "testfile_10000mb.vol007+08.par2".
+Loading "testfile_10000mb.vol063+37.par2".
+Loading "testfile_10000mb.vol031+32.par2".
+Loading "testfile_10000mb.vol015+16.par2".
+Loading "testfile_10000mb.vol001+02.par2".
+Loading "testfile_10000mb.vol003+04.par2".
+Target: "testfile_10000mb" - damaged. Found 1999 of 2000 data blocks.
+5242752 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000188 s, 2.7 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10000mb.vol001+02.par2".
+Loading "testfile_10000mb.vol015+16.par2".
+Loading "testfile_10000mb.vol003+04.par2".
+Loading "testfile_10000mb.vol007+08.par2".
+Loading "testfile_10000mb.vol031+32.par2".
+Loading "testfile_10000mb.vol000+01.par2".
+Loading "testfile_10000mb.par2".
+Loading "testfile_10000mb.vol063+37.par2".
+Loaded 4 new packets
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5242880 bytes.
+
+Opening: "testfile_10000mb"
+Target: "testfile_10000mb" - damaged.
+Scanning: "testfile_10000mb"                            
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5242880 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 137.214962000s
+  par2rs:      296.258532000s
+
+[0;32m=== Iteration 5/5 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000273 s, 1.9 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_10000mb.par2".
+Loading "testfile_10000mb.vol000+01.par2".
+Loading "testfile_10000mb.vol007+08.par2".
+Loading "testfile_10000mb.vol063+37.par2".
+Loading "testfile_10000mb.vol031+32.par2".
+Loading "testfile_10000mb.vol015+16.par2".
+Loading "testfile_10000mb.vol001+02.par2".
+Loading "testfile_10000mb.vol003+04.par2".
+Target: "testfile_10000mb" - damaged. Found 1999 of 2000 data blocks.
+5242752 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_10000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000326 s, 1.6 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_10000mb.par2".
+Loading "testfile_10000mb.vol001+02.par2".
+Loading "testfile_10000mb.vol007+08.par2".
+Loading "testfile_10000mb.vol000+01.par2".
+Loading "testfile_10000mb.vol031+32.par2".
+Loading "testfile_10000mb.vol063+37.par2".
+Loading "testfile_10000mb.vol015+16.par2".
+Loading "testfile_10000mb.vol003+04.par2".
+Loaded 4 new packets
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 5242880 bytes.
+
+Opening: "testfile_10000mb"
+Target: "testfile_10000mb" - damaged.
+Scanning: "testfile_10000mb"                            
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_10000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_10000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 5242880 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 10485760000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 216.615567000s
+  par2rs:      100.226997000s
+
+[0;34m================================[0m
+[0;34mResults (5 iterations)[0m
+[0;34m================================[0m
+
+[1;33mpar2cmdline:[0m
+  Average: 153.785s
+  Min:     137.214962000s
+  Max:     216.615567000s
+
+[1;33mpar2rs:[0m
+  Average: 124.281s
+  Min:     73.615743000s
+  Max:     296.258532000s
+
+[0;32mSpeedup: 1.23x[0m
+
+[1;33mIndividual times:[0m
+Iteration | par2cmdline | par2rs
+----------|-------------|--------
+        1 | 137.865874000s | 73.615743000s
+        2 | 138.379179000s | 75.086577000s
+        3 | 138.851262000s | 76.219157000s
+        4 | 137.214962000s | 296.258532000s
+        5 | 216.615567000s | 100.226997000s
+
+[0;32m✓ All repairs verified correct[0m
+
+=== Running 25GB benchmark (3 iterations) ===
+[0;34m================================[0m
+[0;34mPAR2 Repair Benchmark (Averaged)[0m
+[0;34mTesting 25000MB file repair[0m
+[0;34mIterations: 3[0m
+[0;34m================================[0m
+
+[1;33mBuilding par2rs...[0m
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.19s
+
+[1;33mGenerating 25000MB test file in /var/folders/rv/xm_hkw514m55mjx39987zzhm0000gn/T/tmp.ICZZ6y9O3U...[0m
+25000+0 records in
+25000+0 records out
+26214400000 bytes (26 GB, 24 GiB) copied, 91.3926 s, 287 MB/s
+
+[1;33mCreating PAR2 files...[0m
+
+Created 8 PAR2 files
+Original MD5: 534cd016944263be40ee290154c001c3
+
+[0;32m=== Iteration 1/3 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000645 s, 794 kB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_25000mb.par2".
+Loading "testfile_25000mb.vol001+02.par2".
+Loading "testfile_25000mb.vol015+16.par2".
+Loading "testfile_25000mb.vol003+04.par2".
+Loading "testfile_25000mb.vol000+01.par2".
+Loading "testfile_25000mb.vol031+32.par2".
+Loading "testfile_25000mb.vol063+37.par2".
+Loading "testfile_25000mb.vol007+08.par2".
+Target: "testfile_25000mb" - damaged. Found 1999 of 2000 data blocks.
+13107072 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_25000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000535 s, 957 kB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_25000mb.vol063+37.par2".
+Loading "testfile_25000mb.vol015+16.par2".
+Loading "testfile_25000mb.vol007+08.par2".
+Loading "testfile_25000mb.vol001+02.par2".
+Loading "testfile_25000mb.vol031+32.par2".
+Loading "testfile_25000mb.par2".
+Loading "testfile_25000mb.vol003+04.par2".
+Loading "testfile_25000mb.vol000+01.par2".
+Loaded 4 new packets
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 13107200 bytes.
+
+Opening: "testfile_25000mb"
+Target: "testfile_25000mb" - damaged.
+Scanning: "testfile_25000mb"                            
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_25000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_25000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 13107200 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 26214400000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 616.484919000s
+  par2rs:      531.773699000s
+
+[0;32m=== Iteration 2/3 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000452 s, 1.1 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_25000mb.par2".
+Loading "testfile_25000mb.vol001+02.par2".
+Loading "testfile_25000mb.vol015+16.par2".
+Loading "testfile_25000mb.vol003+04.par2".
+Loading "testfile_25000mb.vol000+01.par2".
+Loading "testfile_25000mb.vol031+32.par2".
+Loading "testfile_25000mb.vol063+37.par2".
+Loading "testfile_25000mb.vol007+08.par2".
+Target: "testfile_25000mb" - damaged. Found 1999 of 2000 data blocks.
+13107072 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_25000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000553 s, 926 kB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_25000mb.vol031+32.par2".
+Loading "testfile_25000mb.vol063+37.par2".
+Loading "testfile_25000mb.par2".
+Loading "testfile_25000mb.vol007+08.par2".
+Loading "testfile_25000mb.vol003+04.par2".
+Loading "testfile_25000mb.vol001+02.par2".
+Loading "testfile_25000mb.vol015+16.par2".
+Loaded 4 new packets
+Loading "testfile_25000mb.vol000+01.par2".
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 13107200 bytes.
+
+Opening: "testfile_25000mb"
+Target: "testfile_25000mb" - damaged.
+Scanning: "testfile_25000mb"                            
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_25000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_25000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 13107200 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 26214400000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 733.180058000s
+  par2rs:      2120.069365000s
+
+[0;32m=== Iteration 3/3 ===[0m
+  PAR2 files present: 8
+[1;33m  Corrupting file for par2cmdline...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000384 s, 1.3 MB/s
+[1;33m  Running par2cmdline repair...[0m
+Loading "testfile_25000mb.par2".
+Loading "testfile_25000mb.vol001+02.par2".
+Loading "testfile_25000mb.vol015+16.par2".
+Loading "testfile_25000mb.vol003+04.par2".
+Loading "testfile_25000mb.vol000+01.par2".
+Loading "testfile_25000mb.vol031+32.par2".
+Loading "testfile_25000mb.vol063+37.par2".
+Loading "testfile_25000mb.vol007+08.par2".
+Target: "testfile_25000mb" - damaged. Found 1999 of 2000 data blocks.
+13107072 bytes of data were skipped whilst scanning.
+If there are not enough blocks found to repair: try again with the -N option.
+
+Repair is required.
+Repair is possible.
+
+
+
+Verifying repaired files:
+
+Target: "testfile_25000mb" - found.
+
+Repair complete.
+[1;33m  Corrupting file for par2rs...[0m
+1+0 records in
+1+0 records out
+512 bytes copied, 0.000317 s, 1.6 MB/s
+[1;33m  Running par2rs repair...[0m
+Loading "testfile_25000mb.vol015+16.par2".
+Loading "testfile_25000mb.vol063+37.par2".
+Loading "testfile_25000mb.vol031+32.par2".
+Loading "testfile_25000mb.vol003+04.par2".
+Loading "testfile_25000mb.vol007+08.par2".
+Loading "testfile_25000mb.vol001+02.par2".
+Loading "testfile_25000mb.par2".
+Loading "testfile_25000mb.vol000+01.par2".
+Loaded 4 new packets
+Loaded 5 new packets including 1 recovery blocks
+Loaded 6 new packets including 2 recovery blocks
+Loaded 8 new packets including 4 recovery blocks
+Loaded 12 new packets including 8 recovery blocks
+Loaded 20 new packets including 16 recovery blocks
+Loaded 36 new packets including 32 recovery blocks
+Loaded 41 new packets including 37 recovery blocks
+There are 1 recoverable files and 100 recovery blocks.
+The block size used was 13107200 bytes.
+
+Opening: "testfile_25000mb"
+Target: "testfile_25000mb" - damaged.
+Scanning: "testfile_25000mb"                            
+You have 100 recovery blocks available.
+Repair is possible.
+You have an excess of 99 recovery blocks.
+1 recovery blocks will be used to repair.
+
+Repairing files:
+
+Repairing "testfile_25000mb"... done.
+
+Verifying source files:
+
+Verified "testfile_25000mb" - correct.
+
+There are 1 recoverable files and 0 other files.
+The block size used was 13107200 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 26214400000 bytes.
+
+Verifying source files:
+
+
+Repair complete.
+Repaired 1 file(s).
+Verified 1 file(s).
+  par2cmdline: 15716.034411000s
+  par2rs:      18863.035668000s
+
+[0;34m================================[0m
+[0;34mResults (3 iterations)[0m
+[0;34m================================[0m
+
+[1;33mpar2cmdline:[0m
+  Average: 5688.566s
+  Min:     616.484919000s
+  Max:     15716.034411000s
+
+[1;33mpar2rs:[0m
+  Average: 7171.626s
+  Min:     531.773699000s
+  Max:     18863.035668000s
+
+[0;32mSpeedup: .79x[0m
+
+[1;33mIndividual times:[0m
+Iteration | par2cmdline | par2rs
+----------|-------------|--------
+        1 | 616.484919000s | 531.773699000s
+        2 | 733.180058000s | 2120.069365000s
+        3 | 15716.034411000s | 18863.035668000s
+
+[0;32m✓ All repairs verified correct[0m
+

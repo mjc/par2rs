@@ -1,3 +1,4 @@
 [toolchain]
-channel = "stable"
+# until std::simd is stabilized
+channel = "nightly"
 components = ["clippy", "rustfmt", "rustc", "cargo"]
