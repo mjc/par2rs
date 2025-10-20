@@ -88,6 +88,14 @@ pub struct ChunkedSliceProvider {
     slice_size: usize,
     /// Cache of verified slices (to avoid re-verification)
     verified_slices: HashMap<usize, bool>,
+    /// Read-ahead cache: (slice_index, chunk_offset) -> data
+    /// Caches upcoming chunks to reduce I/O operations
+    chunk_cache: HashMap<(usize, usize), Vec<u8>>,
+    /// Maximum number of chunks to cache (limits memory usage)
+    max_cache_size: usize,
+    /// LRU tracking: tracks last access order for cache eviction
+    cache_access_counter: usize,
+    cache_access_times: HashMap<(usize, usize), usize>,
 }
 
 impl ChunkedSliceProvider {
@@ -98,6 +106,11 @@ impl ChunkedSliceProvider {
             file_handles: HashMap::default(),
             slice_size,
             verified_slices: HashMap::default(),
+            chunk_cache: HashMap::default(),
+            // Cache up to 1000 chunks (64MB with 64KB chunks) - reasonable memory usage
+            max_cache_size: 1000,
+            cache_access_counter: 0,
+            cache_access_times: HashMap::default(),
         }
     }
 
@@ -118,6 +131,77 @@ impl ChunkedSliceProvider {
         }
         Ok(self.file_handles.get_mut(path).unwrap())
     }
+
+    /// Find the least recently used cache entry for eviction
+    fn find_lru_cache_entry(&self) -> Option<(usize, usize)> {
+        self.cache_access_times
+            .iter()
+            .min_by_key(|(_, &access_time)| access_time)
+            .map(|(&key, _)| key)
+    }
+
+    /// Prefetch upcoming chunks from a slice to reduce I/O operations
+    /// Reads ahead 3-5 chunks at a time in a single sequential read
+    fn prefetch_chunks(
+        &mut self,
+        slice_index: usize,
+        start_offset: usize,
+        chunk_size: usize,
+        location: &SliceLocation,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Don't prefetch if cache is getting full
+        if self.chunk_cache.len() >= self.max_cache_size * 9 / 10 {
+            return Ok(());
+        }
+
+        // Prefetch next 4 chunks (256KB read-ahead with 64KB chunks)
+        const PREFETCH_COUNT: usize = 4;
+
+        for i in 0..PREFETCH_COUNT {
+            let prefetch_offset = start_offset + (i * chunk_size);
+
+            // Stop if beyond slice boundary
+            if prefetch_offset >= location.size {
+                break;
+            }
+
+            let cache_key = (slice_index, prefetch_offset);
+
+            // Skip if already cached
+            if self.chunk_cache.contains_key(&cache_key) {
+                continue;
+            }
+
+            // Evict LRU entry if cache is full
+            if self.chunk_cache.len() >= self.max_cache_size {
+                if let Some(lru_key) = self.find_lru_cache_entry() {
+                    self.chunk_cache.remove(&lru_key);
+                    self.cache_access_times.remove(&lru_key);
+                } else {
+                    break; // Can't evict, stop prefetching
+                }
+            }
+
+            // Calculate bytes to read
+            let bytes_to_read = (location.size - prefetch_offset).min(chunk_size);
+            let mut buffer = vec![0u8; bytes_to_read];
+
+            // Read the chunk
+            let reader = self.get_file_handle(&location.file_path)?;
+            reader.seek(SeekFrom::Start(location.offset + prefetch_offset as u64))?;
+            let bytes_read = reader.read(&mut buffer)?;
+
+            buffer.truncate(bytes_read);
+
+            // Add to cache with access time
+            self.cache_access_counter += 1;
+            self.chunk_cache.insert(cache_key, buffer);
+            self.cache_access_times
+                .insert(cache_key, self.cache_access_counter);
+        }
+
+        Ok(())
+    }
 }
 
 impl SliceProvider for ChunkedSliceProvider {
@@ -127,6 +211,21 @@ impl SliceProvider for ChunkedSliceProvider {
         chunk_offset: usize,
         chunk_size: usize,
     ) -> Result<ChunkData, Box<dyn std::error::Error>> {
+        // Check cache first
+        let cache_key = (slice_index, chunk_offset);
+        if let Some(cached_data) = self.chunk_cache.get(&cache_key) {
+            // Update LRU access time
+            self.cache_access_counter += 1;
+            self.cache_access_times
+                .insert(cache_key, self.cache_access_counter);
+
+            let valid_bytes = cached_data.len();
+            return Ok(ChunkData {
+                data: cached_data.clone(),
+                valid_bytes,
+            });
+        }
+
         let location = self
             .slice_locations
             .get(&slice_index)
@@ -154,8 +253,33 @@ impl SliceProvider for ChunkedSliceProvider {
 
         buffer.truncate(bytes_read);
 
+        // Cache this chunk with LRU eviction if needed
+        let result_data = buffer.clone();
+        self.cache_access_counter += 1;
+
+        if self.chunk_cache.len() >= self.max_cache_size {
+            // Evict least recently used entry
+            if let Some(lru_key) = self.find_lru_cache_entry() {
+                self.chunk_cache.remove(&lru_key);
+                self.cache_access_times.remove(&lru_key);
+            }
+        }
+
+        self.chunk_cache.insert(cache_key, buffer);
+        self.cache_access_times
+            .insert(cache_key, self.cache_access_counter);
+
+        // Read-ahead: prefetch the next few chunks from this slice
+        // This dramatically reduces I/O operations for sequential access
+        self.prefetch_chunks(
+            slice_index,
+            chunk_offset + chunk_size,
+            chunk_size,
+            &location,
+        )?;
+
         Ok(ChunkData {
-            data: buffer,
+            data: result_data,
             valid_bytes: bytes_read,
         })
     }
