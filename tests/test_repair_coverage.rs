@@ -197,7 +197,9 @@ fn test_error_no_valid_packets() {
     // Empty PAR2 file should trigger NoValidPackets error
     let result = repair_files(par2_file.to_str().unwrap());
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), RepairError::NoValidPackets));
+    if let Err(err) = result {
+        assert!(matches!(err, RepairError::NoValidPackets));
+    }
 }
 
 #[test]
@@ -207,7 +209,7 @@ fn test_size_mismatch_detection() {
     // Copy pre-generated fixtures
     copy_fixture_dir("size_test_original.txt", temp_dir.path());
     copy_fixture_dir("size_test.par2", temp_dir.path());
-    copy_fixture_dir("size_test.vol0+1.par2", temp_dir.path());
+    copy_fixture_dir("size_test.vol00+01.par2", temp_dir.path());
 
     let test_file = temp_dir.path().join("size_test_original.txt");
     let par2_file = temp_dir.path().join("size_test.par2");
@@ -227,7 +229,7 @@ fn test_hash_mismatch_detection() {
     // Copy pre-generated fixtures
     copy_fixture_dir("hash_test_original.txt", temp_dir.path());
     copy_fixture_dir("hash_test.par2", temp_dir.path());
-    copy_fixture_dir("hash_test.vol0+1.par2", temp_dir.path());
+    copy_fixture_dir("hash_test.vol00+01.par2", temp_dir.path());
 
     let test_file = temp_dir.path().join("hash_test_original.txt");
     let par2_file = temp_dir.path().join("hash_test.par2");
@@ -244,10 +246,14 @@ fn test_hash_mismatch_detection() {
 fn test_corrupted_file_repair() {
     let temp_dir = TempDir::new().unwrap();
 
-    // Copy pre-generated fixtures
+    // Copy pre-generated fixtures - need enough recovery blocks for repair
     copy_fixture_dir("corrupt_repair_original.txt", temp_dir.path());
     copy_fixture_dir("corrupt_repair.par2", temp_dir.path());
-    copy_fixture_dir("corrupt_repair.vol0+1.par2", temp_dir.path());
+    copy_fixture_dir("corrupt_repair.vol00+01.par2", temp_dir.path());
+    copy_fixture_dir("corrupt_repair.vol01+02.par2", temp_dir.path());
+    copy_fixture_dir("corrupt_repair.vol03+04.par2", temp_dir.path());
+    copy_fixture_dir("corrupt_repair.vol07+08.par2", temp_dir.path());
+    copy_fixture_dir("corrupt_repair.vol15+16.par2", temp_dir.path());
 
     let test_file = temp_dir.path().join("corrupt_repair_original.txt");
     let par2_file = temp_dir.path().join("corrupt_repair.par2");
@@ -260,7 +266,7 @@ fn test_corrupted_file_repair() {
     }
     fs::write(&test_file, &corrupted).unwrap();
 
-    // Repair should succeed
+    // Repair should succeed with enough recovery blocks
     let result = repair_files(par2_file.to_str().unwrap());
     assert!(result.is_ok());
 
@@ -302,8 +308,7 @@ fn test_missing_file_repair() {
     }
 }
 
-// Helper function - kept for backward compatibility but no longer used
-#[allow(dead_code)]
+// Helper function to create minimal PAR2 files for testing
 fn create_minimal_par2(par2_path: &PathBuf, data_file: &PathBuf) {
     // Use par2cmdline to create a real PAR2 file
     std::process::Command::new("par2")
