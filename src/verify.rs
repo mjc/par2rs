@@ -1,9 +1,10 @@
 use crate::domain::{Crc32Value, FileId, Md5Hash};
+use crate::validation;
 use crate::Packet;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::Path;
 
 /// File verification status
@@ -545,77 +546,8 @@ fn verify_blocks_in_file(
     slice_checksums: &[(Md5Hash, Crc32Value)],
     block_size: usize,
 ) -> (usize, Vec<u32>) {
-    let mut available_blocks = 0;
-    let mut damaged_blocks = Vec::new();
-
-    let mut file = match File::open(file_path) {
-        Ok(f) => f,
-        Err(_) => return (0, (0..slice_checksums.len() as u32).collect()),
-    };
-
-    // Get file size to handle the last block correctly
-    let file_size = match file.metadata() {
-        Ok(metadata) => metadata.len() as usize,
-        Err(_) => return (0, (0..slice_checksums.len() as u32).collect()),
-    };
-
-    let mut buffer = vec![0u8; block_size];
-
-    for (block_index, (expected_md5, expected_crc)) in slice_checksums.iter().enumerate() {
-        let block_offset = block_index * block_size;
-
-        // Calculate how many bytes we should read for this block
-        let bytes_to_read = if block_offset + block_size <= file_size {
-            block_size
-        } else if block_offset < file_size {
-            file_size - block_offset
-        } else {
-            // Block is beyond file size
-            damaged_blocks.push(block_index as u32);
-            continue;
-        };
-
-        // Seek to the correct position for this block
-        if file.seek(SeekFrom::Start(block_offset as u64)).is_err() {
-            damaged_blocks.push(block_index as u32);
-            continue;
-        }
-
-        // Read exactly the amount we need for this block
-        buffer.resize(bytes_to_read, 0);
-        let mut total_read = 0;
-        while total_read < bytes_to_read {
-            match file.read(&mut buffer[total_read..bytes_to_read]) {
-                Ok(0) => break, // EOF
-                Ok(n) => total_read += n,
-                Err(_) => {
-                    damaged_blocks.push(block_index as u32);
-                    continue;
-                }
-            }
-        }
-
-        if total_read != bytes_to_read {
-            damaged_blocks.push(block_index as u32);
-            continue;
-        }
-
-        // Compute MD5 of the block
-        use md5::Digest;
-        let block_md5 = Md5Hash::new(md5::Md5::digest(&buffer[..bytes_to_read]).into());
-
-        // Compute CRC32 of the block
-        let block_crc = Crc32Value::new(crc32fast::hash(&buffer[..bytes_to_read]));
-
-        // Check if block is valid
-        if &block_md5 == expected_md5 && &block_crc == expected_crc {
-            available_blocks += 1;
-        } else {
-            damaged_blocks.push(block_index as u32);
-        }
-    }
-
-    (available_blocks, damaged_blocks)
+    // Use shared validation module for efficient sequential I/O
+    validation::validate_blocks_md5_crc32(file_path, slice_checksums, block_size)
 }
 
 /// Print verification results in par2cmdline style

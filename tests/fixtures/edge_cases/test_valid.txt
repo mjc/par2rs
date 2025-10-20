@@ -1,0 +1,1 @@
+Valid content that won't be corrupted

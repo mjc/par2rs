@@ -6,8 +6,23 @@ use par2rs::domain::{
 };
 use par2rs::repair::*;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+
+// Helper to copy fixtures to temp directory
+fn copy_fixture_dir(fixture_name: &str, temp_dir: &Path) -> PathBuf {
+    let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/edge_cases")
+        .join(fixture_name);
+
+    if fixture_path.is_file() {
+        let dest = temp_dir.join(fixture_name);
+        fs::copy(&fixture_path, &dest).unwrap();
+        dest
+    } else {
+        panic!("Fixture not found: {:?}", fixture_path);
+    }
+}
 
 /// Test all trait implementations for type-safe wrappers
 #[test]
@@ -188,35 +203,37 @@ fn test_error_no_valid_packets() {
 #[test]
 fn test_size_mismatch_detection() {
     let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("test.txt");
 
-    // Create file and PAR2
-    fs::write(&test_file, b"Original content").unwrap();
-    let par2_file = temp_dir.path().join("test.par2");
-    create_minimal_par2(&par2_file, &test_file);
+    // Copy pre-generated fixtures
+    copy_fixture_dir("size_test_original.txt", temp_dir.path());
+    copy_fixture_dir("size_test.par2", temp_dir.path());
+    copy_fixture_dir("size_test.vol0+1.par2", temp_dir.path());
 
-    // Change file size after PAR2 creation
-    fs::write(&test_file, b"Different").unwrap();
+    let test_file = temp_dir.path().join("size_test_original.txt");
+    let par2_file = temp_dir.path().join("size_test.par2");
 
-    // Try to repair - should detect size mismatch
+    // Change file size (create a file with different size)
+    fs::write(&test_file, vec![0x33; 5000]).unwrap(); // Original is 10000 bytes
+
+    // Should detect size mismatch and attempt repair
     let result = repair_files(par2_file.to_str().unwrap());
-    // File should be detected as corrupted and attempted repair
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_hash_mismatch_detection() {
     let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("test.txt");
 
-    // Create file with specific size
-    let content = vec![0xAA; 1000];
-    fs::write(&test_file, &content).unwrap();
-    let par2_file = temp_dir.path().join("test.par2");
-    create_minimal_par2(&par2_file, &test_file);
+    // Copy pre-generated fixtures
+    copy_fixture_dir("hash_test_original.txt", temp_dir.path());
+    copy_fixture_dir("hash_test.par2", temp_dir.path());
+    copy_fixture_dir("hash_test.vol0+1.par2", temp_dir.path());
+
+    let test_file = temp_dir.path().join("hash_test_original.txt");
+    let par2_file = temp_dir.path().join("hash_test.par2");
 
     // Change content but keep same size to trigger hash mismatch
-    fs::write(&test_file, vec![0xBB; 1000]).unwrap();
+    fs::write(&test_file, vec![0xBB; 10000]).unwrap(); // Original is 0x44 repeated
 
     // Repair should detect the hash mismatch
     let result = repair_files(par2_file.to_str().unwrap());
@@ -226,16 +243,17 @@ fn test_hash_mismatch_detection() {
 #[test]
 fn test_corrupted_file_repair() {
     let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("test.txt");
 
-    // Create a file
-    let content = vec![0x42; 10000];
-    fs::write(&test_file, &content).unwrap();
+    // Copy pre-generated fixtures
+    copy_fixture_dir("corrupt_repair_original.txt", temp_dir.path());
+    copy_fixture_dir("corrupt_repair.par2", temp_dir.path());
+    copy_fixture_dir("corrupt_repair.vol0+1.par2", temp_dir.path());
 
-    let par2_file = temp_dir.path().join("test.par2");
-    create_minimal_par2(&par2_file, &test_file);
+    let test_file = temp_dir.path().join("corrupt_repair_original.txt");
+    let par2_file = temp_dir.path().join("corrupt_repair.par2");
 
     // Corrupt part of the file
+    let content = vec![0x42; 10000];
     let mut corrupted = content.clone();
     for byte in corrupted.iter_mut().take(100) {
         *byte = 0xFF;
@@ -254,12 +272,14 @@ fn test_corrupted_file_repair() {
 #[test]
 fn test_missing_file_repair() {
     let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("test.txt");
 
-    // Create file and PAR2
-    fs::write(&test_file, b"Test content for missing file").unwrap();
-    let par2_file = temp_dir.path().join("test.par2");
-    create_minimal_par2(&par2_file, &test_file);
+    // Copy pre-generated fixtures
+    copy_fixture_dir("missing_test_original.txt", temp_dir.path());
+    copy_fixture_dir("missing_test.par2", temp_dir.path());
+    copy_fixture_dir("missing_test.vol0+1.par2", temp_dir.path());
+
+    let test_file = temp_dir.path().join("missing_test_original.txt");
+    let par2_file = temp_dir.path().join("missing_test.par2");
 
     // Delete the file
     fs::remove_file(&test_file).unwrap();
@@ -282,7 +302,8 @@ fn test_missing_file_repair() {
     }
 }
 
-// Helper function to create a minimal PAR2 file for testing
+// Helper function - kept for backward compatibility but no longer used
+#[allow(dead_code)]
 fn create_minimal_par2(par2_path: &PathBuf, data_file: &PathBuf) {
     // Use par2cmdline to create a real PAR2 file
     std::process::Command::new("par2")
