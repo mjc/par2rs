@@ -218,3 +218,212 @@ pub unsafe fn process_slice_multiply_add_pshufb(
 
     // Handle remaining bytes with scalar code (fallback in parent function)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reed_solomon::galois::Galois16;
+    use crate::reed_solomon::reedsolomon::build_split_mul_table;
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn build_pshufb_tables_basic() {
+        // Create a simple identity-like table for testing
+        let mut table = [0u16; 256];
+        for (i, item) in table.iter_mut().enumerate() {
+            *item = i as u16;
+        }
+
+        let (lo_nib_lo, lo_nib_hi, hi_nib_lo, hi_nib_hi) = build_pshufb_tables(&table);
+
+        // Low nibble 0: table[0] = 0 -> lo=0, hi=0
+        assert_eq!(lo_nib_lo[0], 0);
+        assert_eq!(lo_nib_hi[0], 0);
+
+        // Low nibble 1: table[1] = 1 -> lo=1, hi=0
+        assert_eq!(lo_nib_lo[1], 1);
+        assert_eq!(lo_nib_hi[1], 0);
+
+        // High nibble 0: table[0x00] = 0 -> lo=0, hi=0
+        assert_eq!(hi_nib_lo[0], 0);
+        assert_eq!(hi_nib_hi[0], 0);
+
+        // High nibble 1: table[0x10] = 16 -> lo=16, hi=0
+        assert_eq!(hi_nib_lo[1], 16);
+        assert_eq!(hi_nib_hi[1], 0);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn build_pshufb_tables_zero_table() {
+        let table = [0u16; 256];
+
+        let (lo_nib_lo, lo_nib_hi, hi_nib_lo, hi_nib_hi) = build_pshufb_tables(&table);
+
+        // All tables should be zero
+        for &val in &lo_nib_lo {
+            assert_eq!(val, 0);
+        }
+        for &val in &lo_nib_hi {
+            assert_eq!(val, 0);
+        }
+        for &val in &hi_nib_lo {
+            assert_eq!(val, 0);
+        }
+        for &val in &hi_nib_hi {
+            assert_eq!(val, 0);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn build_pshufb_tables_nibble_extraction() {
+        let mut table = [0u16; 256];
+        table[0x0F] = 0xABCD; // Low nibble 0xF
+        table[0xF0] = 0x1234; // High nibble 0xF
+
+        let (lo_nib_lo, lo_nib_hi, hi_nib_lo, hi_nib_hi) = build_pshufb_tables(&table);
+
+        // Low nibble 0xF: table[0x0F] = 0xABCD
+        assert_eq!(lo_nib_lo[0xF], 0xCD); // Low byte
+        assert_eq!(lo_nib_hi[0xF], 0xAB); // High byte
+
+        // High nibble 0xF: table[0xF0] = 0x1234
+        assert_eq!(hi_nib_lo[0xF], 0x34); // Low byte
+        assert_eq!(hi_nib_hi[0xF], 0x12); // High byte
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn process_slice_multiply_add_pshufb_requires_avx2() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("ssse3") {
+            eprintln!("Skipping PSHUFB test - AVX2/SSSE3 not supported");
+            return;
+        }
+
+        let input = vec![0x5Au8; 64];
+        let mut output = vec![0xA5u8; 64];
+        let tables = build_split_mul_table(Galois16::new(7));
+        let original_output = output.clone();
+
+        unsafe {
+            process_slice_multiply_add_pshufb(&input, &mut output, &tables);
+        }
+
+        // Output should be modified
+        assert_ne!(output, original_output);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn process_slice_multiply_add_pshufb_small_buffer() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("ssse3") {
+            eprintln!("Skipping PSHUFB small buffer test - AVX2/SSSE3 not supported");
+            return;
+        }
+
+        let input = vec![1u8, 2, 3, 4];
+        let mut output = vec![0u8; 4];
+        let tables = build_split_mul_table(Galois16::new(2));
+        let original_output = output.clone();
+
+        unsafe {
+            // Should return immediately for buffers < 32 bytes
+            process_slice_multiply_add_pshufb(&input, &mut output, &tables);
+        }
+
+        // Output should NOT be modified (buffer too small)
+        assert_eq!(output, original_output);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn process_slice_multiply_add_pshufb_exactly_32_bytes() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("ssse3") {
+            eprintln!("Skipping PSHUFB exact size test - AVX2/SSSE3 not supported");
+            return;
+        }
+
+        let input = vec![1u8; 32];
+        let mut output = vec![0u8; 32];
+        let tables = build_split_mul_table(Galois16::new(3));
+
+        unsafe {
+            process_slice_multiply_add_pshufb(&input, &mut output, &tables);
+        }
+
+        // Output should be non-zero
+        assert!(output.iter().any(|&b| b != 0));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn process_slice_multiply_add_pshufb_large_buffer() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("ssse3") {
+            eprintln!("Skipping PSHUFB large buffer test - AVX2/SSSE3 not supported");
+            return;
+        }
+
+        let input = vec![0xAAu8; 128];
+        let mut output = vec![0x55u8; 128];
+        let tables = build_split_mul_table(Galois16::new(11));
+        let original_output = output.clone();
+
+        unsafe {
+            process_slice_multiply_add_pshufb(&input, &mut output, &tables);
+        }
+
+        // Output should be significantly different
+        assert_ne!(output, original_output);
+
+        // Verify at least some bytes changed
+        let changed = output
+            .iter()
+            .zip(original_output.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(changed > 0, "Expected some bytes to change");
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn process_slice_multiply_add_pshufb_accumulates() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("ssse3") {
+            eprintln!("Skipping PSHUFB accumulate test - AVX2/SSSE3 not supported");
+            return;
+        }
+
+        let input = vec![1u8; 64];
+        let mut output = vec![2u8; 64];
+        let tables = build_split_mul_table(Galois16::new(5));
+
+        // Run twice to verify it accumulates (XOR)
+        unsafe {
+            process_slice_multiply_add_pshufb(&input, &mut output, &tables);
+            let after_first = output.clone();
+            process_slice_multiply_add_pshufb(&input, &mut output, &tables);
+
+            // After two identical operations, should XOR back to original or close
+            // (depending on the math, but definitely should be different from after_first)
+            assert_ne!(output, after_first, "Second operation should modify output");
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn process_slice_multiply_add_pshufb_empty_buffer() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("ssse3") {
+            eprintln!("Skipping PSHUFB empty buffer test - AVX2/SSSE3 not supported");
+            return;
+        }
+
+        let input: Vec<u8> = vec![];
+        let mut output: Vec<u8> = vec![];
+        let tables = build_split_mul_table(Galois16::new(1));
+
+        unsafe {
+            // Should not panic
+            process_slice_multiply_add_pshufb(&input, &mut output, &tables);
+        }
+    }
+}

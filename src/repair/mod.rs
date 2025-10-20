@@ -684,13 +684,21 @@ impl RepairContext {
         // Open source file for reading valid slices
         let source_path = self.base_path.join(&file_info.file_name);
         let mut source_file = if source_path.exists() {
-            Some(File::open(&source_path)?)
+            Some(
+                File::open(&source_path).map_err(|source| RepairError::FileOpenError {
+                    file: source_path.clone(),
+                    source,
+                })?,
+            )
         } else {
             None
         };
 
         // Create temp output file
-        let file = File::create(&temp_path)?;
+        let file = File::create(&temp_path).map_err(|source| RepairError::FileCreateError {
+            file: temp_path.clone(),
+            source,
+        })?;
         let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
 
         let slice_size = self.recovery_set.slice_size as usize;
@@ -713,7 +721,13 @@ impl RepairContext {
             // Get slice data from either reconstructed or source file
             if let Some(reconstructed_data) = reconstructed_slices.get(slice_index) {
                 // Write reconstructed slice
-                writer.write_all(&reconstructed_data[..actual_size])?;
+                writer
+                    .write_all(&reconstructed_data[..actual_size])
+                    .map_err(|e| RepairError::SliceWriteError {
+                        file: temp_path.clone(),
+                        slice_index,
+                        source: e,
+                    })?;
                 bytes_written += actual_size as u64;
                 // Mark that we've broken the sequential read pattern
                 next_expected_offset = None;
@@ -724,11 +738,28 @@ impl RepairContext {
 
                     // Only seek if we're not already at the right position (optimize sequential reads)
                     if next_expected_offset != Some(offset) {
-                        file.seek(SeekFrom::Start(offset))?;
+                        file.seek(SeekFrom::Start(offset)).map_err(|e| {
+                            RepairError::FileSeekError {
+                                file: file_path.to_path_buf(),
+                                offset,
+                                source: e,
+                            }
+                        })?;
                     }
 
-                    file.read_exact(&mut slice_buffer[..actual_size])?;
-                    writer.write_all(&slice_buffer[..actual_size])?;
+                    file.read_exact(&mut slice_buffer[..actual_size])
+                        .map_err(|e| RepairError::SliceReadError {
+                            file: file_path.to_path_buf(),
+                            slice_index,
+                            source: e,
+                        })?;
+                    writer
+                        .write_all(&slice_buffer[..actual_size])
+                        .map_err(|e| RepairError::SliceWriteError {
+                            file: temp_path.clone(),
+                            slice_index,
+                            source: e,
+                        })?;
                     bytes_written += actual_size as u64;
                     next_expected_offset = Some(offset + actual_size as u64);
                 } else {
@@ -739,7 +770,10 @@ impl RepairContext {
             }
         }
 
-        writer.flush()?;
+        writer.flush().map_err(|e| RepairError::FileFlushError {
+            file: temp_path.clone(),
+            source: e,
+        })?;
         drop(writer); // Close the file before rename
         drop(source_file); // Close source file before rename
 
@@ -751,7 +785,11 @@ impl RepairContext {
         }
 
         // Rename temp file to final destination
-        fs::rename(&temp_path, file_path)?;
+        fs::rename(&temp_path, file_path).map_err(|e| RepairError::FileRenameError {
+            temp_path: temp_path.clone(),
+            final_path: file_path.to_path_buf(),
+            source: e,
+        })?;
 
         debug!("Wrote {} bytes to {:?}", bytes_written, file_path);
         Ok(())
