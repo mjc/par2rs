@@ -10,10 +10,11 @@
 //! - Reports which blocks are broken and calculates repair requirements
 //! - Determines if repair is possible with available recovery blocks
 
+use anyhow::{Context, Result};
 use par2rs::{analysis, file_ops, verify};
 use std::path::Path;
 
-fn main() -> Result<(), ()> {
+fn main() -> Result<()> {
     // Initialize the logger
     env_logger::Builder::from_default_env()
         .format_timestamp(None)
@@ -28,37 +29,40 @@ fn main() -> Result<(), ()> {
         .expect("Input file is required");
 
     let file_path = Path::new(input_file);
-    if !file_path.exists() {
-        eprintln!("File does not exist: {}", input_file);
-        return Err(());
-    }
 
+    // Validate file exists
+    anyhow::ensure!(file_path.exists(), "File does not exist: {}", input_file);
+
+    // Change to parent directory if it exists
     if let Some(parent) = file_path.parent() {
-        if let Err(err) = std::env::set_current_dir(parent) {
-            eprintln!(
-                "Failed to set current directory to {}: {}",
-                parent.display(),
-                err
-            );
-            return Err(());
-        }
+        std::env::set_current_dir(parent)
+            .with_context(|| format!("Failed to set current directory to {}", parent.display()))?;
     }
 
     let par2_files = file_ops::collect_par2_files(file_path);
 
     // Parse all packets including recovery slices for verification
-    let mut all_packets = Vec::new();
-    let mut total_recovery_blocks = 0;
-    for par2_file in &par2_files {
-        let file = std::fs::File::open(par2_file).expect("Failed to open PAR2 file");
-        let mut reader = std::io::BufReader::new(file);
-        let packets = par2rs::parse_packets(&mut reader);
-        total_recovery_blocks += packets
-            .iter()
-            .filter(|p| matches!(p, par2rs::Packet::RecoverySlice(_)))
-            .count();
-        all_packets.extend(packets);
-    }
+    let (all_packets, total_recovery_blocks): (Vec<_>, usize) = par2_files
+        .iter()
+        .map(|par2_file| {
+            let file = std::fs::File::open(par2_file)
+                .with_context(|| format!("Failed to open PAR2 file: {}", par2_file.display()))?;
+            let mut reader = std::io::BufReader::new(file);
+            Ok(par2rs::parse_packets(&mut reader))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .fold(
+            (Vec::new(), 0),
+            |(mut packets, mut recovery_count), parsed| {
+                recovery_count += parsed
+                    .iter()
+                    .filter(|p| matches!(p, par2rs::Packet::RecoverySlice(_)))
+                    .count();
+                packets.extend(parsed);
+                (packets, recovery_count)
+            },
+        );
 
     // Show summary statistics
     let stats = analysis::calculate_par2_stats(&all_packets, total_recovery_blocks);
@@ -72,9 +76,11 @@ fn main() -> Result<(), ()> {
     verify::print_verification_results(&verification_results);
 
     // Return success if no repair is needed, error if repair is required
-    if verification_results.missing_block_count == 0 {
-        Ok(())
-    } else {
-        Err(())
-    }
+    anyhow::ensure!(
+        verification_results.missing_block_count == 0,
+        "Repair required: {} blocks are missing or damaged",
+        verification_results.missing_block_count
+    );
+
+    Ok(())
 }
