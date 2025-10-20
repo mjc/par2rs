@@ -8,9 +8,10 @@
 //!
 //! ## Performance
 //!
-//! SIMD-optimized operations achieve:
-//! - **2.76x speedup** in microbenchmarks (54.7ns vs 150.9ns per 528-byte block)
-//! - **1.66x faster** than par2cmdline in real-world repair (0.607s vs 1.008s for 100MB)
+//! Parallel reconstruction with SIMD-optimized operations achieve:
+//! - **1.93x faster** than par2cmdline for 100MB files (0.506s vs 0.980s)
+//! - **2.90x faster** for 1GB files (4.704s vs 13.679s)
+//! - **2.00x faster** for 10GB files (57.243s vs 114.526s)
 //!
 //! See `docs/SIMD_OPTIMIZATION.md` for detailed benchmarks and analysis.
 //!

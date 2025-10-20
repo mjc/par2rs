@@ -8,7 +8,8 @@ A Rust implementation of PAR2 (Parity Archive) for data recovery and verificatio
 
 ### Performance
 
-par2rs achieves **1.77x - 2.61x speedup** over par2cmdline through:
+par2rs achieves **1.93x - 2.90x speedup** over par2cmdline through:
+- **Parallel Reed-Solomon reconstruction** using rayon for multi-threaded chunk processing
 - **SIMD-accelerated Reed-Solomon** operations using PSHUFB instructions
 - **Smart validation skipping** for files with matching MD5 checksums
 - **Sequential I/O optimization** to minimize disk seeks
@@ -16,9 +17,9 @@ par2rs achieves **1.77x - 2.61x speedup** over par2cmdline through:
 
 | File Size | par2cmdline | par2rs  | Speedup |
 |-----------|-------------|---------|---------|
-| 100MB     | 0.984s      | 0.350s  | **2.81x** |
-| 1GB       | 11.388s     | 4.350s  | **2.61x** |
-| 8GB (50 files) | 28.901s | 16.248s | **1.77x** |
+| 100MB     | 0.980s      | 0.506s  | **1.93x** |
+| 1GB       | 13.679s     | 4.704s  | **2.90x** |
+| 10GB      | 114.526s    | 57.243s | **2.00x** |
 
 See [BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md) for detailed performance analysis.
 
