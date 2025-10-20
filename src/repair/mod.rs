@@ -13,393 +13,32 @@
 //!
 //! See `docs/SIMD_OPTIMIZATION.md` and `docs/BENCHMARK_RESULTS.md` for detailed analysis.
 
-use crate::domain::{FileId, GlobalSliceIndex, LocalSliceIndex, Md5Hash, RecoverySetId};
-use crate::validation;
-use crate::{
-    FileDescriptionPacket, InputFileSliceChecksumPacket, MainPacket, Packet, RecoverySliceMetadata,
-    RecoverySlicePacket,
+mod builder;
+mod context;
+mod error;
+mod progress;
+mod types;
+
+// Re-export public API
+pub use builder::RepairContextBuilder;
+pub use context::RepairContext;
+pub use error::{RepairError, Result};
+pub use progress::{ConsoleReporter, ProgressReporter, SilentReporter};
+pub use types::{
+    FileInfo, FileStatus, ReconstructedSlices, RecoverySetInfo, RepairResult, ValidationCache,
+    VerificationResult,
 };
+
+use crate::domain::{FileId, GlobalSliceIndex, LocalSliceIndex, Md5Hash};
+use crate::RecoverySlicePacket;
 use log::debug;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
-use thiserror::Error;
-
-/// Errors that can occur during PAR2 repair operations
-#[derive(Debug, Error)]
-pub enum RepairError {
-    /// No main packet found in PAR2 file
-    #[error("No main packet found in PAR2 file")]
-    NoMainPacket,
-
-    /// No file description packets found
-    #[error("No file description packets found")]
-    NoFileDescriptions,
-
-    /// File ID from main packet not found in file descriptions
-    #[error("File ID {0:?} in main packet not found in file descriptions")]
-    MissingFileDescription(String),
-
-    /// No valid PAR2 packets found
-    #[error("No valid PAR2 packets found")]
-    NoValidPackets,
-
-    /// Failed to create repair context
-    #[error("Failed to create repair context: {0}")]
-    ContextCreation(String),
-
-    /// Insufficient recovery blocks available
-    #[error(
-        "Cannot repair: {missing} missing slices but only {available} recovery slices available"
-    )]
-    InsufficientRecovery { missing: usize, available: usize },
-
-    /// File validation cache not found
-    #[error("No validation cache for file {0}")]
-    NoValidationCache(String),
-
-    /// File MD5 mismatch despite valid slices
-    #[error("File MD5 mismatch despite all slices being valid")]
-    Md5MismatchWithValidSlices,
-
-    /// Repaired file failed verification
-    #[error("Repaired file failed verification: {0:?}")]
-    VerificationFailed(VerificationResult),
-
-    /// Reconstruction failed
-    #[error("Reconstruction failed: {0}")]
-    ReconstructionFailed(String),
-
-    /// Slice marked valid but source file not available
-    #[error("Slice {0} marked valid but source file not available")]
-    ValidSliceMissingSource(usize),
-
-    /// Slice neither reconstructed nor valid
-    #[error("Slice {0} neither reconstructed nor valid")]
-    SliceNotAvailable(usize),
-
-    /// Written bytes don't match expected file length
-    #[error("Wrote {written} bytes but expected {expected}")]
-    ByteCountMismatch { written: u64, expected: u64 },
-
-    /// I/O error occurred
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-
-    /// Generic error (for backward compatibility during transition)
-    #[error("{0}")]
-    Other(String),
-}
-
-/// Information about a file in the recovery set
-#[derive(Debug, Clone)]
-pub struct FileInfo {
-    pub file_id: FileId,
-    pub file_name: String,
-    pub file_length: u64,
-    pub md5_hash: Md5Hash,
-    pub md5_16k: Md5Hash,
-    pub slice_count: usize,
-    pub global_slice_offset: GlobalSliceIndex, // Starting global slice index for this file
-}
-
-impl FileInfo {
-    /// Convert a local slice index to global for this file
-    pub fn local_to_global(&self, local: LocalSliceIndex) -> GlobalSliceIndex {
-        local.to_global(self.global_slice_offset)
-    }
-
-    /// Convert a global slice index to local for this file, if it belongs to this file
-    pub fn global_to_local(&self, global: GlobalSliceIndex) -> Option<LocalSliceIndex> {
-        let global_usize = global.as_usize();
-        let offset_usize = self.global_slice_offset.as_usize();
-        if global_usize >= offset_usize && global_usize < offset_usize + self.slice_count {
-            Some(LocalSliceIndex::new(global_usize - offset_usize))
-        } else {
-            None
-        }
-    }
-}
-
-/// Information about the recovery set
-#[derive(Debug)]
-pub struct RecoverySetInfo {
-    pub set_id: RecoverySetId,
-    pub slice_size: u64,
-    pub files: Vec<FileInfo>,
-    /// Memory-efficient metadata for recovery slices (lazy loading)
-    pub recovery_slices_metadata: Vec<RecoverySliceMetadata>,
-    pub file_slice_checksums: HashMap<FileId, InputFileSliceChecksumPacket>,
-}
-
-impl RecoverySetInfo {
-    /// Calculate the total number of data blocks across all files
-    pub fn total_blocks(&self) -> usize {
-        self.files.iter().map(|f| f.slice_count).sum()
-    }
-
-    /// Calculate the total size of all data files
-    pub fn total_size(&self) -> u64 {
-        self.files.iter().map(|f| f.file_length).sum()
-    }
-
-    /// Print statistics in par2cmdline format
-    pub fn print_statistics(&self) {
-        println!();
-        println!(
-            "There are {} recoverable files and {} other files.",
-            self.files.len(),
-            0
-        );
-        println!("The block size used was {} bytes.", self.slice_size);
-        println!("There are a total of {} data blocks.", self.total_blocks());
-        println!(
-            "The total size of the data files is {} bytes.",
-            self.total_size()
-        );
-        println!();
-        println!("Verifying source files:");
-        println!();
-    }
-}
-
-/// Status of a file that needs repair
-#[derive(Debug, PartialEq)]
-pub enum FileStatus {
-    Present,   // File exists and is valid
-    Missing,   // File doesn't exist
-    Corrupted, // File exists but is corrupted
-}
-
-impl FileStatus {
-    /// Returns true if the file needs repair (missing or corrupted)
-    pub fn needs_repair(&self) -> bool {
-        matches!(self, FileStatus::Missing | FileStatus::Corrupted)
-    }
-}
-
-/// Result of verifying a repaired file
-#[derive(Debug, PartialEq)]
-pub enum VerificationResult {
-    /// File verified successfully - matches expected hash and size
-    Verified,
-    /// File size doesn't match expected
-    SizeMismatch { expected: u64, actual: u64 },
-    /// File MD5 hash doesn't match expected
-    HashMismatch,
-}
-
-/// Result of a repair operation - type-safe to prevent mismatched success/failure states
-#[derive(Debug)]
-pub enum RepairResult {
-    /// All files were repaired and verified successfully
-    Success {
-        files_repaired: usize,
-        files_verified: usize,
-        repaired_files: Vec<String>,
-        verified_files: Vec<String>,
-        message: String,
-    },
-    /// Repair was not needed - all files already valid
-    NoRepairNeeded {
-        files_verified: usize,
-        verified_files: Vec<String>,
-        message: String,
-    },
-    /// Repair failed - insufficient recovery blocks or verification failed
-    Failed {
-        files_failed: Vec<String>,
-        files_verified: usize,
-        verified_files: Vec<String>,
-        message: String,
-    },
-}
-
-impl RepairResult {
-    /// Returns true if repair succeeded or wasn't needed
-    pub fn is_success(&self) -> bool {
-        matches!(
-            self,
-            RepairResult::Success { .. } | RepairResult::NoRepairNeeded { .. }
-        )
-    }
-
-    /// Get the files that were successfully repaired
-    pub fn repaired_files(&self) -> &[String] {
-        match self {
-            RepairResult::Success { repaired_files, .. } => repaired_files,
-            _ => &[],
-        }
-    }
-
-    /// Get the files that failed repair
-    pub fn failed_files(&self) -> &[String] {
-        match self {
-            RepairResult::Failed { files_failed, .. } => files_failed,
-            _ => &[],
-        }
-    }
-
-    /// Print result in par2cmdline format
-    pub fn print_result(&self) {
-        println!();
-        match self {
-            RepairResult::NoRepairNeeded { files_verified, .. } => {
-                println!("All files are correct, repair is not required.");
-                println!("Verified {} file(s).", files_verified);
-            }
-            RepairResult::Success {
-                files_repaired,
-                files_verified,
-                ..
-            } => {
-                println!("Repair complete.");
-                println!("Repaired {} file(s).", files_repaired);
-                println!("Verified {} file(s).", files_verified);
-            }
-            RepairResult::Failed {
-                files_failed,
-                message,
-                ..
-            } => {
-                println!("Repair FAILED: {}", message);
-                println!("Failed to repair {} file(s).", files_failed.len());
-            }
-        }
-    }
-}
-
-/// Main repair context containing all necessary information for repair operations
-#[derive(Debug)]
-pub struct RepairContext {
-    pub recovery_set: RecoverySetInfo,
-    pub base_path: PathBuf,
-}
+use std::path::Path;
 
 impl RepairContext {
-    /// Create a new repair context from PAR2 packets
-    pub fn new(packets: Vec<Packet>, base_path: PathBuf) -> Result<Self, RepairError> {
-        let recovery_set = Self::extract_recovery_set_info(packets)?;
-        Ok(RepairContext {
-            recovery_set,
-            base_path,
-        })
-    }
-
-    /// Create a new repair context with memory-efficient metadata loading
-    pub fn new_with_metadata(
-        packets: Vec<Packet>,
-        metadata: Vec<RecoverySliceMetadata>,
-        base_path: PathBuf,
-    ) -> Result<Self, RepairError> {
-        let mut recovery_set = Self::extract_recovery_set_info(packets)?;
-        recovery_set.recovery_slices_metadata = metadata;
-        Ok(RepairContext {
-            recovery_set,
-            base_path,
-        })
-    }
-
-    /// Extract recovery set information from packets
-    fn extract_recovery_set_info(packets: Vec<Packet>) -> Result<RecoverySetInfo, RepairError> {
-        let mut main_packet: Option<MainPacket> = None;
-        let mut file_descriptions: Vec<FileDescriptionPacket> = Vec::new();
-        let mut input_file_slice_checksums: Vec<InputFileSliceChecksumPacket> = Vec::new();
-
-        // Collect packets by type (excluding RecoverySlice - handled via metadata)
-        for packet in packets {
-            match packet {
-                Packet::Main(main) => {
-                    main_packet = Some(main);
-                }
-                Packet::FileDescription(fd) => {
-                    file_descriptions.push(fd);
-                }
-                Packet::RecoverySlice(_) => {
-                    // Skip - recovery slices are loaded via metadata for memory efficiency
-                }
-                Packet::InputFileSliceChecksum(ifsc) => {
-                    input_file_slice_checksums.push(ifsc);
-                }
-                _ => {} // Ignore other packet types for now
-            }
-        }
-
-        let main = main_packet.ok_or(RepairError::NoMainPacket)?;
-
-        if file_descriptions.is_empty() {
-            return Err(RepairError::NoFileDescriptions);
-        }
-
-        // Build a map of file_id -> FileDescriptionPacket for easy lookup
-        let mut fd_map: HashMap<FileId, FileDescriptionPacket> = HashMap::default();
-        for fd in file_descriptions {
-            fd_map.insert(fd.file_id, fd);
-        }
-
-        // Build file information in the order specified by main.file_ids
-        // This is critical for correct global slice indexing!
-        let mut files = Vec::new();
-        let mut global_slice_offset = 0;
-
-        debug!(
-            "Building file list from main packet's file_ids array ({} files)",
-            main.file_ids.len()
-        );
-
-        for (idx, file_id) in main.file_ids.iter().enumerate() {
-            let fd = fd_map
-                .get(file_id)
-                .ok_or_else(|| RepairError::MissingFileDescription(format!("{:?}", file_id)))?;
-
-            let file_name = String::from_utf8_lossy(&fd.file_name)
-                .trim_end_matches('\0')
-                .to_string();
-
-            let slice_count = fd.file_length.div_ceil(main.slice_size) as usize;
-
-            if idx < 3 || idx >= main.file_ids.len() - 3 {
-                debug!(
-                    "  File {}: {} (slices: {}, global offset: {})",
-                    idx, file_name, slice_count, global_slice_offset
-                );
-            } else if idx == 3 {
-                debug!("  ... ({} files omitted) ...", main.file_ids.len() - 6);
-            }
-
-            files.push(FileInfo {
-                file_id: fd.file_id,
-                file_name,
-                file_length: fd.file_length,
-                md5_hash: fd.md5_hash,
-                md5_16k: fd.md5_16k,
-                slice_count,
-                global_slice_offset: GlobalSliceIndex::new(global_slice_offset),
-            });
-
-            // Increment global slice offset for next file
-            global_slice_offset += slice_count;
-        }
-
-        debug!("Total global slices: {}", global_slice_offset);
-
-        // Build checksum map indexed by file_id
-        let mut file_slice_checksums = HashMap::default();
-        for ifsc in input_file_slice_checksums {
-            file_slice_checksums.insert(ifsc.file_id, ifsc);
-        }
-
-        Ok(RecoverySetInfo {
-            set_id: main.set_id,
-            slice_size: main.slice_size,
-            files,
-            recovery_slices_metadata: Vec::new(), // Populated later for memory-efficient loading
-            file_slice_checksums,
-        })
-    }
-
     /// Check the status of all files in the recovery set
     pub fn check_file_status(&self) -> HashMap<String, FileStatus> {
         let mut status_map = HashMap::default();
@@ -407,18 +46,14 @@ impl RepairContext {
         for file_info in &self.recovery_set.files {
             let file_path = self.base_path.join(&file_info.file_name);
 
-            // Print "Opening:" message before checking
-            println!("Opening: \"{}\"", file_info.file_name);
+            // Report file opening
+            self.reporter().report_file_opening(&file_info.file_name);
 
             let status = self.determine_file_status(&file_path, file_info);
 
-            // Print status in par2cmdline format
-            let status_str = match &status {
-                FileStatus::Present => "found.",
-                FileStatus::Missing => "missing.",
-                FileStatus::Corrupted => "damaged.",
-            };
-            println!("Target: \"{}\" - {}", file_info.file_name, status_str);
+            // Report determined status
+            self.reporter()
+                .report_file_status(&file_info.file_name, status);
 
             status_map.insert(file_info.file_name.clone(), status);
         }
@@ -463,7 +98,7 @@ impl RepairContext {
     }
 
     /// Perform repair operation
-    pub fn repair_with_slices(&self) -> Result<RepairResult, RepairError> {
+    pub fn repair_with_slices(&self) -> Result<RepairResult> {
         debug!("repair_with_slices");
         let mut file_status = self.check_file_status();
         debug!("  File statuses: {:?}", file_status);
@@ -471,66 +106,68 @@ impl RepairContext {
         // Build validation cache by validating all files once upfront
         // PERFORMANCE: Use fast CRC32 slice validation instead of slow full-file MD5
         // PERFORMANCE: Validate files in parallel for maximum I/O throughput
-        let validation_cache: HashMap<FileId, HashSet<usize>> = self
-            .recovery_set
-            .files
-            .par_iter()
-            .map(|file_info| {
-                let status = file_status
-                    .get(&file_info.file_name)
-                    .unwrap_or(&FileStatus::Missing);
+        let validation_cache: ValidationCache = {
+            let map: HashMap<FileId, HashSet<usize>> = self
+                .recovery_set
+                .files
+                .par_iter()
+                .map(|file_info| {
+                    let status = file_status
+                        .get(&file_info.file_name)
+                        .unwrap_or(&FileStatus::Missing);
 
-                let valid_slices = match status {
-                    FileStatus::Missing => {
-                        // Empty set for missing files
-                        HashSet::default()
-                    }
-                    FileStatus::Present => {
-                        // Already validated - all slices valid
-                        (0..file_info.slice_count).collect()
-                    }
-                    FileStatus::Corrupted => {
-                        // Show progress for large files
-                        if file_info.slice_count > 100 {
-                            print!("Scanning: \"{}\"", file_info.file_name);
-                            std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+                    let valid_slices = match status {
+                        FileStatus::Missing => {
+                            // Empty set for missing files
+                            HashSet::default()
                         }
-
-                        let valid_slices = self.validate_file_slices(file_info).unwrap_or_default();
-
-                        // Clear progress line for large files
-                        if file_info.slice_count > 100 {
-                            print!("\r");
-                            for _ in 0..(file_info.file_name.len() + 12) {
-                                print!(" ");
+                        FileStatus::Present => {
+                            // Already validated - all slices valid
+                            (0..file_info.slice_count).collect()
+                        }
+                        FileStatus::Corrupted => {
+                            // Show progress for large files
+                            if file_info.slice_count > 100 {
+                                self.reporter().report_scanning(&file_info.file_name);
                             }
-                            print!("\r");
-                            std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+
+                            let valid_slices =
+                                self.validate_file_slices(file_info).unwrap_or_default();
+
+                            // Clear progress line for large files
+                            if file_info.slice_count > 100 {
+                                self.reporter().clear_scanning(&file_info.file_name);
+                            }
+
+                            valid_slices
                         }
+                    };
 
-                        valid_slices
-                    }
-                };
+                    (file_info.file_id, valid_slices)
+                })
+                .collect();
 
-                (file_info.file_id, valid_slices)
-            })
-            .collect();
+            let mut cache = ValidationCache::new();
+            for (file_id, valid_slices) in map {
+                cache.insert(file_id, valid_slices);
+            }
+            cache
+        };
 
         // Update file_status based on validation results
         let mut total_damaged_blocks = 0;
         for file_info in &self.recovery_set.files {
-            let valid_slices = validation_cache.get(&file_info.file_id).unwrap();
+            let valid_count = validation_cache.valid_count(&file_info.file_id);
 
-            if valid_slices.len() == file_info.slice_count {
+            if valid_count == file_info.slice_count {
                 // All slices are valid
                 file_status.insert(file_info.file_name.clone(), FileStatus::Present);
                 debug!(
                     "  All {} slices valid for {} - marking as Present",
-                    valid_slices.len(),
-                    file_info.file_name
+                    valid_count, file_info.file_name
                 );
             } else {
-                let damaged_slices = file_info.slice_count - valid_slices.len();
+                let damaged_slices = file_info.slice_count - valid_count;
                 total_damaged_blocks += damaged_slices;
                 debug!(
                     "  {} damaged slices found in {}",
@@ -558,19 +195,14 @@ impl RepairContext {
             self.recovery_set.recovery_slices_metadata.len()
         );
 
-        // Print repair information
-        println!();
+        // Report recovery block information
         if total_damaged_blocks > 0 {
-            println!(
-                "You have {} recovery blocks available.",
-                self.recovery_set.recovery_slices_metadata.len()
+            self.reporter().report_recovery_info(
+                self.recovery_set.recovery_slices_metadata.len(),
+                total_damaged_blocks,
             );
+
             if total_damaged_blocks > self.recovery_set.recovery_slices_metadata.len() {
-                println!("Repair is not possible.");
-                println!(
-                    "You need {} more recovery blocks to be able to repair.",
-                    total_damaged_blocks - self.recovery_set.recovery_slices_metadata.len()
-                );
                 return Ok(RepairResult::Failed {
                     files_failed: file_status.keys().cloned().collect(),
                     files_verified: 0,
@@ -581,18 +213,6 @@ impl RepairContext {
                         self.recovery_set.recovery_slices_metadata.len()
                     ),
                 });
-            } else {
-                println!("Repair is possible.");
-                if self.recovery_set.recovery_slices_metadata.len() > total_damaged_blocks {
-                    println!(
-                        "You have an excess of {} recovery blocks.",
-                        self.recovery_set.recovery_slices_metadata.len() - total_damaged_blocks
-                    );
-                }
-                println!(
-                    "{} recovery blocks will be used to repair.",
-                    total_damaged_blocks
-                );
             }
         }
 
@@ -601,7 +221,7 @@ impl RepairContext {
     }
 
     /// Perform repair operation
-    pub fn repair(&self) -> Result<RepairResult, RepairError> {
+    pub fn repair(&self) -> Result<RepairResult> {
         self.repair_with_slices()
     }
 
@@ -609,8 +229,8 @@ impl RepairContext {
     fn perform_reed_solomon_repair(
         &self,
         file_status: &HashMap<String, FileStatus>,
-        validation_cache: &HashMap<FileId, HashSet<usize>>,
-    ) -> Result<RepairResult, RepairError> {
+        validation_cache: &ValidationCache,
+    ) -> Result<RepairResult> {
         debug!(
             "perform_reed_solomon_repair: processing {} files",
             self.recovery_set.files.len()
@@ -619,10 +239,8 @@ impl RepairContext {
         let mut verified_files = Vec::new();
         let mut files_failed = Vec::new();
 
-        // Print repair header
-        println!();
-        println!("Repairing files:");
-        println!();
+        // Report repair header
+        self.reporter().report_repair_header();
 
         // Process each file that needs repair
         for file_info in &self.recovery_set.files {
@@ -637,23 +255,23 @@ impl RepairContext {
             }
 
             // Attempt to repair the file using Reed-Solomon reconstruction
-            print!("Repairing \"{}\"... ", file_info.file_name);
-            std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+            self.reporter().report_repair_start(&file_info.file_name);
 
             match self.repair_single_file(file_info, status, validation_cache) {
                 Ok(repaired) => {
+                    self.reporter()
+                        .report_repair_complete(&file_info.file_name, repaired);
                     if repaired {
-                        println!("done.");
                         repaired_files.push(file_info.file_name.clone());
                         debug!("Successfully repaired: {}", file_info.file_name);
                     } else {
-                        println!("already valid.");
                         verified_files.push(file_info.file_name.clone());
                         debug!("File was already valid: {}", file_info.file_name);
                     }
                 }
                 Err(e) => {
-                    println!("FAILED: {}", e);
+                    self.reporter()
+                        .report_repair_failed(&file_info.file_name, &e.to_string());
                     files_failed.push(file_info.file_name.clone());
                     debug!("Failed to repair {}: {}", file_info.file_name, e);
                 }
@@ -681,9 +299,7 @@ impl RepairContext {
         // CRITICAL: After repair, we MUST verify that repaired files are now correct
         // If we repaired files but can't verify them, that's a FAILURE
         if files_repaired_count > 0 {
-            println!();
-            println!("Verifying source files:");
-            println!();
+            self.reporter().report_verification_header();
 
             let mut verified_after_repair = Vec::new();
             let mut failed_verification = Vec::new();
@@ -703,7 +319,10 @@ impl RepairContext {
                 match crate::file_verification::calculate_file_md5(&file_path) {
                     Ok(computed_hash) if computed_hash == file_info.md5_hash => {
                         verified_after_repair.push(repaired_file.clone());
-                        println!("Verified \"{}\" - correct.", file_info.file_name);
+                        self.reporter().report_verification(
+                            &file_info.file_name,
+                            VerificationResult::Verified,
+                        );
                     }
                     Ok(computed_hash) => {
                         failed_verification.push(repaired_file.clone());
@@ -711,9 +330,9 @@ impl RepairContext {
                             "MD5 mismatch after repair for {}: expected {:?}, got {:?}",
                             file_info.file_name, file_info.md5_hash, computed_hash
                         );
-                        println!(
-                            "Verified \"{}\" - FAILED (MD5 mismatch).",
-                            file_info.file_name
+                        self.reporter().report_verification(
+                            &file_info.file_name,
+                            VerificationResult::HashMismatch,
                         );
                     }
                     Err(e) => {
@@ -722,7 +341,13 @@ impl RepairContext {
                             "Failed to verify {} after repair: {}",
                             file_info.file_name, e
                         );
-                        println!("Verified \"{}\" - FAILED ({})", file_info.file_name, e);
+                        self.reporter().report_verification(
+                            &file_info.file_name,
+                            VerificationResult::SizeMismatch {
+                                expected: file_info.file_length,
+                                actual: 0,
+                            }, // Using SizeMismatch as a generic error indicator
+                        );
                     }
                 }
             }
@@ -766,8 +391,8 @@ impl RepairContext {
         &self,
         file_info: &FileInfo,
         status: &FileStatus,
-        validation_cache: &HashMap<FileId, HashSet<usize>>,
-    ) -> Result<bool, RepairError> {
+        validation_cache: &ValidationCache,
+    ) -> Result<bool> {
         let file_path = self.base_path.join(&file_info.file_name);
 
         debug!(
@@ -849,10 +474,7 @@ impl RepairContext {
 
     /// Validate slices from an existing file
     /// Returns only the indices of valid slices, not the slice data itself
-    pub fn validate_file_slices(
-        &self,
-        file_info: &FileInfo,
-    ) -> Result<HashSet<usize>, RepairError> {
+    pub fn validate_file_slices(&self, file_info: &FileInfo) -> Result<HashSet<usize>> {
         let file_path = self.base_path.join(&file_info.file_name);
 
         if !file_path.exists() {
@@ -885,7 +507,7 @@ impl RepairContext {
             .collect();
 
         // Use shared validation module for efficient sequential I/O
-        let valid_slices = validation::validate_slices_crc32(
+        let valid_slices = crate::validation::validate_slices_crc32(
             &file_path,
             &crc_checksums,
             self.recovery_set.slice_size as usize,
@@ -906,8 +528,8 @@ impl RepairContext {
         &self,
         missing_slices: &[LocalSliceIndex],
         file_info: &FileInfo,
-        validation_cache: &HashMap<FileId, HashSet<usize>>,
-    ) -> Result<HashMap<usize, Vec<u8>>, RepairError> {
+        validation_cache: &ValidationCache,
+    ) -> Result<ReconstructedSlices> {
         use crate::slice_provider::{ChunkedSliceProvider, RecoverySliceProvider, SliceLocation};
         use std::io::Cursor;
 
@@ -1035,7 +657,7 @@ impl RepairContext {
         }
 
         // Convert global indices back to file-local and extract buffers
-        let mut reconstructed = HashMap::default();
+        let mut reconstructed = ReconstructedSlices::new();
         for (global_idx, cursor) in output_buffers {
             let global_index = GlobalSliceIndex::new(global_idx);
             if let Some(file_local_idx) = file_info.global_to_local(global_index) {
@@ -1052,8 +674,8 @@ impl RepairContext {
         file_path: &Path,
         file_info: &FileInfo,
         valid_slice_indices: &HashSet<usize>,
-        reconstructed_slices: &HashMap<usize, Vec<u8>>,
-    ) -> Result<(), RepairError> {
+        reconstructed_slices: &ReconstructedSlices,
+    ) -> Result<()> {
         debug!("Writing repaired file with streaming I/O: {:?}", file_path);
 
         // Write to temp file first, then rename to avoid corrupting source while reading
@@ -1089,7 +711,7 @@ impl RepairContext {
             };
 
             // Get slice data from either reconstructed or source file
-            if let Some(reconstructed_data) = reconstructed_slices.get(&slice_index) {
+            if let Some(reconstructed_data) = reconstructed_slices.get(slice_index) {
                 // Write reconstructed slice
                 writer.write_all(&reconstructed_data[..actual_size])?;
                 bytes_written += actual_size as u64;
@@ -1139,10 +761,7 @@ impl RepairContext {
 /// High-level repair function - loads PAR2 files and performs repair
 ///
 /// This is the main entry point for repair operations. It loads the PAR2 file,
-/// creates a repair context, and performs the repair operation.
-///
-/// For display output, the caller should use `RecoverySetInfo::print_statistics()`
-/// and `RepairResult::print_result()` methods.
+/// creates a repair context with a console reporter, and performs the repair operation.
 ///
 /// # Arguments
 /// * `par2_file` - Path to the PAR2 file
@@ -1150,15 +769,31 @@ impl RepairContext {
 /// # Returns
 /// * `Ok((RepairContext, RepairResult))` - Repair operation completed with context and result
 /// * `Err(...)` - Failed to load PAR2 files or create repair context
-pub fn repair_files(par2_file: &str) -> Result<(RepairContext, RepairResult), RepairError> {
+pub fn repair_files(par2_file: &str) -> Result<(RepairContext, RepairResult)> {
+    repair_files_with_reporter(par2_file, Box::new(ConsoleReporter::new(false)))
+}
+
+/// High-level repair function with custom progress reporter
+///
+/// Allows specifying a custom progress reporter (e.g., SilentReporter for tests,
+/// ConsoleReporter with quiet flag, or custom implementations).
+///
+/// # Arguments
+/// * `par2_file` - Path to the PAR2 file
+/// * `reporter` - Progress reporter implementation
+///
+/// # Returns
+/// * `Ok((RepairContext, RepairResult))` - Repair operation completed with context and result
+/// * `Err(...)` - Failed to load PAR2 files or create repair context
+pub fn repair_files_with_reporter(
+    par2_file: &str,
+    reporter: Box<dyn ProgressReporter>,
+) -> Result<(RepairContext, RepairResult)> {
     let par2_path = Path::new(par2_file);
 
     // Validate file exists
     if !par2_path.exists() {
-        return Err(RepairError::Other(format!(
-            "File does not exist: {}",
-            par2_file
-        )));
+        return Err(RepairError::FileNotFound(par2_file.to_string()));
     }
 
     // Collect all PAR2 files in the set
@@ -1177,75 +812,20 @@ pub fn repair_files(par2_file: &str) -> Result<(RepairContext, RepairResult), Re
     // Get the base directory for file resolution
     let base_path = par2_path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
-    // Create repair context with metadata
-    let repair_context = RepairContext::new_with_metadata(packets, metadata, base_path)
-        .map_err(|e| RepairError::ContextCreation(e.to_string()))?;
+    // Create repair context using builder
+    let repair_context = RepairContextBuilder::new()
+        .packets(packets)
+        .metadata(metadata)
+        .base_path(base_path)
+        .reporter(reporter)
+        .build()?;
 
-    let result = repair_context
-        .repair()
-        .map_err(|e| RepairError::Other(e.to_string()))?;
+    // Report statistics before starting
+    repair_context
+        .reporter()
+        .report_statistics(&repair_context.recovery_set);
+
+    let result = repair_context.repair()?;
 
     Ok((repair_context, result))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use std::path::Path;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_repair_files_function() {
-        // Test with the repair scenario fixtures in a temp directory
-        let source_dir = "tests/fixtures/repair_scenarios";
-        if !Path::new(source_dir).exists() {
-            return;
-        }
-
-        // Create temp dir and copy all files
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let temp_path = temp_dir.path();
-
-        // Copy all files from source to temp
-        for entry in fs::read_dir(source_dir).expect("Failed to read source dir") {
-            let entry = entry.expect("Failed to read entry");
-            let path = entry.path();
-            if path.is_file() {
-                let file_name = path.file_name().unwrap();
-                let dest_path = temp_path.join(file_name);
-                fs::copy(&path, &dest_path).expect("Failed to copy file");
-            }
-        }
-
-        let par2_file = temp_path.join("testfile.par2");
-        if par2_file.exists() {
-            let result = repair_files(&par2_file.to_string_lossy());
-            // The result depends on the test fixtures, but it should not crash
-            assert!(result.is_ok(), "Repair should not crash");
-        }
-
-        // temp_dir is automatically cleaned up
-    }
-
-    #[test]
-    fn test_file_status_determination() {
-        // Test with existing test files
-        let par2_file = Path::new("tests/fixtures/testfile.par2");
-        if par2_file.exists() {
-            let par2_files = crate::file_ops::collect_par2_files(par2_file);
-            let metadata = crate::file_ops::parse_recovery_slice_metadata(&par2_files, false);
-            let packets = crate::file_ops::load_par2_packets(&par2_files, false);
-
-            if !packets.is_empty() {
-                let base_path = par2_file.parent().unwrap().to_path_buf();
-                if let Ok(repair_context) =
-                    RepairContext::new_with_metadata(packets, metadata, base_path)
-                {
-                    let file_status = repair_context.check_file_status();
-                    assert!(!file_status.is_empty());
-                }
-            }
-        }
-    }
 }
