@@ -664,21 +664,87 @@ impl RepairContext {
             });
         }
 
+        // CRITICAL: After repair, we MUST verify that repaired files are now correct
+        // If we repaired files but can't verify them, that's a FAILURE
         if files_repaired_count > 0 {
-            Ok(RepairResult::Success {
+            println!();
+            println!("Verifying source files:");
+            println!();
+
+            let mut verified_after_repair = Vec::new();
+            let mut failed_verification = Vec::new();
+
+            for repaired_file in &repaired_files {
+                // Find the file info for this repaired file
+                let file_info = self
+                    .recovery_set
+                    .files
+                    .iter()
+                    .find(|f| &f.file_name == repaired_file)
+                    .expect("Repaired file must exist in file list");
+
+                let file_path = self.base_path.join(&file_info.file_name);
+
+                // Verify the MD5 hash of the repaired file
+                match crate::file_verification::calculate_file_md5(&file_path) {
+                    Ok(computed_hash) if computed_hash == file_info.md5_hash => {
+                        verified_after_repair.push(repaired_file.clone());
+                        println!("Verified \"{}\" - correct.", file_info.file_name);
+                    }
+                    Ok(computed_hash) => {
+                        failed_verification.push(repaired_file.clone());
+                        debug!(
+                            "MD5 mismatch after repair for {}: expected {:?}, got {:?}",
+                            file_info.file_name, file_info.md5_hash, computed_hash
+                        );
+                        println!(
+                            "Verified \"{}\" - FAILED (MD5 mismatch).",
+                            file_info.file_name
+                        );
+                    }
+                    Err(e) => {
+                        failed_verification.push(repaired_file.clone());
+                        debug!(
+                            "Failed to verify {} after repair: {}",
+                            file_info.file_name, e
+                        );
+                        println!("Verified \"{}\" - FAILED ({})", file_info.file_name, e);
+                    }
+                }
+            }
+
+            // If any repaired files failed verification, that's a FAILURE
+            if !failed_verification.is_empty() {
+                let message = format!(
+                    "Repair failed: {} file(s) repaired but {} failed verification",
+                    files_repaired_count,
+                    failed_verification.len()
+                );
+                return Ok(RepairResult::Failed {
+                    files_failed: failed_verification,
+                    files_verified: verified_files.len() + verified_after_repair.len(),
+                    verified_files: [verified_files, verified_after_repair].concat(),
+                    message,
+                });
+            }
+
+            // Success: all repaired files verified correctly
+            let total_verified = verified_files.len() + verified_after_repair.len();
+            return Ok(RepairResult::Success {
                 files_repaired: files_repaired_count,
-                files_verified: files_verified_count,
+                files_verified: total_verified,
                 repaired_files,
-                verified_files,
+                verified_files: [verified_files, verified_after_repair].concat(),
                 message: format!("Successfully repaired {} file(s)", files_repaired_count),
-            })
-        } else {
-            Ok(RepairResult::NoRepairNeeded {
-                files_verified: files_verified_count,
-                verified_files,
-                message: format!("All {} file(s) verified as intact", files_verified_count),
-            })
+            });
         }
+
+        // No files needed repair
+        Ok(RepairResult::NoRepairNeeded {
+            files_verified: files_verified_count,
+            verified_files,
+            message: format!("All {} file(s) verified as intact", files_verified_count),
+        })
     }
 
     /// Repair a single file using Reed-Solomon reconstruction

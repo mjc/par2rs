@@ -129,15 +129,34 @@ if [ -n "$USE_EXISTING_DIR" ]; then
     echo -e "${YELLOW}PAR2 file: $PAR2_FILE${NC}"
     echo ""
     
-    # Run par2 verify once and cache output for efficiency
-    echo -e "${YELLOW}Analyzing PAR2 set...${NC}"
-    PAR2_VERIFY_OUTPUT=$(cd "$USE_EXISTING_DIR" && "$PAR2CMDLINE" v -q "$PAR2_FILE" 2>&1)
+    # Use par2 verify with timeout (it can be slow on large sets)
+    echo -e "${YELLOW}Analyzing PAR2 set (this may take a moment for large sets)...${NC}"
     
-    # Extract data file names from PAR2 file (lines starting with "Target:")
-    DATA_FILES=$(echo "$PAR2_VERIFY_OUTPUT" | grep "^Target:" | sed 's/^Target: "\(.*\)" - .*/\1/' || echo "")
+    # Run with timeout of 5 minutes
+    if ! PAR2_VERIFY_OUTPUT=$(timeout 300 "$PAR2CMDLINE" v "$USE_EXISTING_DIR/$PAR2_FILE" 2>&1); then
+        PAR2_VERIFY_EXIT=$?
+        if [ $PAR2_VERIFY_EXIT -eq 124 ]; then
+            echo -e "${RED}Error: par2 verify timed out after 5 minutes${NC}"
+            echo -e "${RED}The PAR2 set may be too large. Try a smaller test set.${NC}"
+            exit 1
+        elif [ $PAR2_VERIFY_EXIT -ne 1 ]; then
+            # Exit code 1 is normal (repair needed), anything else is an error
+            echo -e "${RED}Error: par2 verify failed with exit code $PAR2_VERIFY_EXIT${NC}"
+            echo "Output:"
+            echo "$PAR2_VERIFY_OUTPUT"
+            exit 1
+        fi
+    fi
+    
+    # Extract data file names from PAR2 file (lines starting with "Target:" or "File:")
+    # Format: Target: "filename" - found.
+    # Format: File: "filename" - no data found.
+    DATA_FILES=$(echo "$PAR2_VERIFY_OUTPUT" | grep -E "^(Target|File):" | sed 's/^.*: "\(.*\)" - .*/\1/' || echo "")
     
     if [ -z "$DATA_FILES" ]; then
         echo -e "${RED}Error: Could not determine data files from PAR2${NC}"
+        echo "Verify output:"
+        echo "$PAR2_VERIFY_OUTPUT"
         exit 1
     fi
     
@@ -145,28 +164,27 @@ if [ -n "$USE_EXISTING_DIR" ]; then
     NUM_FILES=$(echo "$DATA_FILES" | wc -l)
     echo -e "${YELLOW}Found $NUM_FILES data file(s) protected by PAR2${NC}"
     
-    # For multi-file sets, pick one random file that's not already corrupted
+    # For multi-file sets, pick one file that exists to corrupt for benchmarking
     if [ "$NUM_FILES" -gt 1 ]; then
         echo -e "${YELLOW}Multi-file PAR2 set detected${NC}"
-        echo -e "${YELLOW}Will select one random file to corrupt for benchmarking${NC}"
+        echo -e "${YELLOW}Will select one file to corrupt for benchmarking${NC}"
         echo ""
         
-        # Check which files are already corrupted/missing
-        VALID_FILES=""
+        # Find files that exist and are not missing
+        EXISTING_FILES=""
         while IFS= read -r file; do
             if [ -f "$USE_EXISTING_DIR/$file" ]; then
-                # File exists - check if it's valid by computing its MD5
-                VALID_FILES="$VALID_FILES$file"$'\n'
+                EXISTING_FILES="$EXISTING_FILES$file"$'\n'
             fi
         done <<< "$DATA_FILES"
         
-        if [ -z "$VALID_FILES" ]; then
-            echo -e "${RED}Error: No valid files found to corrupt${NC}"
+        if [ -z "$EXISTING_FILES" ]; then
+            echo -e "${RED}Error: No existing files found to corrupt${NC}"
             exit 1
         fi
         
-        # Pick a random valid file
-        DATA_FILE=$(echo "$VALID_FILES" | shuf -n 1)
+        # Pick a random existing file
+        DATA_FILE=$(echo "$EXISTING_FILES" | grep -v '^$' | shuf -n 1)
         echo -e "${YELLOW}Selected file: $DATA_FILE${NC}"
     else
         DATA_FILE="$DATA_FILES"
@@ -185,13 +203,32 @@ if [ -n "$USE_EXISTING_DIR" ]; then
     echo -e "${YELLOW}File size: ${SIZE_MB}MB${NC}"
     echo ""
     
-    # Verify files are valid before we corrupt (use cached output)
-    if ! echo "$PAR2_VERIFY_OUTPUT" | grep -q "All files are correct"; then
-        echo -e "${RED}Error: Files are not valid according to PAR2. Cannot benchmark.${NC}"
-        echo -e "${RED}Please repair files first before benchmarking.${NC}"
-        exit 1
+    # Check verify output to see if repair is needed
+    if echo "$PAR2_VERIFY_OUTPUT" | grep -q "Repair is not required"; then
+        echo -e "${GREEN}✓ All files verified correct${NC}"
+        NEED_INITIAL_REPAIR=false
+    elif echo "$PAR2_VERIFY_OUTPUT" | grep -q "Repair is required"; then
+        echo -e "${YELLOW}⚠ Some files need repair - will repair before benchmarking${NC}"
+        NEED_INITIAL_REPAIR=true
+    elif echo "$PAR2_VERIFY_OUTPUT" | grep -q "All files are correct"; then
+        echo -e "${GREEN}✓ All files verified correct${NC}"
+        NEED_INITIAL_REPAIR=false
+    else
+        # Assume repair needed if we can't determine
+        echo -e "${YELLOW}⚠ Cannot determine repair status - will repair before benchmarking${NC}"
+        NEED_INITIAL_REPAIR=true
     fi
-    echo -e "${GREEN}✓ All files verified correct${NC}"
+    
+    # If files need repair, repair them first using par2cmdline
+    if [ "$NEED_INITIAL_REPAIR" = true ]; then
+        echo -e "${YELLOW}Repairing files before benchmarking...${NC}"
+        if ! "$PAR2CMDLINE" r "$USE_EXISTING_DIR/$PAR2_FILE" 2>&1 | tail -20; then
+            echo -e "${RED}Error: Failed to repair files${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}✓ Files repaired${NC}"
+        echo ""
+    fi
     
     # Compute original MD5 of the file we'll corrupt
     echo -e "${YELLOW}Computing original file MD5...${NC}"
