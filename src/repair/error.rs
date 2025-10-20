@@ -1,5 +1,6 @@
 //! Error types for PAR2 repair operations
 
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// Errors that can occur during PAR2 repair operations
@@ -63,7 +64,60 @@ pub enum RepairError {
     #[error("File does not exist: {0}")]
     FileNotFound(String),
 
-    /// I/O error occurred
+    /// Failed to read slice from file
+    #[error("Failed to read slice {slice_index} from {file}: {source}")]
+    SliceReadError {
+        file: PathBuf,
+        slice_index: usize,
+        source: std::io::Error,
+    },
+
+    /// Failed to write slice to file
+    #[error("Failed to write slice {slice_index} to {file}: {source}")]
+    SliceWriteError {
+        file: PathBuf,
+        slice_index: usize,
+        source: std::io::Error,
+    },
+
+    /// Failed to seek in file
+    #[error("Failed to seek to offset {offset} in {file}: {source}")]
+    FileSeekError {
+        file: PathBuf,
+        offset: u64,
+        source: std::io::Error,
+    },
+
+    /// Failed to open file for reading
+    #[error("Failed to open file for reading: {file}: {source}")]
+    FileOpenError {
+        file: PathBuf,
+        source: std::io::Error,
+    },
+
+    /// Failed to create output file
+    #[error("Failed to create output file: {file}: {source}")]
+    FileCreateError {
+        file: PathBuf,
+        source: std::io::Error,
+    },
+
+    /// Failed to rename temporary file
+    #[error("Failed to rename {temp_path} to {final_path}: {source}")]
+    FileRenameError {
+        temp_path: PathBuf,
+        final_path: PathBuf,
+        source: std::io::Error,
+    },
+
+    /// Failed to flush file buffer
+    #[error("Failed to flush buffer for {file}: {source}")]
+    FileFlushError {
+        file: PathBuf,
+        source: std::io::Error,
+    },
+
+    /// I/O error occurred (catch-all for other I/O errors)
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
