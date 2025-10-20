@@ -245,16 +245,3 @@ fn test_large_file_with_many_slices() {
     let result = repair_files(par2_file.to_str().unwrap());
     assert!(result.is_ok());
 }
-
-// Helper function - kept for backward compatibility but no longer used
-#[allow(dead_code)]
-fn create_minimal_par2(par2_path: &PathBuf, data_file: &PathBuf) {
-    std::process::Command::new("par2")
-        .arg("c")
-        .arg("-r5") // 5% recovery
-        .arg("-q")
-        .arg(par2_path)
-        .arg(data_file)
-        .output()
-        .expect("Failed to create PAR2 file - is par2cmdline installed?");
-}
