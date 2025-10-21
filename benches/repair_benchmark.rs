@@ -3,19 +3,15 @@ use par2rs::reed_solomon::galois::Galois16;
 use par2rs::reed_solomon::reedsolomon::{
     build_split_mul_table, ReconstructionEngine, SplitMulTable,
 };
-#[cfg(target_arch = "x86_64")]
-use par2rs::reed_solomon::simd::process_slice_multiply_add_avx2_unrolled;
 use par2rs::reed_solomon::simd::process_slice_multiply_add_portable_simd;
 #[cfg(target_arch = "x86_64")]
 use par2rs::reed_solomon::simd::{process_slice_multiply_add_simd, SimdLevel};
-#[cfg(target_arch = "aarch64")]
-use par2rs::reed_solomon::simd_neon::process_slice_multiply_add_neon;
 use par2rs::RecoverySlicePacket;
 use std::collections::HashMap;
 use std::hint::black_box;
 
-/// Pure scalar implementation (no SIMD)
-fn process_slice_multiply_add_scalar(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
+/// Pure scalar implementation (no SIMD) - for benchmark baseline
+fn scalar_baseline(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
     let min_len = input.len().min(output.len());
     let num_words = min_len / 2;
     if num_words == 0 {
@@ -72,12 +68,11 @@ fn bench_simd_comparison(c: &mut Criterion) {
         });
     });
 
-    // Benchmark with unrolled SIMD (no PSHUFB) - x86_64 only
-    #[cfg(target_arch = "x86_64")]
-    group.bench_function("unrolled_only", |b| {
+    // Benchmark the library's scalar fallback function
+    group.bench_function("lib_scalar", |b| {
         let mut output = vec![0x55u8; size];
         b.iter(|| unsafe {
-            process_slice_multiply_add_avx2_unrolled(
+            par2rs::reed_solomon::simd::process_slice_multiply_add_scalar(
                 black_box(&input),
                 black_box(&mut output),
                 black_box(&tables),
@@ -85,11 +80,11 @@ fn bench_simd_comparison(c: &mut Criterion) {
         });
     });
 
-    // Benchmark without SIMD (pure scalar)
+    // Benchmark without SIMD (pure scalar baseline)
     group.bench_function("scalar_fallback", |b| {
         let mut output = vec![0x55u8; size];
         b.iter(|| {
-            process_slice_multiply_add_scalar(
+            scalar_baseline(
                 black_box(&input),
                 black_box(&mut output),
                 black_box(&tables),
@@ -102,19 +97,6 @@ fn bench_simd_comparison(c: &mut Criterion) {
         let mut output = vec![0x55u8; size];
         b.iter(|| unsafe {
             process_slice_multiply_add_portable_simd(
-                black_box(&input),
-                black_box(&mut output),
-                black_box(&tables),
-            );
-        });
-    });
-
-    // Benchmark with ARM NEON (ARM64 only)
-    #[cfg(target_arch = "aarch64")]
-    group.bench_function("neon", |b| {
-        let mut output = vec![0x55u8; size];
-        b.iter(|| unsafe {
-            process_slice_multiply_add_neon(
                 black_box(&input),
                 black_box(&mut output),
                 black_box(&tables),
@@ -154,7 +136,7 @@ fn bench_simd_variants_by_size(c: &mut Criterion) {
             |b, &size| {
                 let mut output = vec![0x55u8; size];
                 b.iter(|| {
-                    process_slice_multiply_add_scalar(
+                    scalar_baseline(
                         black_box(&input),
                         black_box(&mut output),
                         black_box(&tables),
@@ -178,19 +160,6 @@ fn bench_simd_variants_by_size(c: &mut Criterion) {
                 });
             },
         );
-
-        // ARM NEON
-        #[cfg(target_arch = "aarch64")]
-        group.bench_with_input(BenchmarkId::new("neon", &size_label), &size, |b, &size| {
-            let mut output = vec![0x55u8; size];
-            b.iter(|| unsafe {
-                process_slice_multiply_add_neon(
-                    black_box(&input),
-                    black_box(&mut output),
-                    black_box(&tables),
-                );
-            });
-        });
 
         // x86_64 PSHUFB (for comparison on x86 systems)
         #[cfg(target_arch = "x86_64")]
@@ -243,7 +212,7 @@ fn bench_reed_solomon_reconstruct(c: &mut Criterion) {
         }
 
         group.bench_with_input(
-            BenchmarkId::new("with_pshufb", missing_count),
+            BenchmarkId::new("reconstruct", missing_count),
             &missing_count,
             |b, &missing_count| {
                 let engine =

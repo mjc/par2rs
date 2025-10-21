@@ -20,8 +20,6 @@
 pub mod galois;
 pub mod reedsolomon;
 pub mod simd;
-pub mod simd_neon;
-pub mod simd_pshufb;
 
 pub use galois::*;
 pub use reedsolomon::*;

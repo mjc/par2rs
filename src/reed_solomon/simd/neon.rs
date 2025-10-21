@@ -6,43 +6,25 @@
 //! Performance on Apple M1: vqtbl1q_u8 has ~1 cycle latency, comparable to PSHUFB.
 
 #[cfg(target_arch = "aarch64")]
-use super::reedsolomon::SplitMulTable;
+use super::super::reedsolomon::SplitMulTable;
+#[cfg(target_arch = "aarch64")]
+use super::common::{build_nibble_tables, process_slice_multiply_add_scalar};
 
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
 
 /// Build nibble lookup tables for NEON table lookups
 ///
-/// Takes a 256-entry u16 table and splits it into 4 tables of 16 bytes each:
-/// - Low nibble (0-15) → result low byte
-/// - Low nibble (0-15) → result high byte  
-/// - High nibble (0-15) → result low byte
-/// - High nibble (0-15) → result high byte
+/// Wrapper around common build_nibble_tables() for backwards compatibility.
+/// Returns tables as a tuple for use with NEON vtbl implementation.
 #[cfg(target_arch = "aarch64")]
 fn build_neon_tables(table: &[u16; 256]) -> ([u8; 16], [u8; 16], [u8; 16], [u8; 16]) {
-    let mut lo_nib_lo_byte = [0u8; 16];
-    let mut lo_nib_hi_byte = [0u8; 16];
-    let mut hi_nib_lo_byte = [0u8; 16];
-    let mut hi_nib_hi_byte = [0u8; 16];
-
-    // For each nibble value (0-15)
-    for nib in 0..16 {
-        // Low nibble: input byte = nib (i.e., 0x0N)
-        let result_lo = table[nib];
-        lo_nib_lo_byte[nib] = (result_lo & 0xFF) as u8;
-        lo_nib_hi_byte[nib] = (result_lo >> 8) as u8;
-
-        // High nibble: input byte = nib << 4 (i.e., 0xN0)
-        let result_hi = table[nib << 4];
-        hi_nib_lo_byte[nib] = (result_hi & 0xFF) as u8;
-        hi_nib_hi_byte[nib] = (result_hi >> 8) as u8;
-    }
-
+    let nibbles = build_nibble_tables(table);
     (
-        lo_nib_lo_byte,
-        lo_nib_hi_byte,
-        hi_nib_lo_byte,
-        hi_nib_hi_byte,
+        nibbles.lo_nib_lo_byte,
+        nibbles.lo_nib_hi_byte,
+        nibbles.hi_nib_lo_byte,
+        nibbles.hi_nib_hi_byte,
     )
 }
 
@@ -66,7 +48,7 @@ pub unsafe fn process_slice_multiply_add_neon(
     // Need at least 16 bytes for NEON SIMD
     if len < 16 {
         // Fall back to scalar for small buffers
-        process_scalar(input, output, tables);
+        process_slice_multiply_add_scalar(input, output, tables);
         return;
     }
 
@@ -145,35 +127,9 @@ pub unsafe fn process_slice_multiply_add_neon(
         idx += 16;
     }
 
-    // Handle remaining bytes with scalar code
+    // Handle remaining bytes with scalar fallback
     if idx < len {
-        process_scalar(&input[idx..], &mut output[idx..], tables);
-    }
-}
-
-/// Scalar fallback for small buffers or remaining bytes
-#[cfg(target_arch = "aarch64")]
-unsafe fn process_scalar(input: &[u8], output: &mut [u8], tables: &SplitMulTable) {
-    let len = input.len().min(output.len());
-    let in_words = std::slice::from_raw_parts(input.as_ptr() as *const u16, len / 2);
-    let out_words = std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut u16, len / 2);
-    let low = &tables.low[..];
-    let high = &tables.high[..];
-
-    for i in 0..in_words.len() {
-        let in_word = in_words[i];
-        let out_word = out_words[i];
-        let result = low[(in_word & 0xFF) as usize] ^ high[(in_word >> 8) as usize];
-        out_words[i] = out_word ^ result;
-    }
-
-    // Handle odd trailing byte
-    if len % 2 == 1 {
-        let last_idx = len - 1;
-        let in_byte = input[last_idx];
-        let out_byte = output[last_idx];
-        let result_low = low[in_byte as usize];
-        output[last_idx] = out_byte ^ (result_low & 0xFF) as u8;
+        process_slice_multiply_add_scalar(&input[idx..], &mut output[idx..], tables);
     }
 }
 
