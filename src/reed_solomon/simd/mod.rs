@@ -189,10 +189,7 @@ mod tests {
 
         // Should return one of the valid enum values
         match level {
-            SimdLevel::None
-            | SimdLevel::Ssse3
-            | SimdLevel::Avx2
-            | SimdLevel::PortableSimd => {
+            SimdLevel::None | SimdLevel::Ssse3 | SimdLevel::Avx2 | SimdLevel::PortableSimd => {
                 // Valid
             }
         }
