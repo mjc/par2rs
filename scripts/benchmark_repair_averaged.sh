@@ -19,10 +19,44 @@ PAR2RS="$PROJECT_ROOT/target/release/par2repair"
 PAR2CMDLINE="par2"
 ITERATIONS=${ITERATIONS:-10}
 
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
 # Configuration
 PAR2_FILE=""
-SIZE_MB=${1:-100}
-TEMP_BASE=${2:-}
+SIZE_MB=100  # Default size
+TEMP_BASE=""
+MULTIFILE=false
+
+# Functions
+show_help() {
+    cat << EOF
+Usage: $0 [OPTIONS] [SIZE_MB] [TEMP_DIR]
+
+Options:
+  -p, --par2 FILE      PAR2 file path to repair (infers directory automatically)
+  -i, --iterations N   Number of iterations (default: 10)
+  -m, --multifile      Create multiple files of varying sizes for PAR2 set
+  -h, --help           Show this help message
+
+Examples:
+  $0 1000                                    # 1GB test file
+  $0 10000 /mnt/scratch                      # 10GB in /mnt/scratch
+  $0 -m 1000                                 # Multiple files totaling ~1GB
+  $0 -p /path/to/files/file.par2             # Use existing files
+  $0 -p file.par2 -i 5                       # 5 iterations on existing
+EOF
+    exit 0
+}
+
+error_exit() {
+    echo -e "${RED}✗ $1${NC}" >&2
+    exit 1
+}
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -35,65 +69,106 @@ while [[ $# -gt 0 ]]; do
             ITERATIONS="$2"
             shift 2
             ;;
+        -m|--multifile)
+            MULTIFILE=true
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $0 [OPTIONS] [SIZE_MB] [TEMP_DIR]"
-            echo ""
-            echo "Options:"
-            echo "  -p, --par2 FILE      PAR2 file path to repair (infers directory automatically)"
-            echo "  -i, --iterations N   Number of iterations (default: 10)"
-            echo "  -h, --help           Show this help message"
-            echo ""
-            echo "Examples:"
-            echo "  $0 1000                                    # 1GB test file"
-            echo "  $0 10000 /mnt/scratch                      # 10GB in /mnt/scratch"
-            echo "  $0 -p /path/to/files/file.par2             # Use existing files"
-            echo "  $0 -p file.par2 -i 5                       # 5 iterations on existing"
-            exit 0
+            show_help
+            ;;
+        -*)
+            error_exit "Unknown option: $1. Use --help for usage information"
             ;;
         *)
+            # Positional argument - size
             if [[ "$1" =~ ^[0-9]+$ ]]; then
                 SIZE_MB=$1
                 shift
+                # Next positional arg is temp directory (if not a flag)
                 if [[ $# -gt 0 ]] && [[ ! "$1" =~ ^- ]]; then
                     TEMP_BASE=$1
                     shift
                 fi
             else
-                echo "Unknown option: $1"
-                echo "Use --help for usage information"
-                exit 1
+                error_exit "Invalid argument: $1. Use --help for usage information"
             fi
             ;;
     esac
 done
 
-# Infer directory from PAR2 file path if provided
-if [ -n "$PAR2_FILE" ]; then
-    if [ ! -f "$PAR2_FILE" ]; then
-        echo "Error: PAR2 file not found: $PAR2_FILE"
-        exit 1
-    fi
+validate_par2_file() {
+    [ -n "$PAR2_FILE" ] || return 0
     
-    # Get the directory and just the filename
+    [ -f "$PAR2_FILE" ] || error_exit "PAR2 file not found: $PAR2_FILE"
+    
     USE_EXISTING_DIR=$(dirname "$PAR2_FILE")
     PAR2_FILE=$(basename "$PAR2_FILE")
     
     echo "Inferred directory: $USE_EXISTING_DIR"
     echo "PAR2 filename: $PAR2_FILE"
-fi
+    
+    [ -d "$USE_EXISTING_DIR" ] || error_exit "Directory not found: $USE_EXISTING_DIR"
+    [ -f "$USE_EXISTING_DIR/$PAR2_FILE" ] || error_exit "PAR2 file not found: $USE_EXISTING_DIR/$PAR2_FILE"
+}
 
-# Validate directory mode
-if [ -n "$USE_EXISTING_DIR" ]; then
-    if [ ! -d "$USE_EXISTING_DIR" ]; then
-        echo "Error: Directory not found: $USE_EXISTING_DIR"
+validate_par2_file
+
+create_multifile_set() {
+    echo -e "${YELLOW}Generating multiple test files totaling ~${SIZE_MB}MB in $TEMP...${NC}"
+    
+    local large_mb=$((SIZE_MB / 2))
+    local medium_mb=$((SIZE_MB * 3 / 10))
+    local small_mb=$((SIZE_MB * 15 / 100))
+    
+    echo "  Creating large file (${large_mb}MB)..."
+    dd if=/dev/urandom of="$TEMP/large_file.bin" bs=1M count=${large_mb} 2>&1 | grep -v records
+    
+    echo "  Creating medium file (${medium_mb}MB)..."
+    dd if=/dev/urandom of="$TEMP/medium_file.bin" bs=1M count=${medium_mb} 2>&1 | grep -v records
+    
+    echo "  Creating small file (${small_mb}MB)..."
+    dd if=/dev/urandom of="$TEMP/small_file.bin" bs=1M count=${small_mb} 2>&1 | grep -v records
+    
+    echo "  Creating tiny file (32KB - less than one block)..."
+    dd if=/dev/urandom of="$TEMP/tiny_file.bin" bs=1K count=32 2>&1 | grep -v records
+    
+    FILES_PATTERN="$TEMP/*.bin"
+    CORRUPT_FILE="$TEMP/large_file.bin"
+    CORRUPT_OFFSET=$((large_mb * 1024 * 1024 / 2))
+    TINY_FILE="$TEMP/tiny_file.bin"
+}
+
+create_single_file() {
+    echo -e "${YELLOW}Generating ${SIZE_MB}MB test file in $TEMP...${NC}"
+    dd if=/dev/urandom of="$TEMP/testfile_${SIZE_MB}mb" bs=1M count=${SIZE_MB} 2>&1 || \
+        error_exit "Failed to generate test file! Check disk space."
+    
+    FILES_PATTERN="$TEMP/testfile_${SIZE_MB}mb"
+    CORRUPT_FILE="$TEMP/testfile_${SIZE_MB}mb"
+    CORRUPT_OFFSET=$((SIZE_MB * 1024 * 1024 / 2))
+}
+
+create_par2_archives() {
+    echo -e "${YELLOW}Creating PAR2 files...${NC}"
+    
+    local par2_output
+    if [ "$MULTIFILE" = true ]; then
+        par2_output=$($PAR2CMDLINE c -q -r5 "$TEMP/multifile.par2" $FILES_PATTERN 2>&1)
+    else
+        par2_output=$($PAR2CMDLINE c -q -r5 "$TEMP/testfile_${SIZE_MB}mb.par2" "$TEMP/testfile_${SIZE_MB}mb" 2>&1)
+    fi
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}✗ Failed to create PAR2 files!${NC}"
+        echo "PAR2 output: $par2_output"
+        ls -lh "$TEMP"
         exit 1
     fi
     
-    if [ ! -f "$USE_EXISTING_DIR/$PAR2_FILE" ]; then
-        echo "Error: PAR2 file not found: $USE_EXISTING_DIR/$PAR2_FILE"
-        exit 1
-    fi
-fi
+    local par2_count=$(ls -1 "$TEMP"/*.par2 2>/dev/null | wc -l)
+    [ "$par2_count" -eq 0 ] && error_exit "No PAR2 files were created!"
+    echo "Created $par2_count PAR2 files"
+}
 
 # Colors
 RED='\033[0;31m'
@@ -247,14 +322,12 @@ if [ -n "$USE_EXISTING_DIR" ]; then
     TEST_FILE="$DATA_FILE"
     TEST_PAR2="$PAR2_FILE"
     
-else
-    # Original generated file mode
-    # Arrays to store times (will be populated in directory mode too)
+    # Arrays to store times
     declare -a PAR2CMD_TIMES
     declare -a PAR2RS_TIMES
     
-    # Corrupt 512 bytes at midpoint of file
-    CORRUPT_OFFSET=$((SIZE_MB * 1024 * 1024 / 2))
+else
+    # Original generated file mode
     
     # Generate test file once for all iterations
     if [ -n "$TEMP_BASE" ]; then
@@ -262,53 +335,39 @@ else
     else
         TEMP=$(mktemp -d)
     fi
-    echo -e "${YELLOW}Generating ${SIZE_MB}MB test file in $TEMP...${NC}"
-    if ! dd if=/dev/urandom of="$TEMP/testfile_${SIZE_MB}mb" bs=1M count=${SIZE_MB} 2>&1; then
-        echo -e "${RED}✗ Failed to generate test file!${NC}"
-        echo "This could be due to insufficient disk space."
-        df -h "$TEMP"
-        exit 1
+    
+    if [ "$MULTIFILE" = true ]; then
+        create_multifile_set
+    else
+        create_single_file
     fi
     echo ""
     
-    # Create PAR2 files once for all iterations
-    echo -e "${YELLOW}Creating PAR2 files...${NC}"
-    # Capture output to check for errors but suppress verbose messages
-    PAR2_OUTPUT=$($PAR2CMDLINE c -q -r5 "$TEMP/testfile_${SIZE_MB}mb.par2" "$TEMP/testfile_${SIZE_MB}mb" 2>&1)
-    PAR2_EXIT_CODE=$?
-    if [ $PAR2_EXIT_CODE -ne 0 ]; then
-        echo -e "${RED}✗ Failed to create PAR2 files!${NC}"
-        echo "PAR2 output:"
-        echo "$PAR2_OUTPUT"
-        echo "This could be due to insufficient disk space, timeout, or other errors."
-        # Show what's in the temp directory
-        echo "Files in $TEMP:"
-        ls -lh "$TEMP"
-        exit 1
-    fi
+    create_par2_archives
     echo ""
-    
-    # Verify PAR2 files were created
-    PAR2_FILE_COUNT=$(ls -1 "$TEMP"/*.par2 2>/dev/null | wc -l)
-    if [ "$PAR2_FILE_COUNT" -eq 0 ]; then
-        echo -e "${RED}✗ No PAR2 files were created!${NC}"
-        exit 1
-    fi
-    echo "Created $PAR2_FILE_COUNT PAR2 files"
     
     # Save original MD5 for verification
-    MD5_ORIGINAL=$(md5sum "$TEMP/testfile_${SIZE_MB}mb" | awk '{print $1}')
-    echo "Original MD5: $MD5_ORIGINAL"
+    if [ "$MULTIFILE" = true ]; then
+        # Verify large file and save tiny file MD5 for later
+        MD5_ORIGINAL=$(md5sum "$CORRUPT_FILE" | awk '{print $1}')
+        MD5_TINY=$(md5sum "$TINY_FILE" | awk '{print $1}')
+        echo "Original MD5 (large file): $MD5_ORIGINAL"
+        echo "Original MD5 (tiny file): $MD5_TINY"
+    else
+        MD5_ORIGINAL=$(md5sum "$TEMP/testfile_${SIZE_MB}mb" | awk '{print $1}')
+        echo "Original MD5: $MD5_ORIGINAL"
+    fi
     echo ""
     
     # Set TEST_FILE and TEST_PAR2 for iteration loop
-    TEST_FILE="testfile_${SIZE_MB}mb"
-    TEST_PAR2="testfile_${SIZE_MB}mb.par2"
+    if [ "$MULTIFILE" = true ]; then
+        TEST_FILE=$(basename "$CORRUPT_FILE")
+        TEST_PAR2="multifile.par2"
+    else
+        TEST_FILE="testfile_${SIZE_MB}mb"
+        TEST_PAR2="testfile_${SIZE_MB}mb.par2"
+    fi
 fi
-
-# Arrays to store times
-declare -a PAR2CMD_TIMES
-declare -a PAR2RS_TIMES
 
 for i in $(seq 1 $ITERATIONS); do
     echo -e "${GREEN}=== Iteration $i/$ITERATIONS ===${NC}"
@@ -331,6 +390,12 @@ for i in $(seq 1 $ITERATIONS); do
         exit 1
     fi
     
+    # In multifile mode, also delete the tiny file to test complete file recovery
+    if [ "$MULTIFILE" = true ]; then
+        echo -e "${YELLOW}  Deleting tiny file for par2cmdline...${NC}"
+        rm -f "$TINY_FILE"
+    fi
+    
     echo -e "${YELLOW}  Running par2cmdline repair...${NC}"
     START=$(date +%s.%N)
     if ! $PAR2CMDLINE r -q -N "$TEMP/$TEST_PAR2" 2>&1; then
@@ -350,6 +415,12 @@ for i in $(seq 1 $ITERATIONS); do
     if ! dd if=/dev/zero of="$TEMP/$TEST_FILE" bs=512 count=1 seek=$((CORRUPT_OFFSET / 512)) conv=notrunc 2>&1; then
         echo -e "${RED}✗ Failed to corrupt file!${NC}"
         exit 1
+    fi
+    
+    # In multifile mode, also delete the tiny file to test complete file recovery
+    if [ "$MULTIFILE" = true ]; then
+        echo -e "${YELLOW}  Deleting tiny file for par2rs...${NC}"
+        rm -f "$TINY_FILE"
     fi
     
     echo -e "${YELLOW}  Running par2rs repair...${NC}"
@@ -375,6 +446,21 @@ for i in $(seq 1 $ITERATIONS); do
         echo "  par2cmdline: $MD5_PAR2CMD"
         echo "  par2rs: $MD5_PAR2RS"
         exit 1
+    fi
+    
+    # In multifile mode, verify tiny file was recovered correctly
+    if [ "$MULTIFILE" = true ]; then
+        if [ ! -f "$TINY_FILE" ]; then
+            echo -e "${RED}✗ Tiny file was not recovered!${NC}"
+            exit 1
+        fi
+        MD5_TINY_RECOVERED=$(md5sum "$TINY_FILE" | awk '{print $1}')
+        if [ "$MD5_TINY_RECOVERED" != "$MD5_TINY" ]; then
+            echo -e "${RED}✗ Tiny file recovery verification failed in iteration $i!${NC}"
+            echo "  Expected: $MD5_TINY"
+            echo "  Recovered: $MD5_TINY_RECOVERED"
+            exit 1
+        fi
     fi
     
     echo ""

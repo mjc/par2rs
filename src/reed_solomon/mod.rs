@@ -19,8 +19,9 @@
 
 pub mod galois;
 pub mod reedsolomon;
-pub mod simd;
+#[doc(hidden)]
+pub mod simd; // Public for tests/benchmarks, but hidden from docs
 
 pub use galois::*;
 pub use reedsolomon::*;
-pub use simd::*;
+// Don't re-export simd - users shouldn't need direct SIMD access
