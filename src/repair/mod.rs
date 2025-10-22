@@ -27,7 +27,7 @@ pub use types::{
     VerificationResult,
 };
 
-use crate::domain::{FileId, GlobalSliceIndex, LocalSliceIndex, Md5Hash};
+use crate::domain::{FileId, LocalSliceIndex, Md5Hash};
 use crate::RecoverySlicePacket;
 use log::debug;
 use rayon::prelude::*;
@@ -224,6 +224,25 @@ impl RepairContext {
     }
 
     /// Perform Reed-Solomon repair
+    /// Perform Reed-Solomon repair
+    ///
+    /// CRITICAL: This method uses a unified reconstruction approach for ALL files.
+    /// When multiple files have missing/damaged slices, we MUST reconstruct ALL
+    /// missing slices together in ONE Reed-Solomon operation. Reconstructing files
+    /// independently produces incorrect results because PAR2 recovery slices are
+    /// XOR'd across ALL data slices in the set.
+    ///
+    /// Example of why per-file reconstruction fails:
+    /// - file_a: slice 947 missing
+    /// - file_b: slice 1473 damaged
+    /// - If we reconstruct file_a alone: recovery_0 XOR (all slices except 947)
+    ///   This includes the DAMAGED slice 1473, producing: reconstructed_947 = actual_947 XOR damaged_1473 ❌
+    ///
+    /// Correct approach:
+    /// 1. Collect ALL missing slices: [947, 1473]
+    /// 2. Build input provider with ONLY valid slices
+    /// 3. ONE Reed-Solomon reconstruction for both
+    /// 4. Distribute results to respective files
     fn perform_reed_solomon_repair(
         &self,
         file_status: &HashMap<String, FileStatus>,
@@ -233,56 +252,107 @@ impl RepairContext {
             "perform_reed_solomon_repair: processing {} files",
             self.recovery_set.files.len()
         );
-        let mut repaired_files = Vec::new();
-        let mut verified_files = Vec::new();
-        let mut files_failed = Vec::new();
 
         // Report repair header
         self.reporter().report_repair_header();
 
-        // Process each file that needs repair
-        debug!("USING files for repair:");
+        debug!("File status check:");
         for (idx, file_info) in self.recovery_set.files.iter().enumerate() {
+            let status = file_status
+                .get(&file_info.file_name)
+                .unwrap_or(&FileStatus::Missing);
             debug!(
-                "  USING FileInfo[{}]: {} - offset: {}, slices: {}",
+                "  FileInfo[{}]: {} - offset: {}, slices: {}, status: {:?}",
                 idx,
                 file_info.file_name,
                 file_info.global_slice_offset.as_usize(),
-                file_info.slice_count
+                file_info.slice_count,
+                status
             );
         }
 
+        // STEP 1: Identify all files needing repair and collect their missing slices
+        let mut files_to_repair: Vec<(&FileInfo, Vec<usize>)> = Vec::new();
+        let mut verified_files = Vec::new();
+        
         for file_info in &self.recovery_set.files {
-            debug!("  Checking file: {}", file_info.file_name);
             let status = file_status
                 .get(&file_info.file_name)
                 .unwrap_or(&FileStatus::Missing);
 
             if *status == FileStatus::Present {
                 verified_files.push(file_info.file_name.clone());
-                continue; // File is already good
+                continue;
             }
 
-            // Attempt to repair the file using Reed-Solomon reconstruction
+            // Determine which slices are missing for this file
+            let valid_slice_indices = validation_cache
+                .get(&file_info.file_id)
+                .ok_or_else(|| RepairError::NoValidationCache(file_info.file_name.clone()))?;
+
+            let missing_slices: Vec<usize> = (0..file_info.slice_count)
+                .filter(|idx| !valid_slice_indices.contains(idx))
+                .collect();
+
+            if missing_slices.is_empty() {
+                // All slices validated, but file status says not Present
+                if *status == FileStatus::Corrupted {
+                    debug!("File {} has all valid slices but MD5 doesn't match", file_info.file_name);
+                }
+                verified_files.push(file_info.file_name.clone());
+                continue;
+            }
+
+            debug!(
+                "File {} needs {} missing slices repaired",
+                file_info.file_name,
+                missing_slices.len()
+            );
+            files_to_repair.push((file_info, missing_slices));
+        }
+
+        if files_to_repair.is_empty() {
+            return Ok(RepairResult::NoRepairNeeded {
+                files_verified: verified_files.len(),
+                verified_files,
+                message: "All files are already intact".to_string(),
+            });
+        }
+
+        // STEP 2: Reconstruct ALL missing slices across ALL files in ONE operation
+        let reconstructed_data: HashMap<usize, Vec<u8>> = self.reconstruct_all_missing_slices(&files_to_repair, validation_cache)?;
+
+        // STEP 3: Write reconstructed data to each file
+        let mut repaired_files = Vec::new();
+        let mut files_failed = Vec::new();
+
+        for (file_info, missing_slices) in &files_to_repair {
             self.reporter().report_repair_start(&file_info.file_name);
 
-            match self.repair_single_file(file_info, status, validation_cache) {
-                Ok(repaired) => {
-                    self.reporter()
-                        .report_repair_complete(&file_info.file_name, repaired);
-                    if repaired {
-                        repaired_files.push(file_info.file_name.clone());
-                        debug!("Successfully repaired: {}", file_info.file_name);
-                    } else {
-                        verified_files.push(file_info.file_name.clone());
-                        debug!("File was already valid: {}", file_info.file_name);
-                    }
+            // Extract this file's reconstructed slices from the combined result
+            let mut file_reconstructed = ReconstructedSlices::new();
+            for &local_idx in missing_slices {
+                let global_idx = file_info.local_to_global(LocalSliceIndex::new(local_idx));
+                if let Some(data) = reconstructed_data.get(&global_idx.as_usize()) {
+                    file_reconstructed.insert(local_idx, data.clone());
+                }
+            }
+
+            let valid_slice_indices = validation_cache
+                .get(&file_info.file_id)
+                .ok_or_else(|| RepairError::NoValidationCache(file_info.file_name.clone()))?;
+
+            let file_path = self.base_path.join(&file_info.file_name);
+            match self.write_repaired_file(&file_path, file_info, valid_slice_indices, &file_reconstructed) {
+                Ok(()) => {
+                    self.reporter().report_repair_complete(&file_info.file_name, true);
+                    repaired_files.push(file_info.file_name.clone());
+                    debug!("Successfully repaired: {}", file_info.file_name);
                 }
                 Err(e) => {
-                    self.reporter()
-                        .report_repair_failed(&file_info.file_name, &e.to_string());
+                    self.reporter().report_repair_failed(&file_info.file_name, &e.to_string());
                     files_failed.push(file_info.file_name.clone());
-                    debug!("Failed to repair {}: {}", file_info.file_name, e);
+                    debug!("Failed to write repaired file {}: {}", file_info.file_name, e);
                 }
             }
         }
@@ -409,95 +479,168 @@ impl RepairContext {
         })
     }
 
-    /// Repair a single file using Reed-Solomon reconstruction
-    fn repair_single_file(
+    /// Reconstruct ALL missing slices across ALL files in a single Reed-Solomon operation
+    ///
+    /// This is the core fix for the multifile repair bug. We collect ALL missing/damaged
+    /// slices from ALL files and reconstruct them together, ensuring the Reed-Solomon
+    /// matrix uses only valid slices as input.
+    ///
+    /// Returns a HashMap mapping global slice index -> reconstructed data
+    fn reconstruct_all_missing_slices(
         &self,
-        file_info: &FileInfo,
-        status: &FileStatus,
+        files_to_repair: &[(&FileInfo, Vec<usize>)],
         validation_cache: &ValidationCache,
-    ) -> Result<bool> {
-        let file_path = self.base_path.join(&file_info.file_name);
+    ) -> Result<HashMap<usize, Vec<u8>>> {
+        use crate::slice_provider::{ChunkedSliceProvider, RecoverySliceProvider, SliceLocation};
+        use std::io::Cursor;
 
-        debug!(
-            "repair_single_file: {} (status: {:?})",
-            file_info.file_name, status
-        );
-        debug!(
-            "  File global offset: {}, slice count: {}",
-            file_info.global_slice_offset.as_usize(),
-            file_info.slice_count
-        );
-
-        let valid_slice_indices = validation_cache
-            .get(&file_info.file_id)
-            .ok_or_else(|| RepairError::NoValidationCache(file_info.file_name.clone()))?;
-        debug!(
-            "  Have {} valid slices out of {} total (from cache)",
-            valid_slice_indices.len(),
-            file_info.slice_count
-        );
-
-        // Identify missing slices using iterator
-        let missing_slices: Vec<_> = (0..file_info.slice_count)
-            .filter(|idx| !valid_slice_indices.contains(idx))
-            .collect();
-        debug!(
-            "  Missing slices: {} out of {} total",
-            missing_slices.len(),
-            file_info.slice_count
-        );
-
-        if missing_slices.is_empty() {
-            // All slices validated successfully
-            if *status == FileStatus::Corrupted {
-                debug!("All slices valid but file MD5 doesn't match - may have been externally modified");
-                // Could try to rebuild from validated slices, but that requires loading them all
-                // For now, treat as unrepairable
-                return Err(RepairError::Md5MismatchWithValidSlices);
+        // Collect all global missing indices
+        let mut all_missing_global: Vec<usize> = Vec::new();
+        for (file_info, missing_local) in files_to_repair {
+            for &local_idx in missing_local {
+                let global_idx = file_info.local_to_global(LocalSliceIndex::new(local_idx));
+                all_missing_global.push(global_idx.as_usize());
             }
-            return Ok(false); // File is valid
         }
+        all_missing_global.sort();
 
         debug!(
-            "File {} has {} missing/corrupted slices out of {} total",
-            file_info.file_name,
-            missing_slices.len(),
-            file_info.slice_count
+            "Reconstructing {} total missing slices across {} files",
+            all_missing_global.len(),
+            files_to_repair.len()
         );
 
-        // Check if we have enough recovery data
-        if missing_slices.len() > self.recovery_set.recovery_slices_metadata.len() {
+        // Check if we have enough recovery blocks
+        if all_missing_global.len() > self.recovery_set.recovery_slices_metadata.len() {
             return Err(RepairError::InsufficientRecovery {
-                missing: missing_slices.len(),
+                missing: all_missing_global.len(),
                 available: self.recovery_set.recovery_slices_metadata.len(),
             });
         }
 
-        // Reconstruct missing slices using Reed-Solomon
-        let missing_local: Vec<LocalSliceIndex> = missing_slices
+        // Build slice provider with ONLY valid slices (excludes ALL missing/damaged)
+        let mut input_provider = ChunkedSliceProvider::new(self.recovery_set.slice_size as usize);
+
+        debug!("Building input provider (excluding ALL missing/damaged slices):");
+        for file_info in &self.recovery_set.files {
+            let file_path = self.base_path.join(&file_info.file_name);
+
+            let valid_slices = validation_cache
+                .get(&file_info.file_id)
+                .ok_or_else(|| RepairError::NoValidationCache(file_info.file_name.clone()))?;
+
+            if valid_slices.is_empty() {
+                debug!(
+                    "  File {} - no valid slices (skipping)",
+                    file_info.file_name
+                );
+                continue;
+            }
+
+            debug!(
+                "  File {} - using {} valid slices",
+                file_info.file_name,
+                valid_slices.len()
+            );
+
+            for slice_index in 0..file_info.slice_count {
+                if !valid_slices.contains(&slice_index) {
+                    continue; // Skip invalid slices
+                }
+
+                let global_index = file_info.local_to_global(LocalSliceIndex::new(slice_index));
+                let offset = (slice_index * self.recovery_set.slice_size as usize) as u64;
+                let actual_size = if slice_index == file_info.slice_count - 1 {
+                    let remaining = file_info.file_length % self.recovery_set.slice_size;
+                    if remaining == 0 {
+                        self.recovery_set.slice_size as usize
+                    } else {
+                        remaining as usize
+                    }
+                } else {
+                    self.recovery_set.slice_size as usize
+                };
+
+                let expected_crc = self
+                    .recovery_set
+                    .file_slice_checksums
+                    .get(&file_info.file_id)
+                    .and_then(|checksums| checksums.slice_checksums.get(slice_index))
+                    .map(|(_, crc)| *crc);
+
+                input_provider.add_slice(
+                    global_index.as_usize(),
+                    SliceLocation {
+                        file_path: file_path.clone(),
+                        offset,
+                        size: actual_size,
+                        expected_crc,
+                    },
+                );
+            }
+        }
+
+        // Build recovery slice provider
+        let mut recovery_provider =
+            RecoverySliceProvider::new(self.recovery_set.slice_size as usize);
+
+        for metadata in &self.recovery_set.recovery_slices_metadata {
+            recovery_provider.add_recovery_metadata(metadata.exponent as usize, metadata.clone());
+        }
+
+        // Create reconstruction engine
+        let dummy_recovery_slices: Vec<RecoverySlicePacket> = self
+            .recovery_set
+            .recovery_slices_metadata
             .iter()
-            .map(|&idx| LocalSliceIndex::new(idx))
+            .map(|metadata| RecoverySlicePacket {
+                length: 68,
+                md5: Md5Hash::new([0u8; 16]),
+                set_id: metadata.set_id,
+                type_of_packet: *b"PAR 2.0\0RecvSlic",
+                exponent: metadata.exponent,
+                recovery_data: Vec::new(),
+            })
             .collect();
-        let reconstructed_slices =
-            self.reconstruct_slices(&missing_local, file_info, validation_cache)?;
 
-        debug!("Reconstructed {} slices", reconstructed_slices.len());
+        let total_input_slices: usize = self.recovery_set.files.iter().map(|f| f.slice_count).sum();
+        let reconstruction_engine = crate::reed_solomon::ReconstructionEngine::new(
+            self.recovery_set.slice_size as usize,
+            total_input_slices,
+            dummy_recovery_slices,
+        );
 
-        // Write repaired file
-        self.write_repaired_file(
-            &file_path,
-            file_info,
-            valid_slice_indices,
-            &reconstructed_slices,
-        )?;
+        // Create output buffers for all missing slices
+        let mut output_buffers: HashMap<usize, Cursor<Vec<u8>>> = HashMap::default();
+        for &global_idx in &all_missing_global {
+            output_buffers.insert(global_idx, Cursor::new(Vec::new()));
+        }
 
-        // PERFORMANCE: Skip slow full-file MD5 verification after repair
-        // The CRC32 validation of reconstructed slices already verified correctness
-        // Full MD5 would take minutes on large files and provides no additional value
-        // since Reed-Solomon reconstruction is mathematically guaranteed
-        debug!("Skipping MD5 verification - reconstruction validated via CRC32");
+        // Perform reconstruction
+        let result = reconstruction_engine.reconstruct_missing_slices_chunked(
+            &mut input_provider,
+            &recovery_provider,
+            &all_missing_global,
+            &mut output_buffers,
+            64 * 1024,
+        );
 
-        Ok(true)
+        if !result.success {
+            return Err(RepairError::ReconstructionFailed(
+                result
+                    .error_message
+                    .unwrap_or_else(|| "Reconstruction failed".to_string()),
+            ));
+        }
+
+        // Convert cursors to Vec<u8>
+        let reconstructed: HashMap<usize, Vec<u8>> = output_buffers
+            .into_iter()
+            .map(|(idx, cursor)| (idx, cursor.into_inner()))
+            .collect();
+
+        debug!("Successfully reconstructed {} slices", reconstructed.len());
+        Ok(reconstructed)
     }
 
     /// Validate slices from an existing file
@@ -549,179 +692,6 @@ impl RepairContext {
         );
 
         Ok(valid_slices)
-    }
-
-    /// Reconstruct missing slices using Reed-Solomon
-    fn reconstruct_slices(
-        &self,
-        missing_slices: &[LocalSliceIndex],
-        file_info: &FileInfo,
-        validation_cache: &ValidationCache,
-    ) -> Result<ReconstructedSlices> {
-        use crate::slice_provider::{ChunkedSliceProvider, RecoverySliceProvider, SliceLocation};
-        use std::io::Cursor;
-
-        debug!("Reconstructing {} missing slices", missing_slices.len());
-
-        // Build slice provider with all available slices
-        let mut input_provider = ChunkedSliceProvider::new(self.recovery_set.slice_size as usize);
-
-        debug!("Building input provider:");
-        for other_file_info in &self.recovery_set.files {
-            let file_path = self.base_path.join(&other_file_info.file_name);
-
-            let valid_slices = validation_cache
-                .get(&other_file_info.file_id)
-                .ok_or_else(|| RepairError::NoValidationCache(other_file_info.file_name.clone()))?;
-            
-            if valid_slices.is_empty() {
-                debug!(
-                    "  File {} (global offset: {}) - no valid slices (skipping)",
-                    other_file_info.file_name,
-                    other_file_info.global_slice_offset.as_usize()
-                );
-                continue;
-            }
-            
-            debug!(
-                "  File {} (global offset: {}) - using {} cached valid slices out of {}",
-                other_file_info.file_name,
-                other_file_info.global_slice_offset.as_usize(),
-                valid_slices.len(),
-                other_file_info.slice_count
-            );
-
-            // Add slices from this file
-            for slice_index in 0..other_file_info.slice_count {
-                // Skip slices that are not valid
-                if !valid_slices.contains(&slice_index) {
-                    continue;
-                }
-
-                let global_index =
-                    other_file_info.local_to_global(LocalSliceIndex::new(slice_index));
-                
-                if slice_index < 3 || slice_index >= other_file_info.slice_count - 3 {
-                    debug!(
-                        "    Adding slice {} -> global {} from {}",
-                        slice_index,
-                        global_index.as_usize(),
-                        other_file_info.file_name
-                    );
-                }
-                
-                let offset = (slice_index * self.recovery_set.slice_size as usize) as u64;
-                let actual_size = if slice_index == other_file_info.slice_count - 1 {
-                    let remaining = other_file_info.file_length % self.recovery_set.slice_size;
-                    if remaining == 0 {
-                        self.recovery_set.slice_size as usize
-                    } else {
-                        remaining as usize
-                    }
-                } else {
-                    self.recovery_set.slice_size as usize
-                };
-
-                let expected_crc = self
-                    .recovery_set
-                    .file_slice_checksums
-                    .get(&other_file_info.file_id)
-                    .and_then(|checksums| checksums.slice_checksums.get(slice_index))
-                    .map(|(_, crc)| *crc);
-
-                input_provider.add_slice(
-                    global_index.as_usize(),
-                    SliceLocation {
-                        file_path: file_path.clone(),
-                        offset,
-                        size: actual_size,
-                        expected_crc,
-                    },
-                );
-            }
-        }
-
-        // Build recovery slice provider
-        let mut recovery_provider =
-            RecoverySliceProvider::new(self.recovery_set.slice_size as usize);
-
-        // Use metadata-based lazy loading
-        for metadata in &self.recovery_set.recovery_slices_metadata {
-            recovery_provider.add_recovery_metadata(metadata.exponent as usize, metadata.clone());
-        }
-
-        // Convert file-local indices to global
-        let global_missing_indices: Vec<usize> = missing_slices
-            .iter()
-            .map(|&idx| file_info.local_to_global(idx).as_usize())
-            .collect();
-        
-        debug!(
-            "  Local missing indices: {:?}",
-            if missing_slices.len() <= 10 { format!("{:?}", missing_slices) } else { format!("[{} indices]", missing_slices.len()) }
-        );
-        debug!(
-            "  Global missing indices: {:?}",
-            if global_missing_indices.len() <= 10 { format!("{:?}", global_missing_indices) } else { format!("[{} indices]", global_missing_indices.len()) }
-        );
-
-        // Create reconstruction engine
-        // NOTE: ReconstructionEngine still expects RecoverySlicePackets for exponent lookup
-        // Create minimal packets with just exponents (no data, as data comes from provider)
-        let dummy_recovery_slices: Vec<RecoverySlicePacket> = self
-            .recovery_set
-            .recovery_slices_metadata
-            .iter()
-            .map(|metadata| RecoverySlicePacket {
-                length: 68, // Header only
-                md5: Md5Hash::new([0u8; 16]),
-                set_id: metadata.set_id,
-                type_of_packet: *b"PAR 2.0\0RecvSlic",
-                exponent: metadata.exponent,
-                recovery_data: Vec::new(), // Empty! Data comes from provider
-            })
-            .collect();
-
-        let total_input_slices: usize = self.recovery_set.files.iter().map(|f| f.slice_count).sum();
-        let reconstruction_engine = crate::reed_solomon::ReconstructionEngine::new(
-            self.recovery_set.slice_size as usize,
-            total_input_slices,
-            dummy_recovery_slices,
-        );
-
-        // Create output writers (in-memory buffers for now)
-        let mut output_buffers: HashMap<usize, Cursor<Vec<u8>>> = HashMap::default();
-        for &global_idx in &global_missing_indices {
-            output_buffers.insert(global_idx, Cursor::new(Vec::new()));
-        }
-
-        // Perform reconstruction
-        let result = reconstruction_engine.reconstruct_missing_slices_chunked(
-            &mut input_provider,
-            &recovery_provider,
-            &global_missing_indices,
-            &mut output_buffers,
-            64 * 1024, // 64KB chunks
-        );
-
-        if !result.success {
-            return Err(RepairError::ReconstructionFailed(
-                result
-                    .error_message
-                    .unwrap_or_else(|| "Reconstruction failed".to_string()),
-            ));
-        }
-
-        // Convert global indices back to file-local and extract buffers
-        let mut reconstructed = ReconstructedSlices::new();
-        for (global_idx, cursor) in output_buffers {
-            let global_index = GlobalSliceIndex::new(global_idx);
-            if let Some(file_local_idx) = file_info.global_to_local(global_index) {
-                reconstructed.insert(file_local_idx.as_usize(), cursor.into_inner());
-            }
-        }
-
-        Ok(reconstructed)
     }
 
     /// Write repaired file by streaming slices from disk and reconstructed data

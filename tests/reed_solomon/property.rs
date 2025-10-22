@@ -6,7 +6,6 @@
 
 use par2rs::reed_solomon::Galois16;
 use proptest::prelude::*;
-use proptest::strategy::ValueTree;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -344,13 +343,15 @@ mod standard_tests {
     #[test]
     fn test_strategies_produce_valid_values() {
         use proptest::strategy::Strategy;
+        use proptest::strategy::ValueTree;
         use proptest::test_runner::TestRunner;
 
         let mut runner = TestRunner::default();
 
         // Test u16 range strategy - just verify it produces values without panicking
         for _ in 0..10 {
-            let _value = (0u16..=u16::MAX).new_tree(&mut runner).unwrap().current();
+            let tree = (0u16..=u16::MAX).new_tree(&mut runner).unwrap();
+            let _value = tree.current();
         }
     }
 }
