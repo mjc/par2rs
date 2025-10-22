@@ -45,16 +45,16 @@ fn test_actual_par2_slice_checksums() {
 
     let test_files = [
         (
-            "tests/fixtures/multifile_test/file1.txt",
+            "tests/fixtures/textfiles_test/file1.txt",
             "c7d88ea92c6fca90f5d0c2619659312d",
         ),
         (
-            "tests/fixtures/multifile_test/file2.txt",
-            "9345911b386490ecf24df9ae1e35f4cf",
+            "tests/fixtures/textfiles_test/file2.txt",
+            "e863fb9b6d0066a3e8758f98656b47ff",
         ),
         (
-            "tests/fixtures/multifile_test/file3.txt",
-            "a4d007ed3a0a7a4d2dfe951d1b29e8f6",
+            "tests/fixtures/textfiles_test/file3.txt",
+            "c28b3007285e46926525769fed5c5c01",
         ),
     ];
 
@@ -101,7 +101,7 @@ fn test_load_all_slices_with_padding_during_verify() {
     let temp_path = temp_dir.path();
 
     // Copy test fixtures
-    let fixture_dir = PathBuf::from("tests/fixtures/multifile_test");
+    let fixture_dir = PathBuf::from("tests/fixtures/textfiles_test");
     if !fixture_dir.exists() {
         println!("Skipping test - fixtures not found");
         return;
@@ -116,7 +116,7 @@ fn test_load_all_slices_with_padding_during_verify() {
     }
 
     // Verify files without any corruption
-    let par2_file = temp_path.join("multifile.par2");
+    let par2_file = temp_path.join("textfiles.par2");
     let (_context, result) = repair_files(par2_file.to_str().unwrap()).unwrap();
 
     // All files should verify successfully if we're computing slice checksums correctly
@@ -145,7 +145,7 @@ fn test_load_all_slices_during_repair_needs_padding() {
     let temp_path = temp_dir.path();
 
     // Copy test fixtures
-    let fixture_dir = PathBuf::from("tests/fixtures/multifile_test");
+    let fixture_dir = PathBuf::from("tests/fixtures/textfiles_test");
     if !fixture_dir.exists() {
         println!("Skipping test - fixtures not found");
         return;
@@ -169,7 +169,7 @@ fn test_load_all_slices_during_repair_needs_padding() {
     drop(file2);
 
     // Try to repair
-    let par2_file = temp_path.join("multifile.par2");
+    let par2_file = temp_path.join("textfiles.par2");
     let (_context, result) = repair_files(par2_file.to_str().unwrap()).unwrap();
 
     println!("\n=== Repair Result ===");
