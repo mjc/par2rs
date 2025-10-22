@@ -11,6 +11,7 @@ use crate::domain::Crc32Value;
 use crate::RecoverySliceMetadata;
 use crc32fast::Hasher as Crc32;
 use rustc_hash::FxHashMap as HashMap;
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -80,8 +81,8 @@ pub trait SliceProvider {
 /// This provider maintains file handles and reads data on-demand,
 /// keeping only a small working set in memory.
 pub struct ChunkedSliceProvider {
-    /// Map of slice index to location info
-    slice_locations: HashMap<usize, SliceLocation>,
+    /// Map of slice index to location info - BTreeMap maintains sorted order!
+    slice_locations: BTreeMap<usize, SliceLocation>,
     /// Open file handles (cached for performance)
     file_handles: HashMap<PathBuf, BufReader<File>>,
     /// Slice size (for padding calculations)
@@ -102,7 +103,7 @@ impl ChunkedSliceProvider {
     /// Create a new chunked slice provider
     pub fn new(slice_size: usize) -> Self {
         ChunkedSliceProvider {
-            slice_locations: HashMap::default(),
+            slice_locations: BTreeMap::new(),
             file_handles: HashMap::default(),
             slice_size,
             verified_slices: HashMap::default(),
@@ -231,6 +232,14 @@ impl SliceProvider for ChunkedSliceProvider {
             .get(&slice_index)
             .ok_or_else(|| format!("Slice {} not found", slice_index))?
             .clone();
+        
+        log::debug!(
+            "READING slice {} from {:?} at offset {} (size: {})",
+            slice_index,
+            location.file_path.file_name().unwrap(),
+            location.offset,
+            location.size
+        );
 
         // Check if chunk_offset is beyond the slice
         if chunk_offset >= location.size {
