@@ -1344,6 +1344,13 @@ impl ReconstructionEngine {
         // Precompute coefficients for present slices
         debug!("Precomputing coefficients for present slices...");
         let available_slices = input_provider.available_slices();
+        debug!("Total input slices: {}", self.total_input_slices);
+        debug!("Available slices count: {}", available_slices.len());
+        debug!("Available slices (first 20): {:?}", &available_slices[..20.min(available_slices.len())]);
+        debug!("Missing slices: {:?}", global_missing_indices);
+        debug!("Base values (first 10): {:?}", &self.base_values[..10.min(self.base_values.len())]);
+        debug!("Base values (last 10): {:?}", &self.base_values[self.base_values.len().saturating_sub(10)..]);
+        
         let mut slice_coefficients: Vec<Vec<Galois16>> = Vec::new();
         for recovery_slice in self.recovery_slices.iter().take(num_missing) {
             let exponent = recovery_slice.exponent;
