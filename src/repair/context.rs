@@ -142,13 +142,22 @@ impl RepairContext {
 
             files.push(FileInfo {
                 file_id: fd.file_id,
-                file_name,
+                file_name: file_name.clone(),
                 file_length: fd.file_length,
                 md5_hash: fd.md5_hash,
                 md5_16k: fd.md5_16k,
                 slice_count,
                 global_slice_offset: GlobalSliceIndex::new(global_slice_offset),
             });
+
+            debug!(
+                "  CONSTRUCTED FileInfo[{}]: {} - offset: {}, slices: {}, md5: {}",
+                files.len() - 1,
+                file_name,
+                global_slice_offset,
+                slice_count,
+                hex::encode(fd.md5_hash.as_bytes())
+            );
 
             // Increment global slice offset for next file
             global_slice_offset += slice_count;

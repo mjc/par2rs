@@ -241,6 +241,17 @@ impl RepairContext {
         self.reporter().report_repair_header();
 
         // Process each file that needs repair
+        debug!("USING files for repair:");
+        for (idx, file_info) in self.recovery_set.files.iter().enumerate() {
+            debug!(
+                "  USING FileInfo[{}]: {} - offset: {}, slices: {}",
+                idx,
+                file_info.file_name,
+                file_info.global_slice_offset.as_usize(),
+                file_info.slice_count
+            );
+        }
+
         for file_info in &self.recovery_set.files {
             debug!("  Checking file: {}", file_info.file_name);
             let status = file_status
@@ -311,6 +322,14 @@ impl RepairContext {
                     .find(|f| &f.file_name == repaired_file)
                     .expect("Repaired file must exist in file list");
 
+                eprintln!(
+                    "Looking up repaired file '{}', found FileInfo: file_id={:?}, md5={}, global_offset={}",
+                    repaired_file,
+                    file_info.file_id,
+                    hex::encode(file_info.md5_hash.as_bytes()),
+                    file_info.global_slice_offset.as_usize()
+                );
+
                 let file_path = self.base_path.join(&file_info.file_name);
 
                 // Verify the MD5 hash of the repaired file
@@ -324,6 +343,12 @@ impl RepairContext {
                     }
                     Ok(computed_hash) => {
                         failed_verification.push(repaired_file.clone());
+                        eprintln!(
+                            "MD5 mismatch after repair for {}: expected {}, got {}",
+                            file_info.file_name,
+                            hex::encode(file_info.md5_hash.as_bytes()),
+                            hex::encode(computed_hash.as_bytes())
+                        );
                         debug!(
                             "MD5 mismatch after repair for {}: expected {:?}, got {:?}",
                             file_info.file_name, file_info.md5_hash, computed_hash
@@ -396,6 +421,11 @@ impl RepairContext {
         debug!(
             "repair_single_file: {} (status: {:?})",
             file_info.file_name, status
+        );
+        debug!(
+            "  File global offset: {}, slice count: {}",
+            file_info.global_slice_offset.as_usize(),
+            file_info.slice_count
         );
 
         let valid_slice_indices = validation_cache
@@ -536,18 +566,27 @@ impl RepairContext {
         // Build slice provider with all available slices
         let mut input_provider = ChunkedSliceProvider::new(self.recovery_set.slice_size as usize);
 
+        debug!("Building input provider:");
         for other_file_info in &self.recovery_set.files {
             let file_path = self.base_path.join(&other_file_info.file_name);
-            if !file_path.exists() {
-                continue;
-            }
 
             let valid_slices = validation_cache
                 .get(&other_file_info.file_id)
                 .ok_or_else(|| RepairError::NoValidationCache(other_file_info.file_name.clone()))?;
+            
+            if valid_slices.is_empty() {
+                debug!(
+                    "  File {} (global offset: {}) - no valid slices (skipping)",
+                    other_file_info.file_name,
+                    other_file_info.global_slice_offset.as_usize()
+                );
+                continue;
+            }
+            
             debug!(
-                "  File {} - using {} cached valid slices out of {}",
+                "  File {} (global offset: {}) - using {} cached valid slices out of {}",
                 other_file_info.file_name,
+                other_file_info.global_slice_offset.as_usize(),
                 valid_slices.len(),
                 other_file_info.slice_count
             );
@@ -561,6 +600,16 @@ impl RepairContext {
 
                 let global_index =
                     other_file_info.local_to_global(LocalSliceIndex::new(slice_index));
+                
+                if slice_index < 3 || slice_index >= other_file_info.slice_count - 3 {
+                    debug!(
+                        "    Adding slice {} -> global {} from {}",
+                        slice_index,
+                        global_index.as_usize(),
+                        other_file_info.file_name
+                    );
+                }
+                
                 let offset = (slice_index * self.recovery_set.slice_size as usize) as u64;
                 let actual_size = if slice_index == other_file_info.slice_count - 1 {
                     let remaining = other_file_info.file_length % self.recovery_set.slice_size;
@@ -606,6 +655,15 @@ impl RepairContext {
             .iter()
             .map(|&idx| file_info.local_to_global(idx).as_usize())
             .collect();
+        
+        debug!(
+            "  Local missing indices: {:?}",
+            if missing_slices.len() <= 10 { format!("{:?}", missing_slices) } else { format!("[{} indices]", missing_slices.len()) }
+        );
+        debug!(
+            "  Global missing indices: {:?}",
+            if global_missing_indices.len() <= 10 { format!("{:?}", global_missing_indices) } else { format!("[{} indices]", global_missing_indices.len()) }
+        );
 
         // Create reconstruction engine
         // NOTE: ReconstructionEngine still expects RecoverySlicePackets for exponent lookup
@@ -719,6 +777,12 @@ impl RepairContext {
             // Get slice data from either reconstructed or source file
             if let Some(reconstructed_data) = reconstructed_slices.get(slice_index) {
                 // Write reconstructed slice
+                debug!(
+                    "Writing reconstructed slice {} (size: {}, first 8 bytes: {:02x?})",
+                    slice_index,
+                    actual_size,
+                    &reconstructed_data[..8.min(reconstructed_data.len())]
+                );
                 writer
                     .write_all(&reconstructed_data[..actual_size])
                     .map_err(|e| RepairError::SliceWriteError {
