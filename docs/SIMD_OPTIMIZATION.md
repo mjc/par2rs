@@ -8,7 +8,7 @@ For end-to-end benchmark results, see [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.m
 
 ## SIMD Implementations
 
-par2rs includes three SIMD implementations, all using the same nibble-based table lookup strategy:
+par2rs includes two SIMD implementations, all using the same nibble-based table lookup strategy:
 
 ### 1. PSHUFB (x86_64 - AVX2/SSSE3)
 
@@ -21,17 +21,18 @@ Platform-specific implementation for x86_64 CPUs with AVX2 or SSSE3 support.
 
 **Performance:** 2.76x faster than scalar (54.7ns vs 150.9ns for 528B blocks)
 
-### 2. ARM NEON (ARM64/AArch64)
+### 2. portable_simd (ARM64 and cross-platform)
 
-Platform-specific implementation for ARM processors.
+Cross-platform implementation using `std::simd` that compiles to optimal SIMD instructions:
+- **ARM64**: Compiles to NEON instructions (vqtbl1q_u8, vuzpq_u8, vzipq_u8)
+- **Other platforms**: Falls back to available SIMD or scalar
 
-**Instructions Used:**
-- `vqtbl1q_u8` - Table lookup (equivalent to PSHUFB)
-- `vuzpq_u8` - De-interleave even/odd bytes
-- `vzipq_u8` - Re-interleave results
-- `veorq_u8` - XOR operations
+**Instructions Used (ARM64):**
+- `swizzle_dyn()` compiles to `vqtbl1q_u8` - Table lookup
+- `simd_swizzle!()` for de-interleaving and re-interleaving bytes
+- XOR operations via `^` operator
 
-**Performance:** 2.2-2.4x faster than scalar (matches portable_simd)
+**Performance:** 2.2-2.4x faster than scalar on ARM64 (identical to hand-written NEON)
 
 ## Implementation Details
 
@@ -106,27 +107,28 @@ Result = LOW_TABLE[low_nibble] ^ HIGH_TABLE[high_nibble]
 
 ## Implementation Files
 
-- **`src/reed_solomon/simd_pshufb.rs`**: PSHUFB implementation (x86_64)
-  - `build_pshufb_tables()`: Convert 256-entry tables to 8 nibble tables
+- **`src/reed_solomon/simd/pshufb.rs`**: PSHUFB implementation (x86_64)
   - `process_slice_multiply_add_pshufb()`: Main AVX2 SIMD loop (32 bytes/iteration)
 
-- **`src/reed_solomon/simd_neon.rs`**: ARM NEON implementation (ARM64)
-  - `build_neon_tables()`: Build nibble lookup tables for vtbl
-  - `process_slice_multiply_add_neon()`: NEON SIMD loop (16 bytes/iteration)
-  - Byte interleaving using vuzpq_u8/vzipq_u8
-
-- **`src/reed_solomon/simd.rs`**: SIMD dispatcher and portable_simd
-  - Runtime CPU feature detection (AVX2/SSSE3 on x86_64)
+- **`src/reed_solomon/simd/portable.rs`**: portable_simd implementation
   - `process_slice_multiply_add_portable_simd()`: Cross-platform SIMD using swizzle_dyn
-  - Fallback to unrolled AVX2 or scalar code
-  - **TODO**: Implement runtime dispatch to choose best implementation
+  - Compiles to NEON on ARM64, optimal instructions on other platforms
+
+- **`src/reed_solomon/simd/common.rs`**: Shared utilities and scalar fallback
+  - `build_nibble_tables()`: Convert 256-entry tables to nibble tables
+  - `process_slice_multiply_add_scalar()`: Scalar fallback implementation
+
+- **`src/reed_solomon/simd/mod.rs`**: SIMD dispatcher
+  - Runtime CPU feature detection (AVX2/SSSE3 on x86_64)
+  - `detect_simd_support()`: Returns best available SIMD level
+  - `process_slice_multiply_add_simd()`: Dispatches to optimal implementation
 
 - **`src/reed_solomon/reedsolomon.rs`**: Core Reed-Solomon operations
   - `build_split_mul_table()`: Creates split low/high byte tables
   - `reconstruct_missing_slices_global()`: Main reconstruction function
 
 - **`benches/repair_benchmark.rs`**: Performance benchmarks
-  - Comparison benchmarks: PSHUFB/NEON/portable_simd vs scalar
+  - Comparison benchmarks: PSHUFB/portable_simd vs scalar
   - Reed-Solomon reconstruction benchmarks
   - Multiple data sizes (528B, 4KB, 64KB, 1MB)
   - See results in [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md)
@@ -170,31 +172,25 @@ pub unsafe fn process_slice_multiply_add_portable_simd(...) {
 
 **Benefits:**
 - No warnings on non-x86_64 platforms
-- Clean compilation on all architectures
-- Prepares for future ARM NEON optimizations
-
-### Future Work: ARM NEON Optimizations
-
-Apple Silicon and other ARM processors support NEON SIMD instructions that can achieve similar performance to x86 AVX2:
-
+### Cross-Platform SIMD Status
 
 ✅ **x86_64 (PSHUFB)**: Fully implemented and tested (2.76x speedup)  
-✅ **ARM64 (NEON)**: Fully implemented and tested (2.2-2.4x speedup)  
-✅ **Cross-platform (portable_simd)**: Fully implemented and tested (matches NEON on M1)  
+✅ **ARM64 (portable_simd → NEON)**: Compiles to NEON instructions (2.2-2.4x speedup)  
+✅ **Cross-platform (portable_simd)**: Works on all platforms with std::simd support  
 ✅ **Conditional compilation**: Correct cfg guards for platform-specific code  
-⏳ **Runtime dispatch**: TODO - Currently uses compile-time selection
+✅ **Runtime dispatch**: Automatically selects best SIMD level at runtime
 
 ### Platform-Specific Notes
 
 **x86_64:**
 - Prefers PSHUFB (AVX2) when available (detected at runtime)
 - Falls back to SSSE3 PSHUFB if no AVX2
-- Falls back to scalar if no SIMD support
+- Falls back to scalar if no SIMD support (portable_simd is slower than scalar on x86_64)
 
 **ARM64:**
-- Uses NEON intrinsics (always available on ARM64)
-- portable_simd provides identical performance
-- Future: Add runtime dispatch to prefer NEON over portable_simd
+- Uses portable_simd which compiles to NEON instructions
+- NEON is always available on ARM64, provides 2.2-2.4x speedup
+- No need for separate hand-written NEON implementation
 
 **Other platforms (via portable_simd):**
 - RISC-V with vector extensions
@@ -204,8 +200,9 @@ Apple Silicon and other ARM processors support NEON SIMD instructions that can a
 
 ### Future Improvements
 
-1. **Runtime dispatch for best implementation**
-   - x86_64: PSHUFB → portable_simd → scalar
+1. **Profile-guided optimization for dispatch**
+   - Benchmark at startup to choose fastest implementation
+   - Cache results across runs
    - ARM64: NEON → portable_simd → scalar
    - Currently uses compile-time selection
 
