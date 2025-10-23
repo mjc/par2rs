@@ -90,7 +90,8 @@ mod slice_provider {
             SliceLocation {
                 file_path: temp_file.path().to_path_buf(),
                 offset: 0,
-                size: 512,
+                actual_size: ActualDataSize::new(512),
+                logical_size: LogicalSliceSize::new(512),
                 expected_crc: None,
             },
         );
