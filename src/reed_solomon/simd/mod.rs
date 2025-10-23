@@ -61,7 +61,7 @@ pub fn detect_simd_support() -> SimdLevel {
             return SimdLevel::Ssse3;
         }
         // No PSHUFB available - use scalar (do NOT use portable_simd on x86_64)
-        return SimdLevel::None;
+        SimdLevel::None
     }
 
     #[cfg(target_arch = "aarch64")]

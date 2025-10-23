@@ -83,7 +83,8 @@ fn setup_test_fixture() -> TempDir {
         if source_path.extension().and_then(|s| s.to_str()) == Some("par2") {
             let file_name = entry.file_name();
             let dest_path = temp_dir.path().join(&file_name);
-            fs::copy(&source_path, &dest_path).expect(&format!("Failed to copy {:?}", file_name));
+            fs::copy(&source_path, &dest_path)
+                .unwrap_or_else(|_| panic!("Failed to copy {:?}", file_name));
         }
     }
 
@@ -134,7 +135,7 @@ fn setup_damaged_state(temp_dir: &Path) {
             .open(&file_b)
             .expect("Failed to open file_b.bin");
         // Slice 1 of file_b is at offset 1 * SLICE_SIZE
-        file.seek(SeekFrom::Start((1 * SLICE_SIZE) as u64))
+        file.seek(SeekFrom::Start(SLICE_SIZE as u64))
             .expect("Failed to seek");
         file.write_all(&vec![0xFF; SLICE_SIZE])
             .expect("Failed to corrupt slice");

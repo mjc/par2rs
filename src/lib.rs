@@ -14,6 +14,7 @@
 //! as mandated by the PAR2 specification for cross-compatibility with other PAR2 clients.
 
 #![feature(portable_simd)]
+#![allow(clippy::double_parens)] // binrw macro generates double parens
 
 pub mod analysis;
 pub mod args;
