@@ -19,6 +19,36 @@ use std::path::{Path, PathBuf};
 /// Default chunk size for reading data (64KB, same as par2cmdline)
 pub const DEFAULT_CHUNK_SIZE: usize = 64 * 1024;
 
+/// Actual file data size (may be less than slice_size for last slice)
+/// This is how many bytes are ACTUALLY in the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActualDataSize(usize);
+
+impl ActualDataSize {
+    pub fn new(size: usize) -> Self {
+        Self(size)
+    }
+    
+    pub fn as_usize(&self) -> usize {
+        self.0
+    }
+}
+
+/// Logical slice size (always the full slice_size from PAR2, zero-padded if needed)
+/// This is the size Reed-Solomon sees - always consistent across all slices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogicalSliceSize(usize);
+
+impl LogicalSliceSize {
+    pub fn new(size: usize) -> Self {
+        Self(size)
+    }
+    
+    pub fn as_usize(&self) -> usize {
+        self.0
+    }
+}
+
 /// Information about a slice location
 #[derive(Debug, Clone)]
 pub struct SliceLocation {
@@ -26,19 +56,38 @@ pub struct SliceLocation {
     pub file_path: PathBuf,
     /// Byte offset within the file
     pub offset: u64,
-    /// Size of the slice (actual data, not including padding)
-    pub size: usize,
+    /// Actual size of data in file (may be less than logical_size for last slice)
+    pub actual_size: ActualDataSize,
+    /// Logical size for Reed-Solomon (always slice_size, zero-padded)
+    pub logical_size: LogicalSliceSize,
     /// Expected CRC32 checksum (if available)
     pub expected_crc: Option<Crc32Value>,
 }
 
 /// Result of reading a chunk of data
+/// 
+/// INVARIANT: valid_bytes == data.len() OR valid_bytes == 0 (for error case)
+/// If valid_bytes > 0, data MUST contain exactly that many bytes
 #[derive(Debug)]
 pub struct ChunkData {
     /// The data read (may be less than requested if at end of slice)
     pub data: Vec<u8>,
     /// Number of valid bytes in data
+    /// MUST equal data.len() if > 0
     pub valid_bytes: usize,
+}
+
+impl ChunkData {
+    /// Create ChunkData, enforcing invariant
+    pub fn new(data: Vec<u8>) -> Self {
+        let valid_bytes = data.len();
+        ChunkData { data, valid_bytes }
+    }
+    
+    /// Create empty ChunkData (for errors)
+    pub fn empty() -> Self {
+        ChunkData { data: vec![], valid_bytes: 0 }
+    }
 }
 
 /// Trait for providing slice data on-demand
@@ -85,8 +134,8 @@ pub struct ChunkedSliceProvider {
     slice_locations: BTreeMap<usize, SliceLocation>,
     /// Open file handles (cached for performance)
     file_handles: HashMap<PathBuf, BufReader<File>>,
-    /// Slice size (for padding calculations)
-    slice_size: usize,
+    /// Logical slice size for Reed-Solomon (all slices appear this size, zero-padded)
+    logical_slice_size: LogicalSliceSize,
     /// Cache of verified slices (to avoid re-verification)
     verified_slices: HashMap<usize, bool>,
     /// Read-ahead cache: (slice_index, chunk_offset) -> data
@@ -105,7 +154,7 @@ impl ChunkedSliceProvider {
         ChunkedSliceProvider {
             slice_locations: BTreeMap::new(),
             file_handles: HashMap::default(),
-            slice_size,
+            logical_slice_size: LogicalSliceSize::new(slice_size),
             verified_slices: HashMap::default(),
             chunk_cache: HashMap::default(),
             // Cache up to 1000 chunks (64MB with 64KB chunks) - reasonable memory usage
@@ -164,8 +213,8 @@ impl ChunkedSliceProvider {
         for i in 0..PREFETCH_COUNT {
             let prefetch_offset = start_offset + (i * chunk_size);
 
-            // Stop if beyond slice boundary
-            if prefetch_offset >= location.size {
+            // Stop if beyond actual file data
+            if prefetch_offset >= location.actual_size.as_usize() {
                 break;
             }
 
@@ -187,7 +236,7 @@ impl ChunkedSliceProvider {
             }
 
             // Calculate bytes to read
-            let bytes_to_read = (location.size - prefetch_offset).min(chunk_size);
+            let bytes_to_read = (location.actual_size.as_usize() - prefetch_offset).min(chunk_size);
             let mut buffer = vec![0u8; bytes_to_read];
 
             // Read the chunk
@@ -218,16 +267,9 @@ impl SliceProvider for ChunkedSliceProvider {
         // Check cache first
         let cache_key = (slice_index, chunk_offset);
         if let Some(cached_data) = self.chunk_cache.get(&cache_key) {
-            // Update LRU access time
             self.cache_access_counter += 1;
-            self.cache_access_times
-                .insert(cache_key, self.cache_access_counter);
-
-            let valid_bytes = cached_data.len();
-            return Ok(ChunkData {
-                data: cached_data.clone(),
-                valid_bytes,
-            });
+            self.cache_access_times.insert(cache_key, self.cache_access_counter);
+            return Ok(ChunkData::new(cached_data.clone()));
         }
 
         let location = self
@@ -237,67 +279,68 @@ impl SliceProvider for ChunkedSliceProvider {
             .clone();
 
         log::debug!(
-            "READING slice {} from {:?} at offset {} (size: {})",
+            "READING slice {} from {:?} at offset {} (actual: {}, logical: {})",
             slice_index,
             location.file_path.file_name().unwrap(),
             location.offset,
-            location.size
+            location.actual_size.as_usize(),
+            location.logical_size.as_usize()
         );
 
-        // Check if chunk_offset is beyond the slice
-        if chunk_offset >= location.size {
-            return Ok(ChunkData {
-                data: vec![],
-                valid_bytes: 0,
-            });
+        // CRITICAL: Chunk beyond logical slice = ERROR (caller screwed up)
+        if chunk_offset >= location.logical_size.as_usize() {
+            return Err(format!(
+                "BUG: Requested chunk at offset {} but logical slice size is only {}",
+                chunk_offset, location.logical_size.as_usize()
+            ).into());
         }
 
-        // Calculate actual bytes to read (may be less than chunk_size at end)
-        let bytes_to_read = (location.size - chunk_offset).min(chunk_size);
+        // Calculate how much of the chunk is real data vs zero padding
+        let actual_data_end = location.actual_size.as_usize();
+        
+        if chunk_offset >= actual_data_end {
+            // ENTIRELY in padding region - return chunk_size zeros
+            // Reed-Solomon MUST see these zeros, not skip them!
+            let padding_size = chunk_size.min(location.logical_size.as_usize() - chunk_offset);
+            return Ok(ChunkData::new(vec![0u8; padding_size]));
+        }
 
-        // Allocate buffer
+        // Some real data, possibly some padding
+        let bytes_to_read = (actual_data_end - chunk_offset).min(chunk_size);
         let mut buffer = vec![0u8; bytes_to_read];
-
-        // Get file handle and read data
+        
         let reader = self.get_file_handle(&location.file_path)?;
         reader.seek(SeekFrom::Start(location.offset + chunk_offset as u64))?;
         let bytes_read = reader.read(&mut buffer)?;
-
         buffer.truncate(bytes_read);
-
-        // Cache this chunk with LRU eviction if needed
-        let result_data = buffer.clone();
+        
+        // If this chunk extends into padding, add zeros
+        let chunk_end = chunk_offset + chunk_size;
+        if chunk_end > actual_data_end && chunk_end <= location.logical_size.as_usize() {
+            let padding_needed = chunk_end - actual_data_end.max(chunk_offset + bytes_read);
+            buffer.resize(bytes_read + padding_needed, 0);
+        }
+        
+        // Cache with LRU eviction
         self.cache_access_counter += 1;
-
         if self.chunk_cache.len() >= self.max_cache_size {
-            // Evict least recently used entry
             if let Some(lru_key) = self.find_lru_cache_entry() {
                 self.chunk_cache.remove(&lru_key);
                 self.cache_access_times.remove(&lru_key);
             }
         }
-
-        self.chunk_cache.insert(cache_key, buffer);
-        self.cache_access_times
-            .insert(cache_key, self.cache_access_counter);
-
-        // Read-ahead: prefetch the next few chunks from this slice
-        // This dramatically reduces I/O operations for sequential access
-        self.prefetch_chunks(
-            slice_index,
-            chunk_offset + chunk_size,
-            chunk_size,
-            &location,
-        )?;
-
-        Ok(ChunkData {
-            data: result_data,
-            valid_bytes: bytes_read,
-        })
+        self.chunk_cache.insert(cache_key, buffer.clone());
+        self.cache_access_times.insert(cache_key, self.cache_access_counter);
+        
+        // Prefetch next chunks for sequential access optimization
+        self.prefetch_chunks(slice_index, chunk_offset + chunk_size, chunk_size, &location)?;
+        
+        Ok(ChunkData::new(buffer))
     }
 
     fn get_slice_size(&self, slice_index: usize) -> Option<usize> {
-        self.slice_locations.get(&slice_index).map(|loc| loc.size)
+        // Return LOGICAL size (what Reed-Solomon sees), not actual size
+        self.slice_locations.get(&slice_index).map(|loc| loc.logical_size.as_usize())
     }
 
     fn is_slice_available(&self, slice_index: usize) -> bool {
@@ -330,14 +373,14 @@ impl SliceProvider for ChunkedSliceProvider {
         };
 
         // Read entire slice and compute CRC32
-        // Note: PAR2 spec requires CRC32 on padded data
-        let mut buffer = vec![0u8; self.slice_size];
+        // Note: PAR2 spec requires CRC32 on padded data (full logical size)
+        let mut buffer = vec![0u8; self.logical_slice_size.as_usize()];
         let reader = self.get_file_handle(&location.file_path)?;
         reader.seek(SeekFrom::Start(location.offset))?;
-        let bytes_read = reader.read(&mut buffer[..location.size])?;
+        let bytes_read = reader.read(&mut buffer[..location.actual_size.as_usize()])?;
 
-        if bytes_read != location.size {
-            // Couldn't read full slice
+        if bytes_read != location.actual_size.as_usize() {
+            // Couldn't read full actual data from file
             self.verified_slices.insert(slice_index, false);
             return Ok(Some(false));
         }
@@ -393,12 +436,7 @@ impl RecoverySliceProvider {
             .load_chunk(chunk_offset, chunk_size)
             .map_err(|e| format!("Failed to load chunk: {}", e))?;
 
-        let valid_bytes = chunk.len();
-
-        Ok(ChunkData {
-            data: chunk,
-            valid_bytes,
-        })
+        Ok(ChunkData::new(chunk))
     }
 
     /// Get all available recovery slice exponents
