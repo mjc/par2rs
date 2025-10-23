@@ -130,7 +130,10 @@ impl ChunkedSliceProvider {
             let reader = BufReader::new(file);
             self.file_handles.insert(path.to_path_buf(), reader);
         }
-        Ok(self.file_handles.get_mut(path).unwrap())
+        Ok(self
+            .file_handles
+            .get_mut(path)
+            .expect("File handle must exist after insertion"))
     }
 
     /// Find the least recently used cache entry for eviction
@@ -232,7 +235,7 @@ impl SliceProvider for ChunkedSliceProvider {
             .get(&slice_index)
             .ok_or_else(|| format!("Slice {} not found", slice_index))?
             .clone();
-        
+
         log::debug!(
             "READING slice {} from {:?} at offset {} (size: {})",
             slice_index,

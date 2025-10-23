@@ -1,4 +1,4 @@
 [toolchain]
-# until std::simd is stabilized
+# portable_simd (std::simd) is still unstable; required for cross-platform SIMD
 channel = "nightly"
 components = ["clippy", "rustfmt", "rustc", "cargo"]

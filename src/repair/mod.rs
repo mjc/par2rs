@@ -274,7 +274,7 @@ impl RepairContext {
         // STEP 1: Identify all files needing repair and collect their missing slices
         let mut files_to_repair: Vec<(&FileInfo, Vec<usize>)> = Vec::new();
         let mut verified_files = Vec::new();
-        
+
         for file_info in &self.recovery_set.files {
             let status = file_status
                 .get(&file_info.file_name)
@@ -297,7 +297,10 @@ impl RepairContext {
             if missing_slices.is_empty() {
                 // All slices validated, but file status says not Present
                 if *status == FileStatus::Corrupted {
-                    debug!("File {} has all valid slices but MD5 doesn't match", file_info.file_name);
+                    debug!(
+                        "File {} has all valid slices but MD5 doesn't match",
+                        file_info.file_name
+                    );
                 }
                 verified_files.push(file_info.file_name.clone());
                 continue;
@@ -320,7 +323,8 @@ impl RepairContext {
         }
 
         // STEP 2: Reconstruct ALL missing slices across ALL files in ONE operation
-        let reconstructed_data: HashMap<usize, Vec<u8>> = self.reconstruct_all_missing_slices(&files_to_repair, validation_cache)?;
+        let reconstructed_data: HashMap<usize, Vec<u8>> =
+            self.reconstruct_all_missing_slices(&files_to_repair, validation_cache)?;
 
         // STEP 3: Write reconstructed data to each file
         let mut repaired_files = Vec::new();
@@ -343,16 +347,26 @@ impl RepairContext {
                 .ok_or_else(|| RepairError::NoValidationCache(file_info.file_name.clone()))?;
 
             let file_path = self.base_path.join(&file_info.file_name);
-            match self.write_repaired_file(&file_path, file_info, valid_slice_indices, &file_reconstructed) {
+            match self.write_repaired_file(
+                &file_path,
+                file_info,
+                valid_slice_indices,
+                &file_reconstructed,
+            ) {
                 Ok(()) => {
-                    self.reporter().report_repair_complete(&file_info.file_name, true);
+                    self.reporter()
+                        .report_repair_complete(&file_info.file_name, true);
                     repaired_files.push(file_info.file_name.clone());
                     debug!("Successfully repaired: {}", file_info.file_name);
                 }
                 Err(e) => {
-                    self.reporter().report_repair_failed(&file_info.file_name, &e.to_string());
+                    self.reporter()
+                        .report_repair_failed(&file_info.file_name, &e.to_string());
                     files_failed.push(file_info.file_name.clone());
-                    debug!("Failed to write repaired file {}: {}", file_info.file_name, e);
+                    debug!(
+                        "Failed to write repaired file {}: {}",
+                        file_info.file_name, e
+                    );
                 }
             }
         }
