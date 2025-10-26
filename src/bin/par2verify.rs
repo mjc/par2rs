@@ -26,7 +26,7 @@ fn main() -> Result<()> {
 
     let input_file = matches
         .get_one::<String>("input")
-        .expect("Input file is required");
+        .expect("input is required by clap");
 
     let file_path = Path::new(input_file);
 

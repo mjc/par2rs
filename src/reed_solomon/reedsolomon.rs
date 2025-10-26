@@ -155,6 +155,9 @@ pub enum RsError {
     #[error("Singular matrix at column {0}")]
     SingularMatrix(usize),
 
+    #[error("Division by zero in matrix operation at column {0}")]
+    DivisionByZero(usize),
+
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
 }
@@ -1645,7 +1648,9 @@ impl ReconstructionEngine {
 
             // Scale pivot row
             let pivot = aug[col][col];
-            let pivot_inv = Galois16::new(1) / pivot;
+            let pivot_inv = Galois16::new(1)
+                .checked_div(pivot)
+                .ok_or_else(|| format!("Division by zero in matrix operation at column {}", col))?;
             for j in 0..n * 2 {
                 aug[col][j] *= pivot_inv;
             }
@@ -1714,7 +1719,9 @@ impl ReconstructionEngine {
 
             // Scale pivot row
             let pivot = aug[col][col];
-            let pivot_inv = Galois16::new(1) / pivot;
+            let pivot_inv = Galois16::new(1)
+                .checked_div(pivot)
+                .ok_or_else(|| format!("Division by zero in matrix operation at column {}", col))?;
             for j in 0..=n {
                 aug[col][j] *= pivot_inv;
             }

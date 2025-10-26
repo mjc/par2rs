@@ -86,10 +86,17 @@ fn main() -> io::Result<()> {
 
                 // Debug: Correctly interpret the length field's value (first 8 bytes of the packet) as a little-endian u64
                 // Check if the file size matches the length field value
-                if packet_data.len() >= 8 {
-                    let length_field = u64::from_le_bytes(packet_data[8..16].try_into().unwrap());
-                    if length_field != packet_data.len() as u64 {
-                        println!("Error: Packet length field value ({}) does not match actual packet size ({}).", length_field, packet_data.len());
+                if packet_data.len() >= 16 {
+                    match packet_data[8..16].try_into() {
+                        Ok(bytes) => {
+                            let length_field = u64::from_le_bytes(bytes);
+                            if length_field != packet_data.len() as u64 {
+                                println!("Error: Packet length field value ({}) does not match actual packet size ({}).", length_field, packet_data.len());
+                            }
+                        }
+                        Err(_) => {
+                            println!("Error: Failed to extract length field from packet.");
+                        }
                     }
                 } else {
                     println!("Packet too short to extract length field as u64.");

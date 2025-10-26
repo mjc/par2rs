@@ -95,15 +95,14 @@ impl RecoverySliceMetadata {
         }
 
         // Parse fields from header
-        let length = u64::from_le_bytes(header[8..16].try_into().map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid length field")
-        })?);
-        let set_id_bytes: [u8; 16] = header[32..48].try_into().map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid set_id field")
-        })?;
-        let type_bytes: [u8; 16] = header[48..64].try_into().map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid type field")
-        })?;
+        let length =
+            u64::from_le_bytes(header[8..16].try_into().expect("slice is exactly 8 bytes"));
+        let set_id_bytes: [u8; 16] = header[32..48]
+            .try_into()
+            .expect("slice is exactly 16 bytes");
+        let type_bytes: [u8; 16] = header[48..64]
+            .try_into()
+            .expect("slice is exactly 16 bytes");
 
         // Check type
         if type_bytes != *TYPE_OF_PACKET {

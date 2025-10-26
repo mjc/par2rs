@@ -77,8 +77,29 @@ pub struct Galois16 {
 }
 
 impl Galois16 {
-    pub fn new(value: u16) -> Self {
+    /// Create a new Galois16 element
+    #[inline]
+    pub const fn new(value: u16) -> Self {
         Self { value }
+    }
+
+    /// Checked division that returns None for division by zero
+    /// Use this in matrix operations where singular matrices should be detected
+    #[inline]
+    pub fn checked_div(self, rhs: Self) -> Option<Self> {
+        if rhs.value == 0 {
+            return None;
+        }
+        if self.value == 0 {
+            return Some(Self::new(0));
+        }
+
+        let table = Self::get_table();
+        let log_diff = (table.log[self.value as usize] as i32
+            - table.log[rhs.value as usize] as i32
+            + LIMIT as i32)
+            % LIMIT as i32;
+        Some(Self::new(table.antilog[log_diff as usize]))
     }
 
     pub fn value(&self) -> u16 {
@@ -395,6 +416,33 @@ mod tests {
         let zero = Galois16::new(0);
 
         let _ = a / zero;
+    }
+
+    #[test]
+    fn galois16_checked_division_by_zero_returns_none() {
+        let a = Galois16::new(5);
+        let zero = Galois16::new(0);
+        assert_eq!(a.checked_div(zero), None);
+    }
+
+    #[test]
+    fn galois16_checked_division_zero_by_nonzero_is_zero() {
+        let zero = Galois16::new(0);
+        let a = Galois16::new(5);
+        assert_eq!(zero.checked_div(a), Some(Galois16::new(0)));
+    }
+
+    #[test]
+    fn galois16_checked_division_normal_cases() {
+        let a = Galois16::new(100);
+        let b = Galois16::new(25);
+        let result = a.checked_div(b).unwrap();
+
+        // Verify a / b * b == a
+        assert_eq!(result * b, a);
+
+        // Test division by self
+        assert_eq!(a.checked_div(a), Some(Galois16::new(1)));
     }
 
     #[test]
