@@ -28,6 +28,7 @@ pub use types::{
 };
 
 use crate::domain::{FileId, LocalSliceIndex, Md5Hash};
+use crate::slice_provider::{ActualDataSize, LogicalSliceSize};
 use crate::RecoverySlicePacket;
 use log::debug;
 use rayon::prelude::*;
@@ -587,7 +588,8 @@ impl RepairContext {
                     SliceLocation {
                         file_path: file_path.clone(),
                         offset,
-                        size: actual_size,
+                        actual_size: ActualDataSize::new(actual_size),
+                        logical_size: LogicalSliceSize::new(self.recovery_set.slice_size as usize),
                         expected_crc,
                     },
                 );

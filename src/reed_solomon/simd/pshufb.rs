@@ -150,10 +150,7 @@ pub unsafe fn process_slice_multiply_add_pshufb(
 
         // Process low bytes: split into nibbles and lookup
         let low_lo_nib = _mm256_and_si256(low_bytes, mask_0x0f);
-        let low_hi_nib = _mm256_srli_epi16(
-            _mm256_and_si256(low_bytes, _mm256_set1_epi8(0xF0u8 as i8)),
-            4,
-        );
+        let low_hi_nib = _mm256_and_si256(_mm256_srli_epi16(low_bytes, 4), mask_0x0f);
 
         // PSHUFB lookups for low byte
         let low_lo_nib_result_lo = _mm256_shuffle_epi8(low_lo_nib_lo_vec, low_lo_nib);
@@ -167,10 +164,7 @@ pub unsafe fn process_slice_multiply_add_pshufb(
 
         // Process high bytes: split into nibbles and lookup
         let high_lo_nib = _mm256_and_si256(high_bytes, mask_0x0f);
-        let high_hi_nib = _mm256_srli_epi16(
-            _mm256_and_si256(high_bytes, _mm256_set1_epi8(0xF0u8 as i8)),
-            4,
-        );
+        let high_hi_nib = _mm256_and_si256(_mm256_srli_epi16(high_bytes, 4), mask_0x0f);
 
         // PSHUFB lookups for high byte
         let high_lo_nib_result_lo = _mm256_shuffle_epi8(high_lo_nib_lo_vec, high_lo_nib);
@@ -196,11 +190,15 @@ pub unsafe fn process_slice_multiply_add_pshufb(
         // Store result
         _mm256_storeu_si256(output.as_mut_ptr().add(pos) as *mut __m256i, final_result);
 
+        // Debug the final iteration to see if it's corrupting byte 512
+
         pos += 32;
     }
 
     // Handle remaining bytes with scalar fallback
     if pos < len {
+        let _remaining = len - pos;
+
         process_slice_multiply_add_scalar(&input[pos..], &mut output[pos..], tables);
     }
 }

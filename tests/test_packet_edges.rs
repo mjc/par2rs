@@ -3,7 +3,9 @@
 use binrw::BinReaderExt;
 use par2rs::domain::{FileId, Md5Hash, RecoverySetId};
 use par2rs::packets::{InputFileSliceChecksumPacket, Packet, RecoverySlicePacket};
-use par2rs::slice_provider::{ChunkedSliceProvider, SliceLocation, SliceProvider};
+use par2rs::slice_provider::{
+    ActualDataSize, ChunkedSliceProvider, LogicalSliceSize, SliceLocation, SliceProvider,
+};
 use std::fs::File;
 use std::io::Cursor;
 
@@ -71,7 +73,7 @@ mod slice_provider {
     #[test]
     fn available_slices_empty() {
         let provider = ChunkedSliceProvider::new(1024);
-        assert_eq!(provider.available_slices(), vec![]);
+        assert_eq!(provider.available_slices(), Vec::<usize>::new());
     }
 
     #[test]
