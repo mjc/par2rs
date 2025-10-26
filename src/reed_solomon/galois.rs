@@ -77,10 +77,22 @@ pub struct Galois16 {
 }
 
 impl Galois16 {
+    /// Zero constant for compile-time usage
+    pub const ZERO: Self = Self { value: 0 };
+
+    /// One constant for compile-time usage  
+    pub const ONE: Self = Self { value: 1 };
+
     /// Create a new Galois16 element
     #[inline]
     pub const fn new(value: u16) -> Self {
         Self { value }
+    }
+
+    /// Check if this element is zero
+    #[inline]
+    pub const fn is_zero(self) -> bool {
+        self.value == 0
     }
 
     /// Checked division that returns None for division by zero

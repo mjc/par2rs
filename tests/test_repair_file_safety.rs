@@ -3,7 +3,7 @@
 //! This test suite investigates the bug where PAR2 files disappeared during
 //! 25GB benchmark repairs between iteration 1 and 2.
 
-use par2rs::file_ops;
+use par2rs::par2_files;
 use par2rs::repair::RepairContext;
 use std::fs::{self, File};
 use std::io::Write;
@@ -85,9 +85,9 @@ impl TestEnv {
     }
 
     fn load_context(&self) -> RepairContext {
-        let par2_files = file_ops::collect_par2_files(&self.par2_file);
-        let metadata = file_ops::parse_recovery_slice_metadata(&par2_files, false);
-        let packets = file_ops::load_par2_packets(&par2_files, false);
+        let par2_files = par2_files::collect_par2_files(&self.par2_file);
+        let metadata = par2_files::parse_recovery_slice_metadata(&par2_files, false);
+        let packets = par2_files::load_par2_packets(&par2_files, false);
         RepairContext::new_with_metadata(packets, metadata, self.temp_dir.path().to_path_buf())
             .unwrap()
     }

@@ -7,7 +7,7 @@
 //! On x86_64, this implementation is typically slower than the scalar fallback.
 //! On ARM64, it achieves performance comparable to NEON.
 
-use super::super::reedsolomon::SplitMulTable;
+use super::super::codec::SplitMulTable;
 use super::common::{build_nibble_tables, process_slice_multiply_add_scalar};
 
 /// Portable SIMD implementation using nibble-based table lookups

@@ -123,7 +123,7 @@ Result = LOW_TABLE[low_nibble] ^ HIGH_TABLE[high_nibble]
   - `detect_simd_support()`: Returns best available SIMD level
   - `process_slice_multiply_add_simd()`: Dispatches to optimal implementation
 
-- **`src/reed_solomon/reedsolomon.rs`**: Core Reed-Solomon operations
+- **`src/reed_solomon/codec.rs`**: Core Reed-Solomon operations
   - `build_split_mul_table()`: Creates split low/high byte tables
   - `reconstruct_missing_slices_global()`: Main reconstruction function
 

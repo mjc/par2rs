@@ -158,6 +158,12 @@ pub enum RsError {
     #[error("Division by zero in matrix operation at column {0}")]
     DivisionByZero(usize),
 
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
+    #[error("Operation called before compute()")]
+    NotComputed,
+
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
 }

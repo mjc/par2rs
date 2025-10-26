@@ -857,8 +857,8 @@ mod tests {
             let test_file = Path::new("tests/fixtures/testfile");
             if test_file.exists() {
                 let main_file = Path::new("tests/fixtures/testfile.par2");
-                let par2_files = crate::file_ops::collect_par2_files(main_file);
-                let packets = crate::file_ops::load_par2_packets(&par2_files, false);
+                let par2_files = crate::par2_files::collect_par2_files(main_file);
+                let packets = crate::par2_files::load_par2_packets(&par2_files, false);
 
                 for packet in &packets {
                     if let Packet::FileDescription(fd) = packet {
@@ -886,8 +886,8 @@ mod tests {
             let test_file = Path::new("tests/fixtures/testfile_corrupted");
             if test_file.exists() {
                 let main_file = Path::new("tests/fixtures/testfile.par2");
-                let par2_files = crate::file_ops::collect_par2_files(main_file);
-                let packets = crate::file_ops::load_par2_packets(&par2_files, false);
+                let par2_files = crate::par2_files::collect_par2_files(main_file);
+                let packets = crate::par2_files::load_par2_packets(&par2_files, false);
 
                 for packet in &packets {
                     if let Packet::FileDescription(fd) = packet {
@@ -914,8 +914,8 @@ mod tests {
             let test_file = Path::new("tests/fixtures/testfile");
             if test_file.exists() {
                 let main_file = Path::new("tests/fixtures/testfile.par2");
-                let par2_files = crate::file_ops::collect_par2_files(main_file);
-                let packets = crate::file_ops::load_par2_packets(&par2_files, false);
+                let par2_files = crate::par2_files::collect_par2_files(main_file);
+                let packets = crate::par2_files::load_par2_packets(&par2_files, false);
 
                 for packet in &packets {
                     if let Packet::FileDescription(fd) = packet {
@@ -938,8 +938,8 @@ mod tests {
             let test_file = Path::new("tests/fixtures/testfile_corrupted");
             if test_file.exists() {
                 let main_file = Path::new("tests/fixtures/testfile.par2");
-                let par2_files = crate::file_ops::collect_par2_files(main_file);
-                let packets = crate::file_ops::load_par2_packets(&par2_files, false);
+                let par2_files = crate::par2_files::collect_par2_files(main_file);
+                let packets = crate::par2_files::load_par2_packets(&par2_files, false);
 
                 for packet in &packets {
                     if let Packet::FileDescription(fd) = packet {
@@ -967,8 +967,8 @@ mod tests {
             let test_file = Path::new("tests/fixtures/testfile");
             if test_file.exists() {
                 let main_file = Path::new("tests/fixtures/testfile.par2");
-                let par2_files = crate::file_ops::collect_par2_files(main_file);
-                let packets = crate::file_ops::load_par2_packets(&par2_files, false);
+                let par2_files = crate::par2_files::collect_par2_files(main_file);
+                let packets = crate::par2_files::load_par2_packets(&par2_files, false);
 
                 // Extract block size and checksums
                 let mut block_size = 0;
@@ -1040,8 +1040,8 @@ mod tests {
             let test_file = Path::new("tests/fixtures/testfile");
             if test_file.exists() {
                 let main_file = Path::new("tests/fixtures/testfile.par2");
-                let par2_files = crate::file_ops::collect_par2_files(main_file);
-                let packets = crate::file_ops::load_par2_packets(&par2_files, false);
+                let par2_files = crate::par2_files::collect_par2_files(main_file);
+                let packets = crate::par2_files::load_par2_packets(&par2_files, false);
 
                 let packet_count = packets.len();
                 let results = comprehensive_verify_files(packets);
@@ -1057,8 +1057,8 @@ mod tests {
         fn detects_missing_files() {
             let main_file = Path::new("tests/fixtures/repair_scenarios/testfile.par2");
             if main_file.exists() {
-                let par2_files = crate::file_ops::collect_par2_files(main_file);
-                let packets = crate::file_ops::load_par2_packets(&par2_files, false);
+                let par2_files = crate::par2_files::collect_par2_files(main_file);
+                let packets = crate::par2_files::load_par2_packets(&par2_files, false);
 
                 let results = comprehensive_verify_files(packets);
 
@@ -1077,8 +1077,8 @@ mod tests {
         fn calculates_recovery_requirement() {
             let main_file = Path::new("tests/fixtures/testfile.par2");
             if main_file.exists() {
-                let par2_files = crate::file_ops::collect_par2_files(main_file);
-                let packets = crate::file_ops::load_par2_packets(&par2_files, false);
+                let par2_files = crate::par2_files::collect_par2_files(main_file);
+                let packets = crate::par2_files::load_par2_packets(&par2_files, false);
 
                 let results = comprehensive_verify_files(packets);
 
@@ -1108,8 +1108,8 @@ mod tests {
         fn includes_recovery_blocks_in_results() {
             let main_file = Path::new("tests/fixtures/testfile.par2");
             if main_file.exists() {
-                let par2_files = crate::file_ops::collect_par2_files(main_file);
-                let packets = crate::file_ops::load_par2_packets(&par2_files, false);
+                let par2_files = crate::par2_files::collect_par2_files(main_file);
+                let packets = crate::par2_files::load_par2_packets(&par2_files, false);
 
                 let results = comprehensive_verify_files(packets);
 
@@ -1197,8 +1197,8 @@ mod tests {
             let test_file = Path::new("tests/fixtures/testfile");
             if test_file.exists() {
                 let main_file = Path::new("tests/fixtures/testfile.par2");
-                let par2_files = crate::file_ops::collect_par2_files(main_file);
-                let packets = crate::file_ops::load_par2_packets(&par2_files, false);
+                let par2_files = crate::par2_files::collect_par2_files(main_file);
+                let packets = crate::par2_files::load_par2_packets(&par2_files, false);
 
                 let result = quick_check_files(packets);
                 // If file exists and passes verification, result should be empty or contain only corrupted files

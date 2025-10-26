@@ -28,7 +28,7 @@ fn test_find_par2_files_in_directory_empty() {
     let temp_dir = TempDir::new().unwrap();
     let exclude = temp_dir.path().join("test.par2");
 
-    let result = par2rs::file_ops::find_par2_files_in_directory(temp_dir.path(), &exclude);
+    let result = par2rs::par2_files::find_par2_files_in_directory(temp_dir.path(), &exclude);
 
     assert!(result.is_empty());
 }
@@ -42,7 +42,7 @@ fn test_find_par2_files_in_directory_single_file() {
     File::create(&file1).unwrap();
     File::create(&file2).unwrap();
 
-    let mut result = par2rs::file_ops::find_par2_files_in_directory(temp_dir.path(), &file1);
+    let mut result = par2rs::par2_files::find_par2_files_in_directory(temp_dir.path(), &file1);
     result.sort();
 
     assert_eq!(result.len(), 1);
@@ -59,7 +59,7 @@ fn test_find_par2_files_in_directory_multiple_files() {
         &["test1.par2", "test2.par2", "test3.par2", "exclude.par2"],
     );
 
-    let mut result = par2rs::file_ops::find_par2_files_in_directory(temp_dir.path(), &exclude);
+    let mut result = par2rs::par2_files::find_par2_files_in_directory(temp_dir.path(), &exclude);
     result.sort();
 
     assert_eq!(result.len(), 3);
@@ -77,7 +77,7 @@ fn test_find_par2_files_ignores_non_par2() {
     File::create(temp_dir.path().join("test3.par")).unwrap();
     File::create(temp_dir.path().join("test4")).unwrap();
 
-    let result = par2rs::file_ops::find_par2_files_in_directory(temp_dir.path(), &exclude);
+    let result = par2rs::par2_files::find_par2_files_in_directory(temp_dir.path(), &exclude);
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].extension().unwrap(), "par2");
@@ -88,7 +88,7 @@ fn test_find_par2_files_nonexistent_directory() {
     let nonexistent = Path::new("/nonexistent/directory");
     let exclude = Path::new("/nonexistent/directory/test.par2");
 
-    let result = par2rs::file_ops::find_par2_files_in_directory(nonexistent, exclude);
+    let result = par2rs::par2_files::find_par2_files_in_directory(nonexistent, exclude);
 
     assert!(result.is_empty());
 }
@@ -100,7 +100,7 @@ fn test_collect_par2_files_absolute_path() {
 
     create_test_par2_files(temp_dir.path(), &["main.par2", "vol01.par2", "vol02.par2"]);
 
-    let result = par2rs::file_ops::collect_par2_files(&main_file);
+    let result = par2rs::par2_files::collect_par2_files(&main_file);
 
     assert!(!result.is_empty());
     assert_eq!(result[0], main_file);
@@ -111,7 +111,7 @@ fn test_collect_par2_files_relative_path() {
     let _temp_dir = TempDir::new().unwrap();
     let rel_path = PathBuf::from("test.par2");
 
-    let result = par2rs::file_ops::collect_par2_files(&rel_path);
+    let result = par2rs::par2_files::collect_par2_files(&rel_path);
 
     assert_eq!(result[0], rel_path);
 }
@@ -126,7 +126,7 @@ fn test_collect_par2_files_sorts_results() {
         &["zzz.par2", "mmm.par2", "aaa.par2", "bbb.par2"],
     );
 
-    let result = par2rs::file_ops::collect_par2_files(&main_file);
+    let result = par2rs::par2_files::collect_par2_files(&main_file);
 
     // Verify sorted order
     for i in 1..result.len() {
@@ -138,7 +138,7 @@ fn test_collect_par2_files_sorts_results() {
 fn test_collect_par2_files_no_parent() {
     let file_path = PathBuf::from("test.par2");
 
-    let result = par2rs::file_ops::collect_par2_files(&file_path);
+    let result = par2rs::par2_files::collect_par2_files(&file_path);
 
     assert_eq!(result[0], file_path);
 }
@@ -147,7 +147,7 @@ fn test_collect_par2_files_no_parent() {
 fn test_count_recovery_blocks_empty() {
     let packets: Vec<Packet> = vec![];
 
-    let count = par2rs::file_ops::count_recovery_blocks(&packets);
+    let count = par2rs::par2_files::count_recovery_blocks(&packets);
 
     assert_eq!(count, 0);
 }
@@ -166,7 +166,7 @@ fn test_get_packet_hash_consistency() {
 fn test_load_par2_packets_empty_list() {
     let empty: Vec<PathBuf> = vec![];
 
-    let result = par2rs::file_ops::load_par2_packets(&empty, false);
+    let result = par2rs::par2_files::load_par2_packets(&empty, false);
 
     assert!(result.is_empty());
 }
@@ -178,7 +178,7 @@ fn test_load_par2_packets_nonexistent_file() {
     // With the original code, this will panic with .expect()
     // After improvements, it should handle gracefully
     // For now, we test that it either panics (original) or returns empty (improved)
-    let result = std::panic::catch_unwind(|| par2rs::file_ops::load_par2_packets(&files, false));
+    let result = std::panic::catch_unwind(|| par2rs::par2_files::load_par2_packets(&files, false));
 
     // Either it panics (original code) or returns empty (improved code)
     if let Ok(packets) = result {
@@ -191,7 +191,7 @@ fn test_load_par2_packets_nonexistent_file() {
 fn test_parse_recovery_slice_metadata_empty_list() {
     let empty: Vec<PathBuf> = vec![];
 
-    let result = par2rs::file_ops::parse_recovery_slice_metadata(&empty, false);
+    let result = par2rs::par2_files::parse_recovery_slice_metadata(&empty, false);
 
     assert!(result.is_empty());
 }
@@ -201,7 +201,7 @@ fn test_parse_recovery_slice_metadata_nonexistent_file() {
     let files = vec![PathBuf::from("/nonexistent/file.par2")];
 
     // Should not panic, just return empty
-    let result = par2rs::file_ops::parse_recovery_slice_metadata(&files, false);
+    let result = par2rs::par2_files::parse_recovery_slice_metadata(&files, false);
 
     assert!(result.is_empty());
 }
@@ -225,7 +225,7 @@ fn test_collect_par2_files_with_fixtures() {
             .collect();
 
         if let Some(first_file) = par2_files.first() {
-            let result = par2rs::file_ops::collect_par2_files(first_file);
+            let result = par2rs::par2_files::collect_par2_files(first_file);
 
             // Should at least contain the input file
             assert!(!result.is_empty());
@@ -244,7 +244,7 @@ fn test_find_par2_files_case_sensitivity() {
     File::create(temp_dir.path().join("file.par2")).unwrap();
     File::create(temp_dir.path().join("file.PAR2")).unwrap();
 
-    let result = par2rs::file_ops::find_par2_files_in_directory(temp_dir.path(), &exclude);
+    let result = par2rs::par2_files::find_par2_files_in_directory(temp_dir.path(), &exclude);
 
     // Should only find .par2 (lowercase)
     let lowercase_count = result
@@ -265,7 +265,7 @@ fn test_collect_par2_files_with_subdirectory_path() {
     File::create(&file_path).unwrap();
     File::create(subdir.join("vol01.par2")).unwrap();
 
-    let result = par2rs::file_ops::collect_par2_files(&file_path);
+    let result = par2rs::par2_files::collect_par2_files(&file_path);
 
     assert!(!result.is_empty());
     assert_eq!(result[0], file_path);
@@ -299,17 +299,17 @@ fn test_parse_par2_file_deduplication() {
 fn test_path_edge_cases() {
     // Test with empty path components
     let path = PathBuf::from("");
-    let result = par2rs::file_ops::collect_par2_files(&path);
+    let result = par2rs::par2_files::collect_par2_files(&path);
     assert_eq!(result[0], path);
 
     // Test with just filename
     let path = PathBuf::from("file.par2");
-    let result = par2rs::file_ops::collect_par2_files(&path);
+    let result = par2rs::par2_files::collect_par2_files(&path);
     assert_eq!(result[0], path);
 
     // Test with dot path
     let path = PathBuf::from("./file.par2");
-    let result = par2rs::file_ops::collect_par2_files(&path);
+    let result = par2rs::par2_files::collect_par2_files(&path);
     assert_eq!(result[0], path);
 }
 
@@ -330,7 +330,7 @@ fn test_special_characters_in_filenames() {
         File::create(temp_dir.path().join(name)).unwrap();
     }
 
-    let result = par2rs::file_ops::find_par2_files_in_directory(temp_dir.path(), &exclude);
+    let result = par2rs::par2_files::find_par2_files_in_directory(temp_dir.path(), &exclude);
 
     assert_eq!(result.len(), special_names.len());
 }
