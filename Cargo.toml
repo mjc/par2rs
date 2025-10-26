@@ -31,5 +31,9 @@ rand = "0.8"
 name = "repair_benchmark"
 harness = false
 
+[[bench]]
+name = "typestate_benchmark"
+harness = false
+
 [profile.release]
 debug = true
