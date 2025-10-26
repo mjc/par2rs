@@ -13,7 +13,9 @@ fn main() -> Result<()> {
 
     let matches = parse_repair_args();
 
-    let par2_file = matches.get_one::<String>("par2_file").unwrap();
+    let par2_file = matches
+        .get_one::<String>("par2_file")
+        .expect("par2_file is required by clap");
     let quiet = matches.get_flag("quiet");
 
     let (context, result) = repair_files(par2_file).context("Failed to repair files")?;

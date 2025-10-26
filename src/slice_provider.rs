@@ -182,10 +182,13 @@ impl ChunkedSliceProvider {
             let reader = BufReader::new(file);
             self.file_handles.insert(path.to_path_buf(), reader);
         }
-        Ok(self
-            .file_handles
-            .get_mut(path)
-            .expect("File handle must exist after insertion"))
+        // File handle was just inserted above, so this should always succeed
+        Ok(self.file_handles.get_mut(path).ok_or_else(|| {
+            std::io::Error::other(format!(
+                "Internal error: file handle missing for {}",
+                path.display()
+            ))
+        })?)
     }
 
     /// Find the least recently used cache entry for eviction
@@ -432,14 +435,11 @@ impl RecoverySliceProvider {
         chunk_size: usize,
     ) -> Result<ChunkData, Box<dyn std::error::Error>> {
         // Load only the requested chunk from disk (memory-efficient!)
-        let metadata = self
-            .recovery_metadata
-            .get(&exponent)
-            .ok_or_else(|| format!("Recovery slice {} not found", exponent))?;
+        let metadata = self.recovery_metadata.get(&exponent).ok_or_else(|| {
+            std::io::Error::other(format!("Recovery slice {} not found", exponent))
+        })?;
 
-        let chunk = metadata
-            .load_chunk(chunk_offset, chunk_size)
-            .map_err(|e| format!("Failed to load chunk: {}", e))?;
+        let chunk = metadata.load_chunk(chunk_offset, chunk_size)?;
 
         Ok(ChunkData::new(chunk))
     }

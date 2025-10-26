@@ -405,7 +405,12 @@ impl RepairContext {
                     .files
                     .iter()
                     .find(|f| &f.file_name == repaired_file)
-                    .expect("Repaired file must exist in file list");
+                    .ok_or_else(|| {
+                        RepairError::ContextCreation(format!(
+                            "Repaired file '{}' not found in recovery set file list",
+                            repaired_file
+                        ))
+                    })?;
 
                 eprintln!(
                     "Looking up repaired file '{}', found FileInfo: file_id={:?}, md5={}, global_offset={}",

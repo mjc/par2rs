@@ -32,7 +32,8 @@ impl BinRead for InputFileSliceChecksumPacket {
             });
         }
 
-        let length = u64::from_le_bytes(header[8..16].try_into().unwrap());
+        let length =
+            u64::from_le_bytes(header[8..16].try_into().expect("slice is exactly 8 bytes"));
         let mut md5 = [0u8; 16];
         md5.copy_from_slice(&header[16..32]);
         let mut set_id = [0u8; 16];
