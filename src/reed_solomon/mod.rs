@@ -21,7 +21,12 @@ pub mod galois;
 pub mod reedsolomon;
 #[doc(hidden)]
 pub mod simd; // Public for tests/benchmarks, but hidden from docs
+pub mod typestate; // Type-safe Reed-Solomon with compile-time state enforcement
 
 pub use galois::*;
 pub use reedsolomon::*;
+pub use typestate::{ReedSolomon as TypeSafeReedSolomon, TypeSafeReedSolomonBuilder};
+
+// Re-export states for advanced usage
+pub use typestate::{Computed as RsComputed, Configured as RsConfigured, New as RsNew};
 // Don't re-export simd - users shouldn't need direct SIMD access
