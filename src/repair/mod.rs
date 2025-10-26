@@ -412,13 +412,7 @@ impl RepairContext {
                         ))
                     })?;
 
-                eprintln!(
-                    "Looking up repaired file '{}', found FileInfo: file_id={:?}, md5={}, global_offset={}",
-                    repaired_file,
-                    file_info.file_id,
-                    hex::encode(file_info.md5_hash.as_bytes()),
-                    file_info.global_slice_offset.as_usize()
-                );
+                // Debug info removed - use standard PAR2 format
 
                 let file_path = self.base_path.join(&file_info.file_name);
 
@@ -888,14 +882,13 @@ pub fn repair_files_with_reporter(
     }
 
     // Collect all PAR2 files in the set
-    let par2_files = crate::file_ops::collect_par2_files(par2_path);
+    let par2_files = crate::par2_files::collect_par2_files(par2_path);
 
     // Load metadata for memory-efficient recovery slice loading
-    let metadata = crate::file_ops::parse_recovery_slice_metadata(&par2_files, false);
+    let metadata = crate::par2_files::parse_recovery_slice_metadata(&par2_files, false);
 
     // Load packets WITHOUT recovery slices (they're loaded via metadata on-demand)
-    let packets = crate::file_ops::load_par2_packets(&par2_files, true);
-
+    let packets = crate::par2_files::load_par2_packets(&par2_files, true);
     if packets.is_empty() {
         return Err(RepairError::NoValidPackets);
     }

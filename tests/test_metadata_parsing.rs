@@ -1,5 +1,5 @@
 /// Test to verify recovery slice metadata parsing works correctly
-use par2rs::file_ops;
+use par2rs::par2_files;
 use std::path::PathBuf;
 
 #[test]
@@ -17,10 +17,10 @@ fn test_metadata_parsing_counts_all_recovery_slices() {
         return;
     }
 
-    let par2_files = file_ops::collect_par2_files(&par2_file);
+    let par2_files = par2_files::collect_par2_files(&par2_file);
 
     // Parse metadata
-    let metadata = file_ops::parse_recovery_slice_metadata(&par2_files, false);
+    let metadata = par2_files::parse_recovery_slice_metadata(&par2_files, false);
 
     // Should find 32 recovery blocks in this one file
     assert_eq!(
@@ -49,7 +49,7 @@ fn test_metadata_parsing_vs_packet_parsing() {
         return;
     }
 
-    let par2_files = file_ops::collect_par2_files(&par2_file);
+    let par2_files = par2_files::collect_par2_files(&par2_file);
 
     // Parse with direct method (loads all packets including recovery slices)
     use std::fs::File;
@@ -66,7 +66,7 @@ fn test_metadata_parsing_vs_packet_parsing() {
     }
 
     // Parse with new method (metadata only)
-    let metadata = file_ops::parse_recovery_slice_metadata(&par2_files, false);
+    let metadata = par2_files::parse_recovery_slice_metadata(&par2_files, false);
 
     assert_eq!(
         metadata.len(),

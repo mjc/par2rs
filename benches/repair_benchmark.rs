@@ -1,8 +1,6 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use par2rs::reed_solomon::codec::{build_split_mul_table, ReconstructionEngine, SplitMulTable};
 use par2rs::reed_solomon::galois::Galois16;
-use par2rs::reed_solomon::reedsolomon::{
-    build_split_mul_table, ReconstructionEngine, SplitMulTable,
-};
 use par2rs::reed_solomon::simd::process_slice_multiply_add_portable_simd;
 #[cfg(target_arch = "x86_64")]
 use par2rs::reed_solomon::simd::{process_slice_multiply_add_simd, SimdLevel};

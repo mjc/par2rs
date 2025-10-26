@@ -15,7 +15,7 @@ pub mod common;
 pub mod portable;
 pub mod pshufb;
 
-use super::reedsolomon::SplitMulTable;
+use super::codec::SplitMulTable;
 
 // These are used in tests/benchmarks
 #[doc(hidden)]
@@ -166,8 +166,8 @@ pub fn process_slice_multiply_add_simd(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reed_solomon::codec::build_split_mul_table;
     use crate::reed_solomon::galois::Galois16;
-    use crate::reed_solomon::reedsolomon::build_split_mul_table;
 
     #[test]
     fn detect_simd_support_returns_valid_level() {

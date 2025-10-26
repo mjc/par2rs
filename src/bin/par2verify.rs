@@ -11,7 +11,7 @@
 //! - Determines if repair is possible with available recovery blocks
 
 use anyhow::{Context, Result};
-use par2rs::{analysis, file_ops, verify};
+use par2rs::{analysis, par2_files, verify};
 use std::path::Path;
 
 fn main() -> Result<()> {
@@ -40,11 +40,11 @@ fn main() -> Result<()> {
     }
 
     // Collect all PAR2 files in the set
-    let par2_files = file_ops::collect_par2_files(file_path);
+    let par2_files = par2_files::collect_par2_files(file_path);
 
     // Parse all packets including recovery slices for verification (in parallel)
     println!("Loading PAR2 files...\n");
-    let all_packets = file_ops::load_all_par2_packets(&par2_files);
+    let all_packets = par2_files::load_all_par2_packets(&par2_files);
 
     let total_recovery_blocks = all_packets
         .iter()

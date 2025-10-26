@@ -49,7 +49,7 @@
 //! **Memory savings**: 8 tables × 16 bytes = 128 bytes (vs 2 tables × 256 × 2 bytes = 1024 bytes)
 
 #[cfg(target_arch = "x86_64")]
-use super::super::reedsolomon::SplitMulTable;
+use super::super::codec::SplitMulTable;
 #[cfg(target_arch = "x86_64")]
 use super::common::{build_nibble_tables, process_slice_multiply_add_scalar};
 
@@ -210,9 +210,9 @@ mod tests {
 
     // These are only used in x86_64 tests
     #[cfg(target_arch = "x86_64")]
-    use crate::reed_solomon::galois::Galois16;
+    use crate::reed_solomon::codec::build_split_mul_table;
     #[cfg(target_arch = "x86_64")]
-    use crate::reed_solomon::reedsolomon::build_split_mul_table;
+    use crate::reed_solomon::galois::Galois16;
 
     #[cfg(target_arch = "x86_64")]
     #[test]

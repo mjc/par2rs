@@ -2,7 +2,7 @@
 //!
 //! Provides shared data structures and fallback implementations used by all SIMD variants.
 
-use super::super::reedsolomon::SplitMulTable;
+use super::super::codec::SplitMulTable;
 
 /// Nibble lookup tables for SIMD operations
 ///
@@ -47,7 +47,7 @@ pub struct NibbleTables {
 /// # Example
 /// ```rust
 /// # use par2rs::reed_solomon::galois::Galois16;
-/// # use par2rs::reed_solomon::reedsolomon::build_split_mul_table;
+/// # use par2rs::reed_solomon::codec::build_split_mul_table;
 /// # use par2rs::reed_solomon::simd::common::build_nibble_tables;
 /// let coeff = Galois16::new(42);
 /// let tables = build_split_mul_table(coeff);

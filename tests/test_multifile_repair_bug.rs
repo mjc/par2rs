@@ -53,8 +53,8 @@
 //! - PAR2 Specification: Recovery slices are XOR of data slices across ALL files
 //! - Fix implemented in: `src/repair/mod.rs::perform_reed_solomon_repair()`
 
-use par2rs::file_ops::*;
 use par2rs::file_verification::calculate_file_md5;
+use par2rs::par2_files::*;
 use par2rs::repair::RepairContext;
 use std::fs;
 use std::io::Write;

@@ -3,7 +3,7 @@
 //! Tests for file discovery, PAR2 file collection, packet loading, and deduplication.
 //! Organized into logical groups: file discovery, packet parsing, deduplication, and collection.
 
-use par2rs::file_ops::*;
+use par2rs::par2_files::*;
 use rustc_hash::FxHashSet as HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};

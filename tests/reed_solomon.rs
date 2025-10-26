@@ -2,12 +2,10 @@
 //!
 //! Organized test suite for Reed-Solomon implementation including:
 //! - Galois field arithmetic (galois.rs)
-//! - Basic Reed-Solomon operations (basic.rs)
 //! - Reconstruction engine (reconstruction.rs)  
 //! - Property-based tests (property.rs)
 
 mod reed_solomon {
-    pub mod basic;
     pub mod galois;
     pub mod property;
     pub mod reconstruction;

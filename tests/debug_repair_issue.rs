@@ -1,4 +1,4 @@
-use par2rs::file_ops;
+use par2rs::par2_files;
 use par2rs::repair::RepairContext;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -39,9 +39,9 @@ fn debug_repair_issue() {
     println!("Original MD5: {:02x?}", original_md5);
 
     // Create repair context
-    let par2_files = file_ops::collect_par2_files(&par2_file);
-    let metadata = file_ops::parse_recovery_slice_metadata(&par2_files, false);
-    let packets = file_ops::load_par2_packets(&par2_files, false);
+    let par2_files = par2_files::collect_par2_files(&par2_file);
+    let metadata = par2_files::parse_recovery_slice_metadata(&par2_files, false);
+    let packets = par2_files::load_par2_packets(&par2_files, false);
     let context =
         RepairContext::new_with_metadata(packets, metadata, temp_dir.path().to_path_buf()).unwrap();
 

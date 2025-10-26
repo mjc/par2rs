@@ -198,7 +198,7 @@ impl ProgressReporter for ConsoleReporter {
             return;
         }
         println!();
-        println!("Verifying source files:");
+        println!("Verifying repaired files:");
         println!();
     }
 
@@ -208,14 +208,14 @@ impl ProgressReporter for ConsoleReporter {
         }
         match result {
             VerificationResult::Verified => {
-                println!("Verified \"{}\" - correct.", file_name);
+                println!("Target: \"{}\" - found.", file_name);
             }
             VerificationResult::HashMismatch => {
-                println!("Verified \"{}\" - FAILED (MD5 mismatch).", file_name);
+                println!("Target: \"{}\" - FAILED (MD5 mismatch).", file_name);
             }
             VerificationResult::SizeMismatch { expected, actual } => {
                 println!(
-                    "Verified \"{}\" - FAILED (size mismatch: expected {}, got {}).",
+                    "Target: \"{}\" - FAILED (size mismatch: expected {}, got {}).",
                     file_name, expected, actual
                 );
             }
