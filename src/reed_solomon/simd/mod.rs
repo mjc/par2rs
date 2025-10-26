@@ -138,22 +138,8 @@ pub fn process_slice_multiply_add_simd(
         SimdLevel::Avx2 => {
             #[cfg(target_arch = "x86_64")]
             unsafe {
-                let len = input.len().min(output.len());
-
-                // Use PSHUFB for the bulk of the data (multiples of 32 bytes)
-                if len >= 32 {
-                    process_slice_multiply_add_pshufb(input, output, tables);
-                }
-
-                // Handle remaining bytes (< 32 bytes) with unrolled version
-                let remainder_start = (len / 32) * 32;
-                if remainder_start < len {
-                    process_slice_multiply_add_scalar(
-                        &input[remainder_start..],
-                        &mut output[remainder_start..],
-                        tables,
-                    );
-                }
+                // PSHUFB implementation handles both SIMD processing and scalar fallback internally
+                process_slice_multiply_add_pshufb(input, output, tables);
             }
         }
         SimdLevel::Ssse3 => {

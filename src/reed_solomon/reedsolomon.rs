@@ -50,7 +50,11 @@ pub fn process_slice_multiply_add(input: &[u8], output: &mut [u8], tables: &Spli
     let min_len = input.len().min(output.len());
 
     // Get SIMD level (cached after first call)
-    let simd_level = *SIMD_LEVEL.get_or_init(detect_simd_support);
+    let simd_level = if std::env::var("PAR2RS_FORCE_SCALAR").is_ok() {
+        SimdLevel::None
+    } else {
+        *SIMD_LEVEL.get_or_init(detect_simd_support)
+    };
 
     // Try SIMD first for large enough buffers
     if min_len >= 32 && simd_level != SimdLevel::None {
@@ -1457,74 +1461,37 @@ impl ReconstructionEngine {
                     }
                 };
 
-                if recovery_chunk.valid_bytes < current_chunk_size {
-                    // Pad with zeros if needed
-                    let mut padded = recovery_chunk.data;
-                    padded.resize(current_chunk_size, 0);
-
-                    for out_idx in 0..num_missing {
-                        let coeff_val = matrix_inv[out_idx][eq_idx].value();
-                        if coeff_val == 0 {
-                            continue;
-                        }
-
-                        if first_writes[out_idx] {
-                            first_writes[out_idx] = false;
-                            if coeff_val == 1 {
-                                output_buffers[out_idx].copy_from_slice(&padded);
-                            } else if let Some(table) = table_cache.get(&coeff_val) {
-                                process_slice_multiply_direct(
-                                    &padded,
-                                    &mut output_buffers[out_idx],
-                                    table,
-                                );
-                            }
-                        } else if coeff_val == 1 {
-                            for (out_byte, in_byte) in
-                                output_buffers[out_idx].iter_mut().zip(padded.iter())
-                            {
-                                *out_byte ^= *in_byte;
-                            }
-                        } else if let Some(table) = table_cache.get(&coeff_val) {
-                            process_slice_multiply_add(
-                                &padded,
-                                &mut output_buffers[out_idx],
-                                table,
-                            );
-                        }
+                // Use recovery chunk data as-is - recovery provider already handles padding correctly
+                for out_idx in 0..num_missing {
+                    let coeff_val = matrix_inv[out_idx][eq_idx].value();
+                    if coeff_val == 0 {
+                        continue;
                     }
-                } else {
-                    for out_idx in 0..num_missing {
-                        let coeff_val = matrix_inv[out_idx][eq_idx].value();
-                        if coeff_val == 0 {
-                            continue;
-                        }
 
-                        if first_writes[out_idx] {
-                            first_writes[out_idx] = false;
-                            if coeff_val == 1 {
-                                output_buffers[out_idx].copy_from_slice(&recovery_chunk.data);
-                            } else if let Some(table) = table_cache.get(&coeff_val) {
-                                process_slice_multiply_direct(
-                                    &recovery_chunk.data,
-                                    &mut output_buffers[out_idx],
-                                    table,
-                                );
-                            }
-                        } else if coeff_val == 1 {
-                            for (out_byte, in_byte) in output_buffers[out_idx]
-                                .iter_mut()
-                                .zip(recovery_chunk.data.iter())
-                            {
-                                *out_byte ^= *in_byte;
-                            }
+                    if first_writes[out_idx] {
+                        first_writes[out_idx] = false;
+                        if coeff_val == 1 {
+                            output_buffers[out_idx].copy_from_slice(&recovery_chunk.data);
                         } else if let Some(table) = table_cache.get(&coeff_val) {
-                            process_slice_multiply_add(
+                            process_slice_multiply_direct(
                                 &recovery_chunk.data,
                                 &mut output_buffers[out_idx],
                                 table,
                             );
                         }
+                    } else if coeff_val == 1 {
+                        for (out_byte, in_byte) in output_buffers[out_idx]
+                            .iter_mut()
+                            .zip(recovery_chunk.data.iter())
+                        {
+                            *out_byte ^= *in_byte;
+                        }
+                    } else if let Some(table) = table_cache.get(&coeff_val) {
+                        process_slice_multiply_add(
+                            &recovery_chunk.data,
+                            &mut output_buffers[out_idx],
+                            table,
+                        );
                     }
                 }
             }
@@ -1554,14 +1521,8 @@ impl ReconstructionEngine {
                     continue;
                 }
 
-                // Pad if necessary
-                let chunk_data = if input_chunk.valid_bytes < current_chunk_size {
-                    let mut padded = input_chunk.data;
-                    padded.resize(current_chunk_size, 0);
-                    padded
-                } else {
-                    input_chunk.data
-                };
+                // Use chunk data as-is - slice provider already handles padding correctly
+                let chunk_data = input_chunk.data;
 
                 for out_idx in 0..num_missing {
                     let coeff_val = present_coeffs[out_idx][idx];
@@ -1599,6 +1560,27 @@ impl ReconstructionEngine {
             // Write output chunks to files
             for (out_idx, &missing_global_idx) in global_missing_indices.iter().enumerate() {
                 if let Some(writer) = output_writers.get_mut(&missing_global_idx) {
+                    // Debug logging for the problematic byte 512 region
+                    if chunk_offset <= 512 && chunk_offset + current_chunk_size > 512 {
+                        let buffer_512_idx = 512 - chunk_offset;
+                        if buffer_512_idx < output_buffers[out_idx].len() {
+                            debug!(
+                                "Slice {} chunk {}: writing byte at buffer[{}] (global byte 512) = 0x{:02x}",
+                                missing_global_idx, chunk_idx, buffer_512_idx, output_buffers[out_idx][buffer_512_idx]
+                            );
+                            // Show a few bytes around the boundary
+                            let start = buffer_512_idx.saturating_sub(4);
+                            let end = (buffer_512_idx + 5).min(output_buffers[out_idx].len());
+                            debug!(
+                                "Slice {} boundary context: bytes {}..{} = {:02x?}",
+                                missing_global_idx,
+                                start,
+                                end,
+                                &output_buffers[out_idx][start..end]
+                            );
+                        }
+                    }
+
                     if let Err(e) = writer.write_all(&output_buffers[out_idx]) {
                         return ReconstructionResult {
                             success: false,
