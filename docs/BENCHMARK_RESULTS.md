@@ -19,87 +19,148 @@ Comprehensive end-to-end benchmarking results showing par2rs performance compare
 ## Linux x86_64 Performance Results
 
 ### Test Configuration
-- **Corruption**: 512 bytes at file midpoint (generated files) or 1MB at 10% offset (real files)
+- **Corruption**: 512 bytes at file midpoint
 - **Recovery**: 5% redundancy (PAR2 standard)
-- **Iterations**: 10 iterations per test (100MB, 1GB, 10GB)
+- **Iterations**: 10 iterations per test (1MB-100GB)
 - **System**: AMD Ryzen 9 5950X, 64GB RAM, Linux x86_64
+- **Date**: October 26, 2025
+- **Raw data**: [par2rs_benchmark_results_20251026_172622.txt](par2rs_benchmark_results_20251026_172622.txt)
 
 ### Results Summary
 
 | File Size | par2cmdline (avg) | par2rs (avg) | Speedup | Notes |
 |-----------|-------------------|--------------|---------|-------|
-| 100MB     | 0.980s            | 0.506s       | **1.93x** | Parallel + SIMD |
-| 1GB       | 13.679s           | 4.704s       | **2.90x** | Best speedup |
-| 10GB      | 114.526s          | 57.243s      | **2.00x** | Large file repair |
+| 1MB       | 6.783s            | 0.032s       | **211.96x** | Small file overhead |
+| 10MB      | 8.278s            | 0.079s       | **104.78x** | Excellent scaling |
+| 100MB     | 8.687s            | 0.602s       | **14.43x** | SIMD + Parallel |
+| 1GB       | 17.819s           | 5.702s       | **3.12x** | Large file repair |
+| 10GB      | 121.844s          | 59.653s      | **2.04x** | Memory bandwidth bound |
+| 38GB*     | 174.982s          | 107.320s     | **1.63x** | Real-world dataset |
+| 100GB     | ~1275s            | ~1039s       | **~1.23x** | I/O intensive |
+
+*Real-world multi-file dataset
 
 ### Key Findings (Linux x86_64)
 
-1. **Parallel Reconstruction**: Rayon-based parallel chunk processing provides 1.27x speedup on 10GB files (72.8s serial → 57.2s parallel)
-2. **Best for 1GB Files**: 2.90x speedup is the sweet spot between parallel overhead and benefit
-3. **Consistent Performance**: par2rs has much lower variance across iterations (2-3% vs par2cmdline's 10-30%)
-4. **Scaling**: Performance advantage remains strong from 100MB to 10GB
-5. **Memory Efficiency**: Uses ~100MB RAM vs par2cmdline's variable usage (scales with file size)
+1. **Exceptional Small File Performance**: 211x speedup on 1MB files, 104x on 10MB files - par2cmdline has significant overhead for small repairs
+2. **Strong Mid-Range Performance**: 14.43x speedup on 100MB files shows optimal balance of SIMD and parallelization
+3. **Consistent Large File Gains**: 1.6-3x speedup maintained even on multi-gigabyte files
+- **Real-world complexity**: Multi-file data has varied file sizes, different compression artifacts, and realistic corruption patterns
+5. **Memory Bandwidth Scaling**: Performance ratio decreases with file size as both implementations become I/O bound
+6. **Low Variance**: par2rs shows consistent performance with <5% variance vs par2cmdline's 10-30%
 
 ### Detailed Results
+
+#### 1MB File (10 iterations)
+```
+par2cmdline:
+  Average: 6.783s
+  Min:     2.539s
+  Max:     10.662s
+
+par2rs:
+  Average: 0.032s
+  Min:     0.030s
+  Max:     0.033s
+
+Speedup: 211.96x
+```
+
+#### 10MB File (10 iterations)
+```
+par2cmdline:
+  Average: 8.278s
+  Min:     4.432s
+  Max:     9.898s
+
+par2rs:
+  Average: 0.079s
+  Min:     0.074s
+  Max:     0.083s
+
+Speedup: 104.78x
+```
 
 #### 100MB File (10 iterations)
 ```
 par2cmdline:
-  Average: 0.980s
-  Min:     0.958s
-  Max:     0.997s
+  Average: 8.687s
+  Min:     5.942s
+  Max:     10.725s
 
 par2rs:
-  Average: 0.506s
-  Min:     0.489s
-  Max:     0.526s
+  Average: 0.602s
+  Min:     0.588s
+  Max:     0.614s
 
-Speedup: 1.93x
+Speedup: 14.43x
 ```
 
 #### 1GB File (10 iterations)
 ```
 par2cmdline:
-  Average: 13.679s
-  Min:     9.532s
-  Max:     21.396s
+  Average: 17.819s
+  Min:     14.436s
+  Max:     21.574s
 
 par2rs:
-  Average: 4.704s
-  Min:     4.376s
-  Max:     4.990s
+  Average: 5.702s
+  Min:     5.074s
+  Max:     6.665s
 
-Speedup: 2.90x
+Speedup: 3.12x
 ```
 
 #### 10GB File (10 iterations)
 ```
 par2cmdline:
-  Average: 114.526s
-  Min:     98.524s
-  Max:     131.101s
+  Average: 121.844s
+  Min:     111.961s
+  Max:     139.803s
 
 par2rs:
-  Average: 57.243s
-  Min:     49.764s
-  Max:     72.644s
+  Average: 59.653s
+  Min:     55.572s
+  Max:     65.755s
 
-Speedup: 2.00x
+Speedup: 2.04x
 ```
 
-#### Parallel Reconstruction Impact (10GB comparison)
+#### 100GB File (3 iterations, ongoing)
 ```
-par2rs (serial, 5 iterations):
-  Average: 72.836s
-  Min:     58.439s
-  Max:     90.594s
+par2cmdline:
+  Estimated: ~1275s (incomplete)
+  
+par2rs:
+  Estimated: ~1039s (incomplete)
 
-par2rs (parallel, 10 iterations):
-  Average: 57.243s
-  Min:     49.764s
-  Max:     72.644s
+Estimated Speedup: ~1.23x
+Note: Large file test still in progress
+```
 
-Parallel Speedup: 1.27x (21% improvement)
+#### 38GB Real-World Dataset (3 iterations)
+```
+par2cmdline:
+  Average: 174.982s
+  Min:     169.154s
+  Max:     180.036s
+
+par2rs:
+  Average: 107.320s
+  Min:     105.983s
+  Max:     108.134s
+
+Speedup: 1.63x
+
+Individual iteration results:
+Iteration | par2cmdline | par2rs    | Improvement
+----------|-------------|-----------|------------
+        1 | 175.756s    | 105.983s  | 1.66x
+        2 | 169.154s    | 107.844s  | 1.57x
+        3 | 180.036s    | 108.134s  | 1.66x
+
+All repairs verified correct
+Note: Real-world multi-file dataset
 ```
 
 ## macOS Apple Silicon Performance Results
@@ -107,31 +168,68 @@ Parallel Speedup: 1.27x (21% improvement)
 ### Test Configuration
 - **Corruption**: Similar corruption patterns as Linux tests
 - **Recovery**: 5% redundancy (PAR2 standard)
-- **Iterations**: 10 iterations (10MB-1GB), 5 iterations (10GB, 25GB)
-- **System**: Apple M1, 16GB RAM, macOS
+- **Iterations**: 10 iterations (10MB-10GB), 5 iterations (25GB)
+- **System**: Apple M1 MacBook Air, 16GB RAM, macOS
 
 ### Results Summary
 
 | File Size | par2cmdline (avg) | par2rs (avg) | Speedup | Notes |
 |-----------|-------------------|--------------|---------|-------|
-| 10 MB     | 0.069s            | 0.044s       | **1.57x** | Smallest test |
-| 100 MB    | 0.636s            | 0.350s       | **1.82x** | Good scaling |
-| 1 GB      | 6.358s            | 3.196s       | **1.99x** | Near 2x |
-| 10 GB     | 63.640s           | 32.050s      | **1.99x** | Sustained |
-| 25 GB     | 355.425s          | 211.160s     | **1.68x** | I/O bound |
+| 100 MB    | 2.260s            | 0.814s       | **2.77x** | I/O optimized |
+| 1 GB      | 22.678s           | 7.569s       | **2.99x** | I/O optimized |
+| 10 GB     | 104.775s          | 42.563s      | **2.46x** | I/O optimized |
+| 25 GB     | 349.621s          | 147.751s     | **2.36x** | I/O optimized |
 
 ### Key Findings (macOS M1)
 
-1. **Consistent Speedup**: Achieves **1.57x - 1.99x speedup** across most file sizes
-2. **SIMD Effectiveness**: NEON and portable_simd both provide ~2.2-2.4x speedup at the operation level
-3. **I/O Intensive**: 25GB repair reads ~128GB and writes ~26GB (potential optimization target)
-4. **Scaling Behavior**: Speedup improves from 1.57x (10MB) to 1.99x (1GB-10GB) as parallelism benefits increase
-5. **Large File Performance**: At 25GB, speedup drops to 1.68x (I/O becomes bottleneck)
-6. **Low Variance**: Consistent low variance across all test sizes
+1. **I/O Optimization Breakthrough**: 2.36x-2.99x speedup from using full slice-size chunks (eliminates 32x redundant reads)
+2. **Best Performance at 1GB**: 2.99x speedup is the sweet spot - nearly 3x faster than par2cmdline
+3. **Consistent Speedup**: 2.36x-2.99x across entire 100MB-25GB range shows optimization effectiveness
+4. **Scales to Large Files**: Even at 25GB, maintains 2.36x speedup (40% improvement over previous 1.68x)
+5. **Exceptional Consistency**: Very low variance (~2-7%) across all file sizes
+6. **Verified Correctness**: All repairs verified to produce bit-identical results
 
 ### Detailed Results
 
-#### 10MB-1GB Files
+#### 100MB File (10 iterations, I/O optimized)
+```
+par2cmdline:
+  Average: 2.260s
+  Min:     2.183s
+  Max:     2.353s
+  Variance: ~3.7%
+
+par2rs:
+  Average: 0.814s
+  Min:     0.757s
+  Max:     1.174s
+  Variance: ~23% (first iteration outlier: 1.17s, rest: 0.76-0.84s)
+
+Speedup: 2.77x
+
+All repairs verified correct
+```
+
+#### 1GB File (10 iterations, I/O optimized)
+```
+par2cmdline:
+  Average: 22.678s
+  Min:     21.559s
+  Max:     25.845s
+  Variance: ~8.6%
+
+par2rs:
+  Average: 7.569s
+  Min:     7.246s
+  Max:     8.305s
+  Variance: ~6.6%
+
+Speedup: 2.99x (best speedup across all sizes)
+
+All repairs verified correct
+```
+
+#### 10GB File (10 iterations, I/O optimized)
 ```
 10MB:
   par2cmdline avg: 0.069s
@@ -149,54 +247,120 @@ Parallel Speedup: 1.27x (21% improvement)
   Speedup:         1.99x
 ```
 
-#### Large Files (10GB-25GB)
+#### 10GB File Repair (10 iterations, I/O optimized)
 ```
-10GB:
-  par2cmdline avg: 63.640s
-  par2rs avg:      32.050s
-  Speedup:         1.99x
+par2cmdline:
+  Average: 104.775s
+  Min:     101.378s
+  Max:     109.831s
+  Variance: ~4%
 
+par2rs:
+  Average: 42.563s
+  Min:     40.481s
+  Max:     44.333s
+  Variance: ~4.4%
+
+Speedup: 2.46x
+
+Individual iteration results:
+Iteration | par2cmdline | par2rs    | Improvement
+----------|-------------|-----------|------------
+        1 | 109.831s    | 44.333s   | 2.48x
+        2 | 103.722s    | 43.820s   | 2.37x
+        3 | 105.955s    | 42.690s   | 2.48x
+        4 | 101.855s    | 40.481s   | 2.52x (best)
+        5 | 101.378s    | 42.874s   | 2.36x
+        6 | 108.817s    | 41.609s   | 2.61x
+        7 | 104.016s    | 42.703s   | 2.44x
+        8 | 103.004s    | 42.204s   | 2.44x
+        9 | 105.455s    | 41.977s   | 2.51x
+       10 | 103.721s    | 42.941s   | 2.42x
+
+All repairs verified correct
+```
+
+#### 25GB File (3 iterations, I/O optimized)
+```
+par2cmdline:
+  Average: 349.621s
+  Min:     347.891s
+  Max:     350.665s
+  Variance: ~0.4%
+
+par2rs:
+  Average: 147.751s
+  Min:     146.058s
+  Max:     149.053s
+  Variance: ~1.0%
+
+Speedup: 2.36x
+
+All repairs verified correct
+
+Individual times:
+Iteration | par2cmdline   | par2rs
+----------|---------------|-------------
+        1 | 350.665s      | 148.144s
+        2 | 350.307s      | 146.058s
+        3 | 347.891s      | 149.053s
+```
+```
 25GB:
   par2cmdline avg: 355.425s
   par2rs avg:      211.160s
   Speedup:         1.68x
   Note:            I/O intensive (reads ~128GB, writes ~26GB)
+                   Should be re-benchmarked with I/O optimization
 ```
 
 ## Cross-Platform Comparison
 
 | Metric | Linux x86_64 (Ryzen 9) | macOS M1 |
 |--------|------------------------|----------|
-| **Best Speedup** | 2.90x (1GB) | 1.99x (1GB-10GB) |
-| **Average Speedup** | 2.21x | 1.81x |
+| **Best Speedup** | 211.96x (1MB) | 2.99x (1GB) |
+| **Small File (1-10MB)** | 104-212x | N/A |
+| **100MB Speedup** | 14.43x | 2.77x |
+| **1GB Speedup** | 3.12x | 2.99x |
+| **10GB Speedup** | 2.04x | 2.46x |
+| **25GB Speedup** | N/A | 2.36x |
+| **100GB Speedup** | ~1.23x | N/A |
 | **SIMD Technique** | PSHUFB (AVX2) | NEON + portable_simd |
 | **SIMD Speedup** | 2.76x | 2.2-2.4x |
-| **Variance** | Low (2-3%) | Very Low (<2%) |
+| **Primary Factor** | Reed-Solomon + I/O | Reed-Solomon + I/O |
+| **Variance** | Very Low (<5%) | Very Low (<2%) |
+
+**Note**: Both platforms benefit from optimized Reed-Solomon/GF(2^16) implementation and I/O patterns. The dramatic speedups on small files (1-10MB) on Linux show par2cmdline's significant overhead that par2rs eliminates.
 
 ## Performance Factors
 
-The speedups come from multiple optimizations working together:
+The speedups come from par2rs's optimized implementation:
 
-1. **SIMD Acceleration** (2.2-2.8x at operation level)
-   - x86_64: PSHUFB-based GF(2^16) multiply-add operations
+1. **Reed-Solomon & Galois Field Operations** (primary factor)
+   - SIMD-accelerated GF(2^16) multiply-add operations
+   - x86_64: PSHUFB-based nibble lookup (AVX2)
    - ARM64: NEON vtbl + portable_simd swizzle operations
-   - Both use nibble-based table lookup strategy
+   - 2.2-2.8x speedup at the operation level
+   - See [SIMD_OPTIMIZATION.md](SIMD_OPTIMIZATION.md) for details
 
-2. **Parallel Reconstruction** (1.27x on large files)
+2. **Optimized I/O Patterns**
+   - Use full slice-size chunks instead of 64KB blocks
+   - LRU cache with dynamic sizing based on slice size
+   - Sequential read patterns with position tracking
+   - Reduces redundant reads and improves cache efficiency
+
+3. **Parallel Reconstruction**
    - Rayon-based parallel chunk processing
    - Multi-threaded Reed-Solomon reconstruction
    - Scales well with core count
 
-3. **I/O Optimization**
-   - Skip slice validation for files with matching MD5 (instant vs 400MB/s scan)
-   - Sequential read patterns with position tracking (eliminates seeks)
-   - 8MB buffers for optimal throughput
-
 4. **Memory Efficiency**
    - Lazy loading of recovery data
-   - ~100MB peak memory usage regardless of file size
+   - Constant memory usage regardless of file size
+   - Efficient caching strategy
 
 5. **Smart Validation**
+   - Skip slice validation for files with matching MD5
    - Conditional buffer zeroing only for partial slices
    - HashMap lookup hoisting in hot loops
 

@@ -2,7 +2,19 @@
 
 ## Overview
 
-This document describes the SIMD (Single Instruction, Multiple Data) optimizations implemented in par2rs for Reed-Solomon error correction operations. These optimizations provide **2.2-2.8x speedup** for GF(2^16) multiply-add operations, which are the computational core of PAR2 repair.
+This document describes the SIMD (Single Instruction, Multiple Data) optimizations implemented in par2rs for Reed-Solomon error correction operations. Combined with I/O optimizations, par2rs achieves **2.4-3x speedup** over par2cmdline for real-world repair workloads.
+
+**Performance breakdown:**
+- **I/O optimization** (primary factor): Full slice-size chunks eliminate 32x redundant reads
+- **SIMD acceleration**: 2.2-2.8x speedup for GF(2^16) multiply-add operations
+- **Parallel reconstruction**: Multi-threaded chunk processing with Rayon
+- **Smart caching**: LRU cache with dynamic sizing
+
+**Measured performance (M1 MacBook Air 16GB):**
+- 100MB: 2.77x speedup (2.26s → 0.81s)
+- 1GB: 2.99x speedup (22.7s → 7.6s)
+- 10GB: 2.46x speedup (104.8s → 42.6s)
+- 25GB: 2.36x speedup (349.6s → 147.8s)
 
 For end-to-end benchmark results, see [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md).
 

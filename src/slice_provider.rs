@@ -192,18 +192,14 @@ impl ChunkedSliceProvider {
     }
 
     /// Get or create a reader for the given file path
-    fn get_or_create_reader(
-        &mut self,
-        path: &Path,
-    ) -> Result<&mut BufReader<File>> {
+    fn get_or_create_reader(&mut self, path: &Path) -> Result<&mut BufReader<File>> {
         let reader = match self.file_handles.entry(path.to_path_buf()) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                let file = File::open(path)
-                    .map_err(|e| SliceProviderError::FileOpenError {
-                        path: path.to_path_buf(),
-                        source: e,
-                    })?;
+                let file = File::open(path).map_err(|e| SliceProviderError::FileOpenError {
+                    path: path.to_path_buf(),
+                    source: e,
+                })?;
                 let reader = BufReader::new(file);
                 entry.insert(reader)
             }
@@ -274,13 +270,15 @@ impl ChunkedSliceProvider {
         let mut buffer = vec![0u8; bytes_to_read];
 
         let reader = self.get_or_create_reader(&location.file_path)?;
-        reader.seek(SeekFrom::Start(location.offset + offset as u64))
+        reader
+            .seek(SeekFrom::Start(location.offset + offset as u64))
             .map_err(|e| SliceProviderError::FileSeekError {
                 path: location.file_path.clone(),
                 offset: location.offset + offset as u64,
                 source: e,
             })?;
-        reader.read_exact(&mut buffer)
+        reader
+            .read_exact(&mut buffer)
             .map_err(|e| SliceProviderError::FileReadError {
                 path: location.file_path.clone(),
                 source: e,
@@ -307,13 +305,15 @@ impl ChunkedSliceProvider {
         let mut buffer = vec![0u8; bytes_to_read];
 
         let reader = self.get_or_create_reader(&location.file_path)?;
-        reader.seek(SeekFrom::Start(location.offset + chunk_offset as u64))
+        reader
+            .seek(SeekFrom::Start(location.offset + chunk_offset as u64))
             .map_err(|e| SliceProviderError::FileSeekError {
                 path: location.file_path.clone(),
                 offset: location.offset + chunk_offset as u64,
                 source: e,
             })?;
-        reader.read_exact(&mut buffer)
+        reader
+            .read_exact(&mut buffer)
             .map_err(|e| SliceProviderError::FileReadError {
                 path: location.file_path.clone(),
                 source: e,
@@ -412,10 +412,7 @@ impl SliceProvider for ChunkedSliceProvider {
         self.slice_locations.keys().copied().collect()
     }
 
-    fn verify_slice(
-        &mut self,
-        slice_index: usize,
-    ) -> Result<Option<bool>> {
+    fn verify_slice(&mut self, slice_index: usize) -> Result<Option<bool>> {
         // Check cache first
         if let Some(&verified) = self.verified_slices.get(&slice_index) {
             return Ok(Some(verified));
@@ -437,14 +434,16 @@ impl SliceProvider for ChunkedSliceProvider {
         // Note: PAR2 spec requires CRC32 on padded data (full logical size)
         let mut buffer = vec![0u8; self.logical_slice_size.as_usize()];
         let reader = self.get_or_create_reader(&location.file_path)?;
-        reader.seek(SeekFrom::Start(location.offset))
-            .map_err(|e| SliceProviderError::FileSeekError {
+        reader.seek(SeekFrom::Start(location.offset)).map_err(|e| {
+            SliceProviderError::FileSeekError {
                 path: location.file_path.clone(),
                 offset: location.offset,
                 source: e,
-            })?;
+            }
+        })?;
 
-        let bytes_read = reader.read(&mut buffer[..location.actual_size.as_usize()])
+        let bytes_read = reader
+            .read(&mut buffer[..location.actual_size.as_usize()])
             .map_err(|e| SliceProviderError::FileReadError {
                 path: location.file_path.clone(),
                 source: e,
@@ -492,14 +491,17 @@ impl RecoverySliceProvider {
         chunk_size: usize,
     ) -> Result<ChunkData> {
         // Load only the requested chunk from disk (memory-efficient!)
-        let metadata = self.recovery_metadata.get(&exponent)
+        let metadata = self
+            .recovery_metadata
+            .get(&exponent)
             .ok_or(SliceProviderError::RecoverySliceNotFound { exponent })?;
 
-        let chunk = metadata.load_chunk(chunk_offset, chunk_size)
-            .map_err(|e| SliceProviderError::RecoveryChunkLoadError {
+        let chunk = metadata.load_chunk(chunk_offset, chunk_size).map_err(|e| {
+            SliceProviderError::RecoveryChunkLoadError {
                 offset: chunk_offset,
                 source: e,
-            })?;
+            }
+        })?;
 
         Ok(ChunkData::new(chunk))
     }
