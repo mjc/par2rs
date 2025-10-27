@@ -127,6 +127,17 @@ pub enum RepairError {
         computed: [u8; 16],
     },
 
+    /// Failed to delete file
+    #[error("Failed to delete file {file}: {source}")]
+    FileDeleteError {
+        file: PathBuf,
+        source: std::io::Error,
+    },
+
+    /// Invalid path
+    #[error("Invalid path: {0}")]
+    InvalidPath(PathBuf),
+
     /// I/O error occurred (catch-all for other I/O errors)
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

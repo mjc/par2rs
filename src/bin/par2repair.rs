@@ -17,6 +17,7 @@ fn main() -> Result<()> {
         .get_one::<String>("par2_file")
         .expect("par2_file is required by clap");
     let quiet = matches.get_flag("quiet");
+    let purge = matches.get_flag("purge");
 
     let (context, result) = repair_files(par2_file).context("Failed to repair files")?;
 
@@ -24,6 +25,11 @@ fn main() -> Result<()> {
     if !quiet {
         context.recovery_set.print_statistics();
         result.print_result();
+    }
+
+    // Purge backup and PAR2 files on successful repair if -p flag is set
+    if purge && result.is_success() {
+        context.purge_files(par2_file)?;
     }
 
     // Exit with success if repair was successful or not needed, error otherwise

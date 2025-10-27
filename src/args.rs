@@ -77,5 +77,12 @@ pub fn parse_repair_args() -> clap::ArgMatches {
                 .long("quiet")
                 .action(clap::ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("purge")
+                .help("Purge backup files and par files on successful recovery")
+                .short('p')
+                .long("purge")
+                .action(clap::ArgAction::SetTrue),
+        )
         .get_matches()
 }

@@ -179,4 +179,59 @@ impl RepairContext {
             file_slice_checksums,
         })
     }
+
+    /// Purge backup files and PAR2 files after successful repair
+    /// Matches par2cmdline's -p flag behavior
+    pub fn purge_files(&self, par2_file: &str) -> Result<()> {
+        use std::fs;
+        use std::path::Path;
+
+        let par2_path = Path::new(par2_file);
+        let par2_dir = par2_path
+            .parent()
+            .ok_or_else(|| RepairError::InvalidPath(par2_path.to_path_buf()))?;
+
+        // Print purge backup files message
+        println!("\nPurge backup files.");
+
+        // Remove backup files (.1, .bak, etc.) for all files in the recovery set
+        for file_info in &self.recovery_set.files {
+            let file_path = self.base_path.join(&file_info.file_name);
+            
+            // Try common backup file extensions
+            for ext in &["1", "bak"] {
+                let backup_path = file_path.with_extension(ext);
+                if backup_path.exists() {
+                    fs::remove_file(&backup_path).map_err(|e| RepairError::FileDeleteError {
+                        file: backup_path.clone(),
+                        source: e,
+                    })?;
+                    
+                    println!("Remove \"{}\".", backup_path.file_name().unwrap().to_string_lossy());
+                }
+            }
+        }
+
+        // Print purge par files message
+        println!("\nPurge par files.");
+
+        // Remove all PAR2 files in the directory
+        if let Ok(entries) = fs::read_dir(par2_dir) {
+            for entry in entries.flatten() {
+                if let Some(ext) = entry.path().extension() {
+                    if ext == "par2" {
+                        fs::remove_file(&entry.path()).map_err(|e| RepairError::FileDeleteError {
+                            file: entry.path(),
+                            source: e,
+                        })?;
+                        
+                        println!("Remove \"{}\".", entry.file_name().to_string_lossy());
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
+
