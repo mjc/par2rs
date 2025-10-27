@@ -737,7 +737,7 @@ impl RepairContext {
             path: std::path::PathBuf,
             keep: bool,
         }
-        
+
         impl Drop for TempFileGuard {
             fn drop(&mut self) {
                 if !self.keep && self.path.exists() {
@@ -746,7 +746,7 @@ impl RepairContext {
                 }
             }
         }
-        
+
         let mut temp_guard = TempFileGuard {
             path: temp_path.clone(),
             keep: false,

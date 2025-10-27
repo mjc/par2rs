@@ -40,6 +40,7 @@ Usage: $0 [OPTIONS] [SIZE_MB] [TEMP_DIR]
 Options:
   -p, --par2 FILE      PAR2 file path to repair (infers directory automatically)
   -i, --iterations N   Number of iterations (default: 10)
+                       When N=1, flamegraph profiling is enabled automatically
   -m, --multifile      Create multiple files of varying sizes for PAR2 set
   -h, --help           Show this help message
 
@@ -49,6 +50,10 @@ Examples:
   $0 -m 1000                                 # Multiple files totaling ~1GB
   $0 -p /path/to/files/file.par2             # Use existing files
   $0 -p file.par2 -i 5                       # 5 iterations on existing
+  $0 -p file.par2 -i 1                       # Single run with flamegraph
+
+Note: When iterations=1, flamegraph profiling is automatically enabled.
+      Install with: cargo install flamegraph
 EOF
     exit 0
 }
@@ -425,10 +430,35 @@ for i in $(seq 1 $ITERATIONS); do
     
     echo -e "${YELLOW}  Running par2rs repair...${NC}"
     START=$(date +%s.%N)
-    if ! $PAR2RS "$TEMP/$TEST_PAR2" 2>&1; then
-        echo -e "${RED}✗ par2rs repair failed in iteration $i!${NC}"
-        exit 1
+    
+    # If only 1 iteration, use flamegraph for profiling
+    if [ "$ITERATIONS" -eq 1 ]; then
+        echo -e "${YELLOW}  Single iteration detected - running with flamegraph profiling${NC}"
+        FLAMEGRAPH_OUTPUT="$TEMP/flamegraph.svg"
+        if command -v cargo-flamegraph >/dev/null 2>&1; then
+            # Run with flamegraph
+            cd "$PROJECT_ROOT"
+            if ! cargo flamegraph --output="$FLAMEGRAPH_OUTPUT" --root -- "$TEMP/$TEST_PAR2" 2>&1; then
+                echo -e "${RED}✗ par2rs repair (with flamegraph) failed in iteration $i!${NC}"
+                exit 1
+            fi
+            echo -e "${GREEN}  ✓ Flamegraph saved to: $FLAMEGRAPH_OUTPUT${NC}"
+        else
+            echo -e "${YELLOW}  Warning: cargo-flamegraph not found, running without profiling${NC}"
+            echo -e "${YELLOW}  Install with: cargo install flamegraph${NC}"
+            if ! $PAR2RS "$TEMP/$TEST_PAR2" 2>&1; then
+                echo -e "${RED}✗ par2rs repair failed in iteration $i!${NC}"
+                exit 1
+            fi
+        fi
+    else
+        # Normal run without flamegraph
+        if ! $PAR2RS "$TEMP/$TEST_PAR2" 2>&1; then
+            echo -e "${RED}✗ par2rs repair failed in iteration $i!${NC}"
+            exit 1
+        fi
     fi
+    
     END=$(date +%s.%N)
     PAR2RS_TIME=$(echo "$END - $START" | bc)
     PAR2RS_TIMES+=($PAR2RS_TIME)
@@ -533,7 +563,18 @@ echo ""
 
 # Cleanup (only for generated file mode)
 if [ -z "$USE_EXISTING_DIR" ]; then
+    # Preserve flamegraph if it was generated
+    if [ -f "$TEMP/flamegraph.svg" ] && [ "$ITERATIONS" -eq 1 ]; then
+        FLAMEGRAPH_DEST="$PROJECT_ROOT/flamegraph_${SIZE_MB}mb.svg"
+        mv "$TEMP/flamegraph.svg" "$FLAMEGRAPH_DEST"
+        echo -e "${GREEN}✓ Flamegraph saved to: $FLAMEGRAPH_DEST${NC}"
+    fi
     rm -rf "$TEMP"
+else
+    # For existing directory mode, flamegraph stays in the directory
+    if [ -f "$TEMP/flamegraph.svg" ] && [ "$ITERATIONS" -eq 1 ]; then
+        echo -e "${GREEN}✓ Flamegraph saved to: $TEMP/flamegraph.svg${NC}"
+    fi
 fi
 
 echo -e "${GREEN}✓ All repairs verified correct${NC}"
