@@ -732,6 +732,26 @@ impl RepairContext {
         // Write to temp file first, then rename to avoid corrupting source while reading
         let temp_path = file_path.with_extension("par2_tmp");
 
+        // Guard to clean up temp file on error
+        struct TempFileGuard {
+            path: std::path::PathBuf,
+            keep: bool,
+        }
+        
+        impl Drop for TempFileGuard {
+            fn drop(&mut self) {
+                if !self.keep && self.path.exists() {
+                    let _ = std::fs::remove_file(&self.path);
+                    debug!("Cleaned up temporary file: {:?}", self.path);
+                }
+            }
+        }
+        
+        let mut temp_guard = TempFileGuard {
+            path: temp_path.clone(),
+            keep: false,
+        };
+
         // Open source file for reading valid slices
         let source_path = self.base_path.join(&file_info.file_name);
         let mut source_file = if source_path.exists() {
@@ -857,6 +877,9 @@ impl RepairContext {
             final_path: file_path.to_path_buf(),
             source: e,
         })?;
+
+        // Mark temp file as successfully renamed (no cleanup needed)
+        temp_guard.keep = true;
 
         // Verify the MD5 hash matches expected (no re-read needed!)
         let expected_md5 = file_info.md5_hash.as_bytes();
