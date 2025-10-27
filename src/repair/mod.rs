@@ -732,6 +732,26 @@ impl RepairContext {
         // Write to temp file first, then rename to avoid corrupting source while reading
         let temp_path = file_path.with_extension("par2_tmp");
 
+        // Guard to clean up temp file on error
+        struct TempFileGuard {
+            path: std::path::PathBuf,
+            keep: bool,
+        }
+
+        impl Drop for TempFileGuard {
+            fn drop(&mut self) {
+                if !self.keep && self.path.exists() {
+                    let _ = std::fs::remove_file(&self.path);
+                    debug!("Cleaned up temporary file: {:?}", self.path);
+                }
+            }
+        }
+
+        let mut temp_guard = TempFileGuard {
+            path: temp_path.clone(),
+            keep: false,
+        };
+
         // Open source file for reading valid slices
         let source_path = self.base_path.join(&file_info.file_name);
         let mut source_file = if source_path.exists() {
@@ -750,7 +770,8 @@ impl RepairContext {
             file: temp_path.clone(),
             source,
         })?;
-        let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
+        let buffered = std::io::BufWriter::with_capacity(1024 * 1024, file);
+        let mut writer = crate::md5_writer::Md5Writer::new(buffered);
 
         let slice_size = self.recovery_set.slice_size as usize;
         let mut slice_buffer = vec![0u8; slice_size];
@@ -831,7 +852,16 @@ impl RepairContext {
             file: temp_path.clone(),
             source: e,
         })?;
-        drop(writer); // Close the file before rename
+
+        // Finalize MD5 computation and get the hash
+        let (mut buffered_writer, computed_md5) = writer.finalize();
+        buffered_writer
+            .flush()
+            .map_err(|e| RepairError::FileFlushError {
+                file: temp_path.clone(),
+                source: e,
+            })?;
+        drop(buffered_writer); // Close the file before rename
         drop(source_file); // Close source file before rename
 
         if bytes_written != file_info.file_length {
@@ -848,7 +878,24 @@ impl RepairContext {
             source: e,
         })?;
 
-        debug!("Wrote {} bytes to {:?}", bytes_written, file_path);
+        // Mark temp file as successfully renamed (no cleanup needed)
+        temp_guard.keep = true;
+
+        // Verify the MD5 hash matches expected (no re-read needed!)
+        let expected_md5 = file_info.md5_hash.as_bytes();
+        if computed_md5 != *expected_md5 {
+            return Err(RepairError::Md5MismatchAfterRepair {
+                file: file_path.to_path_buf(),
+                expected: *expected_md5,
+                computed: computed_md5,
+            });
+        }
+
+        debug!(
+            "✓ Wrote {} bytes to {:?}, MD5 verified: {:02x?}",
+            bytes_written, file_path, computed_md5
+        );
+
         Ok(())
     }
 }

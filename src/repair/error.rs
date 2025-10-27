@@ -117,6 +117,27 @@ pub enum RepairError {
         source: std::io::Error,
     },
 
+    /// MD5 hash mismatch after repair
+    #[error(
+        "MD5 mismatch after repair for {file}: expected {expected:02x?}, computed {computed:02x?}"
+    )]
+    Md5MismatchAfterRepair {
+        file: PathBuf,
+        expected: [u8; 16],
+        computed: [u8; 16],
+    },
+
+    /// Failed to delete file
+    #[error("Failed to delete file {file}: {source}")]
+    FileDeleteError {
+        file: PathBuf,
+        source: std::io::Error,
+    },
+
+    /// Invalid path
+    #[error("Invalid path: {0}")]
+    InvalidPath(PathBuf),
+
     /// I/O error occurred (catch-all for other I/O errors)
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

@@ -50,6 +50,7 @@ pub mod analysis;
 pub mod args;
 pub mod domain;
 pub mod file_verification;
+pub mod md5_writer;
 pub mod packets;
 pub mod par2_files;
 pub mod recovery_loader;

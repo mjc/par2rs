@@ -7,9 +7,7 @@ fn test_metadata_parsing_counts_all_recovery_slices() {
     // This test uses the sample PAR2 set with multiple recovery blocks
     // The bug was that parse_recovery_slice_metadata() only found 9 blocks
 
-    let fixtures = PathBuf::from(
-        "sample-dataset",
-    );
+    let fixtures = PathBuf::from("sample-dataset");
     let par2_file = fixtures.join("testfile.vol63+32.par2");
 
     if !par2_file.exists() {
