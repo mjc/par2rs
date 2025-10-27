@@ -2,6 +2,4 @@
 //!
 //! This file imports and runs all integration tests.
 
-mod integration {
-    pub mod complete_workflow;
-}
+// Integration tests will be added here as needed

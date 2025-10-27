@@ -3,10 +3,39 @@
 //! Tests for PAR2 repair functionality, including detection of corrupted files
 //! and scenarios that require repair operations.
 
-use par2rs::file_ops::*;
 use par2rs::file_verification::*;
+use par2rs::par2_files::*;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use tempfile::TempDir;
+
+// Helper function for tests that need to load all packets including recovery slices
+fn load_packets_with_recovery(par2_files: &[PathBuf]) -> (Vec<par2rs::Packet>, usize) {
+    use rustc_hash::FxHashSet as HashSet;
+    use std::io::BufReader;
+    let mut all_packets = Vec::new();
+    let mut recovery_count = 0;
+    let mut seen_hashes = HashSet::default();
+
+    for par2_file in par2_files {
+        let file = fs::File::open(par2_file).expect("Failed to open PAR2 file");
+        let mut reader = BufReader::new(file);
+        let packets = par2rs::parse_packets(&mut reader);
+
+        // Deduplicate packets
+        for packet in packets {
+            let hash = get_packet_hash(&packet);
+            if seen_hashes.insert(hash) {
+                if matches!(packet, par2rs::Packet::RecoverySlice(_)) {
+                    recovery_count += 1;
+                }
+                all_packets.push(packet);
+            }
+        }
+    }
+
+    (all_packets, recovery_count)
+}
 
 mod corruption_detection {
     use super::*;
@@ -16,7 +45,7 @@ mod corruption_detection {
         // Load the PAR2 set to get expected file information
         let main_file = Path::new("tests/fixtures/testfile.par2");
         let par2_files = collect_par2_files(main_file);
-        let (packets, _) = load_all_par2_packets(&par2_files, false);
+        let (packets, _) = load_packets_with_recovery(&par2_files);
 
         // Extract file information from packets
         let mut expected_md5 = None;
@@ -59,7 +88,7 @@ mod corruption_detection {
     fn detects_heavily_corrupted_file() {
         let main_file = Path::new("tests/fixtures/testfile.par2");
         let par2_files = collect_par2_files(main_file);
-        let (packets, _) = load_all_par2_packets(&par2_files, false);
+        let (packets, _) = load_packets_with_recovery(&par2_files);
 
         // Extract file information
         let mut expected_md5 = None;
@@ -121,22 +150,43 @@ mod missing_file_scenarios {
     #[test]
     fn detects_missing_data_file() {
         // Test scenario where PAR2 files exist but data file is missing
-        let repair_dir = Path::new("tests/fixtures/repair_scenarios");
-        let main_file = repair_dir.join("testfile.par2");
-        let data_file = repair_dir.join("testfile");
+        // Create temp dir and copy only PAR2 files (not the data file)
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let temp_path = temp_dir.path();
+
+        let source_dir = Path::new("tests/fixtures/repair_scenarios");
+
+        // Copy only PAR2 files to temp directory
+        for entry in fs::read_dir(source_dir).expect("Failed to read source dir") {
+            let entry = entry.expect("Failed to read entry");
+            let path = entry.path();
+
+            if path.is_file() {
+                if let Some(ext) = path.extension() {
+                    if ext == "par2" {
+                        let file_name = path.file_name().unwrap();
+                        let dest_path = temp_path.join(file_name);
+                        fs::copy(&path, &dest_path).expect("Failed to copy PAR2 file");
+                    }
+                }
+            }
+        }
+
+        let main_file = temp_path.join("testfile.par2");
+        let data_file = temp_path.join("testfile");
 
         assert!(
             main_file.exists(),
-            "PAR2 file should exist in repair scenarios"
+            "PAR2 file should exist in test directory"
         );
         assert!(
             !data_file.exists(),
-            "Data file should be missing in repair scenarios"
+            "Data file should be missing in test scenario"
         );
 
         // Load PAR2 information
         let par2_files = collect_par2_files(&main_file);
-        let (packets, recovery_blocks) = load_all_par2_packets(&par2_files, false);
+        let (packets, recovery_blocks) = load_packets_with_recovery(&par2_files);
 
         assert!(!packets.is_empty(), "Should have packets from PAR2 files");
         assert!(
@@ -161,6 +211,8 @@ mod missing_file_scenarios {
             found_testfile,
             "Should find testfile description in PAR2 set"
         );
+
+        // temp_dir is automatically cleaned up
     }
 
     #[test]
@@ -168,7 +220,7 @@ mod missing_file_scenarios {
         let repair_dir = Path::new("tests/fixtures/repair_scenarios");
         let main_file = repair_dir.join("testfile.par2");
         let par2_files = collect_par2_files(&main_file);
-        let (packets, recovery_blocks) = load_all_par2_packets(&par2_files, false);
+        let (packets, recovery_blocks) = load_packets_with_recovery(&par2_files);
 
         // Extract main packet information to understand the recovery requirements
         let mut slice_size = 0;
@@ -208,7 +260,7 @@ mod repair_prerequisites {
         // Scenario 1: Corrupted file with PAR2 data - should be repairable
         let main_file = Path::new("tests/fixtures/testfile.par2");
         let par2_files = collect_par2_files(main_file);
-        let (packets, recovery_blocks) = load_all_par2_packets(&par2_files, false);
+        let (packets, recovery_blocks) = load_packets_with_recovery(&par2_files);
 
         assert!(!packets.is_empty(), "Should have PAR2 packets available");
         assert!(recovery_blocks > 0, "Should have recovery data for repair");
@@ -218,7 +270,7 @@ mod repair_prerequisites {
         let repair_main_file = repair_dir.join("testfile.par2");
         let repair_par2_files = collect_par2_files(&repair_main_file);
         let (repair_packets, repair_recovery_blocks) =
-            load_all_par2_packets(&repair_par2_files, false);
+            load_packets_with_recovery(&repair_par2_files);
 
         assert!(
             !repair_packets.is_empty(),
@@ -234,7 +286,7 @@ mod repair_prerequisites {
     fn extracts_file_information_for_repair() {
         let main_file = Path::new("tests/fixtures/testfile.par2");
         let par2_files = collect_par2_files(main_file);
-        let (packets, _) = load_all_par2_packets(&par2_files, false);
+        let (packets, _) = load_packets_with_recovery(&par2_files);
 
         let mut file_info = Vec::new();
 

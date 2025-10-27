@@ -4,34 +4,32 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-reed-solomon-erasure = "*"
 binrw = "*"
 clap = "4.5.39"
 rayon = "1.10.0"
-md5 = "0.7.0"
+md-5 = { version = "0.10", features = ["asm"] }
 hex = "0.4.3"
+crc32fast = "1.4.0"
+log = "0.4"
+env_logger = "0.11"
+bytemuck = "1.24"
+rustc-hash = "2.1"
+thiserror = "2.0.17"
+anyhow = "1.0"
 
 [dev-dependencies]
-# Test coverage and reporting tools
-cargo-tarpaulin = "0.32"
+# Temporary directory management for tests
+tempfile = "3"
+# Benchmarking framework
+criterion = { version = "0.7", features = ["html_reports"] }
+# Property-based testing
+proptest = "1.5"
+# Random number generation for tests
+rand = "0.8"
 
-# Tarpaulin configuration
-[package.metadata.tarpaulin]
-# Exclude generated files and certain test directories from coverage
-exclude = [
-    "target/*",
-    "scripts/*",
-]
-# Include all source files by default
-include = [
-    "src/*",
-    "tests/*",
-]
-# Timeout for individual tests (in seconds)
-timeout = 120
-# Follow symbolic links
-follow-links = true
-# Count hits in tests 
-count-hits = true
-# Output timeout for individual tests
-output-timeout = 60
+[[bench]]
+name = "repair_benchmark"
+harness = false
+
+[profile.release]
+debug = true

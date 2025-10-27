@@ -1,61 +1,35 @@
-use std::process;
+use anyhow::{Context, Result};
 
 use par2rs::args::parse_repair_args;
 use par2rs::repair::repair_files;
 
-fn main() {
+fn main() -> Result<()> {
+    // Initialize the logger
+    env_logger::Builder::from_default_env()
+        .format_timestamp(None)
+        .format_module_path(false)
+        .format_target(false)
+        .init();
+
     let matches = parse_repair_args();
 
-    let par2_file = matches.get_one::<String>("par2_file").unwrap();
-    let target_files: Vec<String> = matches
-        .get_many::<String>("files")
-        .unwrap_or_default()
-        .map(|s| s.to_string())
-        .collect();
-    let verbose = matches.get_flag("verbose");
+    let par2_file = matches
+        .get_one::<String>("par2_file")
+        .expect("par2_file is required by clap");
     let quiet = matches.get_flag("quiet");
 
+    let (context, result) = repair_files(par2_file).context("Failed to repair files")?;
+
+    // Print output unless quiet mode is enabled
     if !quiet {
-        println!("Loading PAR2 file: {}", par2_file);
+        context.recovery_set.print_statistics();
+        result.print_result();
     }
 
-    match repair_files(par2_file, &target_files, verbose) {
-        Ok(result) => {
-            if !quiet {
-                println!("Repair operation completed successfully");
-                println!("Files repaired: {}", result.files_repaired);
-                println!("Files verified: {}", result.files_verified);
-
-                if !result.repaired_files.is_empty() {
-                    println!("Repaired files:");
-                    for file in &result.repaired_files {
-                        println!("  - {}", file);
-                    }
-                }
-
-                if !result.verified_files.is_empty() {
-                    println!("Verified files:");
-                    for file in &result.verified_files {
-                        println!("  - {}", file);
-                    }
-                }
-            }
-
-            if result.files_repaired > 0 {
-                process::exit(0);
-            } else if result.files_verified > 0 {
-                if !quiet {
-                    println!("All files are already intact - no repair needed");
-                }
-                process::exit(0);
-            } else {
-                eprintln!("No files could be repaired or verified");
-                process::exit(1);
-            }
-        }
-        Err(e) => {
-            eprintln!("Error during repair: {}", e);
-            process::exit(1);
-        }
+    // Exit with success if repair was successful or not needed, error otherwise
+    if result.is_success() {
+        Ok(())
+    } else {
+        anyhow::bail!("Repair failed");
     }
 }

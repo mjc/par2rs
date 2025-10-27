@@ -4,7 +4,6 @@
 
 mod unit {
     pub mod analysis;
-    pub mod file_ops;
-    pub mod file_verification;
+    pub mod par2_files;
     pub mod repair;
 }

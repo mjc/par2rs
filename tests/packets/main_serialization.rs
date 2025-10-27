@@ -1,4 +1,5 @@
 use binrw::{BinReaderExt, BinWrite};
+use par2rs::domain::{FileId, Md5Hash, RecoverySetId};
 use par2rs::packets::main_packet::MainPacket;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -22,19 +23,19 @@ fn test_main_packet_fields() {
 
     let mut buffer = [0u8; 16];
     file.read_exact(&mut buffer).unwrap();
-    let expected_md5 = buffer;
+    let expected_md5 = Md5Hash::new(buffer);
     assert_eq!(
         expected_md5,
-        [
+        Md5Hash::new([
             0xbb, 0xcf, 0x29, 0x18, 0x55, 0x6d, 0x0c, 0xd3, 0xaf, 0xe9, 0x0a, 0xb5, 0x12, 0x3c,
             0x3f, 0xac
-        ],
+        ]),
         "MD5 mismatch"
     );
 
     let mut buffer = [0u8; 16];
     file.read_exact(&mut buffer).unwrap();
-    let expected_set_id = buffer;
+    let expected_set_id = RecoverySetId::new(buffer);
     assert_eq!(
         buffer,
         [
@@ -80,15 +81,15 @@ fn test_main_packet_fields() {
     for _ in 0..file_ids_count {
         let mut buffer = [0u8; 16];
         file.read_exact(&mut buffer).unwrap();
-        file_ids.push(buffer);
+        file_ids.push(FileId::new(buffer));
     }
 
     assert_eq!(
         file_ids,
-        [[
+        [FileId::new([
             0x87, 0x42, 0x70, 0xa6, 0x34, 0xd2, 0x77, 0xf8, 0x8c, 0x0e, 0x0b, 0x25, 0x85, 0x17,
             0xc2, 0x63
-        ]],
+        ])],
         "File IDs mismatch"
     );
 
@@ -97,7 +98,7 @@ fn test_main_packet_fields() {
     for _ in 0..non_recovery_file_ids_count {
         let mut buffer = [0u8; 16];
         file.read_exact(&mut buffer).unwrap();
-        non_recovery_file_ids.push(buffer);
+        non_recovery_file_ids.push(FileId::new(buffer));
     }
 
     file.seek(SeekFrom::Start(0)).unwrap(); // Reset file position for BinRead

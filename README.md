@@ -6,6 +6,32 @@ A Rust implementation of PAR2 (Parity Archive) for data recovery and verificatio
 
 `par2rs` is a modern, high-performance implementation of the PAR2 (Parity Archive 2.0) format written in Rust. PAR2 files are used to detect and repair corruption in data files, making them invaluable for archival storage, data transmission, and backup verification.
 
+### Performance
+
+par2rs achieves **2-200x speedup** over par2cmdline through:
+- **Optimized I/O patterns** using full slice-size chunks instead of 64KB blocks (eliminates 32x redundant reads)
+- **Parallel Reed-Solomon reconstruction** using Rayon for multi-threaded chunk processing
+- **SIMD-accelerated operations** (PSHUFB on x86_64, NEON on ARM64, portable_simd cross-platform)
+- **Smart validation skipping** for files with matching MD5 checksums
+- **Memory-efficient lazy loading** with LRU caching
+
+**Latest benchmark results:**
+
+**Linux x86_64 (AMD Ryzen 9 5950X, 64GB RAM):**
+- 1MB: **211.96x speedup** (6.78s → 0.032s)
+- 10MB: **104.78x speedup** (8.28s → 0.079s)
+- 100MB: **14.43x speedup** (8.69s → 0.60s)
+- 1GB: **3.12x speedup** (17.82s → 5.70s)
+- 10GB: **2.04x speedup** (121.84s → 59.65s)
+
+**macOS M1 (MacBook Air, 16GB RAM):**
+- 100MB: 2.77x speedup (2.26s → 0.81s)
+- 1GB: **2.99x speedup** (22.7s → 7.6s)
+- 10GB: 2.46x speedup (104.8s → 42.6s)
+- 25GB: 2.36x speedup (349.6s → 147.8s)
+
+The majority of this speedup comes from I/O optimization. See [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md) for comprehensive end-to-end benchmarks and [docs/SIMD_OPTIMIZATION.md](docs/SIMD_OPTIMIZATION.md) for SIMD implementation details.
+
 ## Quick Start
 
 ### Installation
@@ -73,8 +99,7 @@ let results = file_verification::verify_files_and_collect_results(&file_info, tr
 
 - **Rust**: 1.70+ (see `rust-toolchain.toml` for exact version)
 - **Optional Tools**:
-  - `cargo-tarpaulin`: `cargo install cargo-tarpaulin`
-  - `cargo-llvm-cov`: `cargo install cargo-llvm-cov`
+  - `cargo-llvm-cov`: `cargo install cargo-llvm-cov` (for code coverage)
 
 ### Building
 
@@ -206,8 +231,8 @@ Development utility to split PAR2 files into individual packets for analysis.
 - **hex**: Hexadecimal encoding/decoding
 
 ### Development Dependencies
-- **cargo-tarpaulin**: Code coverage analysis
-- **cargo-llvm-cov**: LLVM-based coverage analysis
+- **cargo-llvm-cov**: Code coverage analysis
+- **criterion**: Benchmarking framework
 
 ## Contributing
 
@@ -235,13 +260,26 @@ This implementation follows the PAR2 specification and supports:
 - **Variable Block Sizes**: Flexible slice size configuration
 - **Reed-Solomon Codes**: Error correction mathematics
 
+## Known Issues
+
+- **Repair Hanging**: The repair functionality occasionally hangs on small files within large multi-file PAR2 sets. The root cause is still under investigation. Workaround: Process smaller PAR2 sets or single files where possible.
+
 ## Roadmap
 
 - [x] **Phase 1**: Complete packet parsing and verification
 - [ ] **Phase 2**: PAR2 file creation (`par2create`)
-- [ ] **Phase 3**: File repair functionality (`par2repair`)
-- [ ] **Phase 4**: Performance optimizations
-- [ ] **Phase 5**: Advanced features (progress callbacks, custom block sizes)
+- [x] **Phase 3**: File repair functionality (`par2repair`)
+- [x] **Phase 4**: SIMD optimizations (PSHUFB, NEON, portable_simd)
+- [ ] **Phase 5**: Runtime SIMD dispatch
+- [ ] **Phase 6**: Advanced features (progress callbacks, custom block sizes)
+
+## Documentation
+
+- **[README.md](README.md)**: This file - project overview and quick start
+- **[BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md)**: Comprehensive end-to-end performance benchmarks
+- **[SIMD_OPTIMIZATION.md](docs/SIMD_OPTIMIZATION.md)**: Technical details on SIMD implementations
+- **[COVERAGE.md](COVERAGE.md)**: Code coverage tooling and instructions
+- **[par2_parsing.md](par2_parsing.md)**: Internal implementation notes (development reference)
 
 ## License
 

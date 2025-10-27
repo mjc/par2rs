@@ -1,3 +1,4 @@
+use crate::domain::{Md5Hash, RecoverySetId};
 use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0Creator\0";
@@ -5,10 +6,12 @@ pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0Creator\0";
 #[derive(Debug, BinRead)]
 #[br(magic = b"PAR2\0PKT")] // Reverted to using the literal value
 pub struct CreatorPacket {
-    pub length: u64,   // Length of the packet
-    pub md5: [u8; 16], // MD5 hash of the packet
+    pub length: u64, // Length of the packet
+    #[br(map = |x: [u8; 16]| Md5Hash::new(x))]
+    pub md5: Md5Hash, // MD5 hash of the packet
     #[br(pad_after = 16)] // Skip the `type_of_packet` field
-    pub set_id: [u8; 16], // Unique identifier for the PAR2 set
+    #[br(map = |x: [u8; 16]| RecoverySetId::new(x))]
+    pub set_id: RecoverySetId, // Unique identifier for the PAR2 set
     #[br(count = length as usize - (8 + 8 + 16 + 16 + 16))]
     pub creator_info: Vec<u8>, // ASCII text identifying the client
 }
@@ -35,14 +38,16 @@ impl CreatorPacket {
             return false;
         }
         let mut data = Vec::new();
-        data.extend_from_slice(&self.set_id);
+        data.extend_from_slice(self.set_id.as_bytes());
         data.extend_from_slice(TYPE_OF_PACKET);
         data.extend_from_slice(&self.creator_info);
-        let computed_md5 = md5::compute(&data);
-        if computed_md5.as_ref() != self.md5 {
+        use md5::Digest;
+        let computed_md5: [u8; 16] = md5::Md5::digest(&data).into();
+        if computed_md5 != *self.md5.as_bytes() {
             println!(
                 "MD5 mismatch: expected {:?}, computed {:?}",
-                self.md5, computed_md5
+                self.md5.as_bytes(),
+                computed_md5
             );
             return false;
         }
@@ -84,10 +89,10 @@ impl BinWrite for CreatorPacket {
         writer.write_all(&self.length.to_le_bytes())?;
 
         // Write the MD5 hash
-        writer.write_all(&self.md5)?;
+        writer.write_all(self.md5.as_bytes())?;
 
         // Write the set_id field
-        writer.write_all(&self.set_id)?;
+        writer.write_all(self.set_id.as_bytes())?;
 
         // Write the type of packet (TYPE_OF_PACKET)
         writer.write_all(TYPE_OF_PACKET)?;

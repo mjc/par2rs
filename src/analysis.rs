@@ -3,6 +3,7 @@
 //! This module provides functionality for analyzing PAR2 packets,
 //! extracting metadata, and calculating statistics.
 
+use crate::domain::{FileId, Md5Hash};
 use crate::Packet;
 use std::collections::HashMap;
 
@@ -48,14 +49,14 @@ pub fn extract_main_packet_stats(packets: &[Packet]) -> (u32, usize) {
             .values()
             .map(|&file_length| {
                 // Calculate blocks needed for this file (round up)
-                file_length.div_ceil(block_size as u64) as usize
+                file_length.div_ceil(block_size as u64)
             })
             .sum()
     } else {
         0
     };
 
-    (block_size, total_blocks)
+    (block_size, total_blocks as usize)
 }
 
 /// Calculate total size based on unique files only
@@ -77,7 +78,7 @@ pub fn calculate_total_size(packets: &[Packet]) -> u64 {
 /// Returns: HashMap<filename, (file_id, md5_hash, file_length)>
 pub fn collect_file_info_from_packets(
     packets: &[Packet],
-) -> HashMap<String, ([u8; 16], [u8; 16], u64)> {
+) -> HashMap<String, (FileId, Md5Hash, u64)> {
     let mut file_info = HashMap::new();
 
     for packet in packets {

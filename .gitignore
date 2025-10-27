@@ -1,2 +1,6 @@
 target
 .direnv
+perf*
+benchmark_output.txt
+flamegraph.svg
+lcov.info

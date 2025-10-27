@@ -1,3 +1,4 @@
+use crate::domain::{FileId, Md5Hash, RecoverySetId};
 use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0FileDesc";
@@ -5,14 +6,24 @@ pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0FileDesc";
 #[derive(Debug, BinRead, BinWrite)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct FileDescriptionPacket {
-    pub length: u64,      // Length of the packet
-    pub md5: [u8; 16],    // MD5 hash of the packet type and body
-    pub set_id: [u8; 16], // Unique identifier for the PAR2 set
+    pub length: u64, // Length of  the packet
+    #[br(map = |x: [u8; 16]| Md5Hash::new(x))]
+    #[bw(map = |x: &Md5Hash| *x.as_bytes())]
+    pub md5: Md5Hash, // MD5 hash of the packet type and body
+    #[br(map = |x: [u8; 16]| RecoverySetId::new(x))]
+    #[bw(map = |x: &RecoverySetId| *x.as_bytes())]
+    pub set_id: RecoverySetId, // Unique identifier for the PAR2 set
     #[br(assert(packet_type == TYPE_OF_PACKET, "Packet type mismatch for FileDescriptionPacket. Expected {:?}, got {:?}", TYPE_OF_PACKET, packet_type))]
     pub packet_type: [u8; 16], // Type of the packet
-    pub file_id: [u8; 16], // Unique identifier for the file
-    pub md5_hash: [u8; 16], // MD5 hash of the entire file
-    pub md5_16k: [u8; 16], // MD5 hash of the first 16kB of the file
+    #[br(map = |x: [u8; 16]| FileId::new(x))]
+    #[bw(map = |x: &FileId| *x.as_bytes())]
+    pub file_id: FileId, // Unique identifier for the file
+    #[br(map = |x: [u8; 16]| Md5Hash::new(x))]
+    #[bw(map = |x: &Md5Hash| *x.as_bytes())]
+    pub md5_hash: Md5Hash, // MD5 hash of the entire file
+    #[br(map = |x: [u8; 16]| Md5Hash::new(x))]
+    #[bw(map = |x: &Md5Hash| *x.as_bytes())]
+    pub md5_16k: Md5Hash, // MD5 hash of the first 16kB of the file
     pub file_length: u64, // Length of the file
     #[br(count = length.saturating_sub(120))]
     // Removed the map function to prevent trimming of null bytes
@@ -81,8 +92,9 @@ impl FileDescriptionPacket {
 
         let set_id_start = 24; // Magic (8 bytes) + MD5 (16 bytes)
         let packet_data_for_md5 = serialized_packet.get_ref()[set_id_start..].to_vec();
-        let computed_md5 = md5::compute(&packet_data_for_md5);
-        if computed_md5.as_ref() != self.md5 {
+        use md5::Digest;
+        let computed_md5: [u8; 16] = md5::Md5::digest(&packet_data_for_md5).into();
+        if computed_md5 != self.md5 {
             println!(
                 "MD5 mismatch: expected {:?}, got {:?}",
                 self.md5, computed_md5
