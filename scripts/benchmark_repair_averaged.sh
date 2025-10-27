@@ -213,14 +213,15 @@ if [ -n "$USE_EXISTING_DIR" ]; then
     echo -e "${YELLOW}Analyzing PAR2 set (this may take a moment for large sets)...${NC}"
     
     # Run with timeout of 5 minutes
+    PAR2_VERIFY_EXIT=0
     if ! PAR2_VERIFY_OUTPUT=$(timeout 300 "$PAR2CMDLINE" v "$USE_EXISTING_DIR/$PAR2_FILE" 2>&1); then
         PAR2_VERIFY_EXIT=$?
         if [ $PAR2_VERIFY_EXIT -eq 124 ]; then
             echo -e "${RED}Error: par2 verify timed out after 5 minutes${NC}"
             echo -e "${RED}The PAR2 set may be too large. Try a smaller test set.${NC}"
             exit 1
-        elif [ $PAR2_VERIFY_EXIT -ne 1 ]; then
-            # Exit code 1 is normal (repair needed), anything else is an error
+        elif [ $PAR2_VERIFY_EXIT -ne 1 ] && [ $PAR2_VERIFY_EXIT -ne 0 ]; then
+            # Exit code 0 is success (no repair needed), 1 is normal (repair needed), anything else is an error
             echo -e "${RED}Error: par2 verify failed with exit code $PAR2_VERIFY_EXIT${NC}"
             echo "Output:"
             echo "$PAR2_VERIFY_OUTPUT"
