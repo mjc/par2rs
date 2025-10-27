@@ -403,13 +403,16 @@ for i in $(seq 1 $ITERATIONS); do
     
     echo -e "${YELLOW}  Running par2cmdline repair...${NC}"
     START=$(date +%s.%N)
-    if ! $PAR2CMDLINE r -q -N -p "$TEMP/$TEST_PAR2" 2>&1; then
+    if ! $PAR2CMDLINE r -q -N "$TEMP/$TEST_PAR2" 2>&1; then
         echo -e "${RED}✗ par2cmdline repair failed in iteration $i!${NC}"
         exit 1
     fi
     END=$(date +%s.%N)
     PAR2CMD_TIME=$(echo "$END - $START" | bc)
     PAR2CMD_TIMES+=($PAR2CMD_TIME)
+    
+    # Remove backup files created by par2cmdline (without -p flag which also removes PAR2 files)
+    rm -f "$TEMP/$TEST_FILE".1 "$TEMP/$TEST_FILE".bak
     
     # Verify par2cmdline repair
     MD5_PAR2CMD=$(md5sum "$TEMP/$TEST_FILE" | awk '{print $1}')
