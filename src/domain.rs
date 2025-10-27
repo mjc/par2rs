@@ -19,11 +19,11 @@
 pub struct FileId([u8; 16]);
 
 impl FileId {
-    pub fn new(bytes: [u8; 16]) -> Self {
+    pub const fn new(bytes: [u8; 16]) -> Self {
         FileId(bytes)
     }
 
-    pub fn as_bytes(&self) -> &[u8; 16] {
+    pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
 }
@@ -57,11 +57,11 @@ impl PartialEq<FileId> for [u8; 16] {
 pub struct GlobalSliceIndex(usize);
 
 impl GlobalSliceIndex {
-    pub fn new(index: usize) -> Self {
+    pub const fn new(index: usize) -> Self {
         GlobalSliceIndex(index)
     }
 
-    pub fn as_usize(&self) -> usize {
+    pub const fn as_usize(&self) -> usize {
         self.0
     }
 }
@@ -99,16 +99,16 @@ impl std::fmt::Display for GlobalSliceIndex {
 pub struct LocalSliceIndex(usize);
 
 impl LocalSliceIndex {
-    pub fn new(index: usize) -> Self {
+    pub const fn new(index: usize) -> Self {
         LocalSliceIndex(index)
     }
 
-    pub fn as_usize(&self) -> usize {
+    pub const fn as_usize(&self) -> usize {
         self.0
     }
 
     /// Convert to global index by adding file's global offset
-    pub fn to_global(&self, offset: GlobalSliceIndex) -> GlobalSliceIndex {
+    pub const fn to_global(&self, offset: GlobalSliceIndex) -> GlobalSliceIndex {
         GlobalSliceIndex(offset.0 + self.0)
     }
 }
@@ -131,11 +131,11 @@ impl std::fmt::Display for LocalSliceIndex {
 pub struct RecoverySetId([u8; 16]);
 
 impl RecoverySetId {
-    pub fn new(bytes: [u8; 16]) -> Self {
+    pub const fn new(bytes: [u8; 16]) -> Self {
         RecoverySetId(bytes)
     }
 
-    pub fn as_bytes(&self) -> &[u8; 16] {
+    pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
 }
@@ -170,16 +170,16 @@ impl PartialEq<RecoverySetId> for [u8; 16] {
 pub struct Md5Hash([u8; 16]);
 
 impl Md5Hash {
-    pub fn new(bytes: [u8; 16]) -> Self {
+    pub const fn new(bytes: [u8; 16]) -> Self {
         Md5Hash(bytes)
     }
 
-    pub fn as_bytes(&self) -> &[u8; 16] {
+    pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
 
     #[allow(clippy::len_without_is_empty)]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         16
     }
 }
@@ -214,15 +214,15 @@ impl PartialEq<Md5Hash> for [u8; 16] {
 pub struct Crc32Value(u32);
 
 impl Crc32Value {
-    pub fn new(value: u32) -> Self {
+    pub const fn new(value: u32) -> Self {
         Crc32Value(value)
     }
 
-    pub fn as_u32(&self) -> u32 {
+    pub const fn as_u32(&self) -> u32 {
         self.0
     }
 
-    pub fn to_le_bytes(&self) -> [u8; 4] {
+    pub const fn to_le_bytes(&self) -> [u8; 4] {
         self.0.to_le_bytes()
     }
 }

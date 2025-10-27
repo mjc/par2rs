@@ -7,10 +7,14 @@
 //! The design follows par2cmdline's approach of loading data in small chunks
 //! (default 64KB) rather than loading entire slices or files into memory.
 
+mod error;
+
+pub use error::{Result, SliceProviderError};
+
 use crate::domain::Crc32Value;
 use crate::RecoverySliceMetadata;
-use crc32fast::Hasher as Crc32;
 use rustc_hash::FxHashMap as HashMap;
+use std::collections::hash_map::Entry;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -25,12 +29,18 @@ pub const DEFAULT_CHUNK_SIZE: usize = 64 * 1024;
 pub struct ActualDataSize(usize);
 
 impl ActualDataSize {
-    pub fn new(size: usize) -> Self {
+    pub const fn new(size: usize) -> Self {
         Self(size)
     }
 
-    pub fn as_usize(&self) -> usize {
+    pub const fn as_usize(self) -> usize {
         self.0
+    }
+}
+
+impl From<usize> for ActualDataSize {
+    fn from(size: usize) -> Self {
+        Self(size)
     }
 }
 
@@ -40,12 +50,18 @@ impl ActualDataSize {
 pub struct LogicalSliceSize(usize);
 
 impl LogicalSliceSize {
-    pub fn new(size: usize) -> Self {
+    pub const fn new(size: usize) -> Self {
         Self(size)
     }
 
-    pub fn as_usize(&self) -> usize {
+    pub const fn as_usize(self) -> usize {
         self.0
+    }
+}
+
+impl From<usize> for LogicalSliceSize {
+    fn from(size: usize) -> Self {
+        Self(size)
     }
 }
 
@@ -109,7 +125,7 @@ pub trait SliceProvider {
         slice_index: usize,
         chunk_offset: usize,
         chunk_size: usize,
-    ) -> Result<ChunkData, Box<dyn std::error::Error>>;
+    ) -> Result<ChunkData>;
 
     /// Get the size of a slice
     fn get_slice_size(&self, slice_index: usize) -> Option<usize>;
@@ -122,10 +138,7 @@ pub trait SliceProvider {
 
     /// Verify a slice's checksum (if available)
     /// Returns true if valid, false if invalid, None if no checksum available
-    fn verify_slice(
-        &mut self,
-        slice_index: usize,
-    ) -> Result<Option<bool>, Box<dyn std::error::Error>>;
+    fn verify_slice(&mut self, slice_index: usize) -> Result<Option<bool>>;
 }
 
 /// A slice provider that reads data in chunks from files
@@ -154,14 +167,20 @@ pub struct ChunkedSliceProvider {
 impl ChunkedSliceProvider {
     /// Create a new chunked slice provider
     pub fn new(slice_size: usize) -> Self {
-        ChunkedSliceProvider {
+        // PERFORMANCE: Dynamic cache size based on slice size
+        // For small slices (64KB): cache 1000 chunks = 64MB
+        // For large slices (2MB): cache 32 chunks = 64MB
+        // This maintains constant ~64MB cache regardless of chunk size
+        const MB: usize = 1024 * 1024;
+        let max_cache_size = if slice_size >= MB { 32 } else { 1000 };
+
+        Self {
             slice_locations: BTreeMap::new(),
             file_handles: HashMap::default(),
             logical_slice_size: LogicalSliceSize::new(slice_size),
             verified_slices: HashMap::default(),
             chunk_cache: HashMap::default(),
-            // Cache up to 1000 chunks (64MB with 64KB chunks) - reasonable memory usage
-            max_cache_size: 1000,
+            max_cache_size,
             cache_access_counter: 0,
             cache_access_times: HashMap::default(),
         }
@@ -172,23 +191,24 @@ impl ChunkedSliceProvider {
         self.slice_locations.insert(slice_index, location);
     }
 
-    /// Get or open a file handle
-    fn get_file_handle(
+    /// Get or create a reader for the given file path
+    fn get_or_create_reader(
         &mut self,
         path: &Path,
-    ) -> Result<&mut BufReader<File>, Box<dyn std::error::Error>> {
-        if !self.file_handles.contains_key(path) {
-            let file = File::open(path)?;
-            let reader = BufReader::new(file);
-            self.file_handles.insert(path.to_path_buf(), reader);
-        }
-        // File handle was just inserted above, so this should always succeed
-        Ok(self.file_handles.get_mut(path).ok_or_else(|| {
-            std::io::Error::other(format!(
-                "Internal error: file handle missing for {}",
-                path.display()
-            ))
-        })?)
+    ) -> Result<&mut BufReader<File>> {
+        let reader = match self.file_handles.entry(path.to_path_buf()) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let file = File::open(path)
+                    .map_err(|e| SliceProviderError::FileOpenError {
+                        path: path.to_path_buf(),
+                        source: e,
+                    })?;
+                let reader = BufReader::new(file);
+                entry.insert(reader)
+            }
+        };
+        Ok(reader)
     }
 
     /// Find the least recently used cache entry for eviction
@@ -200,66 +220,122 @@ impl ChunkedSliceProvider {
     }
 
     /// Prefetch upcoming chunks from a slice to reduce I/O operations
-    /// Reads ahead 3-5 chunks at a time in a single sequential read
     fn prefetch_chunks(
         &mut self,
         slice_index: usize,
         start_offset: usize,
         chunk_size: usize,
         location: &SliceLocation,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<()> {
         // Don't prefetch if cache is getting full
         if self.chunk_cache.len() >= self.max_cache_size * 9 / 10 {
             return Ok(());
         }
 
-        // Prefetch next 4 chunks (256KB read-ahead with 64KB chunks)
-        const PREFETCH_COUNT: usize = 4;
+        const MB: usize = 1024 * 1024;
+        let prefetch_count = if chunk_size >= MB { 1 } else { 4 };
 
-        for i in 0..PREFETCH_COUNT {
-            let prefetch_offset = start_offset + (i * chunk_size);
+        for i in 0..prefetch_count {
+            let offset = start_offset + (i * chunk_size);
 
-            // Stop if beyond actual file data
-            if prefetch_offset >= location.actual_size.as_usize() {
-                break;
-            }
-
-            let cache_key = (slice_index, prefetch_offset);
-
-            // Skip if already cached
-            if self.chunk_cache.contains_key(&cache_key) {
+            // Early exits using functional guard patterns
+            if offset >= location.actual_size.as_usize()
+                || self.chunk_cache.contains_key(&(slice_index, offset))
+            {
                 continue;
             }
 
-            // Evict LRU entry if cache is full
-            if self.chunk_cache.len() >= self.max_cache_size {
-                if let Some(lru_key) = self.find_lru_cache_entry() {
-                    self.chunk_cache.remove(&lru_key);
-                    self.cache_access_times.remove(&lru_key);
-                } else {
-                    break; // Can't evict, stop prefetching
-                }
-            }
-
-            // Calculate bytes to read
-            let bytes_to_read = (location.actual_size.as_usize() - prefetch_offset).min(chunk_size);
-            let mut buffer = vec![0u8; bytes_to_read];
-
-            // Read the chunk
-            let reader = self.get_file_handle(&location.file_path)?;
-            reader.seek(SeekFrom::Start(location.offset + prefetch_offset as u64))?;
-            let bytes_read = reader.read(&mut buffer)?;
-
-            buffer.truncate(bytes_read);
-
-            // Add to cache with access time
-            self.cache_access_counter += 1;
-            self.chunk_cache.insert(cache_key, buffer);
-            self.cache_access_times
-                .insert(cache_key, self.cache_access_counter);
+            self.evict_lru_if_full();
+            self.read_and_cache_chunk(slice_index, offset, chunk_size, location)?;
         }
 
         Ok(())
+    }
+
+    /// Evict the least recently used cache entry if cache is full
+    fn evict_lru_if_full(&mut self) {
+        if self.chunk_cache.len() >= self.max_cache_size {
+            if let Some(lru_key) = self.find_lru_cache_entry() {
+                self.chunk_cache.remove(&lru_key);
+                self.cache_access_times.remove(&lru_key);
+            }
+        }
+    }
+
+    /// Read a chunk from disk and add it to cache
+    fn read_and_cache_chunk(
+        &mut self,
+        slice_index: usize,
+        offset: usize,
+        chunk_size: usize,
+        location: &SliceLocation,
+    ) -> Result<()> {
+        let bytes_to_read = (location.actual_size.as_usize() - offset).min(chunk_size);
+        let mut buffer = vec![0u8; bytes_to_read];
+
+        let reader = self.get_or_create_reader(&location.file_path)?;
+        reader.seek(SeekFrom::Start(location.offset + offset as u64))
+            .map_err(|e| SliceProviderError::FileSeekError {
+                path: location.file_path.clone(),
+                offset: location.offset + offset as u64,
+                source: e,
+            })?;
+        reader.read_exact(&mut buffer)
+            .map_err(|e| SliceProviderError::FileReadError {
+                path: location.file_path.clone(),
+                source: e,
+            })?;
+
+        self.cache_access_counter += 1;
+        let cache_key = (slice_index, offset);
+        self.chunk_cache.insert(cache_key, buffer);
+        self.cache_access_times
+            .insert(cache_key, self.cache_access_counter);
+
+        Ok(())
+    }
+
+    /// Read chunk data from file with zero-padding if needed
+    fn read_chunk_with_padding(
+        &mut self,
+        location: &SliceLocation,
+        chunk_offset: usize,
+        chunk_size: usize,
+        actual_data_end: usize,
+    ) -> Result<Vec<u8>> {
+        let bytes_to_read = (actual_data_end - chunk_offset).min(chunk_size);
+        let mut buffer = vec![0u8; bytes_to_read];
+
+        let reader = self.get_or_create_reader(&location.file_path)?;
+        reader.seek(SeekFrom::Start(location.offset + chunk_offset as u64))
+            .map_err(|e| SliceProviderError::FileSeekError {
+                path: location.file_path.clone(),
+                offset: location.offset + chunk_offset as u64,
+                source: e,
+            })?;
+        reader.read_exact(&mut buffer)
+            .map_err(|e| SliceProviderError::FileReadError {
+                path: location.file_path.clone(),
+                source: e,
+            })?;
+
+        // Add zero padding if chunk extends beyond actual data
+        let chunk_end = chunk_offset + chunk_size;
+        if chunk_end > actual_data_end && chunk_end <= location.logical_size.as_usize() {
+            let padding_needed = chunk_end - actual_data_end.max(chunk_offset + buffer.len());
+            buffer.resize(buffer.len() + padding_needed, 0);
+        }
+
+        Ok(buffer)
+    }
+
+    /// Update cache with LRU eviction
+    fn update_cache(&mut self, cache_key: (usize, usize), buffer: Vec<u8>) {
+        self.cache_access_counter += 1;
+        self.evict_lru_if_full();
+        self.chunk_cache.insert(cache_key, buffer);
+        self.cache_access_times
+            .insert(cache_key, self.cache_access_counter);
     }
 }
 
@@ -269,71 +345,48 @@ impl SliceProvider for ChunkedSliceProvider {
         slice_index: usize,
         chunk_offset: usize,
         chunk_size: usize,
-    ) -> Result<ChunkData, Box<dyn std::error::Error>> {
-        // Check cache first
+    ) -> Result<ChunkData> {
         let cache_key = (slice_index, chunk_offset);
-        if let Some(cached_data) = self.chunk_cache.get(&cache_key) {
+
+        // Check cache first - early return with cached data
+        if let Some(cached_data) = self.chunk_cache.get(&cache_key).cloned() {
             self.cache_access_counter += 1;
             self.cache_access_times
                 .insert(cache_key, self.cache_access_counter);
-            return Ok(ChunkData::new(cached_data.clone()));
+            return Ok(ChunkData::new(cached_data));
         }
 
+        // Note: We must clone location because we call &mut self methods below,
+        // which prevents holding a reference to self.slice_locations. This is
+        // unavoidable given the borrow checker rules, but amortized by the cache.
         let location = self
             .slice_locations
             .get(&slice_index)
-            .ok_or_else(|| format!("Slice {} not found", slice_index))?
+            .ok_or(SliceProviderError::SliceNotFound { index: slice_index })?
             .clone();
 
-        // CRITICAL: Chunk beyond logical slice = ERROR (caller screwed up)
+        // Validate chunk offset
         if chunk_offset >= location.logical_size.as_usize() {
-            return Err(format!(
-                "BUG: Requested chunk at offset {} but logical slice size is only {}",
-                chunk_offset,
-                location.logical_size.as_usize()
-            )
-            .into());
+            return Err(SliceProviderError::InvalidChunkOffset {
+                offset: chunk_offset,
+                slice_size: location.logical_size.as_usize(),
+            });
         }
 
-        // Calculate how much of the chunk is real data vs zero padding
         let actual_data_end = location.actual_size.as_usize();
 
+        // Handle entirely padding region - early return
         if chunk_offset >= actual_data_end {
-            // ENTIRELY in padding region - return chunk_size zeros
-            // Reed-Solomon MUST see these zeros, not skip them!
             let padding_size = chunk_size.min(location.logical_size.as_usize() - chunk_offset);
             return Ok(ChunkData::new(vec![0u8; padding_size]));
         }
 
-        // Some real data, possibly some padding
-        let bytes_to_read = (actual_data_end - chunk_offset).min(chunk_size);
-        let mut buffer = vec![0u8; bytes_to_read];
+        // Read real data and add padding if needed
+        let buffer =
+            self.read_chunk_with_padding(&location, chunk_offset, chunk_size, actual_data_end)?;
 
-        let reader = self.get_file_handle(&location.file_path)?;
-        reader.seek(SeekFrom::Start(location.offset + chunk_offset as u64))?;
-        let bytes_read = reader.read(&mut buffer)?;
-        buffer.truncate(bytes_read);
-
-        // If this chunk extends into padding, add zeros
-        let chunk_end = chunk_offset + chunk_size;
-        if chunk_end > actual_data_end && chunk_end <= location.logical_size.as_usize() {
-            let padding_needed = chunk_end - actual_data_end.max(chunk_offset + bytes_read);
-            buffer.resize(bytes_read + padding_needed, 0);
-        }
-
-        // Cache with LRU eviction
-        self.cache_access_counter += 1;
-        if self.chunk_cache.len() >= self.max_cache_size {
-            if let Some(lru_key) = self.find_lru_cache_entry() {
-                self.chunk_cache.remove(&lru_key);
-                self.cache_access_times.remove(&lru_key);
-            }
-        }
-        self.chunk_cache.insert(cache_key, buffer.clone());
-        self.cache_access_times
-            .insert(cache_key, self.cache_access_counter);
-
-        // Prefetch next chunks for sequential access optimization
+        // Cache and prefetch
+        self.update_cache(cache_key, buffer.clone());
         self.prefetch_chunks(
             slice_index,
             chunk_offset + chunk_size,
@@ -362,7 +415,7 @@ impl SliceProvider for ChunkedSliceProvider {
     fn verify_slice(
         &mut self,
         slice_index: usize,
-    ) -> Result<Option<bool>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<bool>> {
         // Check cache first
         if let Some(&verified) = self.verified_slices.get(&slice_index) {
             return Ok(Some(verified));
@@ -371,7 +424,7 @@ impl SliceProvider for ChunkedSliceProvider {
         let location = self
             .slice_locations
             .get(&slice_index)
-            .ok_or_else(|| format!("Slice {} not found", slice_index))?
+            .ok_or(SliceProviderError::SliceNotFound { index: slice_index })?
             .clone();
 
         // If no expected CRC, can't verify
@@ -383,24 +436,28 @@ impl SliceProvider for ChunkedSliceProvider {
         // Read entire slice and compute CRC32
         // Note: PAR2 spec requires CRC32 on padded data (full logical size)
         let mut buffer = vec![0u8; self.logical_slice_size.as_usize()];
-        let reader = self.get_file_handle(&location.file_path)?;
-        reader.seek(SeekFrom::Start(location.offset))?;
-        let bytes_read = reader.read(&mut buffer[..location.actual_size.as_usize()])?;
+        let reader = self.get_or_create_reader(&location.file_path)?;
+        reader.seek(SeekFrom::Start(location.offset))
+            .map_err(|e| SliceProviderError::FileSeekError {
+                path: location.file_path.clone(),
+                offset: location.offset,
+                source: e,
+            })?;
 
-        if bytes_read != location.actual_size.as_usize() {
-            // Couldn't read full actual data from file
-            self.verified_slices.insert(slice_index, false);
-            return Ok(Some(false));
-        }
+        let bytes_read = reader.read(&mut buffer[..location.actual_size.as_usize()])
+            .map_err(|e| SliceProviderError::FileReadError {
+                path: location.file_path.clone(),
+                source: e,
+            })?;
+        let is_valid = if bytes_read != location.actual_size.as_usize() {
+            false
+        } else {
+            // Compute CRC32 on padded buffer
+            let computed_crc = Crc32Value::new(crc32fast::hash(&buffer));
+            computed_crc == expected_crc
+        };
 
-        // Compute CRC32 on padded buffer
-        let mut hasher = Crc32::new();
-        hasher.update(&buffer);
-        let computed_crc = Crc32Value::new(hasher.finalize());
-
-        let is_valid = computed_crc == expected_crc;
         self.verified_slices.insert(slice_index, is_valid);
-
         Ok(Some(is_valid))
     }
 }
@@ -433,13 +490,16 @@ impl RecoverySliceProvider {
         exponent: usize,
         chunk_offset: usize,
         chunk_size: usize,
-    ) -> Result<ChunkData, Box<dyn std::error::Error>> {
+    ) -> Result<ChunkData> {
         // Load only the requested chunk from disk (memory-efficient!)
-        let metadata = self.recovery_metadata.get(&exponent).ok_or_else(|| {
-            std::io::Error::other(format!("Recovery slice {} not found", exponent))
-        })?;
+        let metadata = self.recovery_metadata.get(&exponent)
+            .ok_or(SliceProviderError::RecoverySliceNotFound { exponent })?;
 
-        let chunk = metadata.load_chunk(chunk_offset, chunk_size)?;
+        let chunk = metadata.load_chunk(chunk_offset, chunk_size)
+            .map_err(|e| SliceProviderError::RecoveryChunkLoadError {
+                offset: chunk_offset,
+                source: e,
+            })?;
 
         Ok(ChunkData::new(chunk))
     }
