@@ -37,7 +37,7 @@ Comprehensive end-to-end benchmarking results showing par2rs performance compare
 | 10GB      | 121.844s          | 59.653s      | **2.04x** | Memory bandwidth bound |
 | 38GB (NVMe)* | 174.982s       | 107.320s     | **1.63x** | Real-world dataset |
 | 38GB (RAIDZ2)* | 207.972s     | 208.912s     | **0.99x** | Storage-bound |
-| 100GB     | ~1275s            | ~1039s       | **~1.23x** | I/O intensive |
+| 100GB (RAIDZ2)* | 947.857s    | 1015.961s    | **0.93x** | Storage-bound, slower than par2cmdline |
 
 *Real-world multi-file dataset
 
@@ -48,8 +48,9 @@ Comprehensive end-to-end benchmarking results showing par2rs performance compare
 3. **Consistent Large File Gains**: 1.6-3x speedup maintained even on multi-gigabyte files on fast storage
 4. **Real-world complexity**: Multi-file data has varied file sizes, different compression artifacts, and realistic corruption patterns
 5. **Memory Bandwidth Scaling**: Performance ratio decreases with file size as both implementations become I/O bound
-6. **Storage System Impact**: Fast NVMe storage (1.63x speedup) vs RAIDZ2 (0.99x) shows optimization benefits are storage-dependent
+6. **Storage System Impact**: Fast NVMe storage (1.63x speedup) vs RAIDZ2 storage showing regression (0.93-0.99x) - slow random I/O reveals bottlenecks
 7. **Low Variance**: par2rs shows consistent performance with <5% variance vs par2cmdline's 10-30%
+8. **RAIDZ2 Performance Issue**: On slow storage with high random I/O latency, par2rs is actually slower than par2cmdline, likely due to different I/O patterns
 
 ### Detailed Results
 
@@ -191,6 +192,38 @@ Note: Real-world multi-file dataset on 5x8TB RAIDZ2 array
 Storage bottleneck: The slower random I/O performance of RAIDZ2 
 eliminates the speedup advantage seen on NVMe SSDs. Both implementations 
 become bound by storage throughput rather than CPU or I/O pattern efficiency.
+```
+
+#### 100GB Real-world Dataset on RAIDZ2 (5 iterations)
+```
+par2cmdline:
+  Average: 947.857s
+  Min:     910.172s
+  Max:     1004.553s
+
+par2rs:
+  Average: 1015.961s
+  Min:     965.689s
+  Max:     1051.507s
+
+Speedup: 0.93x (par2rs is slower)
+
+Individual iteration results:
+Iteration | par2cmdline | par2rs    | Improvement
+----------|-------------|-----------|------------
+        1 | 910.172s    | 965.689s  | 0.94x
+        2 | 916.346s    | 1023.799s | 0.89x
+        3 | 965.728s    | 1029.250s | 0.94x
+        4 | 1004.553s   | 1009.563s | 0.99x
+        5 | 942.488s    | 1051.507s | 0.90x
+
+All repairs verified correct
+Note: Real-world multi-file dataset on 5x8TB RAIDZ2 array
+Performance regression: On very large datasets with RAIDZ2 storage, par2rs 
+is actually 7% slower than par2cmdline. This suggests par2rs's I/O patterns
+(possibly more random access or smaller reads) are less optimal for RAIDZ2's
+characteristics (high random I/O latency, optimized for sequential access).
+This is an area for future optimization.
 ```
 
 ## macOS Apple Silicon Performance Results
