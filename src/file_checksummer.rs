@@ -216,11 +216,7 @@ impl FileCheckSummer {
         }
 
         // Get the hashes
-        let hash_16k = if self.file_size < 16384 {
-            Md5Hash::new(hasher_16k.finalize().into())
-        } else {
-            Md5Hash::new(hasher_16k.finalize().into())
-        };
+        let hash_16k = Md5Hash::new(hasher_16k.finalize().into());
 
         let hash_full = if self.file_size < 16384 {
             hash_16k

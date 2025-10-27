@@ -102,7 +102,8 @@ pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationRe
         .sum();
 
     // Collect file descriptions (deduplicate by file_id since each volume contains copies)
-    let mut file_descriptions_map: HashMap<FileId, &crate::packets::FileDescriptionPacket> = HashMap::default();
+    let mut file_descriptions_map: HashMap<FileId, &crate::packets::FileDescriptionPacket> =
+        HashMap::default();
     for packet in &packets {
         if let Packet::FileDescription(fd) = packet {
             file_descriptions_map.entry(fd.file_id).or_insert(fd);
@@ -491,9 +492,10 @@ mod tests {
             create_test_file(&test_file, content).unwrap();
 
             // Use FileCheckSummer instead
-            let checksummer = FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+            let checksummer =
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
             let result = checksummer.compute_file_hashes();
-            
+
             assert!(result.is_ok(), "Should compute MD5 successfully");
         }
 
@@ -513,7 +515,8 @@ mod tests {
             let large_content = vec![0xABu8; 1024 * 1024];
             create_test_file(&test_file, &large_content).unwrap();
 
-            let checksummer = FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+            let checksummer =
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
             let result = checksummer.compute_file_hashes();
 
             assert!(result.is_ok(), "Should handle large files");
@@ -527,13 +530,18 @@ mod tests {
 
             create_test_file(&test_file, content).unwrap();
 
-            let checksummer1 = FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+            let checksummer1 =
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
             let hash1 = checksummer1.compute_file_hashes().unwrap();
 
-            let checksummer2 = FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+            let checksummer2 =
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
             let hash2 = checksummer2.compute_file_hashes().unwrap();
 
-            assert_eq!(hash1.hash_full, hash2.hash_full, "Same file should produce same hash");
+            assert_eq!(
+                hash1.hash_full, hash2.hash_full,
+                "Same file should produce same hash"
+            );
         }
     }
 
@@ -549,7 +557,8 @@ mod tests {
             create_test_file(&test_file, content).unwrap();
 
             // Use FileCheckSummer to compute hashes
-            let checksummer = FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+            let checksummer =
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
             let results = checksummer.compute_file_hashes().unwrap();
 
             // Verify the hash matches what we computed
@@ -565,7 +574,8 @@ mod tests {
             create_test_file(&test_file, content).unwrap();
 
             // Compute actual hash
-            let checksummer = FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+            let checksummer =
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
             let results = checksummer.compute_file_hashes().unwrap();
 
             let wrong_hash = Md5Hash::new([0x42; 16]);
@@ -589,7 +599,8 @@ mod tests {
             create_test_file(&test_file, content).unwrap();
 
             // FileCheckSummer always reads full file, but we can verify it handles small files correctly
-            let checksummer = FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+            let checksummer =
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
             let results = checksummer.compute_file_hashes().unwrap();
 
             // For files < 16k, both hashes should be the same
@@ -897,13 +908,13 @@ mod tests {
             // Regression test for bug where FileDescription packets from multiple
             // PAR2 volume files were not deduplicated, causing the same file to be
             // verified multiple times (once per volume file).
-            use crate::packets::{FileDescriptionPacket, MainPacket};
             use crate::domain::RecoverySetId;
+            use crate::packets::{FileDescriptionPacket, MainPacket};
 
             let file_id = FileId::new([0x42; 16]);
             let file_name = b"testfile.bin\0\0\0\0";
             let set_id = RecoverySetId::new([0x99; 16]);
-            
+
             // Create a Main packet
             let main = MainPacket {
                 length: 92,
@@ -1011,10 +1022,7 @@ mod tests {
             ];
 
             let result = comprehensive_verify_files(packets);
-            assert_eq!(
-                result.missing_file_count, 1,
-                "Should detect missing file"
-            );
+            assert_eq!(result.missing_file_count, 1, "Should detect missing file");
         }
 
         #[test]
@@ -1341,7 +1349,8 @@ mod tests {
             create_test_file(&zero_file, &[]).unwrap();
 
             // Calculate hash for zero-byte file using FileCheckSummer
-            let checksummer = FileCheckSummer::new(zero_file.to_string_lossy().to_string(), 1024).unwrap();
+            let checksummer =
+                FileCheckSummer::new(zero_file.to_string_lossy().to_string(), 1024).unwrap();
             let result = checksummer.compute_file_hashes();
 
             assert!(result.is_ok(), "Should handle zero-byte files");
@@ -1353,7 +1362,8 @@ mod tests {
             let single_file = temp_dir.path().join("single.bin");
             create_test_file(&single_file, &[0x42]).unwrap();
 
-            let checksummer = FileCheckSummer::new(single_file.to_string_lossy().to_string(), 1024).unwrap();
+            let checksummer =
+                FileCheckSummer::new(single_file.to_string_lossy().to_string(), 1024).unwrap();
             let result = checksummer.compute_file_hashes();
 
             assert!(result.is_ok(), "Should handle single-byte files");
@@ -1490,7 +1500,8 @@ mod tests {
             create_test_file(&test_file, b"test").unwrap();
 
             // Test with absolute path
-            let checksummer = FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+            let checksummer =
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
             let abs_result = checksummer.compute_file_hashes();
 
             assert!(abs_result.is_ok());

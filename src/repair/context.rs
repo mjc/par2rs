@@ -197,7 +197,7 @@ impl RepairContext {
         // Remove backup files (.1, .bak, etc.) for all files in the recovery set
         for file_info in &self.recovery_set.files {
             let file_path = self.base_path.join(&file_info.file_name);
-            
+
             // Try common backup file extensions
             for ext in &["1", "bak"] {
                 let backup_path = file_path.with_extension(ext);
@@ -206,8 +206,11 @@ impl RepairContext {
                         file: backup_path.clone(),
                         source: e,
                     })?;
-                    
-                    println!("Remove \"{}\".", backup_path.file_name().unwrap().to_string_lossy());
+
+                    println!(
+                        "Remove \"{}\".",
+                        backup_path.file_name().unwrap().to_string_lossy()
+                    );
                 }
             }
         }
@@ -220,11 +223,13 @@ impl RepairContext {
             for entry in entries.flatten() {
                 if let Some(ext) = entry.path().extension() {
                     if ext == "par2" {
-                        fs::remove_file(&entry.path()).map_err(|e| RepairError::FileDeleteError {
-                            file: entry.path(),
-                            source: e,
+                        fs::remove_file(entry.path()).map_err(|e| {
+                            RepairError::FileDeleteError {
+                                file: entry.path(),
+                                source: e,
+                            }
                         })?;
-                        
+
                         println!("Remove \"{}\".", entry.file_name().to_string_lossy());
                     }
                 }
@@ -234,4 +239,3 @@ impl RepairContext {
         Ok(())
     }
 }
-

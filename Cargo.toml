@@ -26,9 +26,15 @@ criterion = { version = "0.7", features = ["html_reports"] }
 proptest = "1.5"
 # Random number generation for tests
 rand = "0.8"
+# Alternative MD5 crate for comparison
+md5_alt = { package = "md5", version = "0.7" }
 
 [[bench]]
 name = "repair_benchmark"
+harness = false
+
+[[bench]]
+name = "verify_performance"
 harness = false
 
 [profile.release]
