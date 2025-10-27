@@ -35,7 +35,8 @@ Comprehensive end-to-end benchmarking results showing par2rs performance compare
 | 100MB     | 8.687s            | 0.602s       | **14.43x** | SIMD + Parallel |
 | 1GB       | 17.819s           | 5.702s       | **3.12x** | Large file repair |
 | 10GB      | 121.844s          | 59.653s      | **2.04x** | Memory bandwidth bound |
-| 38GB*     | 174.982s          | 107.320s     | **1.63x** | Real-world dataset |
+| 38GB (NVMe)* | 174.982s       | 107.320s     | **1.63x** | Real-world dataset |
+| 38GB (RAIDZ2)* | 207.972s     | 208.912s     | **0.99x** | Storage-bound |
 | 100GB     | ~1275s            | ~1039s       | **~1.23x** | I/O intensive |
 
 *Real-world multi-file dataset
@@ -44,10 +45,11 @@ Comprehensive end-to-end benchmarking results showing par2rs performance compare
 
 1. **Exceptional Small File Performance**: 211x speedup on 1MB files, 104x on 10MB files - par2cmdline has significant overhead for small repairs
 2. **Strong Mid-Range Performance**: 14.43x speedup on 100MB files shows optimal balance of SIMD and parallelization
-3. **Consistent Large File Gains**: 1.6-3x speedup maintained even on multi-gigabyte files
-- **Real-world complexity**: Multi-file data has varied file sizes, different compression artifacts, and realistic corruption patterns
+3. **Consistent Large File Gains**: 1.6-3x speedup maintained even on multi-gigabyte files on fast storage
+4. **Real-world complexity**: Multi-file data has varied file sizes, different compression artifacts, and realistic corruption patterns
 5. **Memory Bandwidth Scaling**: Performance ratio decreases with file size as both implementations become I/O bound
-6. **Low Variance**: par2rs shows consistent performance with <5% variance vs par2cmdline's 10-30%
+6. **Storage System Impact**: Fast NVMe storage (1.63x speedup) vs RAIDZ2 (0.99x) shows optimization benefits are storage-dependent
+7. **Low Variance**: par2rs shows consistent performance with <5% variance vs par2cmdline's 10-30%
 
 ### Detailed Results
 
@@ -160,7 +162,35 @@ Iteration | par2cmdline | par2rs    | Improvement
         3 | 180.036s    | 108.134s  | 1.66x
 
 All repairs verified correct
-Note: Real-world multi-file dataset
+Note: Real-world multi-file dataset on Samsung 980 Pro NVMe SSD
+```
+
+#### 38GB Real-World Dataset on RAIDZ2 Storage (3 iterations)
+```
+par2cmdline:
+  Average: 207.972s
+  Min:     204.119s
+  Max:     211.429s
+
+par2rs:
+  Average: 208.912s
+  Min:     196.667s
+  Max:     216.303s
+
+Speedup: 0.99x (essentially equal performance)
+
+Individual iteration results:
+Iteration | par2cmdline | par2rs    | Improvement
+----------|-------------|-----------|------------
+        1 | 204.119s    | 213.767s  | 0.96x
+        2 | 208.370s    | 216.303s  | 0.96x
+        3 | 211.429s    | 196.667s  | 1.07x
+
+All repairs verified correct
+Note: Real-world multi-file dataset on 5x8TB RAIDZ2 array
+Storage bottleneck: The slower random I/O performance of RAIDZ2 
+eliminates the speedup advantage seen on NVMe SSDs. Both implementations 
+become bound by storage throughput rather than CPU or I/O pattern efficiency.
 ```
 
 ## macOS Apple Silicon Performance Results
@@ -329,8 +359,9 @@ Iteration | par2cmdline   | par2rs
 | **SIMD Speedup** | 2.76x | 2.2-2.4x |
 | **Primary Factor** | Reed-Solomon + I/O | Reed-Solomon + I/O |
 | **Variance** | Very Low (<5%) | Very Low (<2%) |
+| **Storage Sensitivity** | High (NVMe: 1.63x, RAIDZ2: 0.99x) | N/A |
 
-**Note**: Both platforms benefit from optimized Reed-Solomon/GF(2^16) implementation and I/O patterns. The dramatic speedups on small files (1-10MB) on Linux show par2cmdline's significant overhead that par2rs eliminates.
+**Note**: Both platforms benefit from optimized Reed-Solomon/GF(2^16) implementation and I/O patterns. The dramatic speedups on small files (1-10MB) on Linux show par2cmdline's significant overhead that par2rs eliminates. Performance benefits are highly dependent on storage system speed - fast NVMe SSDs show significant gains while slower RAIDZ2 arrays become storage-bound.
 
 ## Performance Factors
 
@@ -348,6 +379,7 @@ The speedups come from par2rs's optimized implementation:
    - LRU cache with dynamic sizing based on slice size
    - Sequential read patterns with position tracking
    - Reduces redundant reads and improves cache efficiency
+   - **Note**: Benefits are storage-dependent (NVMe: 1.63x, RAIDZ2: 0.99x on 38GB dataset)
 
 3. **Parallel Reconstruction**
    - Rayon-based parallel chunk processing
