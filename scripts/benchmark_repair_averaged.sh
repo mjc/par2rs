@@ -398,7 +398,7 @@ for i in $(seq 1 $ITERATIONS); do
     
     echo -e "${YELLOW}  Running par2cmdline repair...${NC}"
     START=$(date +%s.%N)
-    if ! $PAR2CMDLINE r -q -N "$TEMP/$TEST_PAR2" 2>&1; then
+    if ! $PAR2CMDLINE r -q -N -p "$TEMP/$TEST_PAR2" 2>&1; then
         echo -e "${RED}✗ par2cmdline repair failed in iteration $i!${NC}"
         exit 1
     fi
