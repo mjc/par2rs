@@ -1,10 +1,12 @@
-use crate::checksum::FileCheckSummer;
 use crate::domain::{Crc32Value, FileId, Md5Hash};
 use crate::validation;
 use crate::Packet;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
 use std::path::Path;
+
+#[cfg(test)]
+use crate::checksum::FileCheckSummer;
 
 /// File verification status
 #[derive(Debug, Clone)]
@@ -150,6 +152,106 @@ pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationRe
     }
 
     // Calculate repair requirements
+    results.blocks_needed_for_repair = results.missing_block_count;
+    results.repair_possible = results.recovery_blocks_available >= results.missing_block_count;
+
+    results
+}
+
+/// Comprehensive verification with progress reporting
+pub fn comprehensive_verify_files_with_progress<P: crate::checksum::ProgressReporter>(
+    packets: Vec<crate::Packet>,
+    progress: &P,
+) -> VerificationResults {
+    println!("Starting comprehensive verification...");
+
+    let mut results = VerificationResults {
+        files: Vec::new(),
+        blocks: Vec::new(),
+        complete_file_count: 0,
+        renamed_file_count: 0,
+        damaged_file_count: 0,
+        missing_file_count: 0,
+        available_block_count: 0,
+        missing_block_count: 0,
+        total_block_count: 0,
+        recovery_blocks_available: 0,
+        repair_possible: false,
+        blocks_needed_for_repair: 0,
+    };
+
+    // Extract main packet information
+    let main_packet = packets.iter().find_map(|p| match p {
+        Packet::Main(main) => Some(main),
+        _ => None,
+    });
+
+    let block_size = main_packet.map(|main| main.slice_size).unwrap_or(0);
+
+    // Count recovery blocks for repair calculations
+    results.recovery_blocks_available = packets
+        .iter()
+        .filter(|p| matches!(p, Packet::RecoverySlice(_)))
+        .count();
+
+    // Extract file descriptions
+    let file_descriptions: Vec<_> = packets
+        .iter()
+        .filter_map(|p| match p {
+            Packet::FileDescription(fd) => Some(fd),
+            _ => None,
+        })
+        .collect();
+
+    // Extract slice checksums and group by file_id
+    // Extract slice checksums and group by file_id
+    let slice_checksums: HashMap<FileId, Vec<(Md5Hash, Crc32Value)>> = packets
+        .iter()
+        .filter_map(|packet| match packet {
+            Packet::InputFileSliceChecksum(ifsc) => {
+                Some((ifsc.file_id, ifsc.slice_checksums.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+
+    // Process files sequentially when progress reporting (to maintain thread safety)
+    let file_results: Vec<_> = file_descriptions
+        .iter()
+        .map(|file_desc| {
+            verify_single_file_with_progress(file_desc, &slice_checksums, block_size, progress)
+        })
+        .collect();
+
+    // Aggregate results sequentially to avoid race conditions
+    for file_result in file_results {
+        results.total_block_count += file_result.total_blocks;
+
+        match file_result.status {
+            FileStatus::Missing => {
+                results.missing_file_count += 1;
+                results.missing_block_count += file_result.total_blocks;
+            }
+            FileStatus::Complete => {
+                results.complete_file_count += 1;
+                results.available_block_count += file_result.total_blocks;
+            }
+            FileStatus::Damaged => {
+                results.damaged_file_count += 1;
+                results.available_block_count += file_result.blocks_available;
+                results.missing_block_count += file_result.damaged_blocks.len();
+            }
+            FileStatus::Renamed => {
+                results.renamed_file_count += 1;
+                // Handle renamed files
+            }
+        }
+
+        results.blocks.extend(file_result.block_results);
+        results.files.push(file_result.file_info);
+    }
+
+    // Calculate repair feasibility
     results.blocks_needed_for_repair = results.missing_block_count;
     results.repair_possible = results.recovery_blocks_available >= results.missing_block_count;
 
@@ -320,15 +422,179 @@ fn verify_single_file(
     }
 }
 
+/// Verify a single file with progress reporting (thread-safe for parallel execution)
+fn verify_single_file_with_progress<P: crate::checksum::ProgressReporter>(
+    file_desc: &crate::packets::FileDescriptionPacket,
+    slice_checksums: &HashMap<FileId, Vec<(Md5Hash, Crc32Value)>>,
+    block_size: u64,
+    progress: &P,
+) -> SingleFileVerificationResult {
+    let file_name = String::from_utf8_lossy(&file_desc.file_name)
+        .trim_end_matches('\0')
+        .to_string();
+
+    println!("Verifying: \"{}\"", file_name);
+
+    let mut file_result = FileVerificationResult {
+        file_name: file_name.clone(),
+        file_id: file_desc.file_id,
+        status: FileStatus::Missing,
+        blocks_available: 0,
+        total_blocks: 0,
+        damaged_blocks: Vec::new(),
+    };
+
+    let mut block_results = Vec::new();
+
+    // Calculate total blocks for this file
+    let total_blocks = if block_size > 0 {
+        file_desc.file_length.div_ceil(block_size) as usize
+    } else {
+        0
+    };
+    file_result.total_blocks = total_blocks;
+
+    // Check if file exists
+    let file_path = Path::new(&file_name);
+    if !file_path.exists() {
+        println!("Target: \"{}\" - missing.", file_name);
+        file_result.status = FileStatus::Missing;
+
+        // All blocks are missing for this file
+        for block_num in 0..total_blocks {
+            block_results.push(BlockVerificationResult {
+                block_number: block_num as u32,
+                file_id: file_desc.file_id,
+                is_valid: false,
+                expected_hash: None,
+                expected_crc: None,
+            });
+        }
+
+        return SingleFileVerificationResult {
+            file_info: file_result,
+            block_results,
+            total_blocks,
+            blocks_available: 0,
+            status: FileStatus::Missing,
+            damaged_blocks: Vec::new(),
+        };
+    }
+
+    // File exists, verify its integrity with progress reporting
+    match verify_file_integrity_with_progress(file_desc, &file_name, progress) {
+        Ok(true) => {
+            println!("Target: \"{}\" - found.", file_name);
+            file_result.status = FileStatus::Complete;
+            file_result.blocks_available = total_blocks;
+
+            // Mark all blocks as valid
+            for block_num in 0..total_blocks {
+                block_results.push(BlockVerificationResult {
+                    block_number: block_num as u32,
+                    file_id: file_desc.file_id,
+                    is_valid: true,
+                    expected_hash: None,
+                    expected_crc: None,
+                });
+            }
+
+            SingleFileVerificationResult {
+                file_info: file_result,
+                block_results,
+                total_blocks,
+                blocks_available: total_blocks,
+                status: FileStatus::Complete,
+                damaged_blocks: Vec::new(),
+            }
+        }
+        Ok(false) | Err(_) => {
+            println!("Target: \"{}\" - damaged.", file_name);
+            file_result.status = FileStatus::Damaged;
+
+            // Perform block-level verification if we have slice checksums
+            if let Some(checksums) = slice_checksums.get(&file_desc.file_id) {
+                let (available_blocks, damaged_block_numbers) =
+                    verify_blocks_in_file(&file_name, checksums, block_size as usize);
+
+                file_result.blocks_available = available_blocks;
+                file_result.damaged_blocks = damaged_block_numbers.clone();
+
+                // Create block verification results
+                for (block_num, (expected_hash, expected_crc)) in checksums.iter().enumerate() {
+                    let is_valid = !damaged_block_numbers.contains(&(block_num as u32));
+
+                    block_results.push(BlockVerificationResult {
+                        block_number: block_num as u32,
+                        file_id: file_desc.file_id,
+                        is_valid,
+                        expected_hash: Some(*expected_hash),
+                        expected_crc: Some(*expected_crc),
+                    });
+                }
+
+                if !damaged_block_numbers.is_empty() {
+                    println!(
+                        "  {} of {} blocks are damaged",
+                        damaged_block_numbers.len(),
+                        checksums.len()
+                    );
+                }
+
+                SingleFileVerificationResult {
+                    file_info: file_result,
+                    block_results,
+                    total_blocks,
+                    blocks_available: available_blocks,
+                    status: FileStatus::Damaged,
+                    damaged_blocks: damaged_block_numbers,
+                }
+            } else {
+                // No block-level checksums available, assume all blocks are damaged
+                for block_num in 0..total_blocks {
+                    file_result.damaged_blocks.push(block_num as u32);
+                    block_results.push(BlockVerificationResult {
+                        block_number: block_num as u32,
+                        file_id: file_desc.file_id,
+                        is_valid: false,
+                        expected_hash: None,
+                        expected_crc: None,
+                    });
+                }
+
+                let damaged_blocks = file_result.damaged_blocks.clone();
+
+                SingleFileVerificationResult {
+                    file_info: file_result,
+                    block_results,
+                    total_blocks,
+                    blocks_available: 0,
+                    status: FileStatus::Damaged,
+                    damaged_blocks,
+                }
+            }
+        }
+    }
+}
+
 /// Verify integrity of a single file using MD5 hashes
 fn verify_file_integrity(
     desc: &crate::packets::FileDescriptionPacket,
     file_path: &str,
 ) -> Result<bool, std::io::Error> {
-    // Use single-pass verification - read file once and compute both hashes
-    let checksummer = FileCheckSummer::new(file_path.to_string(), 1024)?;
+    verify_file_integrity_with_progress(desc, file_path, &crate::checksum::SilentProgressReporter)
+}
 
-    let results = checksummer.compute_file_hashes()?;
+/// Verify integrity of a single file using MD5 hashes with progress reporting
+fn verify_file_integrity_with_progress<P: crate::checksum::ProgressReporter>(
+    desc: &crate::packets::FileDescriptionPacket,
+    file_path: &str,
+    progress: &P,
+) -> Result<bool, std::io::Error> {
+    // Use single-pass verification - read file once and compute both hashes
+    let checksummer = crate::checksum::FileCheckSummer::new(file_path.to_string(), 1024)?;
+
+    let results = checksummer.compute_file_hashes_with_progress(progress)?;
 
     // Verify file size matches
     if results.file_size != desc.file_length {

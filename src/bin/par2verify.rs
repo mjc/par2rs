@@ -57,9 +57,11 @@ fn main() -> Result<()> {
     let stats = analysis::calculate_par2_stats(&all_packets, total_recovery_blocks);
     analysis::print_summary_stats(&stats);
 
-    // Perform comprehensive verification
+    // Perform comprehensive verification with progress reporting
     println!("\nVerifying source files:\n");
-    let verification_results = verify::comprehensive_verify_files(all_packets);
+    let progress_reporter = par2rs::checksum::ConsoleProgressReporter::new();
+    let verification_results =
+        verify::comprehensive_verify_files_with_progress(all_packets, &progress_reporter);
 
     // Print detailed results
     verify::print_verification_results(&verification_results);
