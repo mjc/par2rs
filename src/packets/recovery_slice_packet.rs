@@ -185,8 +185,7 @@ impl RecoverySlicePacket {
         data.extend_from_slice(TYPE_OF_PACKET);
         data.extend_from_slice(&self.exponent.to_le_bytes());
         data.extend_from_slice(&self.recovery_data);
-        use md5::Digest;
-        let computed_md5: [u8; 16] = md5::Md5::digest(&data).into();
+        let computed_md5 = crate::checksum::compute_md5_bytes(&data);
         if computed_md5 != *self.md5.as_bytes() {
             println!("MD5 verification failed");
             return false;

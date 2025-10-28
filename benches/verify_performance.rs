@@ -34,7 +34,7 @@ fn compute_md5_old_way(file_path: &str) -> (par2rs::domain::Md5Hash, par2rs::dom
 
 // New approach: single pass
 fn compute_md5_new_way(file_path: &str) -> (par2rs::domain::Md5Hash, par2rs::domain::Md5Hash) {
-    use par2rs::file_checksummer::FileCheckSummer;
+    use par2rs::checksum::FileCheckSummer;
 
     let checksummer = FileCheckSummer::new(file_path.to_string(), 1024).unwrap();
     let results = checksummer.compute_file_hashes().unwrap();

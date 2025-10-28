@@ -77,7 +77,7 @@ impl RepairContext {
 
         // ULTRA-FAST filter: Check 16KB MD5 first (0.016GB vs 38GB = 2375x faster!)
         // For large datasets, this avoids hashing 38GB when files are intact
-        use crate::file_verification::{calculate_file_md5, calculate_file_md5_16k};
+        use crate::checksum::{calculate_file_md5, calculate_file_md5_16k};
         if let Ok(md5_16k) = calculate_file_md5_16k(file_path) {
             if md5_16k != file_info.md5_16k {
                 // 16KB doesn't match - file is definitely corrupted
@@ -417,7 +417,7 @@ impl RepairContext {
                 let file_path = self.base_path.join(&file_info.file_name);
 
                 // Verify the MD5 hash of the repaired file
-                match crate::file_verification::calculate_file_md5(&file_path) {
+                match crate::checksum::calculate_file_md5(&file_path) {
                     Ok(computed_hash) if computed_hash == file_info.md5_hash => {
                         verified_after_repair.push(repaired_file.clone());
                         self.reporter().report_verification(

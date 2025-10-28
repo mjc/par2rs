@@ -452,7 +452,7 @@ impl SliceProvider for ChunkedSliceProvider {
             false
         } else {
             // Compute CRC32 on padded buffer
-            let computed_crc = Crc32Value::new(crc32fast::hash(&buffer));
+            let computed_crc = crate::checksum::compute_crc32(&buffer);
             computed_crc == expected_crc
         };
 

@@ -3,11 +3,13 @@
 //! This module provides functionality for verifying individual files
 //! against their expected MD5 hashes.
 
+//! File verification utilities
+//!
+//! Functional-style file verification using centralized checksum.
+
 use crate::domain::{FileId, Md5Hash};
 use crate::Packet;
 use std::collections::HashMap;
-use std::fs;
-use std::io::Read;
 use std::path::Path;
 
 /// Format a filename for display, truncating if necessary
@@ -28,41 +30,13 @@ pub fn format_display_name(file_name: &str) -> String {
 }
 
 /// Calculate MD5 hash of the first 16KB of a file (fast integrity check)
-pub fn calculate_file_md5_16k(file_path: &Path) -> Result<Md5Hash, std::io::Error> {
-    use md5::{Digest, Md5};
-    let mut file = fs::File::open(file_path)?;
-    let mut hasher = Md5::new();
-    let mut buffer = [0; 16384]; // Read exactly 16KB
-
-    let bytes_read = file.read(&mut buffer)?;
-    hasher.update(&buffer[..bytes_read]);
-
-    Ok(Md5Hash::new(hasher.finalize().into()))
-}
+pub use crate::checksum::calculate_file_md5_16k;
 
 /// Calculate MD5 hash of a file
-pub fn calculate_file_md5(file_path: &Path) -> Result<Md5Hash, std::io::Error> {
-    use md5::{Digest, Md5};
-    use std::io::BufReader;
-
-    let file = fs::File::open(file_path)?;
-    let mut reader = BufReader::with_capacity(128 * 1024 * 1024, file); // 128MB buffer
-    let mut hasher = Md5::new();
-
-    // Use 128MB chunks to maximize hardware-accelerated MD5 throughput
-    // Modern CPUs with AES-NI can process multiple GB/s with large chunks
-    let mut buffer = vec![0u8; 128 * 1024 * 1024];
-
-    loop {
-        let bytes_read = reader.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..bytes_read]);
-    }
-
-    Ok(Md5Hash::new(hasher.finalize().into()))
-}
+///
+/// Functional implementation using chunked iteration for performance
+/// Calculate MD5 hash of a file (using functional style for efficiency)
+pub use crate::checksum::calculate_file_md5;
 
 /// Verify a single file by comparing its MD5 hash with the expected value
 pub fn verify_single_file(file_name: &str, expected_md5: &Md5Hash) -> bool {

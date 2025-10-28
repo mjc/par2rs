@@ -79,8 +79,13 @@ pub fn validate_slices_crc32<P: AsRef<Path>>(
         }
 
         // Validate CRC32 on full slice (with padding)
-        let slice_crc = crc32fast::hash(&slice_data[..slice_size]);
-        if slice_crc == expected_crc.as_u32() {
+        let slice_crc = if actual_size < slice_size {
+            crate::checksum::compute_crc32_padded(&slice_data[..actual_size], slice_size)
+        } else {
+            crate::checksum::compute_crc32(&slice_data[..slice_size])
+        };
+
+        if slice_crc == expected_crc {
             valid_slices.insert(slice_index);
         }
     }
@@ -151,17 +156,20 @@ pub fn validate_blocks_md5_crc32<P: AsRef<Path>>(
             continue;
         }
 
-        // Fast path: Check CRC32 first (100x faster than MD5)
-        let block_crc = crc32fast::hash(&buffer[..bytes_to_read]);
-        if block_crc != expected_crc.as_u32() {
+        // Compute both MD5 and CRC32 in one pass (more efficient)
+        let (block_md5, block_crc) = if bytes_to_read < block_size {
+            crate::checksum::compute_block_checksums_padded(&buffer[..bytes_to_read], block_size)
+        } else {
+            crate::checksum::compute_block_checksums(&buffer[..bytes_to_read])
+        };
+
+        // Fast path: Check CRC32 first (cheaper comparison)
+        if &block_crc != expected_crc {
             damaged_blocks.push(block_index as u32);
             continue;
         }
 
         // Slow path: Verify MD5 only if CRC32 matched
-        use md5::Digest;
-        let block_md5 = Md5Hash::new(md5::Md5::digest(&buffer[..bytes_to_read]).into());
-
         if &block_md5 == expected_md5 {
             available_blocks += 1;
         } else {
@@ -187,7 +195,7 @@ mod tests {
         temp_file.flush().unwrap();
 
         // Compute expected CRC32
-        let expected_crc = Crc32Value::new(crc32fast::hash(data));
+        let expected_crc = crate::checksum::compute_crc32(data);
 
         // Validate
         let valid_slices = validate_slices_crc32(
@@ -211,9 +219,7 @@ mod tests {
         temp_file.flush().unwrap();
 
         // Compute expected checksums
-        use md5::Digest;
-        let expected_md5 = Md5Hash::new(md5::Md5::digest(data).into());
-        let expected_crc = Crc32Value::new(crc32fast::hash(data));
+        let (expected_md5, expected_crc) = crate::checksum::compute_block_checksums(data);
 
         // Validate
         let (available, damaged) = validate_blocks_md5_crc32(

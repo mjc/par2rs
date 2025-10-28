@@ -39,7 +39,7 @@ impl<W: Write> Md5Writer<W> {
     pub fn new(inner: W) -> Self {
         Self {
             inner,
-            hasher: Md5::new(),
+            hasher: crate::checksum::new_md5_hasher(),
         }
     }
 
@@ -153,7 +153,7 @@ mod tests {
         let (_, hash) = writer.finalize();
 
         // Hash of "hello" only (what was actually written)
-        let mut expected_hello = Md5::new();
+        let mut expected_hello = crate::checksum::new_md5_hasher();
         expected_hello.update(b"hello");
         let expected: [u8; 16] = expected_hello.finalize().into();
         assert_eq!(hash, expected);
@@ -165,7 +165,7 @@ mod tests {
         let (data, hash) = writer.finalize();
 
         // MD5 of empty data
-        let expected: [u8; 16] = Md5::new().finalize().into();
+        let expected: [u8; 16] = crate::checksum::new_md5_hasher().finalize().into();
         assert_eq!(hash, expected);
         assert!(data.is_empty());
     }

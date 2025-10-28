@@ -1,5 +1,5 @@
+use crate::checksum::FileCheckSummer;
 use crate::domain::{Crc32Value, FileId, Md5Hash};
-use crate::file_checksummer::FileCheckSummer;
 use crate::validation;
 use crate::Packet;
 use rayon::prelude::*;
@@ -79,12 +79,9 @@ pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationRe
     };
 
     // Extract main packet information
-    let main_packet = packets.iter().find_map(|p| {
-        if let Packet::Main(main) = p {
-            Some(main)
-        } else {
-            None
-        }
+    let main_packet = packets.iter().find_map(|p| match p {
+        Packet::Main(main) => Some(main),
+        _ => None,
     });
 
     let block_size = main_packet.map(|m| m.slice_size).unwrap_or(0);
@@ -92,34 +89,27 @@ pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationRe
     // Count recovery blocks available
     results.recovery_blocks_available = packets
         .iter()
-        .filter_map(|p| {
-            if let Packet::RecoverySlice(_) = p {
-                Some(1)
-            } else {
-                None
-            }
-        })
-        .sum();
+        .filter(|p| matches!(p, Packet::RecoverySlice(_)))
+        .count();
 
     // Collect file descriptions (deduplicate by file_id since each volume contains copies)
-    let mut file_descriptions_map: HashMap<FileId, &crate::packets::FileDescriptionPacket> =
-        HashMap::default();
-    for packet in &packets {
-        if let Packet::FileDescription(fd) = packet {
-            file_descriptions_map.entry(fd.file_id).or_insert(fd);
-        }
-    }
+    let file_descriptions_map: HashMap<FileId, &crate::packets::FileDescriptionPacket> = packets
+        .iter()
+        .filter_map(|p| match p {
+            Packet::FileDescription(fd) => Some((fd.file_id, fd)),
+            _ => None,
+        })
+        .collect();
     let file_descriptions: Vec<_> = file_descriptions_map.values().copied().collect();
 
     // Collect slice checksum packets indexed by file ID
     let slice_checksums: HashMap<FileId, Vec<(Md5Hash, Crc32Value)>> = packets
         .iter()
-        .filter_map(|p| {
-            if let Packet::InputFileSliceChecksum(ifsc) = p {
+        .filter_map(|p| match p {
+            Packet::InputFileSliceChecksum(ifsc) => {
                 Some((ifsc.file_id, ifsc.slice_checksums.clone()))
-            } else {
-                None
             }
+            _ => None,
         })
         .collect();
 
@@ -334,14 +324,11 @@ fn verify_single_file(
 fn verify_file_integrity(
     desc: &crate::packets::FileDescriptionPacket,
     file_path: &str,
-) -> Result<bool, String> {
+) -> Result<bool, std::io::Error> {
     // Use single-pass verification - read file once and compute both hashes
-    let checksummer = FileCheckSummer::new(file_path.to_string(), 1024)
-        .map_err(|e| format!("Failed to open file {}: {}", file_path, e))?;
+    let checksummer = FileCheckSummer::new(file_path.to_string(), 1024)?;
 
-    let results = checksummer
-        .compute_file_hashes()
-        .map_err(|e| format!("Failed to compute hashes for {}: {}", file_path, e))?;
+    let results = checksummer.compute_file_hashes()?;
 
     // Verify file size matches
     if results.file_size != desc.file_length {

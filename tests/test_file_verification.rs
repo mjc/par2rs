@@ -3,10 +3,10 @@
 //! Tests for file verification functionality including MD5 hashing,
 //! file integrity checking, and display name formatting.
 
+use par2rs::checksum::{calculate_file_md5, calculate_file_md5_16k};
 use par2rs::domain::Md5Hash;
 use par2rs::file_verification::{
-    calculate_file_md5, calculate_file_md5_16k, format_display_name,
-    verify_files_and_collect_results_with_base_dir, verify_single_file,
+    format_display_name, verify_files_and_collect_results_with_base_dir, verify_single_file,
     verify_single_file_with_base_dir,
 };
 use std::fs::File;

@@ -48,8 +48,8 @@
 
 pub mod analysis;
 pub mod args;
+pub mod checksum;
 pub mod domain;
-pub mod file_checksummer;
 pub mod file_verification;
 pub mod md5_writer;
 pub mod packets;
