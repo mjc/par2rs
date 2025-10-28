@@ -194,14 +194,18 @@ pub fn comprehensive_verify_files_with_progress<P: crate::checksum::ProgressRepo
         .filter(|p| matches!(p, Packet::RecoverySlice(_)))
         .count();
 
-    // Extract file descriptions
-    let file_descriptions: Vec<_> = packets
+    // Extract file descriptions and deduplicate by file_id
+    // PAR2 files can contain duplicate FileDescription packets across multiple files
+    let file_descriptions_map: HashMap<FileId, &crate::packets::FileDescriptionPacket> = packets
         .iter()
         .filter_map(|p| match p {
-            Packet::FileDescription(fd) => Some(fd),
+            Packet::FileDescription(fd) => Some((fd.file_id, fd)),
             _ => None,
         })
         .collect();
+    let file_descriptions: Vec<_> = file_descriptions_map.values().copied().collect();
+
+    println!("Found {} files to verify", file_descriptions.len());
 
     // Extract slice checksums and group by file_id
     // Extract slice checksums and group by file_id
