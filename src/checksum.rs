@@ -229,7 +229,7 @@ pub fn calculate_file_md5(file_path: &std::path::Path) -> std::io::Result<Md5Has
 use std::fs::File;
 use std::io::{BufReader, Result as IoResult, Write};
 
-const BUFFER_SIZE: usize = 1024 * 1024; // 1MB read buffer
+const BUFFER_SIZE: usize = 1024 * 1024; // 1MB read buffer - best overall performance
 const HASH_16K_THRESHOLD: u64 = 16384;
 
 /// Progress reporting trait for file scanning operations
@@ -384,32 +384,31 @@ impl HashAccumulator {
     }
 }
 
-/// Iterator that reads chunks from a file
+/// Direct file reader that eliminates Vec allocations and double-buffering
 struct ChunkReader {
-    reader: BufReader<File>,
+    file: File,
     buffer: Vec<u8>,
 }
 
 impl ChunkReader {
     fn new(file: File) -> Self {
         Self {
-            reader: BufReader::with_capacity(BUFFER_SIZE, file),
+            file,
             buffer: vec![0u8; BUFFER_SIZE],
         }
     }
-}
-
-impl Iterator for ChunkReader {
-    type Item = IoResult<Vec<u8>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.reader.read(&mut self.buffer) {
-            Ok(0) => None,
-            Ok(n) => Some(Ok(self.buffer[..n].to_vec())),
-            Err(e) => Some(Err(e)),
+    
+    /// Read next chunk directly into internal buffer, returning slice
+    fn read_next(&mut self) -> IoResult<Option<&[u8]>> {
+        match self.file.read(&mut self.buffer) {
+            Ok(0) => Ok(None),
+            Ok(n) => Ok(Some(&self.buffer[..n])),
+            Err(e) => Err(e),
         }
     }
 }
+
+// Remove Iterator implementation - we'll use read_next() directly
 
 impl FileCheckSummer {
     /// Create a new checksummer for a file
@@ -433,7 +432,7 @@ impl FileCheckSummer {
         progress: &P,
     ) -> IoResult<ChecksumResults> {
         let file = File::open(&self.file_path)?;
-        let chunks = ChunkReader::new(file);
+        let mut chunks = ChunkReader::new(file);
 
         let file_name = std::path::Path::new(&self.file_path)
             .file_name()
@@ -448,21 +447,25 @@ impl FileCheckSummer {
         let mut last_reported_bytes = 0u64;
         let report_interval = std::cmp::max(1024 * 1024, self.file_size / 1000); // Report every 1MB or 0.1% of file, whichever is larger
 
-        // Process chunks with progress reporting
-        for chunk_result in chunks {
-            let data = chunk_result?;
-            bytes_processed += data.len() as u64;
+        // Process chunks with progress reporting using direct buffer reuse
+        loop {
+            match chunks.read_next()? {
+                None => break, // EOF
+                Some(data) => {
+                    bytes_processed += data.len() as u64;
 
-            // Report progress more frequently
-            if should_report_progress
-                && (bytes_processed - last_reported_bytes >= report_interval
-                    || bytes_processed == self.file_size)
-            {
-                progress.report_scanning_progress(file_name, bytes_processed, self.file_size);
-                last_reported_bytes = bytes_processed;
+                    // Report progress more frequently
+                    if should_report_progress
+                        && (bytes_processed - last_reported_bytes >= report_interval
+                            || bytes_processed == self.file_size)
+                    {
+                        progress.report_scanning_progress(file_name, bytes_processed, self.file_size);
+                        last_reported_bytes = bytes_processed;
+                    }
+
+                    accumulator = accumulator.update(data);
+                }
             }
-
-            accumulator = accumulator.update(&data);
         }
 
         // Clear progress line when done
