@@ -431,6 +431,18 @@ impl FileCheckSummer {
         &self,
         progress: &P,
     ) -> IoResult<ChecksumResults> {
+        // Temporarily disable memory mapping to test regular I/O performance
+        // For large files, try memory mapping to eliminate syscall overhead
+        // But not TOO large files where mmap might cause excessive page faults
+        if false && self.file_size > 50 * 1024 * 1024 && self.file_size < 10 * 1024 * 1024 * 1024 { // 50MB - 10GB threshold
+            eprintln!("DEBUG: Using memory mapping for {}MB file", self.file_size / (1024 * 1024));
+            if let Ok(result) = self.compute_file_hashes_mmap(progress) {
+                return Ok(result);
+            }
+            eprintln!("DEBUG: Memory mapping failed, falling back to regular I/O");
+            // Fall back to regular I/O if mmap fails
+        }
+        
         let file = File::open(&self.file_path)?;
         let mut chunks = ChunkReader::new(file);
 
@@ -594,6 +606,100 @@ impl FileCheckSummer {
     /// Get the file size
     pub fn file_size(&self) -> u64 {
         self.file_size
+    }
+
+    /// Compute file hashes using memory mapping for large files
+    #[cfg(unix)]
+    fn compute_file_hashes_mmap<P: ProgressReporter>(
+        &self,
+        progress: &P,
+    ) -> IoResult<ChecksumResults> {
+        use std::os::unix::io::AsRawFd;
+        use std::io::{Error as IoError, ErrorKind};
+        use std::fs::File;
+        
+        let file = File::open(&self.file_path)?;
+        let fd = file.as_raw_fd();
+        
+        // Map the entire file into memory
+        let mapped_len = self.file_size as usize;
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                mapped_len,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE,
+                fd,
+                0,
+            )
+        };
+        
+        if ptr == libc::MAP_FAILED {
+            return Err(IoError::new(ErrorKind::Other, "mmap failed"));
+        }
+        
+        let result = {
+            let mapped_data = unsafe { std::slice::from_raw_parts(ptr as *const u8, mapped_len) };
+            self.compute_hashes_from_slice(mapped_data, progress)
+        };
+        
+        // Unmap the memory
+        unsafe {
+            libc::munmap(ptr, mapped_len);
+        }
+        
+        result
+    }
+
+    /// Non-Unix fallback (always fails to trigger regular I/O)
+    #[cfg(not(unix))]
+    fn compute_file_hashes_mmap<P: ProgressReporter>(
+        &self,
+        _progress: &P,
+    ) -> IoResult<ChecksumResults> {
+        Err(IoError::new(std::io::ErrorKind::Unsupported, "mmap not available"))
+    }
+
+    /// Compute hashes from a memory-mapped slice with progress reporting
+    fn compute_hashes_from_slice<P: ProgressReporter>(
+        &self,
+        data: &[u8],
+        progress: &P,
+    ) -> IoResult<ChecksumResults> {
+        let file_name = std::path::Path::new(&self.file_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&self.file_path);
+
+        let should_report_progress = self.file_size > 1024 * 1024; // Only report for files > 1MB
+
+        let mut accumulator = HashAccumulator::new();
+        let mut bytes_processed = 0u64;
+        
+        let chunk_size = 1024 * 1024; // 1MB chunks for progress reporting
+        let progress_interval = std::cmp::max(1024 * 1024, self.file_size / 1000); // Update every 0.1%
+
+        // Process the data in chunks for progress reporting
+        for chunk in data.chunks(chunk_size) {
+            accumulator = accumulator.update(chunk);
+            bytes_processed += chunk.len() as u64;
+            
+            if should_report_progress && bytes_processed % progress_interval == 0 {
+                progress.report_scanning_progress(file_name, bytes_processed, self.file_size);
+            }
+        }
+
+        if should_report_progress {
+            progress.clear_progress_line();
+        }
+
+        let (hash_16k, hash_full) = accumulator.finalize(self.file_size);
+
+        Ok(ChecksumResults {
+            hash_16k,
+            hash_full,
+            file_size: self.file_size,
+        })
     }
 }
 
