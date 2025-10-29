@@ -397,7 +397,7 @@ impl ChunkReader {
             buffer: vec![0u8; BUFFER_SIZE],
         }
     }
-    
+
     /// Read next chunk directly into internal buffer, returning slice
     fn read_next(&mut self) -> IoResult<Option<&[u8]>> {
         match self.file.read(&mut self.buffer) {
@@ -459,7 +459,11 @@ impl FileCheckSummer {
                         && (bytes_processed - last_reported_bytes >= report_interval
                             || bytes_processed == self.file_size)
                     {
-                        progress.report_scanning_progress(file_name, bytes_processed, self.file_size);
+                        progress.report_scanning_progress(
+                            file_name,
+                            bytes_processed,
+                            self.file_size,
+                        );
                         last_reported_bytes = bytes_processed;
                     }
 
