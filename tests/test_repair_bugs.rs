@@ -91,11 +91,11 @@ impl TestEnv {
     }
 
     fn verify_md5(&self) -> bool {
-        use md5::Digest;
+        use md_5::Digest;
         let context = self.load_context();
         let file_info = &context.recovery_set.files[0];
         let contents = self.read_file();
-        let computed: [u8; 16] = md5::Md5::digest(&contents).into();
+        let computed: [u8; 16] = md_5::Md5::digest(&contents).into();
         computed == file_info.md5_hash
     }
 }

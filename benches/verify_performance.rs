@@ -5,7 +5,7 @@ use std::io::Write;
 
 // Old approach: compute MD5 twice (16k + full)
 fn compute_md5_old_way(file_path: &str) -> (par2rs::domain::Md5Hash, par2rs::domain::Md5Hash) {
-    use md5::{Digest, Md5};
+    use md_5::{Digest, Md5};
     use std::io::Read;
 
     // First pass: 16k MD5

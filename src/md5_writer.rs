@@ -4,7 +4,7 @@
 //! as data is written, eliminating the need to re-read files for verification.
 //! The MD5 computation happens inline with writes and does not block I/O.
 
-use md5::{Digest, Md5};
+use md_5::{Digest, Md5};
 use std::io::{self, Write};
 
 /// A writer that computes MD5 hash of all data written through it.
