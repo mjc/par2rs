@@ -6,7 +6,7 @@ use std::time::Instant;
 fn main() {
     // Create a test file of various sizes
     let sizes = vec![
-        (1 * 1024 * 1024, "1MB"),
+        (1024 * 1024, "1MB"),
         (10 * 1024 * 1024, "10MB"),
         (100 * 1024 * 1024, "100MB"),
         (500 * 1024 * 1024, "500MB"),

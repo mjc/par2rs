@@ -43,7 +43,7 @@ impl VerificationConfig {
 }
 
 /// File verification status
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileStatus {
     Complete, // File is perfect match
     Renamed,  // File exists but has wrong name

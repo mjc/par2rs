@@ -62,7 +62,7 @@ fn bench_md5_16k(c: &mut Criterion) {
     let mut group = c.benchmark_group("md5_16k_fast_check");
 
     let sizes = [
-        (1 * 1024 * 1024, "1MB"),
+        (1024 * 1024, "1MB"),
         (100 * 1024 * 1024, "100MB"),
         (1000 * 1024 * 1024, "1GB"),
     ];
