@@ -31,7 +31,8 @@ fn test_parallel_sequential_equivalence() {
 
         // Test with parallel mode
         let parallel_config = VerificationConfig {
-            threads: 2, // Use 2 threads for deterministic testing
+            compute_threads: 2, // Use 2 threads for deterministic testing
+            io_threads: 1,      // Conservative I/O threading
             parallel: true,
         };
         let parallel_results =
@@ -39,7 +40,8 @@ fn test_parallel_sequential_equivalence() {
 
         // Test with sequential mode
         let sequential_config = VerificationConfig {
-            threads: 0, // Threads don't matter in sequential mode
+            compute_threads: 0, // Threads don't matter in sequential mode
+            io_threads: 0,
             parallel: false,
         };
         let sequential_results =
@@ -189,7 +191,8 @@ fn test_thread_count_consistency() {
         }
 
         let config = VerificationConfig {
-            threads: *threads,
+            compute_threads: *threads,
+            io_threads: 1, // Conservative I/O threading for tests
             parallel: true,
         };
         let result = comprehensive_verify_files_with_config(packets, &config);

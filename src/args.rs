@@ -37,7 +37,7 @@ pub fn parse_args() -> clap::ArgMatches {
         )
         .arg(
             Arg::new("threads")
-                .help("Number of threads for parallel verification (0 = auto)")
+                .help("Number of CPU threads for computation (0 = auto-detect)")
                 .short('t')
                 .long("threads")
                 .value_name("N")
@@ -45,7 +45,7 @@ pub fn parse_args() -> clap::ArgMatches {
         )
         .arg(
             Arg::new("no-parallel")
-                .help("Disable parallel file verification")
+                .help("Disable all parallel processing")
                 .long("no-parallel")
                 .action(clap::ArgAction::SetTrue),
         )
@@ -100,7 +100,7 @@ pub fn parse_repair_args() -> clap::ArgMatches {
         )
         .arg(
             Arg::new("threads")
-                .help("Number of threads for parallel verification (0 = auto)")
+                .help("Number of CPU threads for computation (0 = auto-detect)")
                 .short('t')
                 .long("threads")
                 .value_name("N")
@@ -108,7 +108,7 @@ pub fn parse_repair_args() -> clap::ArgMatches {
         )
         .arg(
             Arg::new("no-parallel")
-                .help("Disable parallel file verification")
+                .help("Disable all parallel processing")
                 .long("no-parallel")
                 .action(clap::ArgAction::SetTrue),
         )

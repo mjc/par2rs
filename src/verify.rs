@@ -8,19 +8,19 @@ use std::path::Path;
 #[cfg(test)]
 use crate::checksum::FileCheckSummer;
 
-/// Configuration for file verification
+/// Configuration for file verification operations
 #[derive(Debug, Clone)]
 pub struct VerificationConfig {
-    /// Number of threads to use (0 = auto-detect)
+    /// Number of threads for computation (0 = auto-detect)
     pub threads: usize,
-    /// Whether to use parallel verification
+    /// Whether to use parallel verification (false = single-threaded everything)
     pub parallel: bool,
 }
 
 impl Default for VerificationConfig {
     fn default() -> Self {
         Self {
-            threads: 0, // Auto-detect
+            threads: 0,        // Auto-detect CPU cores
             parallel: true,
         }
     }
@@ -36,9 +36,19 @@ impl VerificationConfig {
             .get_one::<String>("threads")
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
+            
         let parallel = !matches.get_flag("no-parallel");
 
         Self::new(threads, parallel)
+    }
+
+    /// Get effective thread count (auto-detect if 0)
+    pub fn effective_threads(&self) -> usize {
+        if self.threads == 0 {
+            std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+        } else {
+            self.threads
+        }
     }
 }
 
@@ -100,18 +110,22 @@ pub fn comprehensive_verify_files_with_config(
     packets: Vec<crate::Packet>,
     config: &VerificationConfig,
 ) -> VerificationResults {
-    // Configure rayon thread pool if specified
-    if config.threads > 0 {
+    // Configure rayon thread pool for compute-intensive operations
+    let threads = config.effective_threads();
+    if threads > 0 {
         rayon::ThreadPoolBuilder::new()
-            .num_threads(config.threads)
+            .num_threads(threads)
             .build_global()
             .unwrap_or_else(|_| {
                 eprintln!(
                     "Warning: Could not set thread count to {}, using default",
-                    config.threads
+                    threads
                 );
             });
     }
+
+    // TODO: I/O threads are not yet implemented - all operations use the compute thread pool
+    // See docs/SIMULTANEOUS_HASHING_OPTIMIZATION.md for the planned I/O threading approach
 
     comprehensive_verify_files_impl(packets, config.parallel)
 }
