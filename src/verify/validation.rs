@@ -60,6 +60,7 @@ pub fn validate_slices_crc32<P: AsRef<Path>>(
         slice_size,
         file_size,
         &crate::repair::SilentReporter,
+        false, // Not in parallel mode (single file validation)
     )
 }
 
@@ -74,6 +75,7 @@ pub fn validate_slices_crc32<P: AsRef<Path>>(
 /// * `slice_size` - Size of each slice in bytes
 /// * `file_size` - Total size of the file
 /// * `progress` - Progress reporter for large file scanning
+/// * `parallel_mode` - Whether this is running in parallel mode (affects update frequency)
 ///
 /// # Returns
 /// A `HashSet` containing the indices of all valid slices
@@ -86,6 +88,7 @@ pub fn validate_slices_crc32_with_progress<P: AsRef<Path>>(
     slice_size: usize,
     file_size: u64,
     progress: &dyn crate::repair::ProgressReporter,
+    parallel_mode: bool,
 ) -> io::Result<HashSet<usize>> {
     let file = File::open(&file_path)?;
     let mut reader = BufReader::with_capacity(BUFFER_CAPACITY, file);
@@ -105,11 +108,13 @@ pub fn validate_slices_crc32_with_progress<P: AsRef<Path>>(
         .unwrap_or("unknown");
 
     // Progress reporting for large files
+    // Parallel mode: update every 5% (less noisy with multiple threads)
+    // Single-thread mode: update every 0.1% (more frequent feedback)
     let should_report_progress = file_size > 10 * 1024 * 1024; // Report for files > 10MB
-    let progress_interval = if should_report_progress {
-        std::cmp::max(1, slice_checksums.len() / 100) // Update every 1%
+    let progress_interval = if parallel_mode {
+        std::cmp::max(1, slice_checksums.len() / 20) // 5% intervals
     } else {
-        0
+        std::cmp::max(1, slice_checksums.len() / 1000) // 0.1% intervals
     };
 
     let mut bytes_processed = 0u64;
@@ -130,8 +135,8 @@ pub fn validate_slices_crc32_with_progress<P: AsRef<Path>>(
 
         bytes_processed += actual_size as u64;
 
-        // Report progress periodically
-        if should_report_progress && progress_interval > 0 && slice_index % progress_interval == 0 {
+        // Report progress at specified intervals
+        if should_report_progress && slice_index % progress_interval == 0 {
             progress.report_scanning_progress(file_name, bytes_processed, file_size);
         }
 

@@ -44,18 +44,37 @@ pub fn comprehensive_verify_files_with_config_and_reporter<R: VerificationReport
     config: &VerificationConfig,
     reporter: &R,
 ) -> VerificationResults {
-    // Configure rayon thread pool for compute-intensive operations
-    let threads = config.effective_threads();
-    if threads > 0 {
-        rayon::ThreadPoolBuilder::new()
+    // Configure rayon thread pool for parallel mode
+    // MUST do this BEFORE any rayon operations to prevent using default pool
+    if config.parallel {
+        let threads = config.effective_threads();
+
+        // Try to set global pool - this MUST happen before first rayon use
+        match rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build_global()
-            .unwrap_or_else(|_| {
+        {
+            Ok(_) => {
+                // Successfully set global pool
+            }
+            Err(e) => {
                 eprintln!(
-                    "Warning: Could not set thread count to {}, using default",
-                    threads
+                    "Warning: Could not set global thread pool to {} threads: {}",
+                    threads, e
                 );
-            });
+                eprintln!("This likely means Rayon was already initialized. Using scoped pool...");
+
+                // Fall back to using a scoped pool for this operation
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .expect("Failed to create scoped thread pool");
+
+                return pool.install(|| {
+                    comprehensive_verify_files_impl(packets, config.parallel, reporter)
+                });
+            }
+        }
     }
 
     // All operations use the configured thread pool for parallel processing
