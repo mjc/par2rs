@@ -3,9 +3,66 @@ use crate::validation;
 use crate::Packet;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
+use std::fmt;
 
 #[cfg(test)]
 use crate::checksum::FileCheckSummer;
+
+/// Constants for verification operations
+const MIN_BLOCKS_FOR_SUMMARY: usize = 20; // Show detailed block list if <= this many blocks
+const BLOCK_SUMMARY_HEAD_TAIL: usize = 10; // Show first/last N blocks for large damaged lists
+const DEFAULT_BUFFER_SIZE: usize = 1024; // Default buffer size for operations
+
+/// Custom error types for file verification operations
+#[derive(Debug, Clone)]
+pub enum VerificationError {
+    /// I/O error when accessing files
+    Io(String),
+    /// Error calculating checksums
+    ChecksumCalculation(String),
+    /// Invalid file metadata
+    InvalidMetadata(String),
+    /// Corrupted or invalid file data
+    CorruptedData(String),
+}
+
+impl fmt::Display for VerificationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VerificationError::Io(msg) => write!(f, "I/O error: {}", msg),
+            VerificationError::ChecksumCalculation(msg) => {
+                write!(f, "Checksum calculation error: {}", msg)
+            }
+            VerificationError::InvalidMetadata(msg) => write!(f, "Invalid metadata: {}", msg),
+            VerificationError::CorruptedData(msg) => write!(f, "Corrupted data: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for VerificationError {}
+
+impl From<std::io::Error> for VerificationError {
+    fn from(error: std::io::Error) -> Self {
+        VerificationError::Io(error.to_string())
+    }
+}
+
+/// Type alias for verification results
+pub type VerificationResult<T> = Result<T, VerificationError>;
+
+/// Utility functions for file name handling
+pub mod file_utils {
+    use crate::packets::FileDescriptionPacket;
+
+    /// Extract clean file name from FileDescription packet
+    ///
+    /// Removes null terminators and converts to UTF-8 string
+    pub fn extract_file_name(file_desc: &FileDescriptionPacket) -> String {
+        String::from_utf8_lossy(&file_desc.file_name)
+            .trim_end_matches('\0')
+            .to_string()
+    }
+}
 
 /// Configuration for file verification operations
 #[derive(Debug, Clone)]
@@ -76,6 +133,17 @@ impl FileStatus {
     }
 }
 
+impl fmt::Display for FileStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FileStatus::Present => write!(f, "present"),
+            FileStatus::Renamed => write!(f, "renamed"),
+            FileStatus::Corrupted => write!(f, "corrupted"),
+            FileStatus::Missing => write!(f, "missing"),
+        }
+    }
+}
+
 /// Block verification result
 #[derive(Debug, Clone)]
 pub struct BlockVerificationResult {
@@ -101,6 +169,75 @@ pub struct VerificationResults {
     pub recovery_blocks_available: usize,
     pub repair_possible: bool,
     pub blocks_needed_for_repair: usize,
+}
+
+impl fmt::Display for VerificationResults {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Verification Results:")?;
+        writeln!(f, "====================")?;
+
+        if self.present_file_count > 0 {
+            writeln!(f, "{} file(s) are ok.", self.present_file_count)?;
+        }
+        if self.renamed_file_count > 0 {
+            writeln!(
+                f,
+                "{} file(s) have the wrong name.",
+                self.renamed_file_count
+            )?;
+        }
+        if self.corrupted_file_count > 0 {
+            writeln!(
+                f,
+                "{} file(s) exist but are damaged.",
+                self.corrupted_file_count
+            )?;
+        }
+        if self.missing_file_count > 0 {
+            writeln!(f, "{} file(s) are missing.", self.missing_file_count)?;
+        }
+
+        writeln!(
+            f,
+            "You have {} out of {} data blocks available.",
+            self.available_block_count, self.total_block_count
+        )?;
+
+        if self.recovery_blocks_available > 0 {
+            writeln!(
+                f,
+                "You have {} recovery blocks available.",
+                self.recovery_blocks_available
+            )?;
+        }
+
+        if self.missing_block_count == 0 {
+            writeln!(f, "All files are correct, repair is not required.")?;
+        } else if self.repair_possible {
+            writeln!(f, "Repair is possible.")?;
+            if self.recovery_blocks_available > self.missing_block_count {
+                writeln!(
+                    f,
+                    "You have an excess of {} recovery blocks.",
+                    self.recovery_blocks_available - self.missing_block_count
+                )?;
+            }
+            writeln!(
+                f,
+                "{} recovery blocks will be used to repair.",
+                self.missing_block_count
+            )?;
+        } else {
+            writeln!(f, "Repair is not possible.")?;
+            writeln!(
+                f,
+                "You need {} more recovery blocks to be able to repair.",
+                self.missing_block_count - self.recovery_blocks_available
+            )?;
+        }
+
+        Ok(())
+    }
 }
 
 /// Individual file verification result  
@@ -199,9 +336,7 @@ impl FileVerifier {
         &self,
         file_desc: &crate::packets::FileDescriptionPacket,
     ) -> FileStatus {
-        let file_name = String::from_utf8_lossy(&file_desc.file_name)
-            .trim_end_matches('\0')
-            .to_string();
+        let file_name = file_utils::extract_file_name(file_desc);
 
         self.determine_file_status(
             &file_name,
@@ -220,10 +355,8 @@ impl FileVerifier {
         &self,
         file_desc: &crate::packets::FileDescriptionPacket,
         progress: &P,
-    ) -> Result<FileStatus, std::io::Error> {
-        let file_name = String::from_utf8_lossy(&file_desc.file_name)
-            .trim_end_matches('\0')
-            .to_string();
+    ) -> VerificationResult<FileStatus> {
+        let file_name = file_utils::extract_file_name(file_desc);
 
         let file_path = self.base_path.join(&file_name);
 
@@ -233,10 +366,15 @@ impl FileVerifier {
         }
 
         // Use FileCheckSummer for comprehensive verification with progress
-        let checksummer =
-            crate::checksum::FileCheckSummer::new(file_path.to_string_lossy().to_string(), 1024)?;
+        let checksummer = crate::checksum::FileCheckSummer::new(
+            file_path.to_string_lossy().to_string(),
+            DEFAULT_BUFFER_SIZE,
+        )
+        .map_err(|e| VerificationError::ChecksumCalculation(e.to_string()))?;
 
-        let results = checksummer.compute_file_hashes_with_progress(progress)?;
+        let results = checksummer
+            .compute_file_hashes_with_progress(progress)
+            .map_err(|e| VerificationError::ChecksumCalculation(e.to_string()))?;
 
         // Verify file size matches
         if results.file_size != file_desc.file_length {
@@ -256,16 +394,17 @@ impl FileVerifier {
     }
 }
 
-/// Comprehensive verification function with configuration support
+/// Comprehensive verification function with configuration and reporter support
 ///
 /// This function performs detailed verification similar to par2cmdline:
 /// 1. Verifies files at the whole-file level using MD5 hashes (SINGLE PASS)
 /// 2. For corrupted files, performs block-level verification using slice checksums
 /// 3. Reports which blocks are broken and calculates repair requirements
 /// 4. Determines if repair is possible with available recovery blocks
-pub fn comprehensive_verify_files_with_config(
+pub fn comprehensive_verify_files_with_config_and_reporter<R: reporting::VerificationReporter>(
     packets: Vec<crate::Packet>,
     config: &VerificationConfig,
+    reporter: &R,
 ) -> VerificationResults {
     // Configure rayon thread pool for compute-intensive operations
     let threads = config.effective_threads();
@@ -282,8 +421,7 @@ pub fn comprehensive_verify_files_with_config(
     }
 
     // All operations use the configured thread pool for parallel processing
-
-    comprehensive_verify_files_impl(packets, config.parallel)
+    comprehensive_verify_files_impl(packets, config.parallel, reporter)
 }
 
 /// Comprehensive verification function based on par2cmdline approach
@@ -294,18 +432,29 @@ pub fn comprehensive_verify_files_with_config(
 /// 3. Reports which blocks are broken and calculates repair requirements
 /// 4. Determines if repair is possible with available recovery blocks
 pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationResults {
-    comprehensive_verify_files_with_config(packets, &VerificationConfig::default())
+    let config = VerificationConfig::default();
+    let reporter = reporting::ConsoleReporter::new();
+    comprehensive_verify_files_with_config_and_reporter(packets, &config, &reporter)
+}
+
+/// Comprehensive verification function with configuration support
+///
+/// Uses console reporter by default. For custom reporting, use the full function.
+pub fn comprehensive_verify_files_with_config(
+    packets: Vec<crate::Packet>,
+    config: &VerificationConfig,
+) -> VerificationResults {
+    let reporter = reporting::ConsoleReporter::new();
+    comprehensive_verify_files_with_config_and_reporter(packets, config, &reporter)
 }
 
 /// Unified verification implementation that supports both parallel and sequential modes
-fn comprehensive_verify_files_impl(
+fn comprehensive_verify_files_impl<R: reporting::VerificationReporter>(
     packets: Vec<crate::Packet>,
     parallel: bool,
+    reporter: &R,
 ) -> VerificationResults {
-    println!(
-        "Starting comprehensive verification ({})...",
-        if parallel { "parallel" } else { "sequential" }
-    );
+    reporter.report_verification_start(parallel);
 
     let mut results = VerificationResults {
         files: Vec::new(),
@@ -357,7 +506,7 @@ fn comprehensive_verify_files_impl(
         })
         .collect();
 
-    println!("Found {} files to verify", file_descriptions.len());
+    reporter.report_files_found(file_descriptions.len());
 
     // Verify files - use parallel or sequential based on config
     let file_results: Vec<_> = if parallel {
@@ -370,6 +519,7 @@ fn comprehensive_verify_files_impl(
                     &slice_checksums,
                     block_size,
                     Some(&progress_reporter),
+                    reporter,
                 )
             })
             .collect()
@@ -382,6 +532,7 @@ fn comprehensive_verify_files_impl(
                     &slice_checksums,
                     block_size,
                     None::<&crate::checksum::SilentProgressReporter>,
+                    reporter,
                 )
             })
             .collect()
@@ -436,17 +587,19 @@ struct SingleFileVerificationResult {
 ///
 /// This unified function consolidates the previous separate implementations
 /// for progress and non-progress verification into a single, efficient function.
-fn verify_single_file_impl<P: crate::checksum::ProgressReporter>(
+fn verify_single_file_impl<
+    P: crate::checksum::ProgressReporter,
+    R: reporting::VerificationReporter,
+>(
     file_desc: &crate::packets::FileDescriptionPacket,
     slice_checksums: &HashMap<FileId, Vec<(Md5Hash, Crc32Value)>>,
     block_size: u64,
     progress: Option<&P>,
+    reporter: &R,
 ) -> SingleFileVerificationResult {
-    let file_name = String::from_utf8_lossy(&file_desc.file_name)
-        .trim_end_matches('\0')
-        .to_string();
+    let file_name = file_utils::extract_file_name(file_desc);
 
-    println!("Verifying: \"{}\"", file_name);
+    reporter.report_verifying_file(&file_name);
 
     let mut file_result = FileVerificationResult {
         file_name: file_name.clone(),
@@ -482,7 +635,7 @@ fn verify_single_file_impl<P: crate::checksum::ProgressReporter>(
 
     match file_status {
         FileStatus::Present => {
-            println!("Target: \"{}\" - found.", file_name);
+            reporter.report_file_status(&file_name, FileStatus::Present);
             file_result.status = FileStatus::Present;
             file_result.blocks_available = total_blocks;
 
@@ -507,7 +660,7 @@ fn verify_single_file_impl<P: crate::checksum::ProgressReporter>(
             }
         }
         FileStatus::Missing => {
-            println!("Target: \"{}\" - missing.", file_name);
+            reporter.report_file_status(&file_name, FileStatus::Missing);
             file_result.status = FileStatus::Missing;
 
             // All blocks are missing for this file
@@ -531,13 +684,17 @@ fn verify_single_file_impl<P: crate::checksum::ProgressReporter>(
             }
         }
         FileStatus::Corrupted | FileStatus::Renamed => {
-            println!("Target: \"{}\" - corrupted.", file_name);
+            reporter.report_file_status(&file_name, FileStatus::Corrupted);
             file_result.status = FileStatus::Corrupted;
 
             // Perform block-level verification if we have slice checksums
             if let Some(checksums) = slice_checksums.get(&file_desc.file_id) {
                 let (available_blocks, damaged_block_numbers) =
-                    verify_blocks_in_file(&file_name, checksums, block_size as usize);
+                    validation::validate_blocks_md5_crc32(
+                        &file_name,
+                        checksums,
+                        block_size as usize,
+                    );
 
                 file_result.blocks_available = available_blocks;
                 file_result.damaged_blocks = damaged_block_numbers.clone();
@@ -556,11 +713,7 @@ fn verify_single_file_impl<P: crate::checksum::ProgressReporter>(
                 }
 
                 if !damaged_block_numbers.is_empty() {
-                    println!(
-                        "  {} of {} blocks are damaged",
-                        damaged_block_numbers.len(),
-                        checksums.len()
-                    );
+                    reporter.report_damaged_blocks(&file_name, &damaged_block_numbers);
                 }
 
                 SingleFileVerificationResult {
@@ -599,105 +752,135 @@ fn verify_single_file_impl<P: crate::checksum::ProgressReporter>(
     }
 }
 
-/// Verify individual blocks within a file using slice checksums
-fn verify_blocks_in_file(
-    file_path: &str,
-    slice_checksums: &[(Md5Hash, Crc32Value)],
-    block_size: usize,
-) -> (usize, Vec<u32>) {
-    // Use shared validation module for efficient sequential I/O
-    validation::validate_blocks_md5_crc32(file_path, slice_checksums, block_size)
-}
+/// Progress and output reporting for verification operations
+pub mod reporting {
+    use super::{FileStatus, VerificationResults, BLOCK_SUMMARY_HEAD_TAIL, MIN_BLOCKS_FOR_SUMMARY};
 
-/// Print verification results in par2cmdline style
-pub fn print_verification_results(results: &VerificationResults) {
-    println!("\nVerification Results:");
-    println!("====================");
+    /// Trait for reporting verification progress and results
+    ///
+    /// Implementations can provide different output formats (console, JSON, silent, etc.)
+    pub trait VerificationReporter: Send + Sync {
+        /// Report starting verification with configuration
+        fn report_verification_start(&self, parallel: bool);
 
-    // Print file summary
-    if results.present_file_count > 0 {
-        println!("{} file(s) are ok.", results.present_file_count);
-    }
-    if results.renamed_file_count > 0 {
-        println!(
-            "{} file(s) have the wrong name.",
-            results.renamed_file_count
-        );
-    }
-    if results.corrupted_file_count > 0 {
-        println!(
-            "{} file(s) exist but are damaged.",
-            results.corrupted_file_count
-        );
-    }
-    if results.missing_file_count > 0 {
-        println!("{} file(s) are missing.", results.missing_file_count);
+        /// Report the number of files found to verify
+        fn report_files_found(&self, count: usize);
+
+        /// Report verifying a specific file
+        fn report_verifying_file(&self, file_name: &str);
+
+        /// Report the determined status of a file
+        fn report_file_status(&self, file_name: &str, status: FileStatus);
+
+        /// Report detailed block damage information for a file
+        fn report_damaged_blocks(&self, file_name: &str, damaged_blocks: &[u32]);
+
+        /// Report final verification results summary
+        fn report_verification_results(&self, results: &VerificationResults);
     }
 
-    // Print block summary
-    println!(
-        "You have {} out of {} data blocks available.",
-        results.available_block_count, results.total_block_count
-    );
+    /// Console implementation of VerificationReporter (par2cmdline style)
+    #[derive(Default)]
+    pub struct ConsoleReporter;
 
-    if results.recovery_blocks_available > 0 {
-        println!(
-            "You have {} recovery blocks available.",
-            results.recovery_blocks_available
-        );
+    impl ConsoleReporter {
+        pub fn new() -> Self {
+            Self
+        }
     }
 
-    // Print repair status
-    if results.missing_block_count == 0 {
-        println!("All files are correct, repair is not required.");
-    } else if results.repair_possible {
-        println!("Repair is possible.");
-
-        if results.recovery_blocks_available > results.missing_block_count {
+    impl VerificationReporter for ConsoleReporter {
+        fn report_verification_start(&self, parallel: bool) {
             println!(
-                "You have an excess of {} recovery blocks.",
-                results.recovery_blocks_available - results.missing_block_count
+                "Starting comprehensive verification ({})...",
+                if parallel { "parallel" } else { "sequential" }
             );
         }
 
-        println!(
-            "{} recovery blocks will be used to repair.",
-            results.missing_block_count
-        );
-    } else {
-        println!("Repair is not possible.");
-        println!(
-            "You need {} more recovery blocks to be able to repair.",
-            results.missing_block_count - results.recovery_blocks_available
-        );
-    }
+        fn report_files_found(&self, count: usize) {
+            println!("Found {} files to verify", count);
+        }
 
-    // Print detailed block information for corrupted files
-    for file_result in &results.files {
-        if !file_result.damaged_blocks.is_empty() {
-            println!("\nDamaged blocks in \"{}\":", file_result.file_name);
-            if file_result.damaged_blocks.len() <= 20 {
-                // Show all blocks if there are 20 or fewer
-                for &block_num in &file_result.damaged_blocks {
-                    println!("  Block {}: damaged", block_num);
-                }
-            } else {
-                // Show first 10 and last 10 blocks if there are many
-                for &block_num in &file_result.damaged_blocks[..10] {
-                    println!("  Block {}: damaged", block_num);
-                }
-                println!(
-                    "  ... {} more damaged blocks ...",
-                    file_result.damaged_blocks.len() - 20
-                );
-                for &block_num in
-                    &file_result.damaged_blocks[file_result.damaged_blocks.len() - 10..]
-                {
-                    println!("  Block {}: damaged", block_num);
+        fn report_verifying_file(&self, file_name: &str) {
+            println!("Verifying: \"{}\"", file_name);
+        }
+
+        fn report_file_status(&self, file_name: &str, status: FileStatus) {
+            match status {
+                FileStatus::Present => println!("Target: \"{}\" - found.", file_name),
+                FileStatus::Missing => println!("Target: \"{}\" - missing.", file_name),
+                FileStatus::Corrupted => println!("Target: \"{}\" - corrupted.", file_name),
+                FileStatus::Renamed => println!("Target: \"{}\" - renamed.", file_name),
+            }
+        }
+
+        fn report_damaged_blocks(&self, _file_name: &str, damaged_blocks: &[u32]) {
+            if !damaged_blocks.is_empty() {
+                println!("  {} blocks are damaged", damaged_blocks.len());
+            }
+        }
+
+        fn report_verification_results(&self, results: &VerificationResults) {
+            // Use the Display implementation for main summary
+            print!("{}", results);
+
+            // Print detailed block information for corrupted files
+            for file_result in &results.files {
+                if !file_result.damaged_blocks.is_empty() {
+                    println!("\nDamaged blocks in \"{}\":", file_result.file_name);
+                    print_block_list(&file_result.damaged_blocks);
                 }
             }
         }
     }
+
+    /// Silent implementation that produces no output
+    #[derive(Default)]
+    pub struct SilentReporter;
+
+    impl SilentReporter {
+        pub fn new() -> Self {
+            Self
+        }
+    }
+
+    impl VerificationReporter for SilentReporter {
+        fn report_verification_start(&self, _parallel: bool) {}
+        fn report_files_found(&self, _count: usize) {}
+        fn report_verifying_file(&self, _file_name: &str) {}
+        fn report_file_status(&self, _file_name: &str, _status: FileStatus) {}
+        fn report_damaged_blocks(&self, _file_name: &str, _damaged_blocks: &[u32]) {}
+        fn report_verification_results(&self, _results: &VerificationResults) {}
+    }
+
+    /// Print a list of block numbers, with summary for large lists
+    fn print_block_list(damaged_blocks: &[u32]) {
+        if damaged_blocks.len() <= MIN_BLOCKS_FOR_SUMMARY {
+            // Show all blocks if there are few enough
+            for &block_num in damaged_blocks {
+                println!("  Block {}: damaged", block_num);
+            }
+        } else {
+            // Show first and last N blocks if there are many
+            for &block_num in &damaged_blocks[..BLOCK_SUMMARY_HEAD_TAIL] {
+                println!("  Block {}: damaged", block_num);
+            }
+            println!(
+                "  ... {} more damaged blocks ...",
+                damaged_blocks.len() - (2 * BLOCK_SUMMARY_HEAD_TAIL)
+            );
+            for &block_num in &damaged_blocks[damaged_blocks.len() - BLOCK_SUMMARY_HEAD_TAIL..] {
+                println!("  Block {}: damaged", block_num);
+            }
+        }
+    }
+}
+
+/// Print verification results in par2cmdline style (legacy function)
+pub fn print_verification_results(results: &VerificationResults) {
+    use reporting::VerificationReporter;
+    let reporter = reporting::ConsoleReporter::new();
+    reporter.report_verification_results(results);
 }
 
 #[cfg(test)]
@@ -732,7 +915,8 @@ mod tests {
 
             // Use FileCheckSummer instead
             let checksummer =
-                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), DEFAULT_BUFFER_SIZE)
+                    .unwrap();
             let result = checksummer.compute_file_hashes();
 
             assert!(result.is_ok(), "Should compute MD5 successfully");
@@ -740,7 +924,8 @@ mod tests {
 
         #[test]
         fn returns_error_for_nonexistent_file() {
-            let result = FileCheckSummer::new("/nonexistent/file/path".to_string(), 1024);
+            let result =
+                FileCheckSummer::new("/nonexistent/file/path".to_string(), DEFAULT_BUFFER_SIZE);
 
             assert!(result.is_err(), "Should return error for missing file");
         }
@@ -755,7 +940,8 @@ mod tests {
             create_test_file(&test_file, &large_content).unwrap();
 
             let checksummer =
-                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), DEFAULT_BUFFER_SIZE)
+                    .unwrap();
             let result = checksummer.compute_file_hashes();
 
             assert!(result.is_ok(), "Should handle large files");
@@ -770,11 +956,13 @@ mod tests {
             create_test_file(&test_file, content).unwrap();
 
             let checksummer1 =
-                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), DEFAULT_BUFFER_SIZE)
+                    .unwrap();
             let hash1 = checksummer1.compute_file_hashes().unwrap();
 
             let checksummer2 =
-                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), DEFAULT_BUFFER_SIZE)
+                    .unwrap();
             let hash2 = checksummer2.compute_file_hashes().unwrap();
 
             assert_eq!(
@@ -797,7 +985,8 @@ mod tests {
 
             // Use FileCheckSummer to compute hashes
             let checksummer =
-                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), DEFAULT_BUFFER_SIZE)
+                    .unwrap();
             let results = checksummer.compute_file_hashes().unwrap();
 
             // Verify the hash matches what we computed
@@ -814,7 +1003,8 @@ mod tests {
 
             // Compute actual hash
             let checksummer =
-                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), DEFAULT_BUFFER_SIZE)
+                    .unwrap();
             let results = checksummer.compute_file_hashes().unwrap();
 
             let wrong_hash = Md5Hash::new([0x42; 16]);
@@ -825,7 +1015,7 @@ mod tests {
 
         #[test]
         fn returns_error_for_missing_file() {
-            let result = FileCheckSummer::new("/nonexistent/file".to_string(), 1024);
+            let result = FileCheckSummer::new("/nonexistent/file".to_string(), DEFAULT_BUFFER_SIZE);
             assert!(result.is_err(), "Should error on missing file");
         }
 
@@ -839,7 +1029,8 @@ mod tests {
 
             // FileCheckSummer always reads full file, but we can verify it handles small files correctly
             let checksummer =
-                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), DEFAULT_BUFFER_SIZE)
+                    .unwrap();
             let results = checksummer.compute_file_hashes().unwrap();
 
             // For files < 16k, both hashes should be the same
@@ -1006,8 +1197,11 @@ mod tests {
                 }
 
                 if let (Some(checksums), true) = (checksums, block_size > 0) {
-                    let (available, damaged) =
-                        verify_blocks_in_file("tests/fixtures/testfile", &checksums, block_size);
+                    let (available, damaged) = validation::validate_blocks_md5_crc32(
+                        "tests/fixtures/testfile",
+                        &checksums,
+                        block_size,
+                    );
 
                     assert!(available > 0, "Should have available blocks");
                     assert_eq!(
@@ -1026,7 +1220,8 @@ mod tests {
                 (Md5Hash::new([0x22; 16]), Crc32Value::new(0x87654321)),
             ];
 
-            let (available, damaged) = verify_blocks_in_file("/nonexistent/file", &checksums, 1024);
+            let (available, damaged) =
+                validation::validate_blocks_md5_crc32("/nonexistent/file", &checksums, 1024);
 
             assert_eq!(available, 0, "No blocks available for missing file");
             assert_eq!(damaged.len(), 2, "All blocks should be marked damaged");
@@ -1036,7 +1231,7 @@ mod tests {
         fn handles_empty_checksum_list() {
             let checksums = vec![];
             let (available, damaged) =
-                verify_blocks_in_file("tests/fixtures/testfile", &checksums, 1024);
+                validation::validate_blocks_md5_crc32("tests/fixtures/testfile", &checksums, 1024);
 
             assert_eq!(available, 0, "No blocks available for empty list");
             assert!(damaged.is_empty(), "No damaged blocks for empty list");
@@ -1601,7 +1796,8 @@ mod tests {
 
             // Calculate hash for zero-byte file using FileCheckSummer
             let checksummer =
-                FileCheckSummer::new(zero_file.to_string_lossy().to_string(), 1024).unwrap();
+                FileCheckSummer::new(zero_file.to_string_lossy().to_string(), DEFAULT_BUFFER_SIZE)
+                    .unwrap();
             let result = checksummer.compute_file_hashes();
 
             assert!(result.is_ok(), "Should handle zero-byte files");
@@ -1613,8 +1809,11 @@ mod tests {
             let single_file = temp_dir.path().join("single.bin");
             create_test_file(&single_file, &[0x42]).unwrap();
 
-            let checksummer =
-                FileCheckSummer::new(single_file.to_string_lossy().to_string(), 1024).unwrap();
+            let checksummer = FileCheckSummer::new(
+                single_file.to_string_lossy().to_string(),
+                DEFAULT_BUFFER_SIZE,
+            )
+            .unwrap();
             let result = checksummer.compute_file_hashes();
 
             assert!(result.is_ok(), "Should handle single-byte files");
@@ -1628,7 +1827,8 @@ mod tests {
                 (Md5Hash::new([0x33; 16]), Crc32Value::new(0xAAAAAAAA)),
             ];
 
-            let (available, damaged) = verify_blocks_in_file("/nonexistent", &checksums, 1024);
+            let (available, damaged) =
+                validation::validate_blocks_md5_crc32("/nonexistent", &checksums, 1024);
 
             // For missing file, all blocks should be damaged
             assert_eq!(available, 0);
@@ -1752,7 +1952,8 @@ mod tests {
 
             // Test with absolute path
             let checksummer =
-                FileCheckSummer::new(test_file.to_string_lossy().to_string(), 1024).unwrap();
+                FileCheckSummer::new(test_file.to_string_lossy().to_string(), DEFAULT_BUFFER_SIZE)
+                    .unwrap();
             let abs_result = checksummer.compute_file_hashes();
 
             assert!(abs_result.is_ok());
@@ -1773,7 +1974,7 @@ mod tests {
             let checksums = vec![(Md5Hash::new([0x11; 16]), Crc32Value::new(0x12345678))];
 
             let (available, damaged) =
-                verify_blocks_in_file(test_file.to_str().unwrap(), &checksums, 512);
+                validation::validate_blocks_md5_crc32(test_file.to_str().unwrap(), &checksums, 512);
 
             // Either the block matches (available=1) or it doesn't (damaged=[0])
             assert_eq!(available + damaged.len(), 1, "Should have exactly 1 block");
@@ -1794,7 +1995,7 @@ mod tests {
             ];
 
             let (available, damaged) =
-                verify_blocks_in_file(test_file.to_str().unwrap(), &checksums, 512);
+                validation::validate_blocks_md5_crc32(test_file.to_str().unwrap(), &checksums, 512);
 
             assert_eq!(available + damaged.len(), 3, "Should have exactly 3 blocks");
         }
@@ -1814,7 +2015,7 @@ mod tests {
             ];
 
             let (available, damaged) =
-                verify_blocks_in_file(test_file.to_str().unwrap(), &checksums, 512);
+                validation::validate_blocks_md5_crc32(test_file.to_str().unwrap(), &checksums, 512);
 
             assert_eq!(available + damaged.len(), 3, "Should process all 3 blocks");
         }
