@@ -1294,13 +1294,13 @@ impl ReconstructionEngine {
     /// * `chunk_size` - Size of chunks to process (default 64KB)
     pub fn reconstruct_missing_slices_chunked<W: std::io::Write>(
         &self,
-        input_provider: &mut dyn crate::slice_provider::SliceProvider,
-        recovery_provider: &crate::slice_provider::RecoverySliceProvider,
+        input_provider: &mut dyn crate::repair::slice_provider::SliceProvider,
+        recovery_provider: &crate::repair::slice_provider::RecoverySliceProvider,
         global_missing_indices: &[usize],
         output_writers: &mut HashMap<usize, W>,
         chunk_size: usize,
     ) -> ReconstructionResult {
-        use crate::slice_provider::DEFAULT_CHUNK_SIZE;
+        use crate::repair::DEFAULT_CHUNK_SIZE;
 
         if global_missing_indices.is_empty() {
             return ReconstructionResult {

@@ -3,7 +3,7 @@
 //! Tests for the pluggable recovery data loading system including
 //! FileSystemLoader and trait implementations.
 
-use par2rs::recovery_loader::{FileSystemLoader, RecoveryDataLoader};
+use par2rs::repair::{FileSystemLoader, RecoveryDataLoader};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;

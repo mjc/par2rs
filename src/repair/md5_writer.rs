@@ -17,7 +17,7 @@ use std::io::{self, Write};
 /// ```no_run
 /// use std::fs::File;
 /// use std::io::{BufWriter, Write};
-/// # use par2rs::md5_writer::Md5Writer;
+/// # use par2rs::repair::Md5Writer;
 ///
 /// let file = File::create("output.dat")?;
 /// let mut writer = Md5Writer::new(BufWriter::new(file));

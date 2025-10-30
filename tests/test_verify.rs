@@ -311,7 +311,7 @@ mod verify_blocks_in_file_tests {
             }
 
             if let (Some(checksums), true) = (checksums, block_size > 0) {
-                let (available, damaged) = par2rs::validation::validate_blocks_md5_crc32(
+                let (available, damaged) = par2rs::verify::validate_blocks_md5_crc32(
                     "tests/fixtures/testfile",
                     &checksums,
                     block_size,
@@ -335,7 +335,7 @@ mod verify_blocks_in_file_tests {
         ];
 
         let (available, damaged) =
-            par2rs::validation::validate_blocks_md5_crc32("/nonexistent/file", &checksums, 1024);
+            par2rs::verify::validate_blocks_md5_crc32("/nonexistent/file", &checksums, 1024);
 
         assert_eq!(available, 0, "No blocks available for missing file");
         assert_eq!(damaged.len(), 2, "All blocks should be marked damaged");
@@ -344,11 +344,8 @@ mod verify_blocks_in_file_tests {
     #[test]
     fn handles_empty_checksum_list() {
         let checksums = vec![];
-        let (available, damaged) = par2rs::validation::validate_blocks_md5_crc32(
-            "tests/fixtures/testfile",
-            &checksums,
-            1024,
-        );
+        let (available, damaged) =
+            par2rs::verify::validate_blocks_md5_crc32("tests/fixtures/testfile", &checksums, 1024);
 
         assert_eq!(available, 0, "No blocks available for empty list");
         assert!(damaged.is_empty(), "No damaged blocks for empty list");
@@ -945,7 +942,7 @@ mod edge_case_verification {
         ];
 
         let (available, damaged) =
-            par2rs::validation::validate_blocks_md5_crc32("/nonexistent", &checksums, 1024);
+            par2rs::verify::validate_blocks_md5_crc32("/nonexistent", &checksums, 1024);
 
         // For missing file, all blocks should be damaged
         assert_eq!(available, 0);
@@ -1090,11 +1087,8 @@ mod block_verification_edge_cases {
         // Compute checksums for single block
         let checksums = vec![(Md5Hash::new([0x11; 16]), Crc32Value::new(0x12345678))];
 
-        let (available, damaged) = par2rs::validation::validate_blocks_md5_crc32(
-            test_file.to_str().unwrap(),
-            &checksums,
-            512,
-        );
+        let (available, damaged) =
+            par2rs::verify::validate_blocks_md5_crc32(test_file.to_str().unwrap(), &checksums, 512);
 
         // Either the block matches (available=1) or it doesn't (damaged=[0])
         assert_eq!(available + damaged.len(), 1, "Should have exactly 1 block");
@@ -1114,11 +1108,8 @@ mod block_verification_edge_cases {
             (Md5Hash::new([0x33; 16]), Crc32Value::new(0xAAAAAAAA)),
         ];
 
-        let (available, damaged) = par2rs::validation::validate_blocks_md5_crc32(
-            test_file.to_str().unwrap(),
-            &checksums,
-            512,
-        );
+        let (available, damaged) =
+            par2rs::verify::validate_blocks_md5_crc32(test_file.to_str().unwrap(), &checksums, 512);
 
         assert_eq!(available + damaged.len(), 3, "Should have exactly 3 blocks");
     }
@@ -1137,11 +1128,8 @@ mod block_verification_edge_cases {
             (Md5Hash::new([0x33; 16]), Crc32Value::new(0xAAAAAAAA)),
         ];
 
-        let (available, damaged) = par2rs::validation::validate_blocks_md5_crc32(
-            test_file.to_str().unwrap(),
-            &checksums,
-            512,
-        );
+        let (available, damaged) =
+            par2rs::verify::validate_blocks_md5_crc32(test_file.to_str().unwrap(), &checksums, 512);
 
         assert_eq!(available + damaged.len(), 3, "Should process all 3 blocks");
     }

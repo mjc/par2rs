@@ -5,21 +5,30 @@
 
 mod config;
 mod error;
+mod file_verification;
 mod types;
 mod utils;
+pub(crate) mod validation;
 mod verifier;
 
 // Re-export public types
 pub use config::VerificationConfig;
 pub use error::{VerificationError, VerificationResult};
+pub use file_verification::{
+    calculate_file_md5, calculate_file_md5_16k, format_display_name,
+    verify_files_and_collect_results_with_base_dir, verify_single_file,
+    verify_single_file_with_base_dir,
+};
 pub use types::{BlockVerificationResult, FileStatus, FileVerificationResult, VerificationResults};
 pub use utils::extract_file_name;
+pub use validation::{
+    validate_blocks_md5_crc32, validate_slices_crc32, validate_slices_crc32_with_progress,
+};
 pub use verifier::FileVerifier;
 
 use crate::domain::{Crc32Value, FileId, Md5Hash};
 use crate::packets::processing::*;
 use crate::reporters::{ConsoleVerificationReporter, VerificationReporter};
-use crate::validation;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
 

@@ -45,11 +45,13 @@ fn main() -> Result<()> {
     // Collect all PAR2 files in the set
     let par2_files = par2_files::collect_par2_files(file_path);
 
-    // Parse all packets including recovery slices for verification (in parallel)
+    // Parse packets excluding recovery slices (verification doesn't need them)
     println!("Loading PAR2 files...\n");
-    let all_packets = par2_files::load_all_par2_packets(&par2_files);
+    let all_packets = par2_files::load_par2_packets(&par2_files, false);
 
-    let total_recovery_blocks = par2rs::packets::processing::count_recovery_blocks(&all_packets);
+    // Count recovery blocks without loading their data (memory efficient)
+    let recovery_metadata = par2_files::parse_recovery_slice_metadata(&par2_files, false);
+    let total_recovery_blocks = recovery_metadata.len();
 
     println!(); // Blank line after loading
 

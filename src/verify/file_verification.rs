@@ -8,7 +8,6 @@
 //! Functional-style file verification using centralized checksum.
 
 use crate::domain::{FileId, Md5Hash};
-use crate::Packet;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -77,14 +76,6 @@ pub struct FileVerificationResult {
     pub exists: bool,
 }
 
-/// Verify files and collect results
-pub fn verify_files_and_collect_results(
-    file_info: &HashMap<String, (FileId, Md5Hash, u64)>,
-    show_progress: bool,
-) -> Vec<FileVerificationResult> {
-    verify_files_and_collect_results_with_base_dir(file_info, show_progress, None)
-}
-
 /// Verify files and collect results with optional base directory for path resolution
 pub fn verify_files_and_collect_results_with_base_dir(
     file_info: &HashMap<String, (FileId, Md5Hash, u64)>,
@@ -132,23 +123,6 @@ pub fn verify_files_and_collect_results_with_base_dir(
     }
 
     results
-}
-
-/// Find FileDescription packets for files that failed verification
-pub fn find_broken_file_descriptors(
-    packets: Vec<Packet>,
-    broken_file_ids: &[FileId],
-) -> Vec<Packet> {
-    packets
-        .into_iter()
-        .filter(|packet| {
-            if let Packet::FileDescription(fd) = packet {
-                broken_file_ids.contains(&fd.file_id)
-            } else {
-                false
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]

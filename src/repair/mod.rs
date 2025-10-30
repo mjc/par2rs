@@ -14,21 +14,30 @@
 mod builder;
 mod context;
 mod error;
+mod md5_writer;
 mod progress;
+mod recovery_loader;
+pub(crate) mod slice_provider;
 mod types;
 
 // Re-export public API
 pub use builder::RepairContextBuilder;
 pub use context::RepairContext;
 pub use error::{RepairError, Result};
+pub use md5_writer::Md5Writer;
 pub use progress::{ConsoleReporter, ProgressReporter, SilentReporter};
+pub use recovery_loader::{FileSystemLoader, RecoveryDataLoader};
+pub use slice_provider::{
+    ActualDataSize, ChunkedSliceProvider, LogicalSliceSize, RecoverySliceProvider,
+    Result as SliceProviderResult, SliceLocation, SliceProvider, SliceProviderError,
+    DEFAULT_CHUNK_SIZE,
+};
 pub use types::{
     FileInfo, FileStatus, ReconstructedSlices, RecoverySetInfo, RepairResult, ValidationCache,
     VerificationResult,
 };
 
 use crate::domain::{FileId, LocalSliceIndex, Md5Hash};
-use crate::slice_provider::{ActualDataSize, LogicalSliceSize};
 use crate::RecoverySlicePacket;
 use log::debug;
 use rayon::prelude::*;
@@ -505,7 +514,7 @@ impl RepairContext {
         files_to_repair: &[(&FileInfo, Vec<usize>)],
         validation_cache: &ValidationCache,
     ) -> Result<HashMap<usize, Vec<u8>>> {
-        use crate::slice_provider::{ChunkedSliceProvider, RecoverySliceProvider, SliceLocation};
+        use self::slice_provider::{ChunkedSliceProvider, RecoverySliceProvider, SliceLocation};
         use std::io::Cursor;
 
         // Collect all global missing indices
@@ -703,7 +712,7 @@ impl RepairContext {
             .collect();
 
         // Use shared validation module for efficient sequential I/O
-        let valid_slices = crate::validation::validate_slices_crc32(
+        let valid_slices = crate::verify::validation::validate_slices_crc32(
             &file_path,
             &crc_checksums,
             self.recovery_set.slice_size as usize,
@@ -771,7 +780,7 @@ impl RepairContext {
             source,
         })?;
         let buffered = std::io::BufWriter::with_capacity(1024 * 1024, file);
-        let mut writer = crate::md5_writer::Md5Writer::new(buffered);
+        let mut writer = md5_writer::Md5Writer::new(buffered);
 
         let slice_size = self.recovery_set.slice_size as usize;
         let mut slice_buffer = vec![0u8; slice_size];
