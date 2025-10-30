@@ -25,9 +25,7 @@ criterion = { version = "0.7", features = ["html_reports"] }
 # Property-based testing
 proptest = "1.5"
 # Random number generation for tests
-rand = "0.8"
-# Alternative MD5 crate for comparison
-md5_alt = { package = "md5", version = "0.7" }
+rand = "0.9"
 
 [[bench]]
 name = "repair_benchmark"
