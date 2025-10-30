@@ -14,6 +14,7 @@
 use crate::domain::{Crc32Value, FileId, Md5Hash};
 use md_5::{Digest, Md5};
 use std::io::Read;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 // ============================================================================
 // MD5 Hashing
@@ -178,7 +179,7 @@ pub fn calculate_file_md5(file_path: &std::path::Path) -> std::io::Result<Md5Has
     // Optimized buffer sizing based on benchmark data
     let buffer_size = if file_size < 5 * 1024 * 1024 {
         // Very small files: 1MB buffer for good cache locality
-        1 * 1024 * 1024
+        1024 * 1024
     } else if file_size < 50 * 1024 * 1024 {
         // Small-medium files: 16MB buffer for high throughput
         16 * 1024 * 1024
@@ -192,8 +193,7 @@ pub fn calculate_file_md5(file_path: &std::path::Path) -> std::io::Result<Md5Has
     let mut hasher = new_md5_hasher();
 
     // Pre-allocate aligned buffer for optimal CPU cache performance
-    let mut buffer = Vec::with_capacity(buffer_size);
-    buffer.resize(buffer_size, 0);
+    let mut buffer = vec![0; buffer_size];
 
     // Use read_exact when possible to minimize partial reads and system call overhead
     let mut remaining = file_size as usize;
@@ -248,13 +248,19 @@ pub trait ProgressReporter {
 
 /// Console progress reporter that matches par2cmdline output format
 pub struct ConsoleProgressReporter {
-    last_percentage: std::cell::Cell<u32>,
+    last_percentage: AtomicU32,
+}
+
+impl Default for ConsoleProgressReporter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ConsoleProgressReporter {
     pub fn new() -> Self {
         Self {
-            last_percentage: std::cell::Cell::new(0),
+            last_percentage: AtomicU32::new(0),
         }
     }
 }
@@ -269,8 +275,8 @@ impl ProgressReporter for ConsoleProgressReporter {
         let new_fraction = ((10000 * bytes_processed) / total_bytes) as u32;
 
         // Only update display when percentage actually changes (now at 0.01% resolution)
-        if new_fraction != self.last_percentage.get() {
-            self.last_percentage.set(new_fraction);
+        if new_fraction != self.last_percentage.load(Ordering::Relaxed) {
+            self.last_percentage.store(new_fraction, Ordering::Relaxed);
 
             // Format as "Scanning: "filename": XX.XX%\r" with two decimal places
             let truncated_name = if file_name.len() > 45 {

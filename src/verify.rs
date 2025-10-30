@@ -8,6 +8,40 @@ use std::path::Path;
 #[cfg(test)]
 use crate::checksum::FileCheckSummer;
 
+/// Configuration for file verification
+#[derive(Debug, Clone)]
+pub struct VerificationConfig {
+    /// Number of threads to use (0 = auto-detect)
+    pub threads: usize,
+    /// Whether to use parallel verification
+    pub parallel: bool,
+}
+
+impl Default for VerificationConfig {
+    fn default() -> Self {
+        Self {
+            threads: 0, // Auto-detect
+            parallel: true,
+        }
+    }
+}
+
+impl VerificationConfig {
+    pub fn new(threads: usize, parallel: bool) -> Self {
+        Self { threads, parallel }
+    }
+
+    pub fn from_args(matches: &clap::ArgMatches) -> Self {
+        let threads = matches
+            .get_one::<String>("threads")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let parallel = !matches.get_flag("no-parallel");
+
+        Self::new(threads, parallel)
+    }
+}
+
 /// File verification status
 #[derive(Debug, Clone)]
 pub enum FileStatus {
@@ -55,7 +89,34 @@ pub struct FileVerificationResult {
     pub damaged_blocks: Vec<u32>,
 }
 
-/// Comprehensive verification function based on par2cmdline approach
+/// Comprehensive verification function with configuration support
+///
+/// This function performs detailed verification similar to par2cmdline:
+/// 1. Verifies files at the whole-file level using MD5 hashes (SINGLE PASS)
+/// 2. For damaged files, performs block-level verification using slice checksums
+/// 3. Reports which blocks are broken and calculates repair requirements
+/// 4. Determines if repair is possible with available recovery blocks
+pub fn comprehensive_verify_files_with_config(
+    packets: Vec<crate::Packet>,
+    config: &VerificationConfig,
+) -> VerificationResults {
+    // Configure rayon thread pool if specified
+    if config.threads > 0 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(config.threads)
+            .build_global()
+            .unwrap_or_else(|_| {
+                eprintln!(
+                    "Warning: Could not set thread count to {}, using default",
+                    config.threads
+                );
+            });
+    }
+
+    comprehensive_verify_files_impl(packets, config.parallel)
+}
+
+/// Comprehensive verification function based on par2cmdline approach (legacy)
 ///
 /// This function performs detailed verification similar to par2cmdline:
 /// 1. Verifies files at the whole-file level using MD5 hashes (SINGLE PASS)
@@ -63,7 +124,18 @@ pub struct FileVerificationResult {
 /// 3. Reports which blocks are broken and calculates repair requirements
 /// 4. Determines if repair is possible with available recovery blocks
 pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationResults {
-    println!("Starting comprehensive verification...");
+    comprehensive_verify_files_with_config(packets, &VerificationConfig::default())
+}
+
+/// Unified verification implementation that supports both parallel and sequential modes
+fn comprehensive_verify_files_impl(
+    packets: Vec<crate::Packet>,
+    parallel: bool,
+) -> VerificationResults {
+    println!(
+        "Starting comprehensive verification ({})...",
+        if parallel { "parallel" } else { "sequential" }
+    );
 
     let mut results = VerificationResults {
         files: Vec::new(),
@@ -117,11 +189,26 @@ pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationRe
 
     println!("Found {} files to verify", file_descriptions.len());
 
-    // Verify files in parallel using Rayon
-    let file_results: Vec<_> = file_descriptions
-        .par_iter()
-        .map(|file_desc| verify_single_file(file_desc, &slice_checksums, block_size))
-        .collect();
+    // Verify files - use parallel or sequential based on config
+    let file_results: Vec<_> = if parallel {
+        let progress_reporter = crate::checksum::ConsoleProgressReporter::new();
+        file_descriptions
+            .par_iter()
+            .map(|file_desc| {
+                verify_single_file_with_progress(
+                    file_desc,
+                    &slice_checksums,
+                    block_size,
+                    &progress_reporter,
+                )
+            })
+            .collect()
+    } else {
+        file_descriptions
+            .iter()
+            .map(|file_desc| verify_single_file(file_desc, &slice_checksums, block_size))
+            .collect()
+    };
 
     // Aggregate results from parallel verification
     for file_result in file_results {
@@ -152,110 +239,6 @@ pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationRe
     }
 
     // Calculate repair requirements
-    results.blocks_needed_for_repair = results.missing_block_count;
-    results.repair_possible = results.recovery_blocks_available >= results.missing_block_count;
-
-    results
-}
-
-/// Comprehensive verification with progress reporting
-pub fn comprehensive_verify_files_with_progress<P: crate::checksum::ProgressReporter>(
-    packets: Vec<crate::Packet>,
-    progress: &P,
-) -> VerificationResults {
-    println!("Starting comprehensive verification...");
-
-    let mut results = VerificationResults {
-        files: Vec::new(),
-        blocks: Vec::new(),
-        complete_file_count: 0,
-        renamed_file_count: 0,
-        damaged_file_count: 0,
-        missing_file_count: 0,
-        available_block_count: 0,
-        missing_block_count: 0,
-        total_block_count: 0,
-        recovery_blocks_available: 0,
-        repair_possible: false,
-        blocks_needed_for_repair: 0,
-    };
-
-    // Extract main packet information
-    let main_packet = packets.iter().find_map(|p| match p {
-        Packet::Main(main) => Some(main),
-        _ => None,
-    });
-
-    let block_size = main_packet.map(|main| main.slice_size).unwrap_or(0);
-
-    // Count recovery blocks for repair calculations
-    results.recovery_blocks_available = packets
-        .iter()
-        .filter(|p| matches!(p, Packet::RecoverySlice(_)))
-        .count();
-
-    // Extract file descriptions and deduplicate by file_id
-    // PAR2 files can contain duplicate FileDescription packets across multiple files
-    let file_descriptions_map: HashMap<FileId, &crate::packets::FileDescriptionPacket> = packets
-        .iter()
-        .filter_map(|p| match p {
-            Packet::FileDescription(fd) => Some((fd.file_id, fd)),
-            _ => None,
-        })
-        .collect();
-    let file_descriptions: Vec<_> = file_descriptions_map.values().copied().collect();
-
-    println!("Found {} files to verify", file_descriptions.len());
-
-    // Extract slice checksums and group by file_id
-    // Extract slice checksums and group by file_id
-    let slice_checksums: HashMap<FileId, Vec<(Md5Hash, Crc32Value)>> = packets
-        .iter()
-        .filter_map(|packet| match packet {
-            Packet::InputFileSliceChecksum(ifsc) => {
-                Some((ifsc.file_id, ifsc.slice_checksums.clone()))
-            }
-            _ => None,
-        })
-        .collect();
-
-    // Process files sequentially when progress reporting (to maintain thread safety)
-    let file_results: Vec<_> = file_descriptions
-        .iter()
-        .map(|file_desc| {
-            verify_single_file_with_progress(file_desc, &slice_checksums, block_size, progress)
-        })
-        .collect();
-
-    // Aggregate results sequentially to avoid race conditions
-    for file_result in file_results {
-        results.total_block_count += file_result.total_blocks;
-
-        match file_result.status {
-            FileStatus::Missing => {
-                results.missing_file_count += 1;
-                results.missing_block_count += file_result.total_blocks;
-            }
-            FileStatus::Complete => {
-                results.complete_file_count += 1;
-                results.available_block_count += file_result.total_blocks;
-            }
-            FileStatus::Damaged => {
-                results.damaged_file_count += 1;
-                results.available_block_count += file_result.blocks_available;
-                results.missing_block_count += file_result.damaged_blocks.len();
-            }
-            FileStatus::Renamed => {
-                results.renamed_file_count += 1;
-                // Handle renamed files
-            }
-        }
-
-        results.blocks.extend(file_result.block_results);
-        results.files.push(file_result.file_info);
-    }
-
-    // Calculate repair feasibility
     results.blocks_needed_for_repair = results.missing_block_count;
     results.repair_possible = results.recovery_blocks_available >= results.missing_block_count;
 

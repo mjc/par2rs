@@ -21,6 +21,9 @@ pub trait ProgressReporter: Send + Sync {
     /// Report scanning progress for large files
     fn report_scanning(&self, file_name: &str);
 
+    /// Report detailed scanning progress with percentage (like par2cmdline)
+    fn report_scanning_progress(&self, file_name: &str, bytes_processed: u64, total_bytes: u64);
+
     /// Clear scanning progress line
     fn clear_scanning(&self, file_name: &str);
 
@@ -33,8 +36,20 @@ pub trait ProgressReporter: Send + Sync {
     /// Report repair header
     fn report_repair_header(&self);
 
+    /// Report loading PAR2 files progress
+    fn report_loading_progress(&self, files_loaded: usize, total_files: usize);
+
+    /// Report constructing Reed-Solomon matrix
+    fn report_constructing(&self);
+
+    /// Report Reed-Solomon computation progress
+    fn report_computing_progress(&self, blocks_processed: usize, total_blocks: usize);
+
     /// Report repair starting for a specific file
     fn report_repair_start(&self, file_name: &str);
+
+    /// Report file writing progress
+    fn report_writing_progress(&self, file_name: &str, bytes_written: u64, total_bytes: u64);
 
     /// Report repair completion for a file
     fn report_repair_complete(&self, file_name: &str, repaired: bool);
@@ -106,6 +121,26 @@ impl ProgressReporter for ConsoleReporter {
         std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
     }
 
+    fn report_scanning_progress(&self, file_name: &str, bytes_processed: u64, total_bytes: u64) {
+        if self.quiet || total_bytes == 0 {
+            return;
+        }
+
+        // Calculate percentage with higher precision: (10000 * progress / total) for 0.01% precision
+        let percentage_100x = ((10000 * bytes_processed) / total_bytes) as u32;
+        let percentage = percentage_100x as f64 / 100.0;
+
+        // Format as "Scanning: "filename": XX.XX%\r" with two decimal places
+        let truncated_name = if file_name.len() > 45 {
+            format!("{}...", &file_name[..42])
+        } else {
+            file_name.to_string()
+        };
+
+        print!("Scanning: \"{}\": {:.2}%\r", truncated_name, percentage);
+        std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+    }
+
     fn clear_scanning(&self, file_name: &str) {
         if self.quiet {
             return;
@@ -163,8 +198,59 @@ impl ProgressReporter for ConsoleReporter {
             return;
         }
         println!();
-        println!("Repairing files:");
-        println!();
+        println!("Repairing:");
+    }
+
+    fn report_loading_progress(&self, files_loaded: usize, total_files: usize) {
+        if self.quiet {
+            return;
+        }
+        if files_loaded == 1 {
+            print!("Loading PAR2 files");
+            std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+        }
+        if files_loaded < total_files {
+            print!(".");
+            std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+        } else {
+            println!();
+        }
+    }
+
+    fn report_constructing(&self) {
+        if self.quiet {
+            return;
+        }
+        println!("Constructing: done.");
+    }
+
+    fn report_computing_progress(&self, blocks_processed: usize, total_blocks: usize) {
+        if self.quiet {
+            return;
+        }
+        let percentage = (blocks_processed as f64 / total_blocks as f64) * 100.0;
+        print!("\rComputing Reed-Solomon: {:.1}%", percentage);
+        std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+        if blocks_processed == total_blocks {
+            println!();
+        }
+    }
+
+    fn report_writing_progress(&self, file_name: &str, bytes_written: u64, total_bytes: u64) {
+        if self.quiet || total_bytes == 0 {
+            return;
+        }
+        let percentage = (bytes_written as f64 / total_bytes as f64) * 100.0;
+        let truncated_name = if file_name.len() > 45 {
+            format!("{}...", &file_name[..42])
+        } else {
+            file_name.to_string()
+        };
+        print!("\rWriting: \"{}\": {:.1}%", truncated_name, percentage);
+        std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+        if bytes_written == total_bytes {
+            println!();
+        }
     }
 
     fn report_repair_start(&self, file_name: &str) {
@@ -249,11 +335,17 @@ impl ProgressReporter for SilentReporter {
     fn report_file_opening(&self, _file_name: &str) {}
     fn report_file_status(&self, _file_name: &str, _status: FileStatus) {}
     fn report_scanning(&self, _file_name: &str) {}
+    fn report_scanning_progress(&self, _file_name: &str, _bytes_processed: u64, _total_bytes: u64) {
+    }
     fn clear_scanning(&self, _file_name: &str) {}
     fn report_recovery_info(&self, _available: usize, _needed: usize) {}
     fn report_insufficient_recovery(&self, _available: usize, _needed: usize) {}
     fn report_repair_header(&self) {}
+    fn report_loading_progress(&self, _files_loaded: usize, _total_files: usize) {}
+    fn report_constructing(&self) {}
+    fn report_computing_progress(&self, _blocks_processed: usize, _total_blocks: usize) {}
     fn report_repair_start(&self, _file_name: &str) {}
+    fn report_writing_progress(&self, _file_name: &str, _bytes_written: u64, _total_bytes: u64) {}
     fn report_repair_complete(&self, _file_name: &str, _repaired: bool) {}
     fn report_repair_failed(&self, _file_name: &str, _error: &str) {}
     fn report_verification_header(&self) {}

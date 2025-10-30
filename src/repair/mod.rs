@@ -38,26 +38,26 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 impl RepairContext {
-    /// Check the status of all files in the recovery set
+    /// Check the status of all files in the recovery set (in parallel)
     pub fn check_file_status(&self) -> HashMap<String, FileStatus> {
-        let mut status_map = HashMap::default();
+        self.recovery_set
+            .files
+            .par_iter()
+            .map(|file_info| {
+                let file_path = self.base_path.join(&file_info.file_name);
 
-        for file_info in &self.recovery_set.files {
-            let file_path = self.base_path.join(&file_info.file_name);
+                // Report file opening (thread-safe)
+                self.reporter().report_file_opening(&file_info.file_name);
 
-            // Report file opening
-            self.reporter().report_file_opening(&file_info.file_name);
+                let status = self.determine_file_status(&file_path, file_info);
 
-            let status = self.determine_file_status(&file_path, file_info);
+                // Report determined status (thread-safe)
+                self.reporter()
+                    .report_file_status(&file_info.file_name, status);
 
-            // Report determined status
-            self.reporter()
-                .report_file_status(&file_info.file_name, status);
-
-            status_map.insert(file_info.file_name.clone(), status);
-        }
-
-        status_map
+                (file_info.file_name.clone(), status)
+            })
+            .collect()
     }
 
     /// Determine the status of a single file
@@ -913,6 +913,28 @@ impl RepairContext {
 /// * `Err(...)` - Failed to load PAR2 files or create repair context
 pub fn repair_files(par2_file: &str) -> Result<(RepairContext, RepairResult)> {
     repair_files_with_reporter(par2_file, Box::new(ConsoleReporter::new(false)))
+}
+
+/// High-level repair function with custom progress reporter and verification config
+///
+/// Allows specifying a custom progress reporter and verification configuration
+/// for unified verification behavior between verify and repair commands.
+///
+/// # Arguments
+/// * `par2_file` - Path to the PAR2 file
+/// * `reporter` - Progress reporter implementation
+/// * `verify_config` - Verification configuration (threading, parallel/sequential)
+///
+/// # Returns
+/// * `Ok((RepairContext, RepairResult))` - Repair operation completed with context and result
+/// * `Err(...)` - Failed to load PAR2 files or create repair context
+pub fn repair_files_with_config(
+    par2_file: &str,
+    reporter: Box<dyn ProgressReporter>,
+    _verify_config: &crate::verify::VerificationConfig,
+) -> Result<(RepairContext, RepairResult)> {
+    // TODO: Integrate verification config into the repair process
+    repair_files_with_reporter(par2_file, reporter)
 }
 
 /// High-level repair function with custom progress reporter

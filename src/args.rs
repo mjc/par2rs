@@ -35,6 +35,20 @@ pub fn parse_args() -> clap::ArgMatches {
                     }
                 }),
         )
+        .arg(
+            Arg::new("threads")
+                .help("Number of threads for parallel verification (0 = auto)")
+                .short('t')
+                .long("threads")
+                .value_name("N")
+                .default_value("0"),
+        )
+        .arg(
+            Arg::new("no-parallel")
+                .help("Disable parallel file verification")
+                .long("no-parallel")
+                .action(clap::ArgAction::SetTrue),
+        )
         .get_matches()
 }
 
@@ -82,6 +96,20 @@ pub fn parse_repair_args() -> clap::ArgMatches {
                 .help("Purge backup files and par files on successful recovery")
                 .short('p')
                 .long("purge")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("threads")
+                .help("Number of threads for parallel verification (0 = auto)")
+                .short('t')
+                .long("threads")
+                .value_name("N")
+                .default_value("0"),
+        )
+        .arg(
+            Arg::new("no-parallel")
+                .help("Disable parallel file verification")
+                .long("no-parallel")
                 .action(clap::ArgAction::SetTrue),
         )
         .get_matches()

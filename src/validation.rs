@@ -54,7 +54,40 @@ pub fn validate_slices_crc32<P: AsRef<Path>>(
     slice_size: usize,
     file_size: u64,
 ) -> io::Result<HashSet<usize>> {
-    let file = File::open(file_path)?;
+    validate_slices_crc32_with_progress(
+        file_path,
+        slice_checksums,
+        slice_size,
+        file_size,
+        &crate::repair::SilentReporter,
+    )
+}
+
+/// Validates slices in a file using CRC32 checksums with progress reporting.
+///
+/// This is optimized for repair operations where only CRC32 validation is needed.
+/// Uses sequential I/O with a large buffer for optimal throughput.
+///
+/// # Arguments
+/// * `file_path` - Path to the file to validate
+/// * `slice_checksums` - Expected CRC32 values for each slice
+/// * `slice_size` - Size of each slice in bytes
+/// * `file_size` - Total size of the file
+/// * `progress` - Progress reporter for large file scanning
+///
+/// # Returns
+/// A `HashSet` containing the indices of all valid slices
+///
+/// # Errors
+/// Returns an `io::Error` if the file cannot be opened
+pub fn validate_slices_crc32_with_progress<P: AsRef<Path>>(
+    file_path: P,
+    slice_checksums: &[Crc32Value],
+    slice_size: usize,
+    file_size: u64,
+    progress: &dyn crate::repair::ProgressReporter,
+) -> io::Result<HashSet<usize>> {
+    let file = File::open(&file_path)?;
     let mut reader = BufReader::with_capacity(BUFFER_CAPACITY, file);
 
     // Pre-allocate with expected capacity to avoid rehashing
@@ -63,6 +96,23 @@ pub fn validate_slices_crc32<P: AsRef<Path>>(
 
     // Reuse single buffer for all slices
     let mut slice_data = vec![0u8; slice_size];
+
+    // Get file name for progress reporting
+    let file_name = file_path
+        .as_ref()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
+
+    // Progress reporting for large files
+    let should_report_progress = file_size > 10 * 1024 * 1024; // Report for files > 10MB
+    let progress_interval = if should_report_progress {
+        std::cmp::max(1, slice_checksums.len() / 100) // Update every 1%
+    } else {
+        0
+    };
+
+    let mut bytes_processed = 0u64;
 
     for (slice_index, &expected_crc) in slice_checksums.iter().enumerate() {
         let actual_size =
@@ -76,6 +126,13 @@ pub fn validate_slices_crc32<P: AsRef<Path>>(
         // Sequential read - early continue on read failure
         if reader.read_exact(&mut slice_data[..actual_size]).is_err() {
             continue;
+        }
+
+        bytes_processed += actual_size as u64;
+
+        // Report progress periodically
+        if should_report_progress && progress_interval > 0 && slice_index % progress_interval == 0 {
+            progress.report_scanning_progress(file_name, bytes_processed, file_size);
         }
 
         // Validate CRC32 on full slice (with padding)

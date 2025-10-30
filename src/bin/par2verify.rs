@@ -28,6 +28,9 @@ fn main() -> Result<()> {
         .get_one::<String>("input")
         .expect("input is required by clap");
 
+    // Create verification config from command line arguments
+    let verify_config = verify::VerificationConfig::from_args(&matches);
+
     let file_path = Path::new(input_file);
 
     // Validate file exists
@@ -57,11 +60,10 @@ fn main() -> Result<()> {
     let stats = analysis::calculate_par2_stats(&all_packets, total_recovery_blocks);
     analysis::print_summary_stats(&stats);
 
-    // Perform comprehensive verification with progress reporting
+    // Perform comprehensive verification with configuration
     println!("\nVerifying source files:\n");
-    let progress_reporter = par2rs::checksum::ConsoleProgressReporter::new();
     let verification_results =
-        verify::comprehensive_verify_files_with_progress(all_packets, &progress_reporter);
+        verify::comprehensive_verify_files_with_config(all_packets, &verify_config);
 
     // Print detailed results
     verify::print_verification_results(&verification_results);

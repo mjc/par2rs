@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use par2rs::args::parse_repair_args;
-use par2rs::repair::repair_files;
+use par2rs::verify::VerificationConfig;
 
 fn main() -> Result<()> {
     // Initialize the logger
@@ -19,7 +19,15 @@ fn main() -> Result<()> {
     let quiet = matches.get_flag("quiet");
     let purge = matches.get_flag("purge");
 
-    let (context, result) = repair_files(par2_file).context("Failed to repair files")?;
+    // Create verification config from command line arguments
+    let verify_config = VerificationConfig::from_args(&matches);
+
+    let (context, result) = par2rs::repair::repair_files_with_config(
+        par2_file,
+        Box::new(par2rs::repair::ConsoleReporter::new(quiet)),
+        &verify_config,
+    )
+    .context("Failed to repair files")?;
 
     // Print output unless quiet mode is enabled
     if !quiet {
