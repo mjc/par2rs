@@ -38,7 +38,7 @@ fn test_new_constructor() {
 #[test]
 fn test_default_constructor() {
     let _reporter = ConsoleVerificationReporter::new();
-    // Test that default() creates a valid instance  
+    // Test that default() creates a valid instance
 }
 
 #[test]
