@@ -231,8 +231,8 @@ proptest! {
     ) {
         let mut rng = StdRng::seed_from_u64(seed);
 
-        let a: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
-        let b: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
+        let a: Vec<u8> = (0..len).map(|_| rng.random()).collect();
+        let b: Vec<u8> = (0..len).map(|_| rng.random()).collect();
 
         let mut result1 = a.clone();
         for i in 0..len {
@@ -255,8 +255,8 @@ proptest! {
     ) {
         let mut rng = StdRng::seed_from_u64(seed);
 
-        let a: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
-        let b: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
+        let a: Vec<u8> = (0..len).map(|_| rng.random()).collect();
+        let b: Vec<u8> = (0..len).map(|_| rng.random()).collect();
 
         let mut result = a.clone();
         for i in 0..len {
@@ -275,7 +275,7 @@ proptest! {
     ) {
         let mut rng = StdRng::seed_from_u64(seed);
 
-        let a: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
+        let a: Vec<u8> = (0..len).map(|_| rng.random()).collect();
         let zeros = vec![0u8; len];
 
         let mut result = a.clone();
@@ -294,9 +294,9 @@ proptest! {
     ) {
         let mut rng = StdRng::seed_from_u64(seed);
 
-        let a: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
-        let b: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
-        let c: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
+        let a: Vec<u8> = (0..len).map(|_| rng.random()).collect();
+        let b: Vec<u8> = (0..len).map(|_| rng.random()).collect();
+        let c: Vec<u8> = (0..len).map(|_| rng.random()).collect();
 
         let mut left = a.clone();
         for i in 0..len {
