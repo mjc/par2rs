@@ -57,6 +57,7 @@ pub mod par2_files;
 pub mod recovery_loader;
 pub mod reed_solomon;
 pub mod repair;
+pub mod reporters;
 pub mod slice_provider;
 pub mod validation;
 pub mod verify;

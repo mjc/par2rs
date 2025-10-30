@@ -1,4 +1,5 @@
 use crate::domain::{Crc32Value, FileId, Md5Hash};
+use crate::reporters::{ConsoleVerificationReporter, VerificationReporter};
 use crate::validation;
 use crate::Packet;
 use rayon::prelude::*;
@@ -9,8 +10,6 @@ use std::fmt;
 use crate::checksum::FileCheckSummer;
 
 /// Constants for verification operations
-const MIN_BLOCKS_FOR_SUMMARY: usize = 20; // Show detailed block list if <= this many blocks
-const BLOCK_SUMMARY_HEAD_TAIL: usize = 10; // Show first/last N blocks for large damaged lists
 const DEFAULT_BUFFER_SIZE: usize = 1024; // Default buffer size for operations
 
 /// Custom error types for file verification operations
@@ -401,7 +400,7 @@ impl FileVerifier {
 /// 2. For corrupted files, performs block-level verification using slice checksums
 /// 3. Reports which blocks are broken and calculates repair requirements
 /// 4. Determines if repair is possible with available recovery blocks
-pub fn comprehensive_verify_files_with_config_and_reporter<R: reporting::VerificationReporter>(
+pub fn comprehensive_verify_files_with_config_and_reporter<R: VerificationReporter>(
     packets: Vec<crate::Packet>,
     config: &VerificationConfig,
     reporter: &R,
@@ -433,7 +432,7 @@ pub fn comprehensive_verify_files_with_config_and_reporter<R: reporting::Verific
 /// 4. Determines if repair is possible with available recovery blocks
 pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationResults {
     let config = VerificationConfig::default();
-    let reporter = reporting::ConsoleReporter::new();
+    let reporter = ConsoleVerificationReporter::new();
     comprehensive_verify_files_with_config_and_reporter(packets, &config, &reporter)
 }
 
@@ -444,12 +443,12 @@ pub fn comprehensive_verify_files_with_config(
     packets: Vec<crate::Packet>,
     config: &VerificationConfig,
 ) -> VerificationResults {
-    let reporter = reporting::ConsoleReporter::new();
+    let reporter = ConsoleVerificationReporter::new();
     comprehensive_verify_files_with_config_and_reporter(packets, config, &reporter)
 }
 
 /// Unified verification implementation that supports both parallel and sequential modes
-fn comprehensive_verify_files_impl<R: reporting::VerificationReporter>(
+fn comprehensive_verify_files_impl<R: VerificationReporter>(
     packets: Vec<crate::Packet>,
     parallel: bool,
     reporter: &R,
@@ -587,10 +586,7 @@ struct SingleFileVerificationResult {
 ///
 /// This unified function consolidates the previous separate implementations
 /// for progress and non-progress verification into a single, efficient function.
-fn verify_single_file_impl<
-    P: crate::checksum::ProgressReporter,
-    R: reporting::VerificationReporter,
->(
+fn verify_single_file_impl<P: crate::checksum::ProgressReporter, R: VerificationReporter>(
     file_desc: &crate::packets::FileDescriptionPacket,
     slice_checksums: &HashMap<FileId, Vec<(Md5Hash, Crc32Value)>>,
     block_size: u64,
@@ -752,134 +748,9 @@ fn verify_single_file_impl<
     }
 }
 
-/// Progress and output reporting for verification operations
-pub mod reporting {
-    use super::{FileStatus, VerificationResults, BLOCK_SUMMARY_HEAD_TAIL, MIN_BLOCKS_FOR_SUMMARY};
-
-    /// Trait for reporting verification progress and results
-    ///
-    /// Implementations can provide different output formats (console, JSON, silent, etc.)
-    pub trait VerificationReporter: Send + Sync {
-        /// Report starting verification with configuration
-        fn report_verification_start(&self, parallel: bool);
-
-        /// Report the number of files found to verify
-        fn report_files_found(&self, count: usize);
-
-        /// Report verifying a specific file
-        fn report_verifying_file(&self, file_name: &str);
-
-        /// Report the determined status of a file
-        fn report_file_status(&self, file_name: &str, status: FileStatus);
-
-        /// Report detailed block damage information for a file
-        fn report_damaged_blocks(&self, file_name: &str, damaged_blocks: &[u32]);
-
-        /// Report final verification results summary
-        fn report_verification_results(&self, results: &VerificationResults);
-    }
-
-    /// Console implementation of VerificationReporter (par2cmdline style)
-    #[derive(Default)]
-    pub struct ConsoleReporter;
-
-    impl ConsoleReporter {
-        pub fn new() -> Self {
-            Self
-        }
-    }
-
-    impl VerificationReporter for ConsoleReporter {
-        fn report_verification_start(&self, parallel: bool) {
-            println!(
-                "Starting comprehensive verification ({})...",
-                if parallel { "parallel" } else { "sequential" }
-            );
-        }
-
-        fn report_files_found(&self, count: usize) {
-            println!("Found {} files to verify", count);
-        }
-
-        fn report_verifying_file(&self, file_name: &str) {
-            println!("Verifying: \"{}\"", file_name);
-        }
-
-        fn report_file_status(&self, file_name: &str, status: FileStatus) {
-            match status {
-                FileStatus::Present => println!("Target: \"{}\" - found.", file_name),
-                FileStatus::Missing => println!("Target: \"{}\" - missing.", file_name),
-                FileStatus::Corrupted => println!("Target: \"{}\" - corrupted.", file_name),
-                FileStatus::Renamed => println!("Target: \"{}\" - renamed.", file_name),
-            }
-        }
-
-        fn report_damaged_blocks(&self, _file_name: &str, damaged_blocks: &[u32]) {
-            if !damaged_blocks.is_empty() {
-                println!("  {} blocks are damaged", damaged_blocks.len());
-            }
-        }
-
-        fn report_verification_results(&self, results: &VerificationResults) {
-            // Use the Display implementation for main summary
-            print!("{}", results);
-
-            // Print detailed block information for corrupted files
-            for file_result in &results.files {
-                if !file_result.damaged_blocks.is_empty() {
-                    println!("\nDamaged blocks in \"{}\":", file_result.file_name);
-                    print_block_list(&file_result.damaged_blocks);
-                }
-            }
-        }
-    }
-
-    /// Silent implementation that produces no output
-    #[derive(Default)]
-    pub struct SilentReporter;
-
-    impl SilentReporter {
-        pub fn new() -> Self {
-            Self
-        }
-    }
-
-    impl VerificationReporter for SilentReporter {
-        fn report_verification_start(&self, _parallel: bool) {}
-        fn report_files_found(&self, _count: usize) {}
-        fn report_verifying_file(&self, _file_name: &str) {}
-        fn report_file_status(&self, _file_name: &str, _status: FileStatus) {}
-        fn report_damaged_blocks(&self, _file_name: &str, _damaged_blocks: &[u32]) {}
-        fn report_verification_results(&self, _results: &VerificationResults) {}
-    }
-
-    /// Print a list of block numbers, with summary for large lists
-    fn print_block_list(damaged_blocks: &[u32]) {
-        if damaged_blocks.len() <= MIN_BLOCKS_FOR_SUMMARY {
-            // Show all blocks if there are few enough
-            for &block_num in damaged_blocks {
-                println!("  Block {}: damaged", block_num);
-            }
-        } else {
-            // Show first and last N blocks if there are many
-            for &block_num in &damaged_blocks[..BLOCK_SUMMARY_HEAD_TAIL] {
-                println!("  Block {}: damaged", block_num);
-            }
-            println!(
-                "  ... {} more damaged blocks ...",
-                damaged_blocks.len() - (2 * BLOCK_SUMMARY_HEAD_TAIL)
-            );
-            for &block_num in &damaged_blocks[damaged_blocks.len() - BLOCK_SUMMARY_HEAD_TAIL..] {
-                println!("  Block {}: damaged", block_num);
-            }
-        }
-    }
-}
-
 /// Print verification results in par2cmdline style (legacy function)
 pub fn print_verification_results(results: &VerificationResults) {
-    use reporting::VerificationReporter;
-    let reporter = reporting::ConsoleReporter::new();
+    let reporter = ConsoleVerificationReporter::new();
     reporter.report_verification_results(results);
 }
 
