@@ -1,7 +1,7 @@
 use crate::domain::{Crc32Value, FileId, Md5Hash};
+use crate::packets::processing::*;
 use crate::reporters::{ConsoleVerificationReporter, VerificationReporter};
 use crate::validation;
-use crate::Packet;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
 use std::fmt;
@@ -279,11 +279,16 @@ impl FileVerifier {
     ) -> FileStatus {
         let file_path = self.base_path.join(file_name);
 
-        // Functional verification pipeline
-        Self::check_file_existence(&file_path)
-            .and_then(|_| Self::check_file_size(&file_path, expected_length))
-            .and_then(|_| Self::verify_file_hashes(&file_path, expected_md5_16k, expected_md5_full))
-            .unwrap_or(FileStatus::Corrupted)
+        // Functional verification pipeline with proper error handling
+        match Self::check_file_existence(&file_path) {
+            Err(FileStatus::Missing) => FileStatus::Missing,
+            Err(status) => status,
+            Ok(_) => Self::check_file_size(&file_path, expected_length)
+                .and_then(|_| {
+                    Self::verify_file_hashes(&file_path, expected_md5_16k, expected_md5_full)
+                })
+                .unwrap_or(FileStatus::Corrupted),
+        }
     }
 
     /// Check if file exists
@@ -468,64 +473,6 @@ pub fn comprehensive_verify_files_with_config(
     comprehensive_verify_files_with_config_and_reporter(packets, config, &reporter)
 }
 
-/// Functional helpers for packet processing
-mod packet_processing {
-    use super::*;
-
-    /// Extract main packet information
-    pub fn extract_main_packet(packets: &[crate::Packet]) -> Option<&crate::packets::MainPacket> {
-        packets.iter().find_map(|p| {
-            if let Packet::Main(main) = p {
-                Some(main)
-            } else {
-                None
-            }
-        })
-    }
-
-    /// Count recovery blocks available
-    pub fn count_recovery_blocks(packets: &[crate::Packet]) -> usize {
-        packets
-            .iter()
-            .filter(|p| matches!(p, Packet::RecoverySlice(_)))
-            .count()
-    }
-
-    /// Extract file descriptions (deduplicated by file_id)
-    pub fn extract_file_descriptions(
-        packets: &[crate::Packet],
-    ) -> Vec<&crate::packets::FileDescriptionPacket> {
-        packets
-            .iter()
-            .filter_map(|p| {
-                if let Packet::FileDescription(fd) = p {
-                    Some((fd.file_id, fd))
-                } else {
-                    None
-                }
-            })
-            .collect::<HashMap<FileId, &crate::packets::FileDescriptionPacket>>()
-            .into_values()
-            .collect()
-    }
-
-    /// Extract slice checksums indexed by file ID
-    pub fn extract_slice_checksums(
-        packets: &[crate::Packet],
-    ) -> HashMap<FileId, Vec<(Md5Hash, Crc32Value)>> {
-        packets
-            .iter()
-            .filter_map(|p| {
-                if let Packet::InputFileSliceChecksum(ifsc) = p {
-                    Some((ifsc.file_id, ifsc.slice_checksums.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-}
-
 /// Functional helpers for results aggregation
 mod results_aggregation {
     use super::*;
@@ -625,13 +572,13 @@ fn comprehensive_verify_files_impl<R: VerificationReporter>(
     reporter.report_verification_start(parallel);
 
     // Extract packet information using functional helpers
-    let block_size = packet_processing::extract_main_packet(&packets)
+    let block_size = extract_main_packet(&packets)
         .map(|m| m.slice_size)
         .unwrap_or(0);
 
-    let recovery_blocks_available = packet_processing::count_recovery_blocks(&packets);
-    let file_descriptions = packet_processing::extract_file_descriptions(&packets);
-    let slice_checksums = packet_processing::extract_slice_checksums(&packets);
+    let recovery_blocks_available = count_recovery_blocks(&packets);
+    let file_descriptions = extract_file_descriptions(&packets);
+    let slice_checksums = extract_slice_checksums(&packets);
 
     reporter.report_files_found(file_descriptions.len());
 

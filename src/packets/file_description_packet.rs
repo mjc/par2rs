@@ -3,7 +3,7 @@ use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0FileDesc";
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Clone, BinRead, BinWrite)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct FileDescriptionPacket {
     pub length: u64, // Length of  the packet

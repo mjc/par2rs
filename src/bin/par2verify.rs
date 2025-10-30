@@ -49,10 +49,7 @@ fn main() -> Result<()> {
     println!("Loading PAR2 files...\n");
     let all_packets = par2_files::load_all_par2_packets(&par2_files);
 
-    let total_recovery_blocks = all_packets
-        .iter()
-        .filter(|p| matches!(p, par2rs::Packet::RecoverySlice(_)))
-        .count();
+    let total_recovery_blocks = par2rs::packets::processing::count_recovery_blocks(&all_packets);
 
     println!(); // Blank line after loading
 

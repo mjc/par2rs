@@ -5,7 +5,7 @@ use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0Main\0\0\0\0";
 
-#[derive(BinRead)]
+#[derive(Clone, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 /// A doctest for testing the `MainPacket` structure with `binread`.
 ///
