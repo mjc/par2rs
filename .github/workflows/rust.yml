@@ -18,7 +18,15 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Cache par2cmdline
+      id: cache-par2
+      uses: actions/cache@v4
+      with:
+        path: /usr/bin/par2
+        key: ${{ runner.os }}-par2cmdline
+
     - name: Install par2cmdline
+      if: steps.cache-par2.outputs.cache-hit != 'true'
       run: sudo apt-get update && sudo apt-get install -y par2
 
     - name: Cache cargo registry
@@ -55,7 +63,15 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Cache par2cmdline
+      id: cache-par2-coverage
+      uses: actions/cache@v4
+      with:
+        path: /usr/bin/par2
+        key: ${{ runner.os }}-par2cmdline
+
     - name: Install par2cmdline
+      if: steps.cache-par2-coverage.outputs.cache-hit != 'true'
       run: sudo apt-get update && sudo apt-get install -y par2
 
     - name: Cache cargo registry
