@@ -15,8 +15,20 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache Rust toolchain
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.rustup/toolchains
+          ~/.rustup/update-hashes
+          ~/.rustup/settings.toml
+        key: ${{ runner.os }}-rustup-${{ hashFiles('rust-toolchain.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-rustup-
 
     - name: Cache par2cmdline
       id: cache-par2
@@ -60,8 +72,20 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache Rust toolchain
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.rustup/toolchains
+          ~/.rustup/update-hashes
+          ~/.rustup/settings.toml
+        key: ${{ runner.os }}-rustup-${{ hashFiles('rust-toolchain.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-rustup-
 
     - name: Cache par2cmdline
       id: cache-par2-coverage
