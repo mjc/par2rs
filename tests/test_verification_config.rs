@@ -36,12 +36,12 @@ fn test_verification_config_thread_bounds() {
 fn test_verification_config_parallel_combinations() {
     // Test all combinations of parallel and thread settings
     let combinations = [
-        (0, true),   // Default threads, parallel
-        (0, false),  // Default threads, sequential
-        (1, true),   // Single thread, parallel (effectively sequential)
-        (1, false),  // Single thread, sequential
-        (4, true),   // Multi-thread, parallel
-        (4, false),  // Multi-thread, sequential
+        (0, true),  // Default threads, parallel
+        (0, false), // Default threads, sequential
+        (1, true),  // Single thread, parallel (effectively sequential)
+        (1, false), // Single thread, sequential
+        (4, true),  // Multi-thread, parallel
+        (4, false), // Multi-thread, sequential
     ];
 
     for (threads, parallel) in combinations.iter() {
@@ -56,13 +56,13 @@ fn test_effective_thread_calculation() {
     // Test auto-detection of thread counts
     let config = VerificationConfig::new(0, true);
     let threads = config.effective_threads();
-    
+
     assert!(threads > 0, "Should auto-detect threads");
 
     // Test explicit values
     let config = VerificationConfig::new(8, true);
     assert_eq!(config.effective_threads(), 8);
-    
+
     // Test sequential mode forces single thread
     let config = VerificationConfig::new(8, false);
     assert_eq!(config.effective_threads(), 1);

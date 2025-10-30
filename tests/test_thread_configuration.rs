@@ -70,7 +70,7 @@ fn test_parallel_vs_sequential_flag() {
     // Both should have same thread counts but different parallel flag
     assert_eq!(parallel_config.threads, sequential_config.threads);
     assert_ne!(parallel_config.parallel, sequential_config.parallel);
-    
+
     // Effective threads should differ
     assert_eq!(parallel_config.effective_threads(), 4);
     assert_eq!(sequential_config.effective_threads(), 1);

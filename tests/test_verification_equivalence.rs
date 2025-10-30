@@ -31,8 +31,7 @@ fn test_parallel_sequential_equivalence() {
 
         // Test with parallel mode
         let parallel_config = VerificationConfig {
-            compute_threads: 2, // Use 2 threads for deterministic testing
-            io_threads: 1,      // Conservative I/O threading
+            threads: 2, // Use 2 threads for deterministic testing
             parallel: true,
         };
         let parallel_results =
@@ -40,8 +39,7 @@ fn test_parallel_sequential_equivalence() {
 
         // Test with sequential mode
         let sequential_config = VerificationConfig {
-            compute_threads: 0, // Threads don't matter in sequential mode
-            io_threads: 0,
+            threads: 0, // Threads don't matter in sequential mode
             parallel: false,
         };
         let sequential_results =
@@ -49,14 +47,14 @@ fn test_parallel_sequential_equivalence() {
 
         // Compare core verification results
         assert_eq!(
-            parallel_results.complete_file_count,
-            sequential_results.complete_file_count,
+            parallel_results.present_file_count,
+            sequential_results.present_file_count,
             "Complete file count mismatch for {}",
             test_file.display()
         );
         assert_eq!(
-            parallel_results.damaged_file_count,
-            sequential_results.damaged_file_count,
+            parallel_results.corrupted_file_count,
+            sequential_results.corrupted_file_count,
             "Damaged file count mismatch for {}",
             test_file.display()
         );
@@ -191,8 +189,7 @@ fn test_thread_count_consistency() {
         }
 
         let config = VerificationConfig {
-            compute_threads: *threads,
-            io_threads: 1, // Conservative I/O threading for tests
+            threads: *threads,
             parallel: true,
         };
         let result = comprehensive_verify_files_with_config(packets, &config);
@@ -205,7 +202,7 @@ fn test_thread_count_consistency() {
         let current = &results[i];
 
         assert_eq!(
-            baseline.complete_file_count, current.complete_file_count,
+            baseline.present_file_count, current.present_file_count,
             "Thread count {} produces different complete file count",
             thread_counts[i]
         );
