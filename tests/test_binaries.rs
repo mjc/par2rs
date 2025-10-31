@@ -165,7 +165,7 @@ fn test_par2_verify_quiet_mode() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let total_output = stdout.len() + stderr.len();
-    
+
     // Quiet mode should produce less output than normal mode
     // Allow some output for warnings/errors
     assert!(
@@ -336,7 +336,7 @@ fn test_par2repair_quiet_mode() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let total_output = stdout.len() + stderr.len();
-    
+
     // Quiet mode should produce less output than normal mode
     assert!(
         total_output < 1000,
@@ -402,7 +402,7 @@ fn test_split_par2_runs() {
 fn test_par2_verify_integration() {
     // Create a temporary directory
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    
+
     // Copy test fixtures to temp dir
     let fixture_dir = Path::new("tests/fixtures/repair_scenarios");
     if !fixture_dir.exists() {
@@ -416,7 +416,7 @@ fn test_par2_verify_integration() {
         eprintln!("Skipping integration test - testfile.par2 not found");
         return;
     }
-    
+
     let dest_par2 = temp_dir.path().join("testfile.par2");
     fs::copy(&src_par2, &dest_par2).expect("Failed to copy PAR2 file");
 
@@ -491,8 +491,14 @@ fn test_par2_threads_argument() {
 
 #[test]
 fn test_all_binaries_exist() {
-    let binaries = vec!["par2", "par2verify", "par2repair", "par2create", "split_par2"];
-    
+    let binaries = vec![
+        "par2",
+        "par2verify",
+        "par2repair",
+        "par2create",
+        "split_par2",
+    ];
+
     for binary in binaries {
         let path = get_binary_path(binary);
         assert!(
@@ -535,11 +541,11 @@ fn test_par2verify_error_handling() {
         output.status.success() || output.status.code().is_some(),
         "par2verify should handle invalid files gracefully"
     );
-    
+
     // Should indicate no files found
     assert!(
-        stdout.contains("0 recoverable files") 
-            || stdout.contains("0 files") 
+        stdout.contains("0 recoverable files")
+            || stdout.contains("0 files")
             || stderr.contains("Error")
             || stderr.contains("Warning"),
         "Expected indication of no valid PAR2 data"
