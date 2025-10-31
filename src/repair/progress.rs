@@ -229,7 +229,8 @@ impl ProgressReporter for ConsoleReporter {
             return;
         }
         let percentage = (blocks_processed as f64 / total_blocks as f64) * 100.0;
-        print!("\rComputing Reed-Solomon: {:.1}%", percentage);
+        // Output format compatible with sabnzbd: "Repairing: XX.X%"
+        print!("\rRepairing: {:.1}%", percentage);
         std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
         if blocks_processed == total_blocks {
             println!();
