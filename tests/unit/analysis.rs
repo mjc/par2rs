@@ -3,7 +3,7 @@
 //! Tests for packet analysis, statistics calculation, and metadata extraction.
 //! Organized into logical groups: filename extraction, statistics, file info, and edge cases.
 
-use par2rs::analysis::*;
+use par2rs::packets::processing;
 use std::fs;
 
 // Helper function for tests that need to load all packets including recovery slices
@@ -45,7 +45,7 @@ mod filename_extraction {
         let mut file = fs::File::open(main_file).unwrap();
         let packets = par2rs::parse_packets(&mut file);
 
-        let filenames = extract_unique_filenames(&packets);
+        let filenames = processing::extract_filenames(&packets);
 
         // Should find the test file
         assert_eq!(filenames.len(), 1);
@@ -55,7 +55,7 @@ mod filename_extraction {
     #[test]
     fn returns_empty_list_when_no_packets() {
         let packets = vec![];
-        let filenames = extract_unique_filenames(&packets);
+        let filenames = processing::extract_filenames(&packets);
         assert!(filenames.is_empty());
     }
 }
@@ -69,10 +69,10 @@ mod statistics_calculation {
         let mut file = fs::File::open(main_file).unwrap();
         let packets = par2rs::parse_packets(&mut file);
 
-        let (block_size, total_blocks) = extract_main_packet_stats(&packets);
+        let (block_size, total_blocks) = processing::extract_main_stats(&packets);
 
         // Test file should have specific block size
-        assert_eq!(block_size, 528);
+        assert_eq!(block_size as u32, 528);
         // Should have calculated correct number of blocks
         assert!(total_blocks > 0);
         assert_eq!(total_blocks, 1986); // Expected value for test file
@@ -84,7 +84,10 @@ mod statistics_calculation {
         let mut file = fs::File::open(main_file).unwrap();
         let packets = par2rs::parse_packets(&mut file);
 
-        let total_size = calculate_total_size(&packets);
+        let total_size = processing::extract_file_descriptions(&packets)
+            .into_iter()
+            .map(|fd| fd.file_length)
+            .sum::<u64>();
 
         // Test file is 1MB
         assert_eq!(total_size, 1048576);
@@ -96,7 +99,7 @@ mod statistics_calculation {
         let par2_files = par2rs::par2_files::collect_par2_files(main_file);
         let (packets, recovery_blocks) = load_packets_with_recovery(&par2_files);
 
-        let stats = calculate_par2_stats(&packets, recovery_blocks);
+        let stats = par2rs::analysis::calculate_par2_stats(&packets, recovery_blocks);
 
         // Verify all statistics
         assert_eq!(stats.file_count, 1);
@@ -111,17 +114,20 @@ mod statistics_calculation {
         // Create empty packet vector
         let packets = vec![];
 
-        let (block_size, total_blocks) = extract_main_packet_stats(&packets);
+        let (block_size, total_blocks) = processing::extract_main_stats(&packets);
 
         // Should return defaults when no main packet present
-        assert_eq!(block_size, 0);
+        assert_eq!(block_size as u32, 0);
         assert_eq!(total_blocks, 0);
     }
 
     #[test]
     fn returns_zero_size_for_empty_packets() {
         let packets = vec![];
-        let total_size = calculate_total_size(&packets);
+        let total_size = processing::extract_file_descriptions(&packets)
+            .into_iter()
+            .map(|fd| fd.file_length)
+            .sum::<u64>();
         assert_eq!(total_size, 0);
     }
 
@@ -132,10 +138,10 @@ mod statistics_calculation {
         let par2_files = par2rs::par2_files::collect_par2_files(main_file);
 
         let (packets1, recovery_blocks1) = load_packets_with_recovery(&par2_files);
-        let stats1 = calculate_par2_stats(&packets1, recovery_blocks1);
+        let stats1 = par2rs::analysis::calculate_par2_stats(&packets1, recovery_blocks1);
 
         let (packets2, recovery_blocks2) = load_packets_with_recovery(&par2_files);
-        let stats2 = calculate_par2_stats(&packets2, recovery_blocks2);
+        let stats2 = par2rs::analysis::calculate_par2_stats(&packets2, recovery_blocks2);
 
         // Stats should be identical
         assert_eq!(stats1.file_count, stats2.file_count);
@@ -155,7 +161,9 @@ mod file_information {
         let mut file = fs::File::open(main_file).unwrap();
         let packets = par2rs::parse_packets(&mut file);
 
-        let file_info = collect_file_info_from_packets(&packets);
+        let file_info = processing::extract_file_info(&packets)
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
 
         // Should have one file
         assert_eq!(file_info.len(), 1);
@@ -179,7 +187,9 @@ mod file_information {
         let par2_files = par2rs::par2_files::collect_par2_files(main_file);
         let (packets, _) = load_packets_with_recovery(&par2_files);
 
-        let file_info = collect_file_info_from_packets(&packets);
+        let file_info = processing::extract_file_info(&packets)
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
 
         // Even though we load from multiple volume files,
         // there should still be only one unique file described
@@ -190,13 +200,15 @@ mod file_information {
     #[test]
     fn returns_empty_info_for_empty_packets() {
         let packets = vec![];
-        let file_info = collect_file_info_from_packets(&packets);
+        let file_info = processing::extract_file_info(&packets)
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
         assert!(file_info.is_empty());
     }
 }
 
 mod par2_stats_struct {
-    use super::*;
+    use par2rs::analysis::{print_summary_stats, Par2Stats};
 
     #[test]
     fn supports_clone_and_debug() {

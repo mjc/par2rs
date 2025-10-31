@@ -7,7 +7,7 @@ edition = "2021"
 binrw = "*"
 clap = "4.5.39"
 rayon = "1.10.0"
-md-5 = { version = "0.10", features = ["asm"] }
+md-5 = { git = "https://github.com/mjc/hashes", package = "md-5"}
 hex = "0.4.3"
 crc32fast = "1.4.0"
 log = "0.4"
@@ -25,10 +25,22 @@ criterion = { version = "0.7", features = ["html_reports"] }
 # Property-based testing
 proptest = "1.5"
 # Random number generation for tests
-rand = "0.8"
+rand = "0.9"
 
 [[bench]]
 name = "repair_benchmark"
+harness = false
+
+[[bench]]
+name = "verify_performance"
+harness = false
+
+[[bench]]
+name = "md5_throughput"
+harness = false
+
+[[bench]]
+name = "md5_optimized"
 harness = false
 
 [profile.release]

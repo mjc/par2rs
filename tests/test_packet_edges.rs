@@ -3,7 +3,7 @@
 use binrw::BinReaderExt;
 use par2rs::domain::{FileId, Md5Hash, RecoverySetId};
 use par2rs::packets::{InputFileSliceChecksumPacket, Packet, RecoverySlicePacket};
-use par2rs::slice_provider::{
+use par2rs::repair::{
     ActualDataSize, ChunkedSliceProvider, LogicalSliceSize, SliceLocation, SliceProvider,
 };
 use std::fs::File;

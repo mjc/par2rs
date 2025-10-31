@@ -134,22 +134,13 @@ pub fn parse_par2_file_with_progress(
     }
 
     let new_packets = parse_par2_file(par2_file, seen_packet_hashes)?;
-    let recovery_blocks = count_recovery_blocks(&new_packets);
+    let recovery_blocks = crate::packets::processing::count_recovery_blocks(&new_packets);
 
     if show_progress {
         print_packet_load_result(new_packets.len(), recovery_blocks);
     }
 
     Ok((new_packets, recovery_blocks))
-}
-
-/// Count the number of recovery slice packets in a collection of packets
-#[must_use]
-pub fn count_recovery_blocks(packets: &[Packet]) -> usize {
-    packets
-        .iter()
-        .filter(|p| matches!(p, Packet::RecoverySlice(_)))
-        .count()
 }
 
 /// Print the result of loading packets from a file

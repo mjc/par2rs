@@ -3,7 +3,7 @@ use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0FileDesc";
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Clone, BinRead, BinWrite)]
 #[br(magic = b"PAR2\0PKT")]
 pub struct FileDescriptionPacket {
     pub length: u64, // Length of  the packet
@@ -92,8 +92,7 @@ impl FileDescriptionPacket {
 
         let set_id_start = 24; // Magic (8 bytes) + MD5 (16 bytes)
         let packet_data_for_md5 = serialized_packet.get_ref()[set_id_start..].to_vec();
-        use md5::Digest;
-        let computed_md5: [u8; 16] = md5::Md5::digest(&packet_data_for_md5).into();
+        let computed_md5 = crate::checksum::compute_md5_bytes(&packet_data_for_md5);
         if computed_md5 != self.md5 {
             println!(
                 "MD5 mismatch: expected {:?}, got {:?}",

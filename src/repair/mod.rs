@@ -14,21 +14,30 @@
 mod builder;
 mod context;
 mod error;
+mod md5_writer;
 mod progress;
+mod recovery_loader;
+pub(crate) mod slice_provider;
 mod types;
 
 // Re-export public API
 pub use builder::RepairContextBuilder;
 pub use context::RepairContext;
 pub use error::{RepairError, Result};
+pub use md5_writer::Md5Writer;
 pub use progress::{ConsoleReporter, ProgressReporter, SilentReporter};
+pub use recovery_loader::{FileSystemLoader, RecoveryDataLoader};
+pub use slice_provider::{
+    ActualDataSize, ChunkedSliceProvider, LogicalSliceSize, RecoverySliceProvider,
+    Result as SliceProviderResult, SliceLocation, SliceProvider, SliceProviderError,
+    DEFAULT_CHUNK_SIZE,
+};
 pub use types::{
     FileInfo, FileStatus, ReconstructedSlices, RecoverySetInfo, RepairResult, ValidationCache,
     VerificationResult,
 };
 
 use crate::domain::{FileId, LocalSliceIndex, Md5Hash};
-use crate::slice_provider::{ActualDataSize, LogicalSliceSize};
 use crate::RecoverySlicePacket;
 use log::debug;
 use rayon::prelude::*;
@@ -38,26 +47,26 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 impl RepairContext {
-    /// Check the status of all files in the recovery set
+    /// Check the status of all files in the recovery set (in parallel)
     pub fn check_file_status(&self) -> HashMap<String, FileStatus> {
-        let mut status_map = HashMap::default();
+        self.recovery_set
+            .files
+            .par_iter()
+            .map(|file_info| {
+                let file_path = self.base_path.join(&file_info.file_name);
 
-        for file_info in &self.recovery_set.files {
-            let file_path = self.base_path.join(&file_info.file_name);
+                // Report file opening (thread-safe)
+                self.reporter().report_file_opening(&file_info.file_name);
 
-            // Report file opening
-            self.reporter().report_file_opening(&file_info.file_name);
+                let status = self.determine_file_status(&file_path, file_info);
 
-            let status = self.determine_file_status(&file_path, file_info);
+                // Report determined status (thread-safe)
+                self.reporter()
+                    .report_file_status(&file_info.file_name, status);
 
-            // Report determined status
-            self.reporter()
-                .report_file_status(&file_info.file_name, status);
-
-            status_map.insert(file_info.file_name.clone(), status);
-        }
-
-        status_map
+                (file_info.file_name.clone(), status)
+            })
+            .collect()
     }
 
     /// Determine the status of a single file
@@ -77,7 +86,7 @@ impl RepairContext {
 
         // ULTRA-FAST filter: Check 16KB MD5 first (0.016GB vs 38GB = 2375x faster!)
         // For large datasets, this avoids hashing 38GB when files are intact
-        use crate::file_verification::{calculate_file_md5, calculate_file_md5_16k};
+        use crate::checksum::{calculate_file_md5, calculate_file_md5_16k};
         if let Ok(md5_16k) = calculate_file_md5_16k(file_path) {
             if md5_16k != file_info.md5_16k {
                 // 16KB doesn't match - file is definitely corrupted
@@ -417,7 +426,7 @@ impl RepairContext {
                 let file_path = self.base_path.join(&file_info.file_name);
 
                 // Verify the MD5 hash of the repaired file
-                match crate::file_verification::calculate_file_md5(&file_path) {
+                match crate::checksum::calculate_file_md5(&file_path) {
                     Ok(computed_hash) if computed_hash == file_info.md5_hash => {
                         verified_after_repair.push(repaired_file.clone());
                         self.reporter().report_verification(
@@ -505,7 +514,7 @@ impl RepairContext {
         files_to_repair: &[(&FileInfo, Vec<usize>)],
         validation_cache: &ValidationCache,
     ) -> Result<HashMap<usize, Vec<u8>>> {
-        use crate::slice_provider::{ChunkedSliceProvider, RecoverySliceProvider, SliceLocation};
+        use self::slice_provider::{ChunkedSliceProvider, RecoverySliceProvider, SliceLocation};
         use std::io::Cursor;
 
         // Collect all global missing indices
@@ -703,7 +712,7 @@ impl RepairContext {
             .collect();
 
         // Use shared validation module for efficient sequential I/O
-        let valid_slices = crate::validation::validate_slices_crc32(
+        let valid_slices = crate::verify::validation::validate_slices_crc32(
             &file_path,
             &crc_checksums,
             self.recovery_set.slice_size as usize,
@@ -771,7 +780,7 @@ impl RepairContext {
             source,
         })?;
         let buffered = std::io::BufWriter::with_capacity(1024 * 1024, file);
-        let mut writer = crate::md5_writer::Md5Writer::new(buffered);
+        let mut writer = md5_writer::Md5Writer::new(buffered);
 
         let slice_size = self.recovery_set.slice_size as usize;
         let mut slice_buffer = vec![0u8; slice_size];
@@ -913,6 +922,28 @@ impl RepairContext {
 /// * `Err(...)` - Failed to load PAR2 files or create repair context
 pub fn repair_files(par2_file: &str) -> Result<(RepairContext, RepairResult)> {
     repair_files_with_reporter(par2_file, Box::new(ConsoleReporter::new(false)))
+}
+
+/// High-level repair function with custom progress reporter and verification config
+///
+/// Allows specifying a custom progress reporter and verification configuration
+/// for unified verification behavior between verify and repair commands.
+///
+/// # Arguments
+/// * `par2_file` - Path to the PAR2 file
+/// * `reporter` - Progress reporter implementation
+/// * `verify_config` - Verification configuration (threading, parallel/sequential)
+///
+/// # Returns
+/// * `Ok((RepairContext, RepairResult))` - Repair operation completed with context and result
+/// * `Err(...)` - Failed to load PAR2 files or create repair context
+pub fn repair_files_with_config(
+    par2_file: &str,
+    reporter: Box<dyn ProgressReporter>,
+    _verify_config: &crate::verify::VerificationConfig,
+) -> Result<(RepairContext, RepairResult)> {
+    // TODO: Integrate verification config into the repair process
+    repair_files_with_reporter(par2_file, reporter)
 }
 
 /// High-level repair function with custom progress reporter

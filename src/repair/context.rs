@@ -4,9 +4,7 @@ use super::error::{RepairError, Result};
 use super::progress::{ConsoleReporter, ProgressReporter};
 use super::types::{FileInfo, RecoverySetInfo};
 use crate::domain::{FileId, GlobalSliceIndex};
-use crate::{
-    FileDescriptionPacket, InputFileSliceChecksumPacket, MainPacket, Packet, RecoverySliceMetadata,
-};
+use crate::packets::{FileDescriptionPacket, Packet, RecoverySliceMetadata};
 use log::debug;
 use rustc_hash::FxHashMap as HashMap;
 use std::path::PathBuf;
@@ -75,28 +73,9 @@ impl RepairContext {
 
     /// Extract recovery set information from packets
     fn extract_recovery_set_info(packets: Vec<Packet>) -> Result<RecoverySetInfo> {
-        let mut main_packet: Option<MainPacket> = None;
-        let mut file_descriptions: Vec<FileDescriptionPacket> = Vec::new();
-        let mut input_file_slice_checksums: Vec<InputFileSliceChecksumPacket> = Vec::new();
-
-        // Collect packets by type (excluding RecoverySlice - handled via metadata)
-        for packet in packets {
-            match packet {
-                Packet::Main(main) => {
-                    main_packet = Some(main);
-                }
-                Packet::FileDescription(fd) => {
-                    file_descriptions.push(fd);
-                }
-                Packet::RecoverySlice(_) => {
-                    // Skip - recovery slices are loaded via metadata for memory efficiency
-                }
-                Packet::InputFileSliceChecksum(ifsc) => {
-                    input_file_slice_checksums.push(ifsc);
-                }
-                _ => {} // Ignore other packet types for now
-            }
-        }
+        // Use functional packet processing for clean separation
+        let (main_packet, file_descriptions, input_file_slice_checksums, _recovery_count) =
+            crate::packets::processing::separate_packets(packets);
 
         let main = main_packet.ok_or(RepairError::NoMainPacket)?;
 
@@ -104,11 +83,11 @@ impl RepairContext {
             return Err(RepairError::NoFileDescriptions);
         }
 
-        // Build a map of file_id -> FileDescriptionPacket for easy lookup
-        let mut fd_map: HashMap<FileId, FileDescriptionPacket> = HashMap::default();
-        for fd in file_descriptions {
-            fd_map.insert(fd.file_id, fd);
-        }
+        // Build lookup map for O(1) access
+        let fd_map: HashMap<FileId, FileDescriptionPacket> = file_descriptions
+            .into_iter()
+            .map(|fd| (fd.file_id, fd))
+            .collect();
 
         // Build file information in the order specified by main.file_ids
         // This is critical for correct global slice indexing!
@@ -197,7 +176,7 @@ impl RepairContext {
         // Remove backup files (.1, .bak, etc.) for all files in the recovery set
         for file_info in &self.recovery_set.files {
             let file_path = self.base_path.join(&file_info.file_name);
-            
+
             // Try common backup file extensions
             for ext in &["1", "bak"] {
                 let backup_path = file_path.with_extension(ext);
@@ -206,8 +185,11 @@ impl RepairContext {
                         file: backup_path.clone(),
                         source: e,
                     })?;
-                    
-                    println!("Remove \"{}\".", backup_path.file_name().unwrap().to_string_lossy());
+
+                    println!(
+                        "Remove \"{}\".",
+                        backup_path.file_name().unwrap().to_string_lossy()
+                    );
                 }
             }
         }
@@ -220,11 +202,13 @@ impl RepairContext {
             for entry in entries.flatten() {
                 if let Some(ext) = entry.path().extension() {
                     if ext == "par2" {
-                        fs::remove_file(&entry.path()).map_err(|e| RepairError::FileDeleteError {
-                            file: entry.path(),
-                            source: e,
+                        fs::remove_file(entry.path()).map_err(|e| {
+                            RepairError::FileDeleteError {
+                                file: entry.path(),
+                                source: e,
+                            }
                         })?;
-                        
+
                         println!("Remove \"{}\".", entry.file_name().to_string_lossy());
                     }
                 }
@@ -234,4 +218,3 @@ impl RepairContext {
         Ok(())
     }
 }
-

@@ -6,6 +6,7 @@ pub mod file_description_packet;
 pub mod input_file_slice_checksum_packet;
 pub mod main_packet;
 pub mod packed_main_packet;
+pub mod processing;
 pub mod recovery_slice_packet;
 
 pub use creator_packet::CreatorPacket;
@@ -13,6 +14,7 @@ pub use file_description_packet::FileDescriptionPacket;
 pub use input_file_slice_checksum_packet::InputFileSliceChecksumPacket;
 pub use main_packet::MainPacket;
 pub use packed_main_packet::PackedMainPacket;
+pub use processing::*;
 pub use recovery_slice_packet::{RecoverySliceMetadata, RecoverySlicePacket};
 
 pub const MAGIC_BYTES: &[u8] = b"PAR2\0PKT";

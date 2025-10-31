@@ -5,7 +5,7 @@ use binrw::{BinRead, BinWrite};
 
 pub const TYPE_OF_PACKET: &[u8] = b"PAR 2.0\0Main\0\0\0\0";
 
-#[derive(BinRead)]
+#[derive(Clone, BinRead)]
 #[br(magic = b"PAR2\0PKT")]
 /// A doctest for testing the `MainPacket` structure with `binread`.
 ///
@@ -153,8 +153,7 @@ impl MainPacket {
         }
 
         // Compute MD5 hash and compare with stored MD5
-        use md5::Digest;
-        let computed_md5: [u8; 16] = md5::Md5::digest(&data).into();
+        let computed_md5 = crate::checksum::compute_md5_bytes(&data);
         if computed_md5 != *self.md5.as_bytes() {
             return false;
         }

@@ -2,7 +2,7 @@
 //!
 //! Tests for FileSystemLoader implementation, error conditions, and integration scenarios.
 
-use par2rs::recovery_loader::{FileSystemLoader, RecoveryDataLoader};
+use par2rs::repair::{FileSystemLoader, RecoveryDataLoader};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;

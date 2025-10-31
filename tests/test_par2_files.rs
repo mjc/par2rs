@@ -147,7 +147,7 @@ fn test_collect_par2_files_no_parent() {
 fn test_count_recovery_blocks_empty() {
     let packets: Vec<Packet> = vec![];
 
-    let count = par2rs::par2_files::count_recovery_blocks(&packets);
+    let count = par2rs::packets::processing::count_recovery_blocks(&packets);
 
     assert_eq!(count, 0);
 }

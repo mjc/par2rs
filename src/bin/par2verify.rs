@@ -28,6 +28,9 @@ fn main() -> Result<()> {
         .get_one::<String>("input")
         .expect("input is required by clap");
 
+    // Create verification config from command line arguments
+    let verify_config = verify::VerificationConfig::from_args(&matches);
+
     let file_path = Path::new(input_file);
 
     // Validate file exists
@@ -42,14 +45,13 @@ fn main() -> Result<()> {
     // Collect all PAR2 files in the set
     let par2_files = par2_files::collect_par2_files(file_path);
 
-    // Parse all packets including recovery slices for verification (in parallel)
+    // Parse packets excluding recovery slices (verification doesn't need them)
     println!("Loading PAR2 files...\n");
-    let all_packets = par2_files::load_all_par2_packets(&par2_files);
+    let all_packets = par2_files::load_par2_packets(&par2_files, false);
 
-    let total_recovery_blocks = all_packets
-        .iter()
-        .filter(|p| matches!(p, par2rs::Packet::RecoverySlice(_)))
-        .count();
+    // Count recovery blocks without loading their data (memory efficient)
+    let recovery_metadata = par2_files::parse_recovery_slice_metadata(&par2_files, false);
+    let total_recovery_blocks = recovery_metadata.len();
 
     println!(); // Blank line after loading
 
@@ -57,9 +59,10 @@ fn main() -> Result<()> {
     let stats = analysis::calculate_par2_stats(&all_packets, total_recovery_blocks);
     analysis::print_summary_stats(&stats);
 
-    // Perform comprehensive verification
+    // Perform comprehensive verification with configuration
     println!("\nVerifying source files:\n");
-    let verification_results = verify::comprehensive_verify_files(all_packets);
+    let verification_results =
+        verify::comprehensive_verify_files_with_config(all_packets, &verify_config);
 
     // Print detailed results
     verify::print_verification_results(&verification_results);

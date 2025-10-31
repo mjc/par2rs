@@ -3,7 +3,7 @@
 //! Tests for PAR2 repair functionality, including detection of corrupted files
 //! and scenarios that require repair operations.
 
-use par2rs::file_verification::*;
+use par2rs::checksum::calculate_file_md5;
 use par2rs::par2_files::*;
 use std::fs;
 use std::path::{Path, PathBuf};

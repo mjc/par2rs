@@ -34,8 +34,8 @@ fn debug_repair_issue() {
         .unwrap();
     println!("Original file size: {} bytes", original_data.len());
 
-    use md5::Digest;
-    let original_md5: [u8; 16] = md5::Md5::digest(&original_data).into();
+    use md_5::Digest;
+    let original_md5: [u8; 16] = md_5::Md5::digest(&original_data).into();
     println!("Original MD5: {:02x?}", original_md5);
 
     // Create repair context
@@ -77,7 +77,7 @@ fn debug_repair_issue() {
         .unwrap()
         .read_to_end(&mut corrupted_data)
         .unwrap();
-    let corrupted_md5: [u8; 16] = md5::Md5::digest(&corrupted_data).into();
+    let corrupted_md5: [u8; 16] = md_5::Md5::digest(&corrupted_data).into();
     println!("Corrupted MD5: {:02x?}", corrupted_md5);
 
     // Check which specific slices are affected
@@ -134,7 +134,7 @@ fn debug_repair_issue() {
                 .unwrap()
                 .read_to_end(&mut repaired_data)
                 .unwrap();
-            let repaired_md5: [u8; 16] = md5::Md5::digest(&repaired_data).into();
+            let repaired_md5: [u8; 16] = md_5::Md5::digest(&repaired_data).into();
             println!("Repaired MD5: {:02x?}", repaired_md5);
 
             // Compare the repaired slices with original

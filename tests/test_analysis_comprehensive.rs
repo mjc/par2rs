@@ -2,8 +2,9 @@
 //!
 //! Tests for PAR2 analysis functions including statistics calculation and metadata extraction.
 
-use par2rs::analysis::*;
+use par2rs::analysis;
 use par2rs::domain::{FileId, Md5Hash, RecoverySetId};
+use par2rs::packets::processing;
 use par2rs::packets::{FileDescriptionPacket, MainPacket};
 use par2rs::Packet;
 
@@ -37,13 +38,13 @@ fn create_file_description(file_id: FileId, file_name: &str, file_length: u64) -
 }
 
 // ============================================================================
-// extract_unique_filenames Tests
+// extract_filenames Tests
 // ============================================================================
 
 #[test]
 fn test_extract_unique_filenames_empty() {
     let packets = vec![];
-    assert_eq!(extract_unique_filenames(&packets).len(), 0);
+    assert_eq!(processing::extract_filenames(&packets).len(), 0);
 }
 
 #[test]
@@ -53,7 +54,7 @@ fn test_extract_unique_filenames_single() {
         "file.txt",
         1024,
     )];
-    let names = extract_unique_filenames(&packets);
+    let names = processing::extract_filenames(&packets);
     assert_eq!(names.len(), 1);
     assert!(names.contains(&"file.txt".to_string()));
 }
@@ -65,7 +66,7 @@ fn test_extract_unique_filenames_multiple_different() {
         create_file_description(FileId::new([2; 16]), "file2.bin", 2048),
         create_file_description(FileId::new([3; 16]), "file3.dat", 4096),
     ];
-    let names = extract_unique_filenames(&packets);
+    let names = processing::extract_filenames(&packets);
     assert_eq!(names.len(), 3);
 }
 
@@ -75,8 +76,9 @@ fn test_extract_unique_filenames_duplicates() {
         create_file_description(FileId::new([1; 16]), "duplicate.txt", 1024),
         create_file_description(FileId::new([2; 16]), "duplicate.txt", 1024),
     ];
-    let names = extract_unique_filenames(&packets);
-    assert_eq!(names.len(), 1); // Should deduplicate
+    let names = processing::extract_filenames(&packets);
+    // Should deduplicate by filename, even with different file IDs
+    assert_eq!(names.len(), 1);
 }
 
 #[test]
@@ -86,7 +88,7 @@ fn test_extract_unique_filenames_with_null_termination() {
         "test\0\0\0",
         1024,
     )];
-    let names = extract_unique_filenames(&packets);
+    let names = processing::extract_filenames(&packets);
     assert!(names.contains(&"test".to_string()));
 }
 
@@ -97,27 +99,27 @@ fn test_extract_unique_filenames_filters_non_file_packets() {
         create_file_description(FileId::new([1; 16]), "file.txt", 1024),
         create_main_packet(4096),
     ];
-    let names = extract_unique_filenames(&packets);
+    let names = processing::extract_filenames(&packets);
     assert_eq!(names.len(), 1);
 }
 
 // ============================================================================
-// extract_main_packet_stats Tests
+// extract_main_stats Tests
 // ============================================================================
 
 #[test]
 fn test_extract_main_packet_stats_no_packets() {
     let packets = vec![];
-    let (_block_size, total_blocks) = extract_main_packet_stats(&packets);
-    assert_eq!(_block_size, 0);
+    let (_block_size, total_blocks) = processing::extract_main_stats(&packets);
+    assert_eq!(_block_size as u32, 0);
     assert_eq!(total_blocks, 0);
 }
 
 #[test]
 fn test_extract_main_packet_stats_only_main() {
     let packets = vec![create_main_packet(4096)];
-    let (_block_size, total_blocks) = extract_main_packet_stats(&packets);
-    assert_eq!(_block_size, 4096);
+    let (_block_size, total_blocks) = processing::extract_main_stats(&packets);
+    assert_eq!(_block_size as u32, 4096);
     assert_eq!(total_blocks, 0);
 }
 
@@ -127,8 +129,8 @@ fn test_extract_main_packet_stats_single_file() {
         create_main_packet(1024),
         create_file_description(FileId::new([1; 16]), "file.txt", 4096),
     ];
-    let (block_size, total_blocks) = extract_main_packet_stats(&packets);
-    assert_eq!(block_size, 1024);
+    let (block_size, total_blocks) = processing::extract_main_stats(&packets);
+    assert_eq!(block_size as u32, 1024);
     assert_eq!(total_blocks, 4);
 }
 
@@ -139,8 +141,8 @@ fn test_extract_main_packet_stats_multiple_files() {
         create_file_description(FileId::new([1; 16]), "file1.txt", 2000),
         create_file_description(FileId::new([2; 16]), "file2.txt", 3000),
     ];
-    let (block_size, total_blocks) = extract_main_packet_stats(&packets);
-    assert_eq!(block_size, 1000);
+    let (block_size, total_blocks) = processing::extract_main_stats(&packets);
+    assert_eq!(block_size as u32, 1000);
     assert_eq!(total_blocks, 5); // 2 + 3
 }
 
@@ -150,7 +152,7 @@ fn test_extract_main_packet_stats_partial_blocks() {
         create_main_packet(1000),
         create_file_description(FileId::new([1; 16]), "file.txt", 1500),
     ];
-    let (_block_size, total_blocks) = extract_main_packet_stats(&packets);
+    let (_block_size, total_blocks) = processing::extract_main_stats(&packets);
     assert_eq!(total_blocks, 2); // Rounds up
 }
 
@@ -161,17 +163,21 @@ fn test_extract_main_packet_stats_duplicate_files() {
         create_file_description(FileId::new([1; 16]), "file.txt", 4096),
         create_file_description(FileId::new([1; 16]), "file.txt", 4096),
     ];
-    let (_block_size, total_blocks) = extract_main_packet_stats(&packets);
+    let (_block_size, total_blocks) = processing::extract_main_stats(&packets);
     assert_eq!(total_blocks, 4); // Not 8 - deduplicated by file_id
 }
 
 // ============================================================================
-// calculate_total_size Tests
+// extract_file_descriptions and calculate total Tests
 // ============================================================================
 
 #[test]
 fn test_calculate_total_size_empty() {
-    assert_eq!(calculate_total_size(&[]), 0);
+    let total: u64 = processing::extract_file_descriptions(&[])
+        .into_iter()
+        .map(|fd| fd.file_length)
+        .sum();
+    assert_eq!(total, 0);
 }
 
 #[test]
@@ -181,7 +187,11 @@ fn test_calculate_total_size_single_file() {
         "file.txt",
         5000,
     )];
-    assert_eq!(calculate_total_size(&packets), 5000);
+    let total: u64 = processing::extract_file_descriptions(&packets)
+        .into_iter()
+        .map(|fd| fd.file_length)
+        .sum();
+    assert_eq!(total, 5000);
 }
 
 #[test]
@@ -191,7 +201,11 @@ fn test_calculate_total_size_multiple_files() {
         create_file_description(FileId::new([2; 16]), "file2.txt", 2000),
         create_file_description(FileId::new([3; 16]), "file3.txt", 3000),
     ];
-    assert_eq!(calculate_total_size(&packets), 6000);
+    let total: u64 = processing::extract_file_descriptions(&packets)
+        .into_iter()
+        .map(|fd| fd.file_length)
+        .sum();
+    assert_eq!(total, 6000);
 }
 
 #[test]
@@ -200,7 +214,11 @@ fn test_calculate_total_size_duplicate_file_ids() {
         create_file_description(FileId::new([1; 16]), "file.txt", 5000),
         create_file_description(FileId::new([1; 16]), "file.txt", 5000),
     ];
-    assert_eq!(calculate_total_size(&packets), 5000); // Counted once
+    let total: u64 = processing::extract_file_descriptions(&packets)
+        .into_iter()
+        .map(|fd| fd.file_length)
+        .sum();
+    assert_eq!(total, 5000); // Counted once
 }
 
 #[test]
@@ -210,7 +228,11 @@ fn test_calculate_total_size_ignores_non_file_packets() {
         create_file_description(FileId::new([1; 16]), "file.txt", 5000),
         create_main_packet(1024),
     ];
-    assert_eq!(calculate_total_size(&packets), 5000);
+    let total: u64 = processing::extract_file_descriptions(&packets)
+        .into_iter()
+        .map(|fd| fd.file_length)
+        .sum();
+    assert_eq!(total, 5000);
 }
 
 #[test]
@@ -219,16 +241,22 @@ fn test_calculate_total_size_large_files() {
         create_file_description(FileId::new([1; 16]), "large1.bin", 1_000_000_000),
         create_file_description(FileId::new([2; 16]), "large2.bin", 2_000_000_000),
     ];
-    assert_eq!(calculate_total_size(&packets), 3_000_000_000);
+    let total: u64 = processing::extract_file_descriptions(&packets)
+        .into_iter()
+        .map(|fd| fd.file_length)
+        .sum();
+    assert_eq!(total, 3_000_000_000);
 }
 
 // ============================================================================
-// collect_file_info_from_packets Tests
+// extract_file_info Tests
 // ============================================================================
 
 #[test]
 fn test_collect_file_info_empty() {
-    let info = collect_file_info_from_packets(&[]);
+    let info = processing::extract_file_info(&[])
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
     assert_eq!(info.len(), 0);
 }
 
@@ -236,7 +264,9 @@ fn test_collect_file_info_empty() {
 fn test_collect_file_info_single_file() {
     let file_id = FileId::new([42; 16]);
     let packets = vec![create_file_description(file_id, "test.txt", 5000)];
-    let info = collect_file_info_from_packets(&packets);
+    let info = processing::extract_file_info(&packets)
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
     assert_eq!(info.len(), 1);
     assert!(info.contains_key("test.txt"));
 }
@@ -247,7 +277,9 @@ fn test_collect_file_info_multiple_files() {
         create_file_description(FileId::new([1; 16]), "file1.txt", 1000),
         create_file_description(FileId::new([2; 16]), "file2.bin", 2000),
     ];
-    let info = collect_file_info_from_packets(&packets);
+    let info = processing::extract_file_info(&packets)
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
     assert_eq!(info.len(), 2);
 }
 
@@ -257,7 +289,9 @@ fn test_collect_file_info_duplicate_names() {
         create_file_description(FileId::new([1; 16]), "file.txt", 1000),
         create_file_description(FileId::new([2; 16]), "file.txt", 2000),
     ];
-    let info = collect_file_info_from_packets(&packets);
+    let info = processing::extract_file_info(&packets)
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
     assert_eq!(info.len(), 1); // Last one wins
 }
 
@@ -267,7 +301,7 @@ fn test_collect_file_info_duplicate_names() {
 
 #[test]
 fn test_calculate_par2_stats_empty() {
-    let stats = calculate_par2_stats(&[], 0);
+    let stats = analysis::calculate_par2_stats(&[], 0);
     assert_eq!(stats.file_count, 0);
     assert_eq!(stats.block_size, 0);
     assert_eq!(stats.total_blocks, 0);
@@ -282,7 +316,7 @@ fn test_calculate_par2_stats_basic() {
         create_file_description(FileId::new([1; 16]), "file1.txt", 8192),
         create_file_description(FileId::new([2; 16]), "file2.txt", 4096),
     ];
-    let stats = calculate_par2_stats(&packets, 5);
+    let stats = analysis::calculate_par2_stats(&packets, 5);
     assert_eq!(stats.file_count, 2);
     assert_eq!(stats.block_size, 4096);
     assert_eq!(stats.total_blocks, 3);
@@ -298,7 +332,7 @@ fn test_calculate_par2_stats_complex() {
         create_file_description(FileId::new([2; 16]), "backup.dat", 5000),
         create_file_description(FileId::new([3; 16]), "readme.txt", 500),
     ];
-    let stats = calculate_par2_stats(&packets, 10);
+    let stats = analysis::calculate_par2_stats(&packets, 10);
     assert_eq!(stats.file_count, 3);
     assert_eq!(stats.block_size, 2048);
     assert_eq!(stats.total_size, 15500);
@@ -311,7 +345,7 @@ fn test_calculate_par2_stats_complex() {
 
 #[test]
 fn test_par2_stats_clone() {
-    let stats = Par2Stats {
+    let stats = analysis::Par2Stats {
         file_count: 5,
         block_size: 4096,
         total_blocks: 20,
@@ -324,7 +358,7 @@ fn test_par2_stats_clone() {
 
 #[test]
 fn test_par2_stats_debug_format() {
-    let stats = Par2Stats {
+    let stats = analysis::Par2Stats {
         file_count: 3,
         block_size: 2048,
         total_blocks: 15,
@@ -338,12 +372,12 @@ fn test_par2_stats_debug_format() {
 #[test]
 fn test_par2_stats_print_summary() {
     // Just ensure it doesn't panic
-    let stats = Par2Stats {
+    let stats = analysis::Par2Stats {
         file_count: 3,
         block_size: 4096,
         total_blocks: 10,
         total_size: 40960,
         recovery_blocks: 5,
     };
-    print_summary_stats(&stats);
+    analysis::print_summary_stats(&stats);
 }
