@@ -119,6 +119,7 @@ fn test_type_wrapper_traits() {
 }
 
 #[test]
+#[ignore] // Requires par2cmdline to be installed
 fn test_recovery_set_methods() {
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("test.txt");
