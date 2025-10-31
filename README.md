@@ -36,18 +36,78 @@ The majority of this speedup comes from I/O optimization. See [docs/BENCHMARK_RE
 
 ### Installation
 
+#### Using Nix Flakes (Recommended)
+
+```bash
+# Run directly without installing
+nix run github:mjc/par2rs -- verify myfile.par2
+
+# Install to your profile
+nix profile install github:mjc/par2rs
+
+# Use in a flake.nix
+{
+  inputs.par2rs.url = "github:mjc/par2rs";
+  
+  # Then use as: inputs.par2rs.packages.${system}.default
+}
+```
+
+#### From Source
+
 ```bash
 # Clone the repository
-git clone https://github.com/YOURUSERNAME/par2rs.git
+git clone https://github.com/mjc/par2rs.git
 cd par2rs
 
 # Build the project
 cargo build --release
+
+# Binaries will be in target/release/
+# - par2 (unified interface, par2cmdline compatible)
+# - par2verify, par2repair, par2create (individual tools)
 ```
 
 ### Basic Usage
 
+The `par2` binary provides a par2cmdline-compatible interface:
+
+```bash
+# Verify files
+par2 verify myfile.par2
+par2 v myfile.par2  # short form
+
+# Repair damaged files
+par2 repair myfile.par2
+par2 r myfile.par2  # short form
+
+# Create recovery files (coming soon)
+par2 create myfile.par2 file1 file2
+par2 c myfile.par2 file1 file2  # short form
+```
+
+#### Advanced Options
+
+```bash
+# Quiet mode (minimal output)
+par2 v -q myfile.par2
+
+# Repair and purge backup files on success
+par2 r -p myfile.par2
+
+# Use specific number of threads
+par2 v -t 8 myfile.par2
+
+# Disable parallel processing (single-threaded)
+par2 v --no-parallel myfile.par2
+```
+
+#### Legacy Binaries
+
+Individual binaries are also available:
+
 #### Verify PAR2 Files
+
 ```bash
 # Verify integrity of files protected by PAR2
 cargo run --bin par2verify tests/fixtures/testfile.par2
