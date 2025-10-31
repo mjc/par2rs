@@ -1,6 +1,7 @@
 use par2rs::domain::{FileId, Md5Hash, RecoverySetId};
-use par2rs::packets::{FileDescriptionPacket, MainPacket, Packet};
-use par2rs::repair::RepairContext;
+use par2rs::packets::{FileDescriptionPacket, MainPacket, Packet, RecoverySliceMetadata};
+use par2rs::repair::{RepairContext, SilentReporter};
+use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -326,4 +327,285 @@ fn test_repair_context_file_count_matches() {
 
     let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
     assert_eq!(context.recovery_set.files.len(), 2);
+}
+
+#[test]
+fn test_repair_context_new_with_reporter() {
+    let dir = TempDir::new().unwrap();
+    let file_id = FileId::new([1; 16]);
+
+    let packets = vec![
+        Packet::Main(create_main_packet(vec![file_id])),
+        Packet::FileDescription(create_file_desc(file_id, "test.txt", 1024)),
+    ];
+
+    let reporter = Box::new(SilentReporter);
+    let context = RepairContext::new_with_reporter(packets, dir.path().to_path_buf(), reporter);
+    assert!(context.is_ok());
+
+    let ctx = context.unwrap();
+    assert_eq!(ctx.recovery_set.files.len(), 1);
+}
+
+#[test]
+fn test_repair_context_new_with_metadata_and_reporter() {
+    let dir = TempDir::new().unwrap();
+    let file_id = FileId::new([1; 16]);
+
+    let packets = vec![
+        Packet::Main(create_main_packet(vec![file_id])),
+        Packet::FileDescription(create_file_desc(file_id, "test.txt", 1024)),
+    ];
+
+    let metadata = vec![];
+    let reporter = Box::new(SilentReporter);
+
+    let context = RepairContext::new_with_metadata_and_reporter(
+        packets,
+        metadata,
+        dir.path().to_path_buf(),
+        reporter,
+    );
+    assert!(context.is_ok());
+}
+
+#[test]
+fn test_repair_context_purge_files_no_backups() {
+    let dir = TempDir::new().unwrap();
+    let file_id = FileId::new([1; 16]);
+
+    // Create a PAR2 file
+    let par2_file = dir.path().join("test.par2");
+    fs::write(&par2_file, b"dummy par2 data").unwrap();
+
+    let packets = vec![
+        Packet::Main(create_main_packet(vec![file_id])),
+        Packet::FileDescription(create_file_desc(file_id, "test.txt", 1024)),
+    ];
+
+    let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
+
+    // Should not error even if no backup files exist
+    let result = context.purge_files(par2_file.to_str().unwrap());
+    assert!(result.is_ok());
+
+    // PAR2 file should be deleted
+    assert!(!par2_file.exists());
+}
+
+#[test]
+fn test_repair_context_purge_files_with_backups() {
+    let dir = TempDir::new().unwrap();
+    let file_id = FileId::new([1; 16]);
+
+    // Create main file and backups with replaced extensions
+    let main_file = dir.path().join("test.txt");
+    let backup_1 = dir.path().join("test.1"); // with_extension replaces .txt with .1
+    let backup_bak = dir.path().join("test.bak"); // with_extension replaces .txt with .bak
+
+    fs::write(&main_file, b"main").unwrap();
+    fs::write(&backup_1, b"backup1").unwrap();
+    fs::write(&backup_bak, b"backup bak").unwrap();
+
+    // Create PAR2 file
+    let par2_file = dir.path().join("test.par2");
+    fs::write(&par2_file, b"dummy par2").unwrap();
+
+    let packets = vec![
+        Packet::Main(create_main_packet(vec![file_id])),
+        Packet::FileDescription(create_file_desc(file_id, "test.txt", 1024)),
+    ];
+
+    let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
+
+    let result = context.purge_files(par2_file.to_str().unwrap());
+    assert!(result.is_ok());
+
+    // Backup files should be deleted
+    assert!(!backup_1.exists());
+    assert!(!backup_bak.exists());
+
+    // Main file should still exist
+    assert!(main_file.exists());
+
+    // PAR2 file should be deleted
+    assert!(!par2_file.exists());
+}
+
+#[test]
+fn test_repair_context_purge_multiple_par2_files() {
+    let dir = TempDir::new().unwrap();
+    let file_id = FileId::new([1; 16]);
+
+    // Create multiple PAR2 files
+    let par2_main = dir.path().join("test.par2");
+    let par2_vol1 = dir.path().join("test.vol01+02.par2");
+    let par2_vol2 = dir.path().join("test.vol03+04.par2");
+
+    fs::write(&par2_main, b"main").unwrap();
+    fs::write(&par2_vol1, b"vol1").unwrap();
+    fs::write(&par2_vol2, b"vol2").unwrap();
+
+    let packets = vec![
+        Packet::Main(create_main_packet(vec![file_id])),
+        Packet::FileDescription(create_file_desc(file_id, "test.txt", 1024)),
+    ];
+
+    let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
+
+    let result = context.purge_files(par2_main.to_str().unwrap());
+    assert!(result.is_ok());
+
+    // All PAR2 files should be deleted
+    assert!(!par2_main.exists());
+    assert!(!par2_vol1.exists());
+    assert!(!par2_vol2.exists());
+}
+
+#[test]
+fn test_repair_context_slice_count_calc_verification() {
+    let dir = TempDir::new().unwrap();
+    let file_id = FileId::new([1; 16]);
+
+    // File size: 50000 bytes, slice size: 16384
+    // Expected slices: ceil(50000 / 16384) = 4
+    let packets = vec![
+        Packet::Main(create_main_packet(vec![file_id])),
+        Packet::FileDescription(create_file_desc(file_id, "test.txt", 50000)),
+    ];
+
+    let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
+    assert_eq!(context.recovery_set.files[0].slice_count, 4);
+}
+
+#[test]
+fn test_repair_context_global_offset_multifile() {
+    let dir = TempDir::new().unwrap();
+    let file_id1 = FileId::new([1; 16]);
+    let file_id2 = FileId::new([2; 16]);
+
+    // File 1: 50000 bytes = 4 slices
+    // File 2: 30000 bytes = 2 slices
+    let packets = vec![
+        Packet::Main(create_main_packet(vec![file_id1, file_id2])),
+        Packet::FileDescription(create_file_desc(file_id1, "file1.txt", 50000)),
+        Packet::FileDescription(create_file_desc(file_id2, "file2.txt", 30000)),
+    ];
+
+    let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
+
+    // File 1 should start at offset 0
+    assert_eq!(
+        context.recovery_set.files[0].global_slice_offset.as_usize(),
+        0
+    );
+    assert_eq!(context.recovery_set.files[0].slice_count, 4);
+
+    // File 2 should start at offset 4 (after file 1's slices)
+    assert_eq!(
+        context.recovery_set.files[1].global_slice_offset.as_usize(),
+        4
+    );
+    assert_eq!(context.recovery_set.files[1].slice_count, 2);
+}
+
+#[test]
+fn test_repair_context_many_files_debug_output() {
+    let dir = TempDir::new().unwrap();
+
+    // Create 10 files to test debug output truncation
+    let mut file_ids = Vec::new();
+    let mut packets = Vec::new();
+
+    for i in 0..10 {
+        let file_id = FileId::new([i as u8; 16]);
+        file_ids.push(file_id);
+        packets.push(Packet::FileDescription(create_file_desc(
+            file_id,
+            &format!("file{}.txt", i),
+            1024,
+        )));
+    }
+
+    packets.insert(0, Packet::Main(create_main_packet(file_ids)));
+
+    let context = RepairContext::new(packets, dir.path().to_path_buf());
+    assert!(context.is_ok());
+
+    let ctx = context.unwrap();
+    assert_eq!(ctx.recovery_set.files.len(), 10);
+}
+
+#[test]
+fn test_repair_context_unicode_filename_handling() {
+    let dir = TempDir::new().unwrap();
+    let file_id = FileId::new([1; 16]);
+
+    let packets = vec![
+        Packet::Main(create_main_packet(vec![file_id])),
+        Packet::FileDescription(create_file_desc(file_id, "测试文件.txt", 1024)),
+    ];
+
+    let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
+    assert_eq!(context.recovery_set.files[0].file_name, "测试文件.txt");
+}
+
+#[test]
+fn test_repair_context_zero_length_file_handling() {
+    let dir = TempDir::new().unwrap();
+    let file_id = FileId::new([1; 16]);
+
+    let packets = vec![
+        Packet::Main(create_main_packet(vec![file_id])),
+        Packet::FileDescription(create_file_desc(file_id, "empty.txt", 0)),
+    ];
+
+    let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
+    assert_eq!(context.recovery_set.files[0].slice_count, 0);
+}
+
+#[test]
+fn test_repair_context_exactly_one_slice() {
+    let dir = TempDir::new().unwrap();
+    let file_id = FileId::new([1; 16]);
+
+    // Exactly one slice worth of data
+    let packets = vec![
+        Packet::Main(create_main_packet(vec![file_id])),
+        Packet::FileDescription(create_file_desc(file_id, "exact.txt", 16384)),
+    ];
+
+    let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
+    assert_eq!(context.recovery_set.files[0].slice_count, 1);
+}
+
+#[test]
+fn test_repair_context_missing_file_description_for_id() {
+    let dir = TempDir::new().unwrap();
+    let file_id1 = FileId::new([1; 16]);
+    let file_id2 = FileId::new([2; 16]);
+
+    // Main packet references file_id2, but we only provide FileDescription for file_id1
+    let packets = vec![
+        Packet::Main(create_main_packet(vec![file_id1, file_id2])),
+        Packet::FileDescription(create_file_desc(file_id1, "file1.txt", 1024)),
+    ];
+
+    let context = RepairContext::new(packets, dir.path().to_path_buf());
+    assert!(context.is_err());
+}
+
+#[test]
+fn test_repair_context_file_name_with_null_bytes() {
+    let dir = TempDir::new().unwrap();
+    let file_id = FileId::new([1; 16]);
+
+    let packets = vec![
+        Packet::Main(create_main_packet(vec![file_id])),
+        Packet::FileDescription(create_file_desc(file_id, "test.txt\0\0\0", 1024)),
+    ];
+
+    let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
+    // Null bytes should be trimmed
+    assert_eq!(context.recovery_set.files[0].file_name, "test.txt");
 }
