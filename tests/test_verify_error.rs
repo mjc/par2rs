@@ -50,7 +50,10 @@ fn test_verification_error_from_io_error() {
 #[test]
 fn test_verification_result_ok() {
     let result: VerificationResult<i32> = Ok(42);
-    assert_eq!(result.unwrap(), 42);
+    assert!(result.is_ok());
+    if let Ok(value) = result {
+        assert_eq!(value, 42);
+    }
 }
 
 #[test]

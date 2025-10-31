@@ -22,14 +22,14 @@ fn create_test_recovery_set() -> RecoverySetInfo {
 fn test_console_reporter_new() {
     let reporter = ConsoleReporter::new(false);
     // Should create successfully
-    drop(reporter);
+    let _ = reporter;
 }
 
 #[test]
 fn test_console_reporter_new_quiet() {
     let reporter = ConsoleReporter::new(true);
     // Should create successfully
-    drop(reporter);
+    let _ = reporter;
 }
 
 #[test]
@@ -431,13 +431,12 @@ fn test_console_reporter_report_final_result() {
 #[test]
 fn test_silent_reporter_new() {
     let reporter = SilentReporter::new();
-    drop(reporter);
+    let _ = reporter;
 }
 
 #[test]
 fn test_silent_reporter_default() {
-    let reporter = SilentReporter::default();
-    drop(reporter);
+    let _reporter = SilentReporter;
 }
 
 #[test]

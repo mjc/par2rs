@@ -215,7 +215,7 @@ fn test_repair_context_large_file() {
     // 100 MB file
     let file_size = 100 * 1024 * 1024u64;
     let slice_size = 16384u64;
-    let expected_slices = (file_size + slice_size - 1) / slice_size;
+    let expected_slices = file_size.div_ceil(slice_size);
 
     let packets = vec![
         Packet::Main(create_main_packet(vec![file_id])),

@@ -264,7 +264,7 @@ fn test_slice_length_new() {
 
 #[test]
 fn test_slice_length_default() {
-    let _length = SliceLength::<32>::default();
+    let _length = SliceLength::<32>;
 }
 
 #[test]
@@ -589,7 +589,7 @@ fn test_aligned_chunk_size_new() {
 
 #[test]
 fn test_aligned_chunk_size_default() {
-    let _chunk = AlignedChunkSize::<128>::default();
+    let _chunk = AlignedChunkSize::<128>;
 }
 
 #[test]
