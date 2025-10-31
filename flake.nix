@@ -49,11 +49,9 @@
                 lockFile = ./Cargo.lock;
               };
 
-              # Skip integration tests that require built binaries in specific paths
-              # These tests are designed for local development, not Nix builds
-              checkFlags = [
-                "--skip=test_binaries"
-              ];
+              # Skip integration tests - test_binaries requires binaries in target/debug/
+              # which doesn't exist in Nix's sandboxed build environment
+              buildFeatures = ["nix-build"];
 
               # The main binary is 'par2' which provides par2cmdline-compatible interface
               # Additional utilities: par2verify, par2repair, par2create, split_par2
