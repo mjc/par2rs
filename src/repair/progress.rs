@@ -193,8 +193,8 @@ impl ProgressReporter for ConsoleReporter {
         if self.quiet {
             return;
         }
-        println!();
-        println!("Repairing:");
+        // Don't print a separate header - sabnzbd expects only "Repairing: XX.X%" format
+        // The first progress update will show the repair status
     }
 
     fn report_loading_progress(&self, files_loaded: usize, total_files: usize) {
