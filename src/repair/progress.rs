@@ -117,7 +117,7 @@ impl ProgressReporter for ConsoleReporter {
         if self.quiet {
             return;
         }
-        print!("Scanning: \"{}\"", file_name);
+        println!("Scanning: \"{}\"", file_name);
         std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
     }
 
@@ -141,16 +141,12 @@ impl ProgressReporter for ConsoleReporter {
         std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
     }
 
-    fn clear_scanning(&self, file_name: &str) {
+    fn clear_scanning(&self, _file_name: &str) {
         if self.quiet {
             return;
         }
-        print!("\r");
-        for _ in 0..(file_name.len() + 12) {
-            print!(" ");
-        }
-        print!("\r");
-        std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+        // No longer needed since we use println! instead of print! with \r
+        // Each scanning line is already on its own line
     }
 
     fn report_recovery_info(&self, available: usize, needed: usize) {

@@ -6,6 +6,11 @@
 //! - par2repair
 //! - par2create (placeholder)
 //! - split_par2
+//!
+//! NOTE: These tests are ignored in CI/Nix builds because they require
+//! binaries to be in specific filesystem locations (target/debug/)
+
+#![cfg(not(feature = "nix-build"))]
 
 use std::fs;
 use std::path::{Path, PathBuf};

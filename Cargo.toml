@@ -3,6 +3,10 @@ name = "par2rs"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Feature flag to skip test_binaries.rs in Nix builds
+nix-build = []
+
 [dependencies]
 binrw = "*"
 clap = "4.5.39"
