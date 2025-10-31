@@ -533,6 +533,10 @@ impl RepairContext {
             files_to_repair.len()
         );
 
+        // Print initial progress for sabnzbd
+        print!("\rRepairing: 0.0%");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
         // Check if we have enough recovery blocks
         if all_missing_global.len() > self.recovery_set.recovery_slices_metadata.len() {
             return Err(RepairError::InsufficientRecovery {

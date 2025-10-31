@@ -1439,6 +1439,10 @@ impl ReconstructionEngine {
             num_chunks, chunk_size
         );
 
+        // Print initial progress for sabnzbd
+        print!("\rRepairing: 0.0%");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
         for chunk_idx in 0..num_chunks {
             let chunk_offset = chunk_idx * chunk_size;
             let current_chunk_size = (self.slice_size - chunk_offset).min(chunk_size);
