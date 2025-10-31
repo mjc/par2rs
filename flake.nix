@@ -21,6 +21,44 @@
             # load external libraries that you need in your rust project here
           ];
       in {
+        # Package output - can be used as flake input and drop-in replacement for par2cmdline
+        packages = {
+          default = self.packages.${system}.par2rs;
+          
+          par2rs = pkgs.rustPlatform.buildRustPackage {
+            pname = "par2rs";
+            version = "0.1.0";
+            
+            src = ./.;
+            
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+            };
+            
+            nativeBuildInputs = with pkgs; [ rustc cargo ];
+            
+            # The main binary is 'par2' which provides par2cmdline-compatible interface
+            # Additional utilities: par2verify, par2repair, par2create, split_par2
+            meta = with pkgs.lib; {
+              description = "High-performance PAR2 file verification and repair utility written in Rust";
+              longDescription = ''
+                par2rs is a Rust implementation of the PAR2 (Parity Archive) specification,
+                providing fast file verification and repair capabilities. It can be used as
+                a drop-in replacement for par2cmdline with improved performance.
+                
+                The main 'par2' binary provides a compatible command-line interface:
+                - par2 create (or 'c') - Create PAR2 recovery files
+                - par2 verify (or 'v') - Verify file integrity
+                - par2 repair (or 'r') - Repair damaged files
+              '';
+              homepage = "https://github.com/mjc/par2rs";
+              license = licenses.mit;
+              maintainers = [];
+              mainProgram = "par2";
+            };
+          };
+        };
+
         devShells.default = pkgs.mkShell rec {
           nativeBuildInputs = [pkgs.pkg-config pkgs.direnv];
           buildInputs = with pkgs;
