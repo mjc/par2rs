@@ -1443,6 +1443,19 @@ impl ReconstructionEngine {
             let chunk_offset = chunk_idx * chunk_size;
             let current_chunk_size = (self.slice_size - chunk_offset).min(chunk_size);
 
+            // Report progress for sabnzbd compatibility
+            // Print every ~1% or at minimum every chunk for small files
+            let report_interval = if num_chunks < 100 {
+                1
+            } else {
+                num_chunks / 100
+            };
+            if chunk_idx % report_interval == 0 || chunk_idx == num_chunks - 1 {
+                let percentage = (chunk_idx as f64 / num_chunks as f64) * 100.0;
+                print!("\rRepairing: {:.1}%", percentage);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+            }
+
             if chunk_idx % 100 == 0 && chunk_idx > 0 {
                 debug!("Processing chunk {}/{}", chunk_idx, num_chunks);
             }
@@ -1600,6 +1613,11 @@ impl ReconstructionEngine {
                 }
             }
         }
+
+        // Print final 100% progress
+        print!("\rRepairing: 100.0%");
+        println!(); // Newline after completion
+        std::io::Write::flush(&mut std::io::stdout()).ok();
 
         debug!("Chunked reconstruction completed successfully");
 
