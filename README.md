@@ -320,6 +320,23 @@ This implementation follows the PAR2 specification and supports:
 - **Variable Block Sizes**: Flexible slice size configuration
 - **Reed-Solomon Codes**: Error correction mathematics
 
+## Compatibility Notes
+
+### File Scanning Strategy
+
+`par2rs` uses a **block-aligned sequential scanning** approach that differs from `par2cmdline`'s sliding window scanner:
+
+- **par2cmdline**: Uses a byte-by-byte sliding window with rolling CRC32 that can find blocks at *any offset* in a file, even if displaced by inserted/deleted data. This is more thorough but slower.
+
+- **par2rs**: Only checks blocks at their expected aligned positions using sequential reads with large buffers (128MB). This is significantly faster for normal verification but cannot find displaced blocks.
+
+**Practical Impact:**
+- ✅ **par2rs is faster** for standard verification/repair scenarios (files are either intact or corrupted at known positions)
+- ⚠️ **par2cmdline is more robust** for edge cases like files with prepended data or non-aligned block corruption
+- 🎯 For typical use cases (bit rot, transmission errors, filesystem corruption), both tools will perform equivalently
+
+This design choice optimizes for the common case where files are either intact or have corruption at expected block boundaries, delivering substantial performance improvements while maintaining correctness for standard PAR2 operations.
+
 ## Known Issues
 
 - **Repair Hanging**: The repair functionality occasionally hangs on small files within large multi-file PAR2 sets. The root cause is still under investigation. Workaround: Process smaller PAR2 sets or single files where possible.

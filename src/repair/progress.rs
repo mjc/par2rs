@@ -142,11 +142,10 @@ impl ProgressReporter for ConsoleReporter {
     }
 
     fn clear_scanning(&self, _file_name: &str) {
-        if self.quiet {
-            return;
+        if !self.quiet {
+            // No longer needed since we use println! instead of print! with \r
+            // Each scanning line is already on its own line
         }
-        // No longer needed since we use println! instead of print! with \r
-        // Each scanning line is already on its own line
     }
 
     fn report_recovery_info(&self, available: usize, needed: usize) {
@@ -190,11 +189,10 @@ impl ProgressReporter for ConsoleReporter {
     }
 
     fn report_repair_header(&self) {
-        if self.quiet {
-            return;
+        if !self.quiet {
+            // Don't print a separate header - sabnzbd expects only "Repairing: XX.X%" format
+            // The first progress update will show the repair status
         }
-        // Don't print a separate header - sabnzbd expects only "Repairing: XX.X%" format
-        // The first progress update will show the repair status
     }
 
     fn report_loading_progress(&self, files_loaded: usize, total_files: usize) {
