@@ -202,7 +202,8 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
     }
 
     // Collect all PAR2 files in the set (use just filename after cd)
-    let file_name = file_path.file_name()
+    let file_name = file_path
+        .file_name()
         .and_then(|n| n.to_str())
         .map(Path::new)
         .unwrap_or(&file_path);
@@ -217,7 +218,8 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
 
     if !quiet {
         // Count recovery blocks without loading their data
-        let recovery_metadata = par2rs::par2_files::parse_recovery_slice_metadata(&par2_files, false);
+        let recovery_metadata =
+            par2rs::par2_files::parse_recovery_slice_metadata(&par2_files, false);
         let total_recovery_blocks = recovery_metadata.len();
 
         println!(); // Blank line after loading
@@ -230,7 +232,8 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
     }
 
     // Perform comprehensive verification
-    let results = par2rs::verify::comprehensive_verify_files_with_config(all_packets, &verify_config);
+    let results =
+        par2rs::verify::comprehensive_verify_files_with_config(all_packets, &verify_config);
 
     if !quiet {
         par2rs::verify::print_verification_results(&results);
