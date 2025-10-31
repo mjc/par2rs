@@ -185,12 +185,9 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         .get_one::<String>("par2_file")
         .expect("par2_file is required");
     let quiet = matches.get_flag("quiet");
-    let sequential = matches.get_flag("sequential");
 
-    let verify_config = par2rs::verify::VerificationConfig {
-        threads: 0, // Auto-detect
-        parallel: !sequential,
-    };
+    // Create verification config from command line arguments
+    let verify_config = par2rs::verify::VerificationConfig::from_args(matches);
 
     let file_path = PathBuf::from(par2_file);
     anyhow::ensure!(file_path.exists(), "File does not exist: {}", par2_file);
