@@ -337,8 +337,6 @@ fn test_verifier_large_file_wrong_16k_hash() {
 // ============================================================================
 
 use par2rs::checksum::ProgressReporter;
-use par2rs::domain::Crc32Value;
-use std::path::Path;
 
 // Simple progress reporter for testing
 struct TestProgressReporter {

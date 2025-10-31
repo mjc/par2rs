@@ -1,8 +1,7 @@
 use par2rs::domain::{FileId, Md5Hash, RecoverySetId};
-use par2rs::packets::{FileDescriptionPacket, MainPacket, Packet, RecoverySliceMetadata};
+use par2rs::packets::{FileDescriptionPacket, MainPacket, Packet};
 use par2rs::repair::{RepairContext, SilentReporter};
 use std::fs;
-use std::path::PathBuf;
 use tempfile::TempDir;
 
 // Helper to create a basic main packet

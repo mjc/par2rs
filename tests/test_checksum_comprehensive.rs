@@ -64,7 +64,7 @@ fn test_compute_crc32_empty() {
 fn test_compute_crc32_padded_no_padding_needed() {
     let data = vec![0u8; 100];
     let crc = compute_crc32_padded(&data, 100);
-    assert!(crc.as_u32() >= 0);
+    let _ = crc.as_u32(); // CRC exists
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn test_compute_crc32_padded_with_padding() {
     let block_size = 100;
     let crc = compute_crc32_padded(&data, block_size);
     // Should pad with zeros to block_size
-    assert!(crc.as_u32() >= 0);
+    let _ = crc.as_u32(); // CRC exists
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn test_compute_crc32_padded_exact_multiple() {
     let data = vec![1u8; 200];
     let block_size = 100;
     let crc = compute_crc32_padded(&data, block_size);
-    assert!(crc.as_u32() >= 0);
+    let _ = crc.as_u32(); // CRC exists
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn test_compute_block_checksums() {
     let data = b"Block of data for checksumming";
     let (md5, crc) = compute_block_checksums(data);
     assert_eq!(md5.as_bytes().len(), 16);
-    assert!(crc.as_u32() >= 0);
+    let _ = crc.as_u32(); // CRC exists
 }
 
 #[test]
@@ -106,7 +106,7 @@ fn test_compute_block_checksums_padded() {
     let block_size = 100;
     let (md5, crc) = compute_block_checksums_padded(&data, block_size);
     assert_eq!(md5.as_bytes().len(), 16);
-    assert!(crc.as_u32() >= 0);
+    let _ = crc.as_u32(); // CRC exists
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn test_compute_block_checksums_padded_large() {
     let block_size = 16384;
     let (md5, crc) = compute_block_checksums_padded(&data, block_size);
     assert_eq!(md5.as_bytes().len(), 16);
-    assert!(crc.as_u32() >= 0);
+    let _ = crc.as_u32(); // CRC exists
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn test_compute_md5_crc32_simultaneous() {
     let data = b"Simultaneous computation test";
     let (md5, crc) = compute_md5_crc32_simultaneous(data);
     assert_eq!(md5.as_bytes().len(), 16);
-    assert!(crc.as_u32() >= 0);
+    let _ = crc.as_u32(); // CRC exists
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn test_compute_md5_crc32_simultaneous_padded() {
     let block_size = 16384;
     let (md5, crc) = compute_md5_crc32_simultaneous_padded(&data, block_size);
     assert_eq!(md5.as_bytes().len(), 16);
-    assert!(crc.as_u32() >= 0);
+    let _ = crc.as_u32(); // CRC exists
 }
 
 #[test]
