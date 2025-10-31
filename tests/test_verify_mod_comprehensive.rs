@@ -167,17 +167,14 @@ fn test_comprehensive_verify_with_corrupted_file() {
     let md5_16k = Md5Hash::new([41; 16]);
     let file_id = FileId::new([5; 16]);
 
+    let file_path_str = file_path.to_str().unwrap();
+
     let packets = vec![
         Packet::Main(create_main_packet(vec![file_id], 16384)),
-        Packet::FileDescription(create_file_desc(file_id, "corrupted.txt", 16, md5, md5_16k)),
+        Packet::FileDescription(create_file_desc(file_id, file_path_str, 16, md5, md5_16k)),
     ];
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
-
     let results = comprehensive_verify_files(packets);
-
-    let _ = std::env::set_current_dir(&original_dir);
 
     // File exists but is corrupted or wrong size
     assert!(results.corrupted_file_count > 0 || results.missing_file_count > 0);
@@ -200,30 +197,29 @@ fn test_comprehensive_verify_mixed_files() {
     let md5_2 = Md5Hash::new([52; 16]);
     let md5_16k_2 = Md5Hash::new([53; 16]);
 
+    let file1_path_str = file1_path.to_str().unwrap();
+    let file2_path = dir.path().join("missing.txt");
+    let file2_path_str = file2_path.to_str().unwrap();
+
     let packets = vec![
         Packet::Main(create_main_packet(vec![file_id1, file_id2], 16384)),
         Packet::FileDescription(create_file_desc(
             file_id1,
-            "good.txt",
+            file1_path_str,
             content1.len() as u64,
             md5_1,
             md5_16k_1,
         )),
         Packet::FileDescription(create_file_desc(
             file_id2,
-            "missing.txt",
+            file2_path_str,
             12,
             md5_2,
             md5_16k_2,
         )),
     ];
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
-
     let results = comprehensive_verify_files(packets);
-
-    let _ = std::env::set_current_dir(&original_dir);
 
     // One file exists (may be corrupt due to hash), one is missing
     assert_eq!(results.present_file_count + results.corrupted_file_count, 1);
@@ -367,17 +363,14 @@ fn test_comprehensive_verify_zero_byte_file() {
     let md5 = Md5Hash::new([110; 16]);
     let md5_16k = Md5Hash::new([111; 16]);
 
+    let file_path_str = file_path.to_str().unwrap();
+
     let packets = vec![
         Packet::Main(create_main_packet(vec![file_id], 16384)),
-        Packet::FileDescription(create_file_desc(file_id, "empty.txt", 0, md5, md5_16k)),
+        Packet::FileDescription(create_file_desc(file_id, file_path_str, 0, md5, md5_16k)),
     ];
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
-
     let results = comprehensive_verify_files(packets);
-
-    let _ = std::env::set_current_dir(&original_dir);
 
     // Zero-byte file should match if created
     assert_eq!(results.total_block_count, 0); // Zero-byte file has no blocks
