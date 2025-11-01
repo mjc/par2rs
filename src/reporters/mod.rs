@@ -44,7 +44,19 @@ pub trait VerificationReporter: Reporter {
     fn report_file_status(&self, file_name: &str, status: FileStatus);
 
     /// Report detailed block damage information for a file
-    fn report_damaged_blocks(&self, file_name: &str, damaged_blocks: &[u32]);
+    ///
+    /// # Arguments
+    /// * `file_name` - Name of the file
+    /// * `damaged_blocks` - List of damaged block indices
+    /// * `available_blocks` - Number of valid blocks found
+    /// * `total_blocks` - Total number of blocks in the file
+    fn report_damaged_blocks(
+        &self,
+        file_name: &str,
+        damaged_blocks: &[u32],
+        available_blocks: usize,
+        total_blocks: usize,
+    );
 
     /// Report final verification results summary
     fn report_verification_results(&self, results: &VerificationResults);

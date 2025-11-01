@@ -65,14 +65,26 @@ impl VerificationReporter for ConsoleVerificationReporter {
         match status {
             FileStatus::Present => println!("Target: \"{}\" - found.", file_name),
             FileStatus::Missing => println!("Target: \"{}\" - missing.", file_name),
-            FileStatus::Corrupted => println!("Target: \"{}\" - corrupted.", file_name),
+            FileStatus::Corrupted => {
+                // Note: block counts will be reported separately via report_damaged_blocks
+                // This matches par2cmdline output style
+            }
             FileStatus::Renamed => println!("Target: \"{}\" - renamed.", file_name),
         }
     }
 
-    fn report_damaged_blocks(&self, _file_name: &str, damaged_blocks: &[u32]) {
+    fn report_damaged_blocks(
+        &self,
+        file_name: &str,
+        damaged_blocks: &[u32],
+        available_blocks: usize,
+        total_blocks: usize,
+    ) {
         if !damaged_blocks.is_empty() {
-            println!("  {} blocks are damaged", damaged_blocks.len());
+            println!(
+                "Target: \"{}\" - damaged. Found {} of {} data blocks.",
+                file_name, available_blocks, total_blocks
+            );
         }
     }
 

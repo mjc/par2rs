@@ -112,21 +112,21 @@ fn test_report_file_status_all_variants() {
 fn test_report_damaged_blocks() {
     let reporter = ConsoleVerificationReporter::new();
 
-    // Empty list
-    reporter.report_damaged_blocks("file1.txt", &[]);
+    // Empty list - all blocks found
+    reporter.report_damaged_blocks("file1.txt", &[], 10, 10);
 
-    // Single block
-    reporter.report_damaged_blocks("file2.txt", &[42]);
+    // Single block damaged - 9 of 10 found
+    reporter.report_damaged_blocks("file2.txt", &[42], 9, 10);
 
-    // Few blocks
-    reporter.report_damaged_blocks("file3.txt", &[1, 5, 10]);
+    // Few blocks damaged - 7 of 10 found
+    reporter.report_damaged_blocks("file3.txt", &[1, 5, 10], 7, 10);
 
-    // Many blocks
-    reporter.report_damaged_blocks("file4.txt", &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    // Many blocks damaged - 0 of 10 found
+    reporter.report_damaged_blocks("file4.txt", &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 0, 10);
 
-    // Large list
+    // Large list - 0 of 100 found
     let large_list: Vec<u32> = (0..100).collect();
-    reporter.report_damaged_blocks("file5.txt", &large_list);
+    reporter.report_damaged_blocks("file5.txt", &large_list, 0, 100);
 }
 
 #[test]

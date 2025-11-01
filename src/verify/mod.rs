@@ -392,7 +392,12 @@ fn create_corrupted_file_result<R: VerificationReporter>(
                 validation::validate_blocks_md5_crc32(file_name, checksums, block_size as usize);
 
             if !damaged_blocks.is_empty() {
-                reporter.report_damaged_blocks(file_name, &damaged_blocks);
+                reporter.report_damaged_blocks(
+                    file_name,
+                    &damaged_blocks,
+                    available_blocks,
+                    total_blocks,
+                );
             }
 
             let block_results = verifier::single_file_verification::create_corrupted_block_results(

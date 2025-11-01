@@ -126,17 +126,17 @@ fn test_report_damaged_blocks_silent() {
     let reporter = SilentVerificationReporter::new();
 
     // All should be silent no-ops regardless of block list size
-    reporter.report_damaged_blocks("file1.txt", &[]);
-    reporter.report_damaged_blocks("file2.txt", &[42]);
-    reporter.report_damaged_blocks("file3.txt", &[1, 5, 10]);
-    reporter.report_damaged_blocks("file4.txt", &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    reporter.report_damaged_blocks("file1.txt", &[], 10, 10);
+    reporter.report_damaged_blocks("file2.txt", &[42], 9, 10);
+    reporter.report_damaged_blocks("file3.txt", &[1, 5, 10], 7, 10);
+    reporter.report_damaged_blocks("file4.txt", &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 0, 10);
 
     // Large list
     let large_list: Vec<u32> = (0..1000).collect();
-    reporter.report_damaged_blocks("file5.txt", &large_list);
+    reporter.report_damaged_blocks("file5.txt", &large_list, 0, 1000);
 
     // Test with empty filename
-    reporter.report_damaged_blocks("", &[1, 2, 3]);
+    reporter.report_damaged_blocks("", &[1, 2, 3], 0, 3);
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn test_comprehensive_verification_workflow_silent() {
     // File 1
     reporter.report_verifying_file("file1.txt");
     reporter.report_file_status("file1.txt", FileStatus::Present);
-    reporter.report_damaged_blocks("file1.txt", &[]);
+    reporter.report_damaged_blocks("file1.txt", &[], 10, 10);
 
     // File 2
     reporter.report_verifying_file("file2.txt");
@@ -259,7 +259,7 @@ fn test_comprehensive_verification_workflow_silent() {
     // File 3
     reporter.report_verifying_file("file3.txt");
     reporter.report_file_status("file3.txt", FileStatus::Corrupted);
-    reporter.report_damaged_blocks("file3.txt", &[1, 5, 9]);
+    reporter.report_damaged_blocks("file3.txt", &[1, 5, 9], 7, 10);
 
     // Final results
     let final_files = vec![
@@ -323,5 +323,5 @@ fn test_extreme_values_silent() {
 
     // Very large damaged block list
     let huge_list: Vec<u32> = (0..100000).collect();
-    reporter.report_damaged_blocks("huge_file.txt", &huge_list);
+    reporter.report_damaged_blocks("huge_file.txt", &huge_list, 0, 100000);
 }

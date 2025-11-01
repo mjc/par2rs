@@ -37,7 +37,14 @@ impl VerificationReporter for SilentVerificationReporter {
     fn report_files_found(&self, _count: usize) {}
     fn report_verifying_file(&self, _file_name: &str) {}
     fn report_file_status(&self, _file_name: &str, _status: FileStatus) {}
-    fn report_damaged_blocks(&self, _file_name: &str, _damaged_blocks: &[u32]) {}
+    fn report_damaged_blocks(
+        &self,
+        _file_name: &str,
+        _damaged_blocks: &[u32],
+        _available_blocks: usize,
+        _total_blocks: usize,
+    ) {
+    }
     fn report_verification_results(&self, _results: &VerificationResults) {}
 }
 
