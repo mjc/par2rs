@@ -16,6 +16,9 @@ use md5::{Digest, Md5};
 use std::io::Read;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+// Export rolling CRC32 module for efficient sliding window operations
+pub mod rolling_crc;
+
 // ============================================================================
 // MD5 Hashing
 // ============================================================================
