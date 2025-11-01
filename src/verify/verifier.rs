@@ -3,7 +3,7 @@
 use super::error::*;
 use super::types::*;
 use super::utils;
-use crate::domain::{Crc32Value, FileId, Md5Hash};
+use crate::domain::Md5Hash;
 use crate::packets::FileDescriptionPacket;
 use std::path::Path;
 
@@ -186,71 +186,4 @@ impl FileVerifier {
 }
 
 /// Functional helpers for single file verification
-pub mod single_file_verification {
-    use super::*;
-
-    /// Generate block results for a given range and validity
-    pub fn generate_block_results(
-        file_id: FileId,
-        range: std::ops::Range<usize>,
-        is_valid: bool,
-        checksums: Option<&[(Md5Hash, Crc32Value)]>,
-    ) -> Vec<BlockVerificationResult> {
-        range
-            .map(|block_num| {
-                let (expected_hash, expected_crc) = if let Some(checksums) = checksums {
-                    checksums
-                        .get(block_num)
-                        .map(|(h, c)| (Some(*h), Some(*c)))
-                        .unwrap_or((None, None))
-                } else {
-                    (None, None)
-                };
-
-                BlockVerificationResult {
-                    block_number: block_num as u32,
-                    file_id,
-                    is_valid,
-                    expected_hash,
-                    expected_crc,
-                }
-            })
-            .collect()
-    }
-
-    /// Create block results based on validation results and checksums
-    pub fn create_corrupted_block_results(
-        file_id: FileId,
-        checksums: &[(Md5Hash, Crc32Value)],
-        damaged_blocks: &[u32],
-    ) -> Vec<BlockVerificationResult> {
-        checksums
-            .iter()
-            .enumerate()
-            .map(|(block_num, (expected_hash, expected_crc))| {
-                let is_valid = !damaged_blocks.contains(&(block_num as u32));
-                BlockVerificationResult {
-                    block_number: block_num as u32,
-                    file_id,
-                    is_valid,
-                    expected_hash: Some(*expected_hash),
-                    expected_crc: Some(*expected_crc),
-                }
-            })
-            .collect()
-    }
-
-    /// Determine file status using FileVerifier
-    pub fn determine_file_status<P: crate::checksum::ProgressReporter>(
-        file_desc: &FileDescriptionPacket,
-        progress: Option<&P>,
-    ) -> FileStatus {
-        let verifier = FileVerifier::new(".");
-        match progress {
-            Some(progress_reporter) => verifier
-                .verify_file_with_progress(file_desc, progress_reporter)
-                .unwrap_or(FileStatus::Corrupted),
-            None => verifier.verify_file_from_description(file_desc),
-        }
-    }
-}
+pub mod single_file_verification {}

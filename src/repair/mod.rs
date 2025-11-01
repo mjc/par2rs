@@ -19,7 +19,7 @@ mod progress;
 mod recovery_loader;
 pub(crate) mod slice_provider;
 mod types;
-mod validate;
+pub mod validate;
 
 // Re-export public API
 pub use builder::RepairContextBuilder;
