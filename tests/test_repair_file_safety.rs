@@ -12,7 +12,6 @@ use tempfile::TempDir;
 
 /// Test environment with PAR2 files
 struct TestEnv {
-    #[allow(dead_code)]
     temp_dir: TempDir,
     test_file: PathBuf,
     par2_file: PathBuf,

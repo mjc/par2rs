@@ -7,28 +7,56 @@ use crate::domain::{Crc32Value, Md5Hash};
 use rustc_hash::FxHashSet as HashSet;
 use std::fs::File;
 use std::io::{self, BufReader, Read};
+use std::ops::Deref;
 use std::path::Path;
 
 /// Buffer size for sequential I/O operations (128MB for optimal throughput)
 const BUFFER_CAPACITY: usize = 128 * 1024 * 1024;
 
-/// Represents the verification state of a block during scanning
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-enum BlockVerificationState {
-    /// Block not yet checked
-    NotChecked,
-    /// CRC32 matched, but MD5 not yet verified (potential match)
-    Crc32Matched,
-    /// Both CRC32 and MD5 matched (confirmed valid block)
-    Verified,
-    /// CRC32 matched but MD5 failed (false positive)
-    Crc32Collision,
+/// Macro to define a newtype wrapper with Deref implementation
+/// This reduces boilerplate and ensures consistency across all newtypes
+macro_rules! define_newtype {
+    // Basic version with Debug, Clone, Copy, PartialEq, Eq
+    ($name:ident, $inner:ty) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        struct $name($inner);
+
+        impl Deref for $name {
+            type Target = $inner;
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl From<$inner> for $name {
+            fn from(value: $inner) -> Self {
+                $name(value)
+            }
+        }
+    };
+    // Version with additional traits (like Hash, PartialOrd, Ord)
+    ($name:ident, $inner:ty, $($extra_trait:ident),+) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, $($extra_trait),+)]
+        struct $name($inner);
+
+        impl Deref for $name {
+            type Target = $inner;
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl From<$inner> for $name {
+            fn from(value: $inner) -> Self {
+                $name(value)
+            }
+        }
+    };
 }
 
 /// Represents whether a block was found and where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
+
 enum BlockMatchResult {
     /// Block found at its expected aligned position
     FoundAligned,
@@ -46,199 +74,64 @@ impl BlockMatchResult {
             BlockMatchResult::FoundAligned | BlockMatchResult::FoundMisaligned { .. }
         )
     }
-
-    /// Check if block is at expected position
-    fn is_aligned(&self) -> bool {
-        matches!(self, BlockMatchResult::FoundAligned)
-    }
 }
 
-/// Newtype for block size to prevent mixing up sizes with offsets
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BlockSize(usize);
-
-impl BlockSize {
-    fn as_usize(&self) -> usize {
-        self.0
-    }
-
-    /// Create a 2-block window size for sliding window search
-    fn window_size(&self) -> WindowSize {
-        WindowSize::from_block_size(*self)
-    }
-
-    /// Calculate the number of blocks in a file of given size
-    #[allow(dead_code)]
-    fn num_blocks(&self, file_size: u64) -> usize {
-        if self.0 == 0 {
-            0
-        } else {
-            (file_size as usize).div_ceil(self.0)
-        }
-    }
-}
-
-/// Newtype for byte offset within a file
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct ByteOffset(usize);
-
-impl ByteOffset {
-    fn as_usize(&self) -> usize {
-        self.0
-    }
-
-    #[allow(dead_code)]
-    fn add(&self, bytes: usize) -> Self {
-        ByteOffset(self.0 + bytes)
-    }
-
-    /// Calculate offset difference (for misalignment tracking)
-    #[allow(dead_code)]
-    fn offset_from(&self, other: ByteOffset) -> isize {
-        self.0 as isize - other.0 as isize
-    }
-}
-
-/// Scan offset within a file (position of scanning window)
-/// This is distinct from ByteOffset because it represents where we're currently looking,
-/// not where data is expected to be. In par2cmdline-turbo, this is `currentoffset`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct ScanOffset(u64);
-
-impl ScanOffset {
-    #[allow(dead_code)]
-    fn as_u64(&self) -> u64 {
-        self.0
-    }
-
-    #[allow(dead_code)]
-    fn as_usize(&self) -> usize {
-        self.0 as usize
-    }
-
-    /// Advance scan position by one byte (for sliding window)
-    #[allow(dead_code)]
-    fn advance_by_one(&mut self) {
-        self.0 += 1;
-    }
-
-    /// Convert to ByteOffset when a match is found at this scan position
-    #[allow(dead_code)]
-    fn to_byte_offset(self) -> ByteOffset {
-        ByteOffset(self.0 as usize)
-    }
-}
-
-/// Read offset for filling buffers (can be ahead of scan position)
-/// par2cmdline-turbo reads ahead to keep the buffer full. This is `readoffset`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ReadOffset(u64);
-
-impl ReadOffset {
-    #[allow(dead_code)]
-    fn as_u64(&self) -> u64 {
-        self.0
-    }
-
-    #[allow(dead_code)]
-    fn as_usize(&self) -> usize {
-        self.0 as usize
-    }
-
-    /// Advance read position
-    #[allow(dead_code)]
-    fn advance(&mut self, bytes: u64) {
-        self.0 += bytes;
-    }
-}
+// Use macro to define newtypes - reduces boilerplate and ensures consistency
+define_newtype!(BlockSize, usize);
+define_newtype!(ByteOffset, usize, PartialOrd, Ord);
+define_newtype!(SliceSize, usize);
+define_newtype!(FileSize, u64);
+define_newtype!(WindowSize, usize);
+define_newtype!(BytesRead, usize);
+define_newtype!(SearchOffset, usize, PartialOrd, Ord);
+define_newtype!(SliceIndex, usize, Hash);
 
 /// Newtype for block index to prevent mixing with byte offsets
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BlockIndex(usize);
 
 impl BlockIndex {
-    #[allow(dead_code)]
-    fn as_usize(&self) -> usize {
-        self.0
-    }
-
     fn as_u32(&self) -> u32 {
         self.0 as u32
     }
 
     /// Calculate byte offset for this block index
     fn byte_offset(&self, block_size: BlockSize) -> ByteOffset {
-        ByteOffset(self.0 * block_size.as_usize())
+        ByteOffset(self.0 * *block_size)
     }
 }
 
-/// Newtype for slice index to prevent mixing with block indices
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct SliceIndex(usize);
-
-impl SliceIndex {
-    fn as_usize(&self) -> usize {
-        self.0
+impl BlockSize {
+    /// Create a 2-block window size for sliding window search
+    fn window_size(&self) -> WindowSize {
+        WindowSize::from_block_size(*self)
     }
 }
-
-/// Newtype for slice size to prevent mixing with block size
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SliceSize(usize);
-
-impl SliceSize {
-    fn as_usize(&self) -> usize {
-        self.0
-    }
-}
-
-/// Newtype for file size to make intent clear
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileSize(u64);
-
-impl FileSize {
-    fn as_u64(&self) -> u64 {
-        self.0
-    }
-
-    #[allow(dead_code)]
-    fn as_usize(&self) -> usize {
-        self.0 as usize
-    }
-}
-
-/// Newtype for window buffer size (always 2 * block_size)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct WindowSize(usize);
 
 impl WindowSize {
     /// Create from block size (window is 2 blocks)
     fn from_block_size(block_size: BlockSize) -> Self {
-        WindowSize(block_size.as_usize() * 2)
-    }
-
-    fn as_usize(&self) -> usize {
-        self.0
+        WindowSize(*block_size * 2)
     }
 }
 
-/// Represents the number of bytes actually read into a window buffer
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BytesRead(usize);
-
 impl BytesRead {
-    fn as_usize(&self) -> usize {
-        self.0
+    /// Calculate the maximum search offset within this window
+    /// Uses saturating_sub to avoid manual if/else - more concise and bug-resistant
+    fn max_search_offset(&self, block_size: BlockSize) -> SearchOffset {
+        SearchOffset(self.0.saturating_sub(*block_size))
+    }
+}
+
+impl SearchOffset {
+    /// Get the end position for a block candidate at this offset
+    fn candidate_end(&self, block_size: BlockSize, bytes_available: BytesRead) -> usize {
+        (self.0 + *block_size).min(*bytes_available)
     }
 
-    /// Calculate the maximum search offset within this window
-    fn max_search_offset(&self, block_size: BlockSize) -> SearchOffset {
-        let block_bytes = block_size.as_usize();
-        if self.0 > block_bytes {
-            SearchOffset(self.0 - block_bytes)
-        } else {
-            SearchOffset(0)
-        }
+    /// Create an inclusive range from 0 to this offset
+    fn inclusive_range(&self) -> std::ops::RangeInclusive<usize> {
+        0..=self.0
     }
 }
 
@@ -249,59 +142,9 @@ impl BytesRead {
 /// - inpointer: end of current block / start of next block data
 /// - tailpointer: end of valid data read from file
 ///
-/// Invariant: buffer <= outpointer <= inpointer <= tailpointer <= buffer+2*blocksize
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct BufferPosition(usize);
-
-impl BufferPosition {
-    #[allow(dead_code)]
-    const ZERO: BufferPosition = BufferPosition(0);
-
-    #[allow(dead_code)]
-    fn as_usize(&self) -> usize {
-        self.0
-    }
-
-    /// Get the slice from this position to another
-    #[allow(dead_code)]
-    fn slice_to<'a>(&self, end: BufferPosition, buffer: &'a [u8]) -> &'a [u8] {
-        &buffer[self.0..end.0]
-    }
-
-    /// Advance position by offset
-    #[allow(dead_code)]
-    fn advance(&mut self, offset: usize) {
-        self.0 += offset;
-    }
-
-    /// Calculate distance to another position
-    #[allow(dead_code)]
-    fn distance_to(&self, other: BufferPosition) -> usize {
-        other.0 - self.0
-    }
-}
-
-/// Hash table bucket index (derived from CRC32 & hashmask)
-/// par2cmdline-turbo uses: `unsigned int index = crc & hashmask`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct HashBucketIndex(usize);
-
-impl HashBucketIndex {
-    /// Create from CRC32 value and hash mask
-    #[allow(dead_code)]
-    fn from_crc(crc: &Crc32Value, hash_mask: usize) -> Self {
-        HashBucketIndex((crc.as_u32() as usize) & hash_mask)
-    }
-
-    #[allow(dead_code)]
-    fn as_usize(&self) -> usize {
-        self.0
-    }
-}
-
 /// Checksum verification result from comparing candidate against expected
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
+
 enum ChecksumMatch {
     /// Both CRC32 and MD5 match - block is valid
     Both,
@@ -313,46 +156,14 @@ enum ChecksumMatch {
 
 impl ChecksumMatch {
     /// Check if this represents a valid block (both checksums match)
-    #[allow(dead_code)]
     fn is_valid(&self) -> bool {
         matches!(self, ChecksumMatch::Both)
-    }
-
-    /// Check if CRC32 matched (even if MD5 didn't)
-    #[allow(dead_code)]
-    fn crc32_matched(&self) -> bool {
-        matches!(self, ChecksumMatch::Both | ChecksumMatch::Crc32Only)
-    }
-}
-
-/// Offset within the search window (0..max_offset)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct SearchOffset(usize);
-
-impl SearchOffset {
-    #[allow(dead_code)]
-    const ZERO: SearchOffset = SearchOffset(0);
-
-    fn as_usize(&self) -> usize {
-        self.0
-    }
-
-    /// Get the end position for a block candidate at this offset
-    fn candidate_end(&self, block_size: BlockSize, bytes_available: BytesRead) -> usize {
-        (self.0 + block_size.as_usize()).min(bytes_available.as_usize())
-    }
-
-    /// Create an inclusive range from 0 to this offset
-    fn inclusive_range(&self) -> std::ops::RangeInclusive<usize> {
-        0..=self.0
     }
 }
 
 /// Represents a candidate block extracted from the window
 struct BlockCandidate<'a> {
     data: &'a [u8],
-    #[allow(dead_code)]
-    offset: SearchOffset,
 }
 
 impl<'a> BlockCandidate<'a> {
@@ -365,19 +176,8 @@ impl<'a> BlockCandidate<'a> {
     ) -> Self {
         let end = offset.candidate_end(block_size, bytes_read);
         BlockCandidate {
-            data: &window[offset.as_usize()..end],
-            offset,
+            data: &window[*offset..end],
         }
-    }
-
-    #[allow(dead_code)]
-    fn data(&self) -> &[u8] {
-        self.data
-    }
-
-    #[allow(dead_code)]
-    fn len(&self) -> usize {
-        self.data.len()
     }
 
     /// Check if this candidate matches the expected checksums
@@ -387,35 +187,76 @@ impl<'a> BlockCandidate<'a> {
         expected_crc: &Crc32Value,
         block_size: BlockSize,
     ) -> ChecksumMatch {
-        let block_size_bytes = block_size.as_usize();
+        let block_size_bytes = *block_size;
 
-        // Compute CRC32 for this candidate
-        let candidate_crc = if self.len() < block_size_bytes {
-            crate::checksum::compute_crc32_padded(self.data, block_size_bytes)
+        // Functional: use helper to compute CRC32
+        let candidate_crc = compute_candidate_crc(self.data, block_size_bytes);
+
+        // Functional chain: check CRC32, then MD5 only if CRC32 matches
+        if &candidate_crc == expected_crc {
+            // CRC32 matches, use helper to compute MD5
+            let candidate_md5 = compute_candidate_md5(self.data, block_size_bytes);
+
+            // Return appropriate match type based on MD5
+            if &candidate_md5 == expected_md5 {
+                ChecksumMatch::Both
+            } else {
+                ChecksumMatch::Crc32Only
+            }
         } else {
-            crate::checksum::compute_crc32(self.data)
-        };
-
-        // Fast path: check CRC32 first
-        if &candidate_crc != expected_crc {
-            return ChecksumMatch::None;
-        }
-
-        // CRC32 matches, now verify MD5
-        let candidate_md5 = if self.len() < block_size_bytes {
-            let mut padded = vec![0u8; block_size_bytes];
-            padded[..self.len()].copy_from_slice(self.data);
-            crate::checksum::compute_md5(&padded)
-        } else {
-            crate::checksum::compute_md5(self.data)
-        };
-
-        if &candidate_md5 == expected_md5 {
-            ChecksumMatch::Both
-        } else {
-            ChecksumMatch::Crc32Only
+            ChecksumMatch::None
         }
     }
+}
+
+/// Compute CRC32 for data, handling padding if data is shorter than target size
+/// This consolidates the common pattern of checking length and choosing padded vs unpadded
+#[inline]
+fn compute_crc_with_padding(data: &[u8], target_size: usize) -> Crc32Value {
+    if data.len() < target_size {
+        crate::checksum::compute_crc32_padded(data, target_size)
+    } else {
+        crate::checksum::compute_crc32(data)
+    }
+}
+
+/// Compute MD5 for data, handling padding if data is shorter than target size
+/// This consolidates the common pattern of checking length and creating padded buffer
+#[inline]
+fn compute_md5_with_padding(data: &[u8], target_size: usize) -> Md5Hash {
+    if data.len() < target_size {
+        let mut padded = vec![0u8; target_size];
+        padded[..data.len()].copy_from_slice(data);
+        crate::checksum::compute_md5(&padded)
+    } else {
+        crate::checksum::compute_md5(data)
+    }
+}
+
+/// Validate a single slice and return whether it's valid
+///
+/// Extracts the validation logic into a pure function for better testability
+#[inline]
+fn validate_slice_crc(
+    slice_data: &[u8],
+    actual_size: usize,
+    slice_size: usize,
+    expected_crc: &Crc32Value,
+) -> bool {
+    let slice_crc = compute_crc_with_padding(&slice_data[..actual_size], slice_size);
+    slice_crc == *expected_crc
+}
+
+/// Compute CRC32 for a block candidate, handling padding if needed
+#[inline]
+fn compute_candidate_crc(data: &[u8], block_size_bytes: usize) -> Crc32Value {
+    compute_crc_with_padding(data, block_size_bytes)
+}
+
+/// Compute MD5 for a block candidate, handling padding if needed
+#[inline]
+fn compute_candidate_md5(data: &[u8], block_size_bytes: usize) -> Md5Hash {
+    compute_md5_with_padding(data, block_size_bytes)
 }
 
 /// Calculate the actual size of a slice, handling the last partial slice
@@ -426,19 +267,112 @@ fn calculate_slice_size(
     slice_size: SliceSize,
     file_size: FileSize,
 ) -> usize {
-    let idx = slice_index.as_usize();
-    let size = slice_size.as_usize();
-
-    if idx == total_slices - 1 {
-        let remaining = (file_size.as_u64() % size as u64) as usize;
-        if remaining == 0 {
-            size
+    // For the last slice, calculate remainder; for others, use full slice size
+    if *slice_index == total_slices - 1 {
+        let remainder = (*file_size % *slice_size as u64) as usize;
+        if remainder == 0 {
+            *slice_size
         } else {
-            remaining
+            remainder
         }
     } else {
-        size
+        *slice_size
     }
+}
+
+/// Calculate progress reporting interval based on mode and number of items
+#[inline]
+fn calculate_progress_interval(total_items: usize, parallel_mode: bool) -> usize {
+    if parallel_mode {
+        std::cmp::max(1, total_items / 20) // 5% intervals for parallel
+    } else {
+        std::cmp::max(1, total_items / 1000) // 0.1% intervals for single-threaded
+    }
+}
+
+/// Extract filename from path for progress reporting
+#[inline]
+fn extract_filename(path: &Path) -> &str {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+}
+
+/// Check if file size warrants progress reporting (files > 10MB)
+#[inline]
+fn should_report_progress(file_size: u64) -> bool {
+    file_size > 10 * 1024 * 1024
+}
+
+/// Open a file and get its size in bytes
+#[inline]
+fn open_file_with_size<P: AsRef<Path>>(path: P) -> io::Result<(File, usize)> {
+    let file = File::open(path)?;
+    let file_size = file.metadata()?.len() as usize;
+    Ok((file, file_size))
+}
+
+/// Create tuple indicating all blocks are damaged (for error cases)
+#[inline]
+fn all_blocks_damaged(count: usize) -> (usize, Vec<u32>) {
+    (0, (0..count as u32).collect())
+}
+
+/// Validate all blocks and separate into available vs damaged
+#[inline]
+fn validate_and_partition_blocks(
+    file: &mut File,
+    block_checksums: &[(Md5Hash, Crc32Value)],
+    block_size: BlockSize,
+    file_size: usize,
+    window_buffer: &mut [u8],
+) -> PartitionedBlocks {
+    block_checksums
+        .iter()
+        .enumerate()
+        .map(|(idx, (expected_md5, expected_crc))| {
+            let block_index = BlockIndex(idx);
+            let result = validate_single_block(
+                file,
+                block_index,
+                expected_md5,
+                expected_crc,
+                block_size,
+                file_size,
+                window_buffer,
+            );
+            (block_index, result)
+        })
+        .partition(|(_, result)| matches!(result, BlockValidationResult::Damaged))
+}
+
+/// Convert damaged blocks to indices
+#[inline]
+fn extract_damaged_indices(damaged_blocks: Vec<(BlockIndex, BlockValidationResult)>) -> Vec<u32> {
+    damaged_blocks
+        .into_iter()
+        .map(|(block_index, _)| block_index.as_u32())
+        .collect()
+}
+
+/// Calculate how many bytes to read for a sliding window
+#[inline]
+fn calculate_window_read_size(
+    file_size: usize,
+    block_offset: ByteOffset,
+    window_size: WindowSize,
+) -> usize {
+    let bytes_available = file_size.saturating_sub(*block_offset);
+    bytes_available.min(*window_size)
+}
+
+/// Seek to position and read into buffer
+#[inline]
+fn seek_and_read(file: &mut File, offset: ByteOffset, buffer: &mut [u8]) -> io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    file.seek(SeekFrom::Start(*offset as u64))?;
+    file.read_exact(buffer)?;
+    Ok(())
 }
 
 /// Validates slices in a file using CRC32 checksums only.
@@ -498,75 +432,63 @@ pub fn validate_slices_crc32_with_progress<P: AsRef<Path>>(
     progress: &dyn crate::repair::ProgressReporter,
     parallel_mode: bool,
 ) -> io::Result<HashSet<usize>> {
-    let slice_size_typed = SliceSize(slice_size);
-    let file_size_typed = FileSize(file_size);
+    // Functional: use Into trait for conversions
+    let slice_size_typed: SliceSize = slice_size.into();
+    let file_size_typed: FileSize = file_size.into();
 
     let file = File::open(&file_path)?;
     let mut reader = BufReader::with_capacity(BUFFER_CAPACITY, file);
 
-    // Pre-allocate with expected capacity to avoid rehashing
-    let mut valid_slices =
-        HashSet::with_capacity_and_hasher(slice_checksums.len(), Default::default());
+    // Use helper functions for cleaner setup
+    let file_name = extract_filename(file_path.as_ref());
+    let should_report = should_report_progress(file_size);
+    let progress_interval = calculate_progress_interval(slice_checksums.len(), parallel_mode);
 
-    // Reuse single buffer for all slices
-    let mut slice_data = vec![0u8; slice_size];
+    // Functional approach: use scan to track state, then filter_map to collect valid slices
+    // scan() is the functional way to maintain state across iterations
+    let valid_slices: HashSet<usize> = slice_checksums
+        .iter()
+        .enumerate()
+        .scan(
+            (vec![0u8; slice_size], 0u64),
+            |(slice_buffer, bytes_processed), (slice_index, &expected_crc)| {
+                let slice_index_typed = SliceIndex(slice_index);
+                let actual_size = calculate_slice_size(
+                    slice_index_typed,
+                    slice_checksums.len(),
+                    slice_size_typed,
+                    file_size_typed,
+                );
 
-    // Get file name for progress reporting
-    let file_name = file_path
-        .as_ref()
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown");
+                // Zero padding if needed
+                if actual_size < slice_size {
+                    slice_buffer[actual_size..].fill(0);
+                }
 
-    // Progress reporting for large files
-    // Parallel mode: update every 5% (less noisy with multiple threads)
-    // Single-thread mode: update every 0.1% (more frequent feedback)
-    let should_report_progress = file_size > 10 * 1024 * 1024; // Report for files > 10MB
-    let progress_interval = if parallel_mode {
-        std::cmp::max(1, slice_checksums.len() / 20) // 5% intervals
-    } else {
-        std::cmp::max(1, slice_checksums.len() / 1000) // 0.1% intervals
-    };
+                // Read slice and validate
+                let is_valid = reader
+                    .read_exact(&mut slice_buffer[..actual_size])
+                    .map(|_| {
+                        *bytes_processed += actual_size as u64;
 
-    let mut bytes_processed = 0u64;
+                        // Report progress at intervals
+                        if should_report && slice_index % progress_interval == 0 {
+                            progress.report_scanning_progress(
+                                file_name,
+                                *bytes_processed,
+                                file_size,
+                            );
+                        }
 
-    for (slice_index, &expected_crc) in slice_checksums.iter().enumerate() {
-        let slice_index_typed = SliceIndex(slice_index);
-        let actual_size = calculate_slice_size(
-            slice_index_typed,
-            slice_checksums.len(),
-            slice_size_typed,
-            file_size_typed,
-        );
+                        validate_slice_crc(slice_buffer, actual_size, slice_size, &expected_crc)
+                    })
+                    .unwrap_or(false);
 
-        // Zero padding if needed (PAR2 spec requires zero-padded CRC32)
-        if actual_size < slice_size {
-            slice_data[actual_size..].fill(0);
-        }
-
-        // Sequential read - early continue on read failure
-        if reader.read_exact(&mut slice_data[..actual_size]).is_err() {
-            continue;
-        }
-
-        bytes_processed += actual_size as u64;
-
-        // Report progress at specified intervals
-        if should_report_progress && slice_index % progress_interval == 0 {
-            progress.report_scanning_progress(file_name, bytes_processed, file_size);
-        }
-
-        // Validate CRC32 on full slice (with padding)
-        let slice_crc = if actual_size < slice_size {
-            crate::checksum::compute_crc32_padded(&slice_data[..actual_size], slice_size)
-        } else {
-            crate::checksum::compute_crc32(&slice_data[..slice_size])
-        };
-
-        if slice_crc == expected_crc {
-            valid_slices.insert(slice_index);
-        }
-    }
+                Some((slice_index, is_valid))
+            },
+        )
+        .filter_map(|(index, is_valid)| is_valid.then_some(index))
+        .collect();
 
     Ok(valid_slices)
 }
@@ -598,84 +520,32 @@ pub fn validate_blocks_md5_crc32<P: AsRef<Path>>(
     block_checksums: &[(Md5Hash, Crc32Value)],
     block_size: usize,
 ) -> (usize, Vec<u32>) {
-    let block_size = BlockSize(block_size);
+    // Functional: use Into trait for type conversion
+    let block_size: BlockSize = block_size.into();
 
-    // Open file or return all blocks as damaged
-    let Ok(mut file) = File::open(&file_path) else {
-        return (0, (0..block_checksums.len() as u32).collect());
-    };
+    // Functional approach: use helper to flatten nested Result combinators
+    open_file_with_size(&file_path)
+        .map(|(mut file, file_size)| {
+            // Allocate sliding window buffer once, reuse for all blocks
+            let window_size = block_size.window_size();
+            let mut window_buffer = vec![0u8; *window_size];
 
-    // Get file size or return all blocks as damaged
-    let Ok(metadata) = file.metadata() else {
-        return (0, (0..block_checksums.len() as u32).collect());
-    };
-    let file_size = metadata.len() as usize;
+            // Functional: delegate validation and partitioning to helper
+            let (damaged_blocks, _valid_blocks) = validate_and_partition_blocks(
+                &mut file,
+                block_checksums,
+                block_size,
+                file_size,
+                &mut window_buffer,
+            );
 
-    // Allocate sliding window buffer: 2 blocks worth of data
-    let window_size = block_size.window_size();
-    let mut window_buffer = vec![0u8; window_size.as_usize()];
+            // Functional: calculate results from damaged blocks
+            let available_count = block_checksums.len() - damaged_blocks.len();
+            let damaged_indices = extract_damaged_indices(damaged_blocks);
 
-    let mut available_blocks = 0;
-    let mut damaged_blocks = Vec::with_capacity(block_checksums.len());
-
-    for (idx, (expected_md5, expected_crc)) in block_checksums.iter().enumerate() {
-        let block_index = BlockIndex(idx);
-        let block_offset = block_index.byte_offset(block_size);
-
-        // Check if we're beyond file bounds
-        if block_offset.as_usize() >= file_size {
-            damaged_blocks.push(block_index.as_u32());
-            continue;
-        }
-
-        // Calculate how much data to read (up to 2 blocks from this position)
-        let bytes_available = file_size.saturating_sub(block_offset.as_usize());
-        let bytes_to_read = bytes_available.min(window_size.as_usize());
-
-        // Zero-fill the window buffer
-        window_buffer.fill(0);
-
-        // Seek to block position and read window
-        use std::io::{Seek, SeekFrom};
-        if file
-            .seek(SeekFrom::Start(block_offset.as_usize() as u64))
-            .is_err()
-        {
-            damaged_blocks.push(block_index.as_u32());
-            continue;
-        }
-
-        if file
-            .read_exact(&mut window_buffer[..bytes_to_read])
-            .is_err()
-        {
-            damaged_blocks.push(block_index.as_u32());
-            continue;
-        }
-
-        // Try to find the block using sliding window
-        let match_result = search_block_in_window(
-            &window_buffer,
-            BytesRead(bytes_to_read),
-            block_size,
-            expected_md5,
-            expected_crc,
-        );
-
-        if match_result.is_found() {
-            available_blocks += 1;
-
-            // Track misaligned blocks (could be useful for logging/debugging later)
-            if !match_result.is_aligned() {
-                // Block found but misaligned - this is recoverable but indicates file corruption
-                // In the future, we could log this or track statistics
-            }
-        } else {
-            damaged_blocks.push(block_index.as_u32());
-        }
-    }
-
-    (available_blocks, damaged_blocks)
+            (available_count, damaged_indices)
+        })
+        .unwrap_or_else(|_| all_blocks_damaged(block_checksums.len()))
 }
 
 /// Search for a block within a sliding window buffer
@@ -696,29 +566,89 @@ fn search_block_in_window(
     expected_md5: &Md5Hash,
     expected_crc: &Crc32Value,
 ) -> BlockMatchResult {
-    // Calculate the maximum search offset within this window
     let max_offset = bytes_read.max_search_offset(block_size);
 
-    // Sliding window: try each offset from 0 to max_offset
-    for raw_offset in max_offset.inclusive_range() {
-        let offset = SearchOffset(raw_offset);
-        let candidate = BlockCandidate::from_window(window_buffer, offset, block_size, bytes_read);
+    // Functional approach: use iterator find_map to search and transform in one pass
+    // This eliminates the need for manual loop control and early returns
+    max_offset
+        .inclusive_range()
+        .find_map(|raw_offset| {
+            let offset = SearchOffset(raw_offset);
+            let candidate =
+                BlockCandidate::from_window(window_buffer, offset, block_size, bytes_read);
 
-        // Check if this candidate matches both checksums
-        let match_result = candidate.matches(expected_md5, expected_crc, block_size);
-        if match_result.is_valid() {
-            // Both checksums match - block is valid!
-            if raw_offset == 0 {
-                return BlockMatchResult::FoundAligned;
-            } else {
-                return BlockMatchResult::FoundMisaligned {
-                    offset_from_expected: raw_offset as u64,
-                };
-            }
-        }
+            // Check if candidate matches both checksums
+            // Use then_some for non-lazy evaluation (clippy suggestion)
+            candidate
+                .matches(expected_md5, expected_crc, block_size)
+                .is_valid()
+                .then_some(if raw_offset == 0 {
+                    BlockMatchResult::FoundAligned
+                } else {
+                    BlockMatchResult::FoundMisaligned {
+                        offset_from_expected: raw_offset as u64,
+                    }
+                })
+        })
+        .unwrap_or(BlockMatchResult::NotFound)
+}
+
+/// Validation result for a single block
+#[derive(Debug, Clone, Copy)]
+enum BlockValidationResult {
+    Valid,
+    Damaged,
+}
+
+/// Type alias for partitioned block validation results
+type PartitionedBlocks = (
+    Vec<(BlockIndex, BlockValidationResult)>,
+    Vec<(BlockIndex, BlockValidationResult)>,
+);
+
+/// Validate a single block by reading its window and searching for a match
+///
+/// This is a pure(ish) function that encapsulates all the logic for validating one block.
+/// It reduces the chance of bugs by keeping all validation logic in one place.
+fn validate_single_block(
+    file: &mut File,
+    block_index: BlockIndex,
+    expected_md5: &Md5Hash,
+    expected_crc: &Crc32Value,
+    block_size: BlockSize,
+    file_size: usize,
+    window_buffer: &mut [u8],
+) -> BlockValidationResult {
+    let block_offset = block_index.byte_offset(block_size);
+
+    // Functional approach: check bounds early
+    if *block_offset >= file_size {
+        return BlockValidationResult::Damaged;
     }
 
-    BlockMatchResult::NotFound
+    // Calculate window parameters using helpers
+    let window_size = block_size.window_size();
+    let bytes_to_read = calculate_window_read_size(file_size, block_offset, window_size);
+
+    // Zero-fill the window buffer
+    window_buffer.fill(0);
+
+    // Functional: chain Result operations to read and validate
+    seek_and_read(file, block_offset, &mut window_buffer[..bytes_to_read])
+        .ok()
+        .and_then(|_| {
+            // Search for block in window using sliding window algorithm
+            search_block_in_window(
+                window_buffer,
+                BytesRead(bytes_to_read),
+                block_size,
+                expected_md5,
+                expected_crc,
+            )
+            .is_found()
+            .then_some(BlockValidationResult::Valid)
+        })
+        .unwrap_or(BlockValidationResult::Damaged)
 }
 
 #[cfg(test)]
