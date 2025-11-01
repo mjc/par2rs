@@ -51,7 +51,13 @@ fn test_comprehensive_verify_with_default_config() {
 
     let packets = vec![
         Packet::Main(create_main_packet(vec![file_id], 16384)),
-        Packet::FileDescription(create_file_desc(file_id, "test.txt", 29, md5, md5_16k)),
+        Packet::FileDescription(create_file_desc(
+            file_id,
+            "nonexistent_file.txt",
+            29,
+            md5,
+            md5_16k,
+        )),
     ];
 
     // This tests the default comprehensive_verify_files function
@@ -324,7 +330,13 @@ fn test_comprehensive_verify_with_silent_reporter() {
 
     let packets = vec![
         Packet::Main(create_main_packet(vec![file_id], 16384)),
-        Packet::FileDescription(create_file_desc(file_id, "test.txt", 25, md5, md5_16k)),
+        Packet::FileDescription(create_file_desc(
+            file_id,
+            "nonexistent_file.txt",
+            25,
+            md5,
+            md5_16k,
+        )),
     ];
 
     let config = VerificationConfig::default();

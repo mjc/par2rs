@@ -19,6 +19,7 @@ mod progress;
 mod recovery_loader;
 pub(crate) mod slice_provider;
 mod types;
+mod validate;
 
 // Re-export public API
 pub use builder::RepairContextBuilder;
@@ -36,6 +37,9 @@ pub use types::{
     FileInfo, FileStatus, ReconstructedSlices, RecoverySetInfo, RepairResult, ValidationCache,
     VerificationResult,
 };
+
+// Expose validation helper moved here
+pub use validate::validate_blocks_md5_crc32;
 
 use crate::domain::{FileId, LocalSliceIndex, Md5Hash};
 use crate::RecoverySlicePacket;

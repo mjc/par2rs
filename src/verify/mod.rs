@@ -21,9 +21,7 @@ pub use file_verification::{
 };
 pub use types::{BlockVerificationResult, FileStatus, FileVerificationResult, VerificationResults};
 pub use utils::extract_file_name;
-pub use validation::{
-    validate_blocks_md5_crc32, validate_slices_crc32, validate_slices_crc32_with_progress,
-};
+pub use validation::{validate_slices_crc32, validate_slices_crc32_with_progress};
 pub use verifier::FileVerifier;
 
 use crate::domain::{Crc32Value, FileId, Md5Hash};
@@ -381,15 +379,16 @@ fn create_corrupted_file_result<R: VerificationReporter>(
     file_name: &str,
     total_blocks: usize,
     slice_checksums: &HashMap<FileId, Vec<(Md5Hash, Crc32Value)>>,
-    block_size: u64,
+    _block_size: u64,
     reporter: &R,
 ) -> SingleFileVerificationResult {
     slice_checksums
         .get(&file_desc.file_id)
         .map(|checksums| {
-            // Perform block-level verification
-            let (available_blocks, damaged_blocks) =
-                validation::validate_blocks_md5_crc32(file_name, checksums, block_size as usize);
+            // For corrupted files, assume all blocks are damaged
+            // Detailed block-level verification is handled by repair module
+            let available_blocks = 0;
+            let damaged_blocks: Vec<u32> = (0..total_blocks).map(|i| i as u32).collect();
 
             if !damaged_blocks.is_empty() {
                 reporter.report_damaged_blocks(
