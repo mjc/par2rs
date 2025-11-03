@@ -276,31 +276,26 @@ impl GlobalVerificationEngine {
                     compute_crc32(block_data)
                 };
 
-                // Fast CRC32 lookup in global table (with bloom filter pre-check)
+                // Fast CRC32 lookup in global table
+                // If find_by_crc32 returns Some, we have at least one block with this CRC32
                 if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
-                    // First check if any candidate has matching CRC32
-                    let has_crc_match = candidates.iter().any(|c| c.checksums.crc32 == crc32);
+                    // Only compute MD5 if we have a CRC32 match (par2cmdline-turbo approach)
+                    let md5_hash = crate::checksum::compute_md5_only(block_data);
 
-                    if has_crc_match {
-                        // Only compute MD5 if we have a CRC32 match
-                        let md5_hash = crate::checksum::compute_md5_only(block_data);
-
-                        for candidate in candidates {
-                            if candidate.checksums.crc32 == crc32
-                                && candidate.checksums.md5_hash == md5_hash
-                            {
-                                // Found valid block - record it
-                                for duplicate in candidate.iter_duplicates() {
-                                    global_block_map
-                                        .entry((md5_hash, crc32))
-                                        .or_default()
-                                        .push((
-                                            duplicate.position.file_id,
-                                            duplicate.position.block_number,
-                                        ));
-                                }
-                                break;
+                    // Check MD5 hash against all candidates with this CRC32
+                    for candidate in candidates {
+                        if candidate.checksums.md5_hash == md5_hash {
+                            // Found valid block - record it
+                            for duplicate in candidate.iter_duplicates() {
+                                global_block_map
+                                    .entry((md5_hash, crc32))
+                                    .or_default()
+                                    .push((
+                                        duplicate.position.file_id,
+                                        duplicate.position.block_number,
+                                    ));
                             }
+                            break;
                         }
                     }
                 }
