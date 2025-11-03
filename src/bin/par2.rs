@@ -189,6 +189,14 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
     // Create verification config from command line arguments
     let verify_config = par2rs::verify::VerificationConfig::from_args(matches);
 
+    // Initialize Rayon thread pool BEFORE any parallel operations
+    // This must be done before any par_iter() calls
+    let thread_count = verify_config.effective_threads();
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(thread_count)
+        .build_global()
+        .ok(); // Ignore error if already initialized
+
     let file_path = PathBuf::from(par2_file);
     anyhow::ensure!(file_path.exists(), "File does not exist: {}", par2_file);
 

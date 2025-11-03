@@ -59,6 +59,9 @@ pub fn comprehensive_verify_files_with_config_and_reporter_in_dir<R: Verificatio
     reporter: &R,
     base_dir: impl AsRef<Path>,
 ) -> VerificationResults {
+    // Note: Rayon thread pool is configured at program start in main binary
+    // (see src/bin/par2.rs handle_verify function)
+
     reporter.report_verification_start(config.parallel);
 
     // Create global verification engine
