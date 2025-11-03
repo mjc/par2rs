@@ -11,7 +11,7 @@ nix-build = []
 binrw = "*"
 clap = "4.5.39"
 rayon = "1.10.0"
-md-5 = "0.10"
+md-5 = { version = "0.10", features = ["md5-asm"] }
 hex = "0.4.3"
 crc32fast = "1.4.0"
 log = "0.4"
