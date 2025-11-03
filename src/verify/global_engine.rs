@@ -199,6 +199,8 @@ impl GlobalVerificationEngine {
         global_block_map: &mut HashMap<(Md5Hash, Crc32Value), Vec<(FileId, u32)>>,
         _reporter: &R,
     ) {
+        // use crate::checksum::rolling_crc::RollingCrcTable;
+        use crate::checksum::rolling_crc::RollingCrcTable;
         use crate::checksum::{compute_block_checksums_padded, compute_crc32};
         use std::fs::File;
         use std::io::{Read, Seek, SeekFrom};
@@ -213,6 +215,9 @@ impl GlobalVerificationEngine {
         let mut buffer = vec![0u8; buffer_size];
         let mut file_position = 0u64;
 
+        // Create rolling CRC table for efficient scanning
+        let rolling_table = RollingCrcTable::new(block_size);
+
         // Initial fill of the buffer
         let mut bytes_in_buffer = match file.read(&mut buffer) {
             Ok(n) => n,
@@ -225,19 +230,33 @@ impl GlobalVerificationEngine {
                 return; // EOF
             }
 
-            // Scan byte-by-byte within the current 2-block buffer
+            // Scan byte-by-byte within the current 2-block buffer using rolling CRC
             let mut scan_pos = 0;
+
+            // Initialize rolling CRC with first block if possible
+            // Store in STANDARD form (matching par2cmdline-turbo's usage)
+            let mut rolling_crc: Option<Crc32Value> = if bytes_in_buffer >= block_size {
+                Some(compute_crc32(&buffer[0..block_size]))
+            } else {
+                None
+            };
 
             while scan_pos + block_size <= bytes_in_buffer {
                 let block_data = &buffer[scan_pos..scan_pos + block_size];
-                let crc32 = compute_crc32(block_data);
+
+                // Use rolling CRC if we have it, otherwise compute fresh
+                let crc32 = if let Some(crc) = rolling_crc {
+                    crc
+                } else {
+                    // Fallback: compute CRC directly (shouldn't happen often)
+                    compute_crc32(block_data)
+                };
 
                 // Fast CRC32 lookup in global table
                 if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
                     let (md5_hash, verified_crc) =
                         compute_block_checksums_padded(block_data, block_size);
 
-                    let mut found = false;
                     for candidate in candidates {
                         if candidate.checksums.crc32 == verified_crc
                             && candidate.checksums.md5_hash == md5_hash
@@ -252,20 +271,28 @@ impl GlobalVerificationEngine {
                                         duplicate.position.block_number,
                                     ));
                             }
-                            found = true;
                             break;
                         }
                     }
-
-                    if found {
-                        // Found a block - advance scan position by 1 byte to check for overlapping blocks
-                        scan_pos += 1;
-                        continue;
-                    }
                 }
 
-                // No match - advance by 1 byte within this buffer
+                // Advance scan position by 1 byte (whether we found a match or not)
                 scan_pos += 1;
+
+                // Update rolling CRC for next iteration
+                // Pass STANDARD CRC, get STANDARD CRC back (matching par2cmdline-turbo)
+                if scan_pos + block_size <= bytes_in_buffer {
+                    if let Some(crc) = rolling_crc {
+                        // Slide the window: remove byte at (scan_pos-1), add byte at (scan_pos+block_size-1)
+                        let byte_out = buffer[scan_pos - 1];
+                        let byte_in = buffer[scan_pos + block_size - 1];
+                        rolling_crc = Some(Crc32Value::new(rolling_table.slide(
+                            crc.as_u32(),
+                            byte_in,
+                            byte_out,
+                        )));
+                    }
+                }
             }
 
             // After scanning full blocks, check if there's a partial block remaining

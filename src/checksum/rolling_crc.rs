@@ -5,23 +5,20 @@
 //! the full CRC32 for each window position (O(n) per position), we can update
 //! it incrementally in O(1) time.
 //!
-//! ## Important: RAW CRC Values
+//! ## Usage (matching par2cmdline-turbo)
 //!
-//! **This implementation uses RAW CRC32 values (without the standard 0xFFFFFFFF
-//! initial and final XOR).** This matches par2cmdline's approach and is necessary
-//! for the rolling window algorithm to work correctly.
-//!
-//! To integrate with standard CRC32 (like `crc32fast`):
 //! ```ignore
-//! // Convert standard CRC to raw for rolling
-//! let raw_crc = standard_crc ^ 0xFFFFFFFF;
+//! // Compute initial CRC in standard form
+//! let mut crc = compute_crc32(&buffer[0..window_size]);
 //!
-//! // Use rolling CRC
-//! let new_raw_crc = table.slide(raw_crc, byte_in, byte_out);
-//!
-//! // Convert back to standard CRC
-//! let new_standard_crc = new_raw_crc ^ 0xFFFFFFFF;
+//! // Slide the window by one byte
+//! crc = rolling_table.slide(crc.as_u32(), byte_in, byte_out);
 //! ```
+//!
+//! The `slide()` function takes and returns STANDARD CRC32 values (with the
+//! 0xFFFFFFFF XOR applied). Internally it converts to RAW form, performs the
+//! rolling operation, then converts back - exactly matching par2cmdline-turbo's
+//! CRCSlideChar implementation.
 //!
 //! ## Algorithm Overview
 //!
@@ -66,6 +63,54 @@ const fn generate_crc_table() -> [u32; 256] {
 
 const CRC_TABLE: [u32; 256] = generate_crc_table();
 
+// Polynomial for CRC32 (IEEE 802.3)
+const CRC_POLYNOMIAL: u32 = 0xEDB88320;
+
+/// GF(2^32) multiplication for CRC polynomial field
+/// This matches par2cmdline-turbo's GF32Multiply function exactly
+fn gf32_multiply(mut a: u32, mut b: u32, polynomial: u32) -> u32 {
+    let mut product = 0u32;
+    for _ in 0..31 {
+        // NEGATE32(b >> 31) - if high bit set, all 1s, else all 0s
+        let mask = (b as i32 >> 31) as u32; // Sign extension
+        product ^= mask & a;
+
+        // Update a: shift right and XOR with polynomial if low bit was set
+        let low_bit_mask = (a as i32 & 1).wrapping_neg() as u32;
+        a = (a >> 1) ^ (polynomial & low_bit_mask);
+
+        b <<= 1;
+    }
+    // Final iteration
+    let mask = (b as i32 >> 31) as u32;
+    product ^= mask & a;
+    product
+}
+
+/// Compute 2^(8n) in CRC's Galois Field
+/// This matches par2cmdline-turbo's CRCExp8 function
+fn crc_exp8(mut n: u64) -> u32 {
+    // Build power table (matching crc32table::power[] generation)
+    let mut power = [0u32; 32];
+    let mut k = 0x80000000u32 >> 1;
+    for i in 0u32..32 {
+        power[((i.wrapping_sub(3)) & 31) as usize] = k;
+        k = gf32_multiply(k, k, CRC_POLYNOMIAL);
+    }
+
+    let mut result = 0x80000000u32;
+    let mut power_idx = 0;
+    n %= 0xffffffff;
+    while n != 0 {
+        if n & 1 != 0 {
+            result = gf32_multiply(result, power[power_idx], CRC_POLYNOMIAL);
+        }
+        n >>= 1;
+        power_idx = (power_idx + 1) & 31;
+    }
+    result
+}
+
 /// Precomputed table for rolling CRC32 window
 ///
 /// Each entry `windowtable[b]` represents the CRC32 contribution of byte value `b`
@@ -109,77 +154,76 @@ impl RollingCrcTable {
     /// Update CRC32 by sliding the window one byte forward
     ///
     /// # Arguments
-    /// * `current_crc` - Current CRC value for the window (RAW, no initial/final XOR)
+    /// * `current_crc` - Current CRC value for the window (STANDARD form with XOR)
     /// * `byte_in` - New byte entering the window at the end
     /// * `byte_out` - Old byte leaving the window from the start
     ///
     /// # Returns
-    /// Updated CRC for the shifted window (RAW, no initial/final XOR)
+    /// Updated CRC for the shifted window (STANDARD form with XOR)
     ///
-    /// # Algorithm (matching par2cmdline exactly)
-    /// 1. Remove old byte's contribution: `crc ^= windowtable[byte_out]`
-    /// 2. Add new byte's contribution: standard CRC update
-    ///
-    /// # Important
-    /// This works with RAW CRC values (no 0xFFFFFFFF XOR).
-    /// To use with standard CRC32:
-    /// - Before first call: `raw_crc = standard_crc ^ 0xFFFFFFFF`
-    /// - After final call: `standard_crc = raw_crc ^ 0xFFFFFFFF`
+    /// # Algorithm (matching par2cmdline-turbo's CRCSlideChar exactly)
+    /// ```cpp
+    /// u32 CRCSlideChar(u32 crc, u8 chNew, u8 chOld, const u32 (&windowtable)[256])
+    /// {
+    ///   crc ^= ~0;  // Convert to RAW
+    ///   return ((crc >> 8) & 0x00ffffffL) ^ ccitttable.table[(u8)crc ^ chNew] ^ windowtable[chOld];
+    /// }
+    /// ```
     #[inline]
     pub fn slide(&self, current_crc: u32, byte_in: u8, byte_out: u8) -> u32 {
-        // Remove the contribution of the outgoing byte
-        let crc = current_crc ^ self.table[byte_out as usize];
+        // Convert from STANDARD to RAW (matching par2cmdline's crc ^= ~0)
+        let crc = current_crc ^ 0xFFFFFFFF;
 
-        // Add the contribution of the incoming byte (standard CRC32 update)
-        crc_update_byte_raw(crc, byte_in)
+        // Update CRC: shift right, add new byte, remove old byte
+        ((crc >> 8) & 0x00ffffff)
+            ^ CRC_TABLE[((crc ^ byte_in as u32) & 0xFF) as usize]
+            ^ self.table[byte_out as usize]
     }
 }
 
 /// Compute the window mask for a single byte value
 ///
-/// This computes what CRC contribution a byte has when it's at position 0
-/// in a window of the given size.
-///
-/// # Algorithm (matching par2cmdline)
-/// 1. Compute RAW CRC of single byte (starting from 0, not 0xFFFFFFFF)
-/// 2. Shift it through (window_size - 1) zero bytes
+/// This matches par2cmdline-turbo's GenerateWindowTable exactly:
+/// ```cpp
+/// void GenerateWindowTable(u64 window, u32 (&target)[256])
+/// {
+///   u32 coeff = CRCExp8(window);
+///   u32 mask = GF32Multiply(~0, coeff, ccitttable.polynom);
+///   mask = GF32Multiply(mask, 0x80800000, ccitttable.polynom);
+///   mask ^= ~0;
+///   
+///   for (i16 i=0; i<=255; i++)
+///   {
+///     target[i] = GF32Multiply(ccitttable.table[i], coeff, ccitttable.polynom) ^ mask;
+///   }
+/// }
+/// ```
 fn compute_window_mask(window_size: usize, byte_value: u8) -> u32 {
-    // Compute CRC of single byte WITHOUT initial XOR (raw polynomial operation)
-    let mut crc = crc_update_byte_raw(0, byte_value);
+    // Window coefficient: x^(8*window_size) in GF(2^32)
+    let coeff = crc_exp8(window_size as u64);
 
-    // Shift the byte's contribution through (window_size - 1) positions
-    // Each shift is equivalent to processing a zero byte
-    for _ in 1..window_size {
-        crc = crc_shift_byte(crc);
-    }
+    // Extend initial CRC (~0) by window_size bytes
+    let mut mask = gf32_multiply(0xFFFFFFFF, coeff, CRC_POLYNOMIAL);
 
-    crc
-}
+    // Multiply by magic constant
+    mask = gf32_multiply(mask, 0x80800000, CRC_POLYNOMIAL);
 
-/// Update CRC32 with a single byte using raw table lookup
-#[inline]
-fn crc_update_byte_raw(crc: u32, byte: u8) -> u32 {
-    (crc >> 8) ^ CRC_TABLE[((crc ^ byte as u32) & 0xFF) as usize]
-}
+    // Invert to save doing it later
+    mask ^= 0xFFFFFFFF;
 
-/// Shift CRC by one byte position (equivalent to appending a zero byte)
-#[inline]
-fn crc_shift_byte(crc: u32) -> u32 {
-    (crc >> 8) ^ CRC_TABLE[(crc & 0xFF) as usize]
+    // Compute table entry for this byte value
+    gf32_multiply(CRC_TABLE[byte_value as usize], coeff, CRC_POLYNOMIAL) ^ mask
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Helper to compute CRC32 in RAW form (matching par2cmdline)
-    /// This does NOT apply the initial 0xFFFFFFFF or final 0xFFFFFFFF XOR
-    fn compute_crc_raw(data: &[u8]) -> u32 {
-        let mut crc = 0; // Start with 0, not 0xFFFFFFFF
-        for &byte in data {
-            crc = crc_update_byte_raw(crc, byte);
-        }
-        crc // No final XOR
+    /// Helper to compute CRC32 in STANDARD form (matching crc32fast)
+    fn compute_crc_standard(data: &[u8]) -> u32 {
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(data);
+        hasher.finalize()
     }
 
     #[test]
@@ -191,19 +235,19 @@ mod tests {
         // Create test data: 2 windows worth
         let data: Vec<u8> = (0..window_size * 2).map(|i| (i % 256) as u8).collect();
 
-        // Compute CRC of first window directly
-        let mut current_crc = compute_crc_raw(&data[0..window_size]);
+        // Compute CRC of first window in STANDARD form
+        let mut current_crc = compute_crc_standard(&data[0..window_size]);
 
         // Slide forward and verify each step
         for i in 0..(window_size - 10) {
             // Test first few positions
-            // Slide the window
+            // Slide the window using STANDARD CRC
             let byte_out = data[i];
             let byte_in = data[i + window_size];
             current_crc = table.slide(current_crc, byte_in, byte_out);
 
             // Compute expected CRC directly
-            let expected_crc = compute_crc_raw(&data[(i + 1)..(i + 1 + window_size)]);
+            let expected_crc = compute_crc_standard(&data[(i + 1)..(i + 1 + window_size)]);
 
             assert_eq!(
                 current_crc,
@@ -230,13 +274,13 @@ mod tests {
 
         let data: Vec<u8> = (0..512).map(|i| ((i * 7) % 256) as u8).collect();
 
-        // Start with window [0..256]
-        let mut rolling_crc = compute_crc_raw(&data[0..window_size]);
+        // Start with window [0..256] in STANDARD form
+        let mut rolling_crc = compute_crc_standard(&data[0..window_size]);
 
         // Slide to [1..257], [2..258], etc.
         for i in 0..100 {
             rolling_crc = table.slide(rolling_crc, data[i + window_size], data[i]);
-            let expected = compute_crc_raw(&data[(i + 1)..(i + 1 + window_size)]);
+            let expected = compute_crc_standard(&data[(i + 1)..(i + 1 + window_size)]);
             assert_eq!(rolling_crc, expected, "Mismatch at step {}", i + 1);
         }
     }
@@ -247,10 +291,10 @@ mod tests {
             let table = RollingCrcTable::new(size);
             let data: Vec<u8> = (0..(size * 2)).map(|i| (i % 251) as u8).collect();
 
-            let mut crc = compute_crc_raw(&data[0..size]);
+            let mut crc = compute_crc_standard(&data[0..size]);
             for i in 0..size {
                 crc = table.slide(crc, data[i + size], data[i]);
-                let expected = compute_crc_raw(&data[(i + 1)..(i + 1 + size)]);
+                let expected = compute_crc_standard(&data[(i + 1)..(i + 1 + size)]);
                 assert_eq!(crc, expected, "Size {}, step {}", size, i + 1);
             }
         }
