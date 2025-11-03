@@ -228,7 +228,7 @@ impl GlobalVerificationEngine {
         use crate::checksum::rolling_crc::RollingCrcTable;
         use crate::checksum::{compute_block_checksums_padded, compute_crc32};
         use std::fs::File;
-        use std::io::{Read, Seek, SeekFrom};
+        use std::io::Read;
 
         let mut file = match File::open(file_path) {
             Ok(f) => f,
@@ -238,7 +238,6 @@ impl GlobalVerificationEngine {
         let block_size = self.block_table.block_size() as usize;
         let buffer_size = block_size * 2; // 2-block buffer like par2cmdline
         let mut buffer = vec![0u8; buffer_size];
-        let mut file_position = 0u64;
 
         // Create rolling CRC table for efficient scanning
         let rolling_table = RollingCrcTable::new(block_size);
@@ -248,7 +247,6 @@ impl GlobalVerificationEngine {
             Ok(n) => n,
             Err(_) => return,
         };
-        file_position += bytes_in_buffer as u64;
 
         loop {
             if bytes_in_buffer == 0 {
@@ -385,32 +383,25 @@ impl GlobalVerificationEngine {
                 }
             }
 
-            // If we scanned the whole buffer, advance to next window
-            // Calculate where we are in the file
-            let buffer_start = file_position - bytes_in_buffer as u64;
+            // If we scanned the whole buffer, we need to slide the window forward
+            // Copy the last block_size bytes to the beginning of the buffer (creating overlap)
+            // This ensures we don't miss blocks that span buffer boundaries
+            if bytes_in_buffer >= block_size {
+                buffer.copy_within(block_size..bytes_in_buffer, 0);
+                let bytes_to_keep = bytes_in_buffer - block_size;
 
-            // Move forward by 1 block for efficiency (we've scanned all byte positions in this block)
-            let new_position = buffer_start + block_size as u64;
+                // Read new data to fill the rest of the buffer
+                let bytes_read = match file.read(&mut buffer[bytes_to_keep..]) {
+                    Ok(0) => 0, // EOF
+                    Ok(n) => n,
+                    Err(_) => return,
+                };
 
-            // Seek to new position
-            if file.seek(SeekFrom::Start(new_position)).is_err() {
+                bytes_in_buffer = bytes_to_keep + bytes_read;
+            } else {
+                // Buffer has less than block_size, we're at EOF
                 return;
             }
-
-            // Read new buffer
-            let bytes_read = match file.read(&mut buffer) {
-                Ok(0) => {
-                    // EOF reached - check if there was a partial block in the previous iteration
-                    // that we didn't scan because the loop condition wasn't met
-                    // This happens when the file size is not a multiple of block_size
-                    return;
-                }
-                Ok(n) => n,
-                Err(_) => return,
-            };
-
-            file_position = new_position + bytes_read as u64;
-            bytes_in_buffer = bytes_read;
         }
     }
 
