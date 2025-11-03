@@ -1,5 +1,5 @@
 use par2rs::domain::{FileId, Md5Hash, RecoverySetId};
-use par2rs::packets::{FileDescriptionPacket, MainPacket, Packet};
+use par2rs::packets::{FileDescriptionPacket, InputFileSliceChecksumPacket, MainPacket, Packet};
 use par2rs::reporters::SilentVerificationReporter;
 use par2rs::verify::{
     comprehensive_verify_files, comprehensive_verify_files_with_config, VerificationConfig,
@@ -207,34 +207,50 @@ fn test_comprehensive_verify_mixed_files() {
     let file_id1 = FileId::new([1; 16]);
     let file_id2 = FileId::new([2; 16]);
 
-    let md5_1 = Md5Hash::new([50; 16]);
-    let md5_16k_1 = Md5Hash::new([51; 16]);
+    let block_size = content1.len() as u64; // Make block size match the file size
+
+    // Compute actual MD5 for the existing file so it's detected as present
+    use par2rs::checksum::{compute_crc32, compute_md5};
+    let md5_1 = compute_md5(content1);
+    let md5_16k_1 = compute_md5(&content1[..content1.len().min(16384)]);
+    let crc32_1 = compute_crc32(content1);
+
+    // Use fake MD5 for the missing file
     let md5_2 = Md5Hash::new([52; 16]);
     let md5_16k_2 = Md5Hash::new([53; 16]);
 
-    let file1_path_str = file1_path.to_str().unwrap();
-    let file2_path = dir.path().join("missing.txt");
-    let file2_path_str = file2_path.to_str().unwrap();
-
     let packets = vec![
-        Packet::Main(create_main_packet(vec![file_id1, file_id2], 16384)),
+        Packet::Main(create_main_packet(vec![file_id1, file_id2], block_size)),
         Packet::FileDescription(create_file_desc(
             file_id1,
-            file1_path_str,
+            "good.txt",
             content1.len() as u64,
             md5_1,
             md5_16k_1,
         )),
         Packet::FileDescription(create_file_desc(
             file_id2,
-            file2_path_str,
+            "missing.txt",
             12,
             md5_2,
             md5_16k_2,
         )),
+        // Add slice checksums for the existing file
+        Packet::InputFileSliceChecksum(InputFileSliceChecksumPacket {
+            length: 64 + 16 + 20, // header + file_id + one (md5, crc32) pair
+            md5: Md5Hash::new([0; 16]),
+            set_id: RecoverySetId::new([1; 16]),
+            file_id: file_id1,
+            slice_checksums: vec![(md5_1, crc32_1)],
+        }),
     ];
 
-    let results = comprehensive_verify_files(packets);
+    let packet_set = par2rs::par2_files::PacketSet::from_packets_with_base_dir(
+        packets,
+        dir.path().to_path_buf(),
+    );
+    let config = VerificationConfig::default();
+    let results = comprehensive_verify_files_with_config(packet_set, &config);
 
     // One file exists (may be corrupt due to hash), one is missing
     assert_eq!(results.present_file_count + results.corrupted_file_count, 1);
@@ -242,7 +258,54 @@ fn test_comprehensive_verify_mixed_files() {
 }
 
 #[test]
-fn test_comprehensive_verify_repair_possible() {
+fn test_comprehensive_verify_with_padding() {
+    // Test that verification works when file is smaller than block size (needs padding)
+    let dir = TempDir::new().unwrap();
+
+    let file1_path = dir.path().join("small.txt");
+    let content1 = b"Small"; // 5 bytes
+    fs::write(&file1_path, content1).unwrap();
+
+    let file_id1 = FileId::new([3; 16]);
+    let block_size = 1024u64; // Much larger than the file
+
+    // Compute checksums with padding
+    use par2rs::checksum::{compute_block_checksums_padded, compute_md5};
+    let (md5_1, crc32_1) = compute_block_checksums_padded(content1, block_size as usize);
+    let md5_16k_1 = compute_md5(&content1[..content1.len().min(16384)]);
+
+    let packets = vec![
+        Packet::Main(create_main_packet(vec![file_id1], block_size)),
+        Packet::FileDescription(create_file_desc(
+            file_id1,
+            "small.txt",
+            content1.len() as u64,
+            md5_1,
+            md5_16k_1,
+        )),
+        Packet::InputFileSliceChecksum(InputFileSliceChecksumPacket {
+            length: 64 + 16 + 20,
+            md5: Md5Hash::new([0; 16]),
+            set_id: RecoverySetId::new([1; 16]),
+            file_id: file_id1,
+            slice_checksums: vec![(md5_1, crc32_1)],
+        }),
+    ];
+
+    let packet_set = par2rs::par2_files::PacketSet::from_packets_with_base_dir(
+        packets,
+        dir.path().to_path_buf(),
+    );
+    let config = VerificationConfig::default();
+    let results = comprehensive_verify_files_with_config(packet_set, &config);
+
+    // File should be detected as present despite being smaller than block size
+    assert_eq!(results.present_file_count, 1);
+    assert_eq!(results.missing_file_count, 0);
+}
+
+#[test]
+fn test_comprehensive_verify_partial_match() {
     let file_id = FileId::new([6; 16]);
     let md5 = Md5Hash::new([60; 16]);
     let md5_16k = Md5Hash::new([61; 16]);

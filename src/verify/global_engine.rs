@@ -268,6 +268,45 @@ impl GlobalVerificationEngine {
                 scan_pos += 1;
             }
 
+            // After scanning full blocks, check if there's a partial block remaining
+            // This happens either when:
+            // 1. The entire file is smaller than block_size (scan_pos == 0)
+            // 2. We've scanned full blocks and there's a remainder (scan_pos > 0 && remainder exists)
+            let remainder_start = scan_pos;
+            let remainder_size = bytes_in_buffer.saturating_sub(remainder_start);
+
+            if remainder_size > 0 && remainder_size < block_size {
+                let partial_data = &buffer[remainder_start..bytes_in_buffer];
+                // Compute checksums with padding
+                let (md5_hash, crc32) = compute_block_checksums_padded(partial_data, block_size);
+
+                // Check if this matches any expected block
+                if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
+                    for candidate in candidates {
+                        if candidate.checksums.crc32 == crc32
+                            && candidate.checksums.md5_hash == md5_hash
+                        {
+                            // Found valid partial block - record it
+                            for duplicate in candidate.iter_duplicates() {
+                                global_block_map
+                                    .entry((md5_hash, crc32))
+                                    .or_default()
+                                    .push((
+                                        duplicate.position.file_id,
+                                        duplicate.position.block_number,
+                                    ));
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                // If the partial block was at the start (whole file smaller than block), we're done
+                if scan_pos == 0 {
+                    return;
+                }
+            }
+
             // If we scanned the whole buffer, advance to next window
             // Calculate where we are in the file
             let buffer_start = file_position - bytes_in_buffer as u64;
@@ -282,7 +321,12 @@ impl GlobalVerificationEngine {
 
             // Read new buffer
             let bytes_read = match file.read(&mut buffer) {
-                Ok(0) => return, // EOF
+                Ok(0) => {
+                    // EOF reached - check if there was a partial block in the previous iteration
+                    // that we didn't scan because the loop condition wasn't met
+                    // This happens when the file size is not a multiple of block_size
+                    return;
+                }
                 Ok(n) => n,
                 Err(_) => return,
             };

@@ -11,7 +11,6 @@ fn test_recovery_blocks_counted_in_verification() {
     // This fixture has:
     // - 1986 data blocks (testfile, 1MB with 528 byte blocks)
     // - Recovery files with 1+2+4+8+16+32+36 = 99 recovery blocks
-    // - The testfile is damaged (block 1985 is corrupted)
     let par2_file = Path::new("tests/fixtures/repair_scenarios/testfile.par2");
 
     if !par2_file.exists() {
@@ -19,18 +18,38 @@ fn test_recovery_blocks_counted_in_verification() {
         return;
     }
 
+    // Create a temp directory and copy the test file there, then corrupt it
+    use std::fs;
+    use std::io::{Seek, SeekFrom, Write};
+    use tempfile::TempDir;
+
+    let temp_dir = TempDir::new().unwrap();
+
+    // Copy the original file
+    let original_file = Path::new("tests/fixtures/repair_scenarios/testfile");
+    let test_file = temp_dir.path().join("testfile");
+    fs::copy(original_file, &test_file).unwrap();
+
+    // Corrupt block 1985 (the last block at offset 1985 * 528 = 1,048,080)
+    {
+        let mut file = fs::OpenOptions::new().write(true).open(&test_file).unwrap();
+        file.seek(SeekFrom::Start(1985 * 528)).unwrap();
+        // Write garbage to corrupt the block
+        file.write_all(&[0xFF; 496]).unwrap(); // Last block is only 496 bytes
+    }
+
     // Load all PAR2 files and packets
     let par2_files = par2rs::par2_files::collect_par2_files(par2_file);
     let packet_set = par2rs::par2_files::load_all_par2_packets(&par2_files);
 
-    // Run verification
+    // Run verification in the temp directory
     let config = par2rs::verify::VerificationConfig::default();
     let reporter = par2rs::reporters::ConsoleVerificationReporter::new();
     let results = par2rs::verify::comprehensive_verify_files_with_config_and_reporter_in_dir(
         packet_set,
         &config,
         &reporter,
-        "tests/fixtures/repair_scenarios",
+        temp_dir.path(),
     );
 
     // ASSERTIONS:
