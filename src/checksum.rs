@@ -189,6 +189,18 @@ pub fn compute_md5_crc32_simultaneous_padded(
     )
 }
 
+/// Compute only MD5 hash (when CRC32 is already known from rolling window)
+///
+/// This is used during scanning when we already have the CRC32 from the
+/// rolling window and only need to verify the MD5 hash.
+#[inline]
+pub fn compute_md5_only(data: &[u8]) -> Md5Hash {
+    use md5::Digest;
+    let mut hasher = Md5::new();
+    hasher.update(data);
+    Md5Hash::new(hasher.finalize().into())
+}
+
 // ============================================================================
 // PAR2-Specific Hash Operations
 // ============================================================================

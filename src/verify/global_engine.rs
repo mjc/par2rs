@@ -276,26 +276,31 @@ impl GlobalVerificationEngine {
                     compute_crc32(block_data)
                 };
 
-                // Fast CRC32 lookup in global table
+                // Fast CRC32 lookup in global table (with bloom filter pre-check)
                 if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
-                    let (md5_hash, verified_crc) =
-                        compute_block_checksums_padded(block_data, block_size);
+                    // First check if any candidate has matching CRC32
+                    let has_crc_match = candidates.iter().any(|c| c.checksums.crc32 == crc32);
 
-                    for candidate in candidates {
-                        if candidate.checksums.crc32 == verified_crc
-                            && candidate.checksums.md5_hash == md5_hash
-                        {
-                            // Found valid block - record it
-                            for duplicate in candidate.iter_duplicates() {
-                                global_block_map
-                                    .entry((md5_hash, verified_crc))
-                                    .or_default()
-                                    .push((
-                                        duplicate.position.file_id,
-                                        duplicate.position.block_number,
-                                    ));
+                    if has_crc_match {
+                        // Only compute MD5 if we have a CRC32 match
+                        let md5_hash = crate::checksum::compute_md5_only(block_data);
+
+                        for candidate in candidates {
+                            if candidate.checksums.crc32 == crc32
+                                && candidate.checksums.md5_hash == md5_hash
+                            {
+                                // Found valid block - record it
+                                for duplicate in candidate.iter_duplicates() {
+                                    global_block_map
+                                        .entry((md5_hash, crc32))
+                                        .or_default()
+                                        .push((
+                                            duplicate.position.file_id,
+                                            duplicate.position.block_number,
+                                        ));
+                                }
+                                break;
                             }
-                            break;
                         }
                     }
                 }

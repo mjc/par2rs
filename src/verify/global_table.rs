@@ -187,7 +187,9 @@ impl GlobalBlockTable {
     }
 
     /// Find blocks matching the given CRC32
+    #[inline(always)]
     pub fn find_by_crc32(&self, crc32: Crc32Value) -> Option<&[GlobalBlockEntry]> {
+        // Direct HashMap lookup - FxHashMap is very fast for integer keys
         self.crc_table.get(&crc32).map(|v| v.as_slice())
     }
 
