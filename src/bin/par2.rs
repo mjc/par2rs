@@ -228,8 +228,15 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
     }
 
     // Perform comprehensive verification
-    let results =
-        par2rs::verify::comprehensive_verify_files_with_config(packet_set, &verify_config);
+    let results = if quiet {
+        par2rs::verify::comprehensive_verify_files_with_config_and_reporter(
+            packet_set,
+            &verify_config,
+            &par2rs::reporters::SilentVerificationReporter,
+        )
+    } else {
+        par2rs::verify::comprehensive_verify_files_with_config(packet_set, &verify_config)
+    };
 
     if !quiet {
         par2rs::verify::print_verification_results(&results);
