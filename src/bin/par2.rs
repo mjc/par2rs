@@ -210,8 +210,8 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         println!("Loading PAR2 files...\n");
     }
 
-    // Parse packets excluding recovery slices (verification doesn't need them)
-    let all_packets = par2rs::par2_files::load_par2_packets(&par2_files, false);
+    // Parse all packets including recovery slices so we can count recovery blocks
+    let all_packets = par2rs::par2_files::load_all_par2_packets(&par2_files);
 
     if !quiet {
         // Count recovery blocks without loading their data
