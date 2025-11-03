@@ -11,7 +11,9 @@ nix-build = []
 binrw = "*"
 clap = "4.5.39"
 rayon = "1.10.0"
-md-5 = { version = "0.10", features = ["md5-asm"] }
+# hand-rolled md5 asm originally from ParPar with some additional optimizations by mjc
+# aarch64 for Apple Silicon and x86-64 for AMD 5xxx are primary targets
+md-5 = { git = "https://github.com/mjc/hashes.git", branch = "mjc-asm", version = "0.11.0-rc.2", features = ["alloc", "oid"] }
 hex = "0.4.3"
 crc32fast = "1.4.0"
 log = "0.4"
