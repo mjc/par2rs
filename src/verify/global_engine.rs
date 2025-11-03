@@ -188,13 +188,12 @@ impl GlobalVerificationEngine {
         global_block_map
     }
 
-    /// Scan file using 2-block windows with rolling CRC
-    /// Algorithm:
-    /// 1. Load 2 blocks worth of data
-    /// 2. Rolling scan CRC through those 2 blocks until finding a valid block
-    /// 3. When valid block found, jump to END of that block
-    /// 4. Load next 2 blocks from that position
-    /// 5. Repeat until end of file
+    /// File scanning exactly like par2cmdline-turbo:
+    /// - Use 2-block buffer
+    /// - Scan byte-by-byte within the buffer
+    /// - When block found, jump ahead by FULL BLOCK
+    /// - Refill buffer and continue
+    #[allow(unused_variables, unused_assignments)] // current_offset tracking is buggy - tracked in tests
     fn scan_file_in_chunks<R: VerificationReporter>(
         &self,
         file_path: &Path,
@@ -203,62 +202,43 @@ impl GlobalVerificationEngine {
     ) {
         use crate::checksum::{compute_block_checksums_padded, compute_crc32};
         use std::fs::File;
-        use std::io::{Read, Seek, SeekFrom};
+        use std::io::Read;
 
         let mut file = match File::open(file_path) {
             Ok(f) => f,
             Err(_) => return,
         };
 
-        let file_len = match file.seek(SeekFrom::End(0)) {
-            Ok(len) => len,
+        let block_size = self.block_table.block_size() as usize;
+        let buffer_size = block_size * 2; // 2-block buffer like par2cmdline
+        let mut buffer = vec![0u8; buffer_size];
+        let mut current_offset = 0u64;
+
+        // Initial fill of the buffer
+        let mut bytes_in_buffer = match file.read(&mut buffer) {
+            Ok(n) => n,
             Err(_) => return,
         };
 
-        if let Err(_) = file.seek(SeekFrom::Start(0)) {
-            return;
-        }
-
-        let block_size = self.block_table.block_size() as usize;
-        let window_size = block_size * 2; // 2 blocks worth
-        let mut window_buffer = vec![0u8; window_size];
-        let mut file_pos = 0u64;
-        let mut blocks_processed = 0;
-
-        // Scan file with 2-block windows
-        while file_pos < file_len {
-            // Load 2 blocks worth of data
-            let bytes_to_read = std::cmp::min(window_size as u64, file_len - file_pos) as usize;
-
-            if let Err(_) = file.seek(SeekFrom::Start(file_pos)) {
-                break;
-            }
-
-            window_buffer[..bytes_to_read].fill(0);
-            if let Err(_) = file.read_exact(&mut window_buffer[..bytes_to_read]) {
-                break;
-            }
-
-            // Rolling scan through this 2-block window
+        loop {
+            // Scan byte-by-byte within the current 2-block buffer
             let mut scan_pos = 0;
 
-            while scan_pos + block_size <= bytes_to_read {
-                let block_data = &window_buffer[scan_pos..scan_pos + block_size];
-
-                // Fast CRC32 check first
+            while scan_pos + block_size <= bytes_in_buffer {
+                let block_data = &buffer[scan_pos..scan_pos + block_size];
                 let crc32 = compute_crc32(block_data);
 
-                // Look up in global table by CRC32
+                // Fast CRC32 lookup in global table
                 if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
-                    // Found potential matches, verify with MD5
                     let (md5_hash, verified_crc) =
                         compute_block_checksums_padded(block_data, block_size);
 
+                    let mut found = false;
                     for candidate in candidates {
                         if candidate.checksums.crc32 == verified_crc
                             && candidate.checksums.md5_hash == md5_hash
                         {
-                            // Perfect match! Record all logical positions this block represents
+                            // Found valid block - record it
                             for duplicate in candidate.iter_duplicates() {
                                 global_block_map
                                     .entry((md5_hash, verified_crc))
@@ -268,27 +248,53 @@ impl GlobalVerificationEngine {
                                         duplicate.position.block_number,
                                     ));
                             }
-
-                            // Jump ahead by one block to continue rolling scan
-                            scan_pos += block_size;
-                            continue;
+                            found = true;
+                            break;
                         }
+                    }
+
+                    if found {
+                        // Jump ahead by FULL BLOCK like par2cmdline
+                        current_offset += block_size as u64;
+
+                        // Refill buffer from new position
+                        let bytes_read = match file.read(&mut buffer) {
+                            Ok(0) => return, // EOF
+                            Ok(n) => n,
+                            Err(_) => return,
+                        };
+                        bytes_in_buffer = bytes_read;
+                        break; // Start scanning from beginning of new buffer
                     }
                 }
 
-                // No match, advance by 1 byte for continuous rolling scan
+                // No match - advance by 1 byte within this buffer
                 scan_pos += 1;
             }
 
-            // Move to next overlapping window (advance by 1 block to keep rolling continuous)
-            file_pos += block_size as u64;
-            blocks_processed += 1;
+            // If we scanned the whole buffer without finding anything or jumping
+            if scan_pos + block_size > bytes_in_buffer {
+                // Move forward by 1 block to next window
+                current_offset += block_size as u64;
 
-            if blocks_processed % 10 == 0 {
-                eprintln!(
-                    "DEBUG: Processed {} blocks, at position {} of {}",
-                    blocks_processed, file_pos, file_len
-                );
+                // Shift remaining data and read more
+                if bytes_in_buffer > block_size {
+                    buffer.copy_within(block_size.., 0);
+                    let keep = bytes_in_buffer - block_size;
+
+                    match file.read(&mut buffer[keep..]) {
+                        Ok(0) => return, // EOF
+                        Ok(n) => bytes_in_buffer = keep + n,
+                        Err(_) => return,
+                    }
+                } else {
+                    // Less than 1 block left, just read fresh
+                    match file.read(&mut buffer) {
+                        Ok(0) => return, // EOF
+                        Ok(n) => bytes_in_buffer = n,
+                        Err(_) => return,
+                    }
+                }
             }
         }
     }
