@@ -190,10 +190,9 @@ impl GlobalVerificationEngine {
 
     /// File scanning exactly like par2cmdline-turbo:
     /// - Use 2-block buffer
-    /// - Scan byte-by-byte within the buffer
-    /// - When block found, jump ahead by FULL BLOCK
-    /// - Refill buffer and continue
-    #[allow(unused_variables, unused_assignments)] // current_offset tracking is buggy - tracked in tests
+    /// - Scan byte-by-byte within the buffer  
+    /// - When block found, skip ahead by FULL BLOCK in file
+    /// - Refill buffer when exhausted
     fn scan_file_in_chunks<R: VerificationReporter>(
         &self,
         file_path: &Path,
@@ -202,7 +201,7 @@ impl GlobalVerificationEngine {
     ) {
         use crate::checksum::{compute_block_checksums_padded, compute_crc32};
         use std::fs::File;
-        use std::io::Read;
+        use std::io::{Read, Seek, SeekFrom};
 
         let mut file = match File::open(file_path) {
             Ok(f) => f,
@@ -212,15 +211,20 @@ impl GlobalVerificationEngine {
         let block_size = self.block_table.block_size() as usize;
         let buffer_size = block_size * 2; // 2-block buffer like par2cmdline
         let mut buffer = vec![0u8; buffer_size];
-        let mut current_offset = 0u64;
+        let mut file_position = 0u64;
 
         // Initial fill of the buffer
         let mut bytes_in_buffer = match file.read(&mut buffer) {
             Ok(n) => n,
             Err(_) => return,
         };
+        file_position += bytes_in_buffer as u64;
 
         loop {
+            if bytes_in_buffer == 0 {
+                return; // EOF
+            }
+
             // Scan byte-by-byte within the current 2-block buffer
             let mut scan_pos = 0;
 
@@ -254,17 +258,9 @@ impl GlobalVerificationEngine {
                     }
 
                     if found {
-                        // Jump ahead by FULL BLOCK like par2cmdline
-                        current_offset += block_size as u64;
-
-                        // Refill buffer from new position
-                        let bytes_read = match file.read(&mut buffer) {
-                            Ok(0) => return, // EOF
-                            Ok(n) => n,
-                            Err(_) => return,
-                        };
-                        bytes_in_buffer = bytes_read;
-                        break; // Start scanning from beginning of new buffer
+                        // Found a block - advance scan position by 1 byte to check for overlapping blocks
+                        scan_pos += 1;
+                        continue;
                     }
                 }
 
@@ -272,30 +268,27 @@ impl GlobalVerificationEngine {
                 scan_pos += 1;
             }
 
-            // If we scanned the whole buffer without finding anything or jumping
-            if scan_pos + block_size > bytes_in_buffer {
-                // Move forward by 1 block to next window
-                current_offset += block_size as u64;
+            // If we scanned the whole buffer, advance to next window
+            // Calculate where we are in the file
+            let buffer_start = file_position - bytes_in_buffer as u64;
 
-                // Shift remaining data and read more
-                if bytes_in_buffer > block_size {
-                    buffer.copy_within(block_size.., 0);
-                    let keep = bytes_in_buffer - block_size;
+            // Move forward by 1 block for efficiency (we've scanned all byte positions in this block)
+            let new_position = buffer_start + block_size as u64;
 
-                    match file.read(&mut buffer[keep..]) {
-                        Ok(0) => return, // EOF
-                        Ok(n) => bytes_in_buffer = keep + n,
-                        Err(_) => return,
-                    }
-                } else {
-                    // Less than 1 block left, just read fresh
-                    match file.read(&mut buffer) {
-                        Ok(0) => return, // EOF
-                        Ok(n) => bytes_in_buffer = n,
-                        Err(_) => return,
-                    }
-                }
+            // Seek to new position
+            if file.seek(SeekFrom::Start(new_position)).is_err() {
+                return;
             }
+
+            // Read new buffer
+            let bytes_read = match file.read(&mut buffer) {
+                Ok(0) => return, // EOF
+                Ok(n) => n,
+                Err(_) => return,
+            };
+
+            file_position = new_position + bytes_read as u64;
+            bytes_in_buffer = bytes_read;
         }
     }
 
