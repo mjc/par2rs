@@ -60,6 +60,10 @@ pub trait VerificationReporter: Reporter {
 
     /// Report final verification results summary
     fn report_verification_results(&self, results: &VerificationResults);
+
+    /// Report scanning progress (fraction of 1.0)
+    /// This is typically printed with \r to update the same line
+    fn report_scanning_progress(&self, fraction: f64);
 }
 
 /// Trait for reporting repair progress and results

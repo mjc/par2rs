@@ -100,6 +100,15 @@ impl VerificationReporter for ConsoleVerificationReporter {
             }
         }
     }
+
+    fn report_scanning_progress(&self, fraction: f64) {
+        // Match par2cmdline-turbo's format: "Scanning: X.X%\r"
+        // The \r returns to start of line so next update overwrites
+        use std::io::{self, Write};
+        let percent = (fraction * 1000.0) as u32;
+        print!("Scanning: {}.{}%\r", percent / 10, percent % 10);
+        let _ = io::stdout().flush();
+    }
 }
 
 // Base Reporter implementation for ConsoleRepairReporter

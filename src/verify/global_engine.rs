@@ -120,6 +120,21 @@ impl GlobalVerificationEngine {
     ) -> HashMap<(Md5Hash, Crc32Value), Vec<(FileId, u32)>> {
         let mut global_block_map = HashMap::default();
 
+        // Calculate total size of all files for progress reporting
+        let total_size: u64 = self
+            .file_descriptions
+            .values()
+            .filter(|desc| {
+                let file_name = extract_file_name(desc);
+                let file_path = self.base_dir.join(&file_name);
+                file_path.exists()
+            })
+            .map(|desc| desc.file_length)
+            .sum();
+
+        let mut bytes_scanned = 0u64;
+        let mut last_reported_fraction = 0u32;
+
         // Scan every file that exists on disk
         for file_desc in self.file_descriptions.values() {
             let file_name = extract_file_name(file_desc);
@@ -129,7 +144,14 @@ impl GlobalVerificationEngine {
 
             if file_path.exists() {
                 // Scan this file for blocks
-                self.scan_file_in_chunks(&file_path, &mut global_block_map, reporter);
+                self.scan_file_in_chunks(
+                    &file_path,
+                    &mut global_block_map,
+                    reporter,
+                    total_size,
+                    &mut bytes_scanned,
+                    &mut last_reported_fraction,
+                );
 
                 // Immediately report block status for this file
                 let total_blocks = self.calculate_total_blocks(file_desc.file_length);
@@ -197,7 +219,10 @@ impl GlobalVerificationEngine {
         &self,
         file_path: &Path,
         global_block_map: &mut HashMap<(Md5Hash, Crc32Value), Vec<(FileId, u32)>>,
-        _reporter: &R,
+        reporter: &R,
+        total_size: u64,
+        bytes_scanned: &mut u64,
+        last_reported_fraction: &mut u32,
     ) {
         // use crate::checksum::rolling_crc::RollingCrcTable;
         use crate::checksum::rolling_crc::RollingCrcTable;
@@ -232,6 +257,7 @@ impl GlobalVerificationEngine {
 
             // Scan byte-by-byte within the current 2-block buffer using rolling CRC
             let mut scan_pos = 0;
+            let mut progress_accumulator = 0usize; // Track bytes processed since last report
 
             // Initialize rolling CRC with first block if possible
             // Store in STANDARD form (matching par2cmdline-turbo's usage)
@@ -278,6 +304,21 @@ impl GlobalVerificationEngine {
 
                 // Advance scan position by 1 byte (whether we found a match or not)
                 scan_pos += 1;
+                progress_accumulator += 1;
+
+                // Report progress periodically (matching par2cmdline-turbo)
+                // Report when we've accumulated a block's worth of progress
+                if progress_accumulator >= block_size && total_size > 0 {
+                    *bytes_scanned += progress_accumulator as u64;
+                    progress_accumulator = 0;
+
+                    // Only report when fraction changes (to match par2cmdline format)
+                    let new_fraction = ((*bytes_scanned * 1000) / total_size) as u32;
+                    if new_fraction != *last_reported_fraction {
+                        reporter.report_scanning_progress(new_fraction as f64 / 1000.0);
+                        *last_reported_fraction = new_fraction;
+                    }
+                }
 
                 // Update rolling CRC for next iteration
                 // Pass STANDARD CRC, get STANDARD CRC back (matching par2cmdline-turbo)
@@ -292,6 +333,16 @@ impl GlobalVerificationEngine {
                             byte_out,
                         )));
                     }
+                }
+            }
+
+            // Flush any remaining progress after scanning this buffer
+            if progress_accumulator > 0 && total_size > 0 {
+                *bytes_scanned += progress_accumulator as u64;
+                let new_fraction = ((*bytes_scanned * 1000) / total_size) as u32;
+                if new_fraction != *last_reported_fraction {
+                    reporter.report_scanning_progress(new_fraction as f64 / 1000.0);
+                    *last_reported_fraction = new_fraction;
                 }
             }
 

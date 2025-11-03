@@ -46,6 +46,7 @@ impl VerificationReporter for SilentVerificationReporter {
     ) {
     }
     fn report_verification_results(&self, _results: &VerificationResults) {}
+    fn report_scanning_progress(&self, _fraction: f64) {}
 }
 
 // Base Reporter implementation for SilentRepairReporter
