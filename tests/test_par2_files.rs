@@ -166,9 +166,10 @@ fn test_get_packet_hash_consistency() {
 fn test_load_par2_packets_empty_list() {
     let empty: Vec<PathBuf> = vec![];
 
-    let result = par2rs::par2_files::load_par2_packets(&empty, false);
+    let packet_set = par2rs::par2_files::load_par2_packets(&empty, false);
 
-    assert!(result.is_empty());
+    assert!(packet_set.packets.is_empty());
+    assert_eq!(packet_set.recovery_block_count, 0);
 }
 
 #[test]
@@ -181,8 +182,8 @@ fn test_load_par2_packets_nonexistent_file() {
     let result = std::panic::catch_unwind(|| par2rs::par2_files::load_par2_packets(&files, false));
 
     // Either it panics (original code) or returns empty (improved code)
-    if let Ok(packets) = result {
-        assert!(packets.is_empty());
+    if let Ok(packet_set) = result {
+        assert!(packet_set.packets.is_empty());
     }
     // If it panicked, that's also acceptable for the original code
 }

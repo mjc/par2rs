@@ -83,7 +83,10 @@ fn test_comprehensive_verify_with_config_parallel() {
         ..Default::default()
     };
 
-    let results = comprehensive_verify_files_with_config(packets, &config);
+    let results = comprehensive_verify_files_with_config(
+        par2rs::par2_files::PacketSet::from_packets(packets),
+        &config,
+    );
     assert!(results.total_block_count > 0 || results.missing_file_count > 0);
 }
 
@@ -100,7 +103,10 @@ fn test_comprehensive_verify_with_config_sequential() {
         ..Default::default()
     };
 
-    let results = comprehensive_verify_files_with_config(packets, &config);
+    let results = comprehensive_verify_files_with_config(
+        par2rs::par2_files::PacketSet::from_packets(packets),
+        &config,
+    );
     assert!(results.total_block_count > 0 || results.missing_file_count > 0);
 }
 

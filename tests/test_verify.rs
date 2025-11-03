@@ -164,9 +164,9 @@ mod verify_file_md5_tests {
         if test_file.exists() {
             let main_file = Path::new("tests/fixtures/testfile.par2");
             let par2_files = par2rs::par2_files::collect_par2_files(main_file);
-            let packets = par2rs::par2_files::load_par2_packets(&par2_files, false);
+            let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false);
 
-            for packet in &packets {
+            for packet in &packet_set.packets {
                 if let Packet::FileDescription(fd) = packet {
                     let file_name = String::from_utf8_lossy(&fd.file_name)
                         .trim_end_matches('\0')
@@ -193,9 +193,9 @@ mod verify_file_md5_tests {
         if test_file.exists() {
             let main_file = Path::new("tests/fixtures/testfile.par2");
             let par2_files = par2rs::par2_files::collect_par2_files(main_file);
-            let packets = par2rs::par2_files::load_par2_packets(&par2_files, false);
+            let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false);
 
-            for packet in &packets {
+            for packet in &packet_set.packets {
                 if let Packet::FileDescription(fd) = packet {
                     let file_name = String::from_utf8_lossy(&fd.file_name)
                         .trim_end_matches('\0')
@@ -222,9 +222,9 @@ mod verify_file_integrity_tests {
         let main_file = Path::new("tests/fixtures/testfile.par2");
         if main_file.exists() {
             let par2_files = par2rs::par2_files::collect_par2_files(main_file);
-            let packets = par2rs::par2_files::load_par2_packets(&par2_files, false);
+            let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false);
 
-            for packet in &packets {
+            for packet in &packet_set.packets {
                 if let Packet::FileDescription(fd) = packet {
                     let file_name = String::from_utf8_lossy(&fd.file_name)
                         .trim_end_matches('\0')
@@ -253,9 +253,9 @@ mod verify_file_integrity_tests {
         if test_file.exists() {
             let main_file = Path::new("tests/fixtures/testfile.par2");
             let par2_files = par2rs::par2_files::collect_par2_files(main_file);
-            let packets = par2rs::par2_files::load_par2_packets(&par2_files, false);
+            let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false);
 
-            for packet in &packets {
+            for packet in &packet_set.packets {
                 if let Packet::FileDescription(fd) = packet {
                     let file_name = String::from_utf8_lossy(&fd.file_name)
                         .trim_end_matches('\0')
@@ -284,14 +284,14 @@ mod verify_blocks_in_file_tests {
         if test_file.exists() {
             let main_file = Path::new("tests/fixtures/testfile.par2");
             let par2_files = par2rs::par2_files::collect_par2_files(main_file);
-            let packets = par2rs::par2_files::load_par2_packets(&par2_files, false);
+            let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false);
 
             // Extract block size and checksums
             let mut block_size = 0;
             let mut checksums = None;
             let mut file_id = None;
 
-            for packet in &packets {
+            for packet in &packet_set.packets {
                 if let Packet::Main(main) = packet {
                     block_size = main.slice_size as usize;
                 } else if let Packet::FileDescription(fd) = packet {
@@ -328,10 +328,10 @@ mod comprehensive_verify_tests {
         if test_file.exists() {
             let main_file = Path::new("tests/fixtures/testfile.par2");
             let par2_files = par2rs::par2_files::collect_par2_files(main_file);
-            let packets = par2rs::par2_files::load_par2_packets(&par2_files, false);
+            let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false);
 
-            let packet_count = packets.len();
-            let results = comprehensive_verify_files(packets);
+            let packet_count = packet_set.packets.len();
+            let results = comprehensive_verify_files(packet_set.packets);
 
             // When we have packets, verify basic invariants
             if packet_count > 0 {
@@ -345,9 +345,9 @@ mod comprehensive_verify_tests {
         let main_file = Path::new("tests/fixtures/repair_scenarios/testfile.par2");
         if main_file.exists() {
             let par2_files = par2rs::par2_files::collect_par2_files(main_file);
-            let packets = par2rs::par2_files::load_par2_packets(&par2_files, false);
+            let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false);
 
-            let results = comprehensive_verify_files(packets);
+            let results = comprehensive_verify_files(packet_set.packets);
 
             assert!(
                 results.missing_file_count > 0,
@@ -365,9 +365,9 @@ mod comprehensive_verify_tests {
         let main_file = Path::new("tests/fixtures/testfile.par2");
         if main_file.exists() {
             let par2_files = par2rs::par2_files::collect_par2_files(main_file);
-            let packets = par2rs::par2_files::load_par2_packets(&par2_files, false);
+            let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false);
 
-            let results = comprehensive_verify_files(packets);
+            let results = comprehensive_verify_files(packet_set.packets);
 
             assert_eq!(
                 results.blocks_needed_for_repair, results.missing_block_count,
@@ -396,9 +396,9 @@ mod comprehensive_verify_tests {
         let main_file = Path::new("tests/fixtures/testfile.par2");
         if main_file.exists() {
             let par2_files = par2rs::par2_files::collect_par2_files(main_file);
-            let packets = par2rs::par2_files::load_par2_packets(&par2_files, false);
+            let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false);
 
-            let results = comprehensive_verify_files(packets);
+            let results = comprehensive_verify_files(packet_set.packets);
 
             // Recovery blocks should be counted
             let _ = results.recovery_blocks_available;
@@ -558,9 +558,9 @@ mod quick_check_files_tests {
         if test_file.exists() {
             let main_file = Path::new("tests/fixtures/testfile.par2");
             let par2_files = par2rs::par2_files::collect_par2_files(main_file);
-            let packets = par2rs::par2_files::load_par2_packets(&par2_files, false);
+            let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false);
 
-            let result = comprehensive_verify_files(packets);
+            let result = comprehensive_verify_files(packet_set.packets);
             // Just verify the function completes successfully
             assert!(!result.files.is_empty() || result.files.is_empty());
         }

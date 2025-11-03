@@ -24,7 +24,7 @@ fn test_parallel_sequential_equivalence() {
         let packets_parallel = load_all_par2_packets(std::slice::from_ref(test_file));
         let packets_sequential = load_all_par2_packets(std::slice::from_ref(test_file));
 
-        if packets_parallel.is_empty() {
+        if packets_parallel.packets.is_empty() {
             println!("No packets loaded from {}, skipping", test_file.display());
             continue;
         }
@@ -183,7 +183,7 @@ fn test_thread_count_consistency() {
     for threads in thread_counts.iter() {
         // Load packets fresh for each test since Packet doesn't implement Clone
         let packets = load_all_par2_packets(std::slice::from_ref(test_file));
-        if packets.is_empty() {
+        if packets.packets.is_empty() {
             println!("No packets loaded from {}, skipping", test_file.display());
             return;
         }

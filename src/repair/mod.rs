@@ -983,9 +983,9 @@ pub fn repair_files_with_reporter(
     // Load metadata for memory-efficient recovery slice loading
     let metadata = crate::par2_files::parse_recovery_slice_metadata(&par2_files, false);
 
-    // Load packets WITHOUT recovery slices (they're loaded via metadata on-demand)
-    let packets = crate::par2_files::load_par2_packets(&par2_files, true);
-    if packets.is_empty() {
+    // Load packets WITH recovery slices (repair needs the actual recovery data)
+    let packet_set = crate::par2_files::load_par2_packets(&par2_files, true);
+    if packet_set.packets.is_empty() {
         return Err(RepairError::NoValidPackets);
     }
 
@@ -994,7 +994,7 @@ pub fn repair_files_with_reporter(
 
     // Create repair context using builder
     let repair_context = RepairContextBuilder::new()
-        .packets(packets)
+        .packets(packet_set.packets)
         .metadata(metadata)
         .base_path(base_path)
         .reporter(reporter)

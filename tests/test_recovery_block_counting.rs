@@ -21,13 +21,13 @@ fn test_recovery_blocks_counted_in_verification() {
 
     // Load all PAR2 files and packets
     let par2_files = par2rs::par2_files::collect_par2_files(par2_file);
-    let packets = par2rs::par2_files::load_all_par2_packets(&par2_files);
+    let packet_set = par2rs::par2_files::load_all_par2_packets(&par2_files);
 
     // Run verification
     let config = par2rs::verify::VerificationConfig::default();
     let reporter = par2rs::reporters::ConsoleVerificationReporter::new();
     let results = par2rs::verify::comprehensive_verify_files_with_config_and_reporter_in_dir(
-        packets,
+        packet_set,
         &config,
         &reporter,
         "tests/fixtures/repair_scenarios",
@@ -84,10 +84,11 @@ fn test_recovery_blocks_from_multiple_vol_files() {
     }
 
     let par2_files = par2rs::par2_files::collect_par2_files(par2_file);
-    let packets = par2rs::par2_files::load_all_par2_packets(&par2_files);
+    let packet_set = par2rs::par2_files::load_all_par2_packets(&par2_files);
 
     // Count recovery packets manually
-    let recovery_count = packets
+    let recovery_count = packet_set
+        .packets
         .iter()
         .filter(|p| matches!(p, Packet::RecoverySlice(_)))
         .count();
@@ -121,12 +122,12 @@ fn test_repair_possible_calculation() {
     }
 
     let par2_files = par2rs::par2_files::collect_par2_files(par2_file);
-    let packets = par2rs::par2_files::load_all_par2_packets(&par2_files);
+    let packet_set = par2rs::par2_files::load_all_par2_packets(&par2_files);
 
     let config = par2rs::verify::VerificationConfig::default();
     let reporter = par2rs::reporters::SilentVerificationReporter;
     let results = par2rs::verify::comprehensive_verify_files_with_config_and_reporter_in_dir(
-        packets,
+        packet_set,
         &config,
         &reporter,
         "tests/fixtures/repair_scenarios",

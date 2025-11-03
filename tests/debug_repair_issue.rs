@@ -41,9 +41,13 @@ fn debug_repair_issue() {
     // Create repair context
     let par2_files = par2_files::collect_par2_files(&par2_file);
     let metadata = par2_files::parse_recovery_slice_metadata(&par2_files, false);
-    let packets = par2_files::load_par2_packets(&par2_files, false);
-    let context =
-        RepairContext::new_with_metadata(packets, metadata, temp_dir.path().to_path_buf()).unwrap();
+    let packet_set = par2_files::load_par2_packets(&par2_files, false);
+    let context = RepairContext::new_with_metadata(
+        packet_set.packets,
+        metadata,
+        temp_dir.path().to_path_buf(),
+    )
+    .unwrap();
 
     println!("Recovery set info:");
     println!("  Slice size: {}", context.recovery_set.slice_size);

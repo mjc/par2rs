@@ -166,17 +166,17 @@ fn test_multifile_repair_with_two_damaged_files() {
 
     // Load PAR2 packets
     let par2_files = collect_par2_files(&par2_file);
-    let packets = load_all_par2_packets(&par2_files);
+    let packet_set = load_all_par2_packets(&par2_files);
     let recovery_metadata = parse_recovery_slice_metadata(&par2_files, false);
     let recovery_blocks = recovery_metadata.len();
 
-    assert!(!packets.is_empty(), "Should have PAR2 packets");
+    assert!(!packet_set.packets.is_empty(), "Should have PAR2 packets");
     println!("Loaded {} recovery blocks\n", recovery_blocks);
 
     // Create repair context
     let base_path = par2_file.parent().unwrap().to_path_buf();
     let repair_context =
-        RepairContext::new_with_metadata(packets, recovery_metadata, base_path.clone())
+        RepairContext::new_with_metadata(packet_set.packets, recovery_metadata, base_path.clone())
             .expect("Failed to create repair context");
 
     // Display file structure
@@ -312,12 +312,13 @@ fn test_validation_cache_identifies_damaged_slices() {
     println!("\n=== Validation Cache Test ===\n");
 
     let par2_files = collect_par2_files(&par2_file);
-    let packets = load_all_par2_packets(&par2_files);
+    let packet_set = load_all_par2_packets(&par2_files);
     let recovery_metadata = parse_recovery_slice_metadata(&par2_files, false);
 
     let base_path = par2_file.parent().unwrap().to_path_buf();
-    let repair_context = RepairContext::new_with_metadata(packets, recovery_metadata, base_path)
-        .expect("Failed to create repair context");
+    let repair_context =
+        RepairContext::new_with_metadata(packet_set.packets, recovery_metadata, base_path)
+            .expect("Failed to create repair context");
 
     let file_status = repair_context.check_file_status();
 
@@ -361,12 +362,13 @@ fn test_reconstruction_excludes_all_damaged_slices() {
     println!("\n=== Slice Set Verification ===\n");
 
     let par2_files = collect_par2_files(&par2_file);
-    let packets = load_all_par2_packets(&par2_files);
+    let packet_set = load_all_par2_packets(&par2_files);
     let recovery_metadata = parse_recovery_slice_metadata(&par2_files, false);
 
     let base_path = par2_file.parent().unwrap().to_path_buf();
-    let repair_context = RepairContext::new_with_metadata(packets, recovery_metadata, base_path)
-        .expect("Failed to create repair context");
+    let repair_context =
+        RepairContext::new_with_metadata(packet_set.packets, recovery_metadata, base_path)
+            .expect("Failed to create repair context");
 
     // Count total slices
     let total_slices: usize = repair_context

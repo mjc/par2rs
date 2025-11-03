@@ -204,7 +204,11 @@ mod tests {
             Packet::InputFileSliceChecksum(slice_checksum_packet),
         ];
 
-        let results = comprehensive_verify_files_in_dir(packets, temp_dir.path());
+        let packet_set = crate::par2_files::PacketSet::from_packets_with_base_dir(
+            packets,
+            temp_dir.path().to_path_buf(),
+        );
+        let results = comprehensive_verify_files_in_dir(packet_set, temp_dir.path());
 
         // File should be present since MD5 matches
         assert_eq!(results.present_file_count, 1);

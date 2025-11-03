@@ -17,13 +17,14 @@ fn test_file_deduplication_with_real_data() {
     println!("Testing file deduplication with: {}", test_file.display());
 
     let packets = load_all_par2_packets(std::slice::from_ref(test_file));
-    if packets.is_empty() {
+    if packets.packets.is_empty() {
         println!("No packets loaded from {}, skipping", test_file.display());
         return;
     }
 
     // Count FileDescription packets in the loaded data
     let file_description_count = packets
+        .packets
         .iter()
         .filter(|p| matches!(p, par2rs::Packet::FileDescription(_)))
         .count();

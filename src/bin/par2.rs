@@ -210,19 +210,18 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         println!("Loading PAR2 files...\n");
     }
 
-    // Parse all packets including recovery slices so we can count recovery blocks
-    let all_packets = par2rs::par2_files::load_all_par2_packets(&par2_files);
+    // Parse packets excluding recovery slices but validate and count them
+    // This is more memory-efficient than loading all recovery data
+    let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false);
 
     if !quiet {
-        // Count recovery blocks without loading their data
-        let recovery_metadata =
-            par2rs::par2_files::parse_recovery_slice_metadata(&par2_files, false);
-        let total_recovery_blocks = recovery_metadata.len();
-
         println!(); // Blank line after loading
 
         // Show summary statistics
-        let stats = par2rs::analysis::calculate_par2_stats(&all_packets, total_recovery_blocks);
+        let stats = par2rs::analysis::calculate_par2_stats(
+            &packet_set.packets,
+            packet_set.recovery_block_count,
+        );
         par2rs::analysis::print_summary_stats(&stats);
 
         println!("\nVerifying source files:\n");
@@ -230,7 +229,7 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
 
     // Perform comprehensive verification
     let results =
-        par2rs::verify::comprehensive_verify_files_with_config(all_packets, &verify_config);
+        par2rs::verify::comprehensive_verify_files_with_config(packet_set, &verify_config);
 
     if !quiet {
         par2rs::verify::print_verification_results(&results);

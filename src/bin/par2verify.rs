@@ -45,24 +45,21 @@ fn main() -> Result<()> {
     // Collect all PAR2 files in the set
     let par2_files = par2_files::collect_par2_files(file_path);
 
-    // Parse packets excluding recovery slices (verification doesn't need them)
+    // Parse packets excluding recovery slices but validate and count them
     println!("Loading PAR2 files...\n");
-    let all_packets = par2_files::load_par2_packets(&par2_files, false);
-
-    // Count recovery blocks without loading their data (memory efficient)
-    let recovery_metadata = par2_files::parse_recovery_slice_metadata(&par2_files, false);
-    let total_recovery_blocks = recovery_metadata.len();
+    let packet_set = par2_files::load_par2_packets(&par2_files, false);
 
     println!(); // Blank line after loading
 
     // Show summary statistics
-    let stats = analysis::calculate_par2_stats(&all_packets, total_recovery_blocks);
+    let stats =
+        analysis::calculate_par2_stats(&packet_set.packets, packet_set.recovery_block_count);
     analysis::print_summary_stats(&stats);
 
     // Perform comprehensive verification with configuration
     println!("\nVerifying source files:\n");
     let verification_results =
-        verify::comprehensive_verify_files_with_config(all_packets, &verify_config);
+        verify::comprehensive_verify_files_with_config(packet_set, &verify_config);
 
     // Print detailed results
     verify::print_verification_results(&verification_results);

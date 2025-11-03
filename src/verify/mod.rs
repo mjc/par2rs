@@ -32,11 +32,10 @@ pub use utils::extract_file_name;
 pub use validation::{validate_slices_crc32, validate_slices_crc32_with_progress};
 pub use verifier::FileVerifier;
 
-use crate::packets::processing::*;
 use crate::reporters::{ConsoleVerificationReporter, VerificationReporter};
 use std::path::Path;
 
-/// Comprehensive verification function with configuration and reporter support
+/// Comprehensive verification with global block table approach
 ///
 /// This function performs detailed verification using global block table approach:
 /// 1. Builds a global block table from all slice checksums  
@@ -44,15 +43,18 @@ use std::path::Path;
 /// 3. Reports which blocks are available and calculates repair requirements
 /// 4. Determines if repair is possible with available recovery blocks
 pub fn comprehensive_verify_files_with_config_and_reporter<R: VerificationReporter>(
-    packets: Vec<crate::Packet>,
+    packet_set: crate::par2_files::PacketSet,
     config: &VerificationConfig,
     reporter: &R,
 ) -> VerificationResults {
-    comprehensive_verify_files_with_config_and_reporter_in_dir(packets, config, reporter, ".")
+    let base_dir = packet_set.base_dir.clone();
+    comprehensive_verify_files_with_config_and_reporter_in_dir(
+        packet_set, config, reporter, base_dir,
+    )
 }
 
 pub fn comprehensive_verify_files_with_config_and_reporter_in_dir<R: VerificationReporter>(
-    packets: Vec<crate::Packet>,
+    packet_set: crate::par2_files::PacketSet,
     config: &VerificationConfig,
     reporter: &R,
     base_dir: impl AsRef<Path>,
@@ -60,7 +62,7 @@ pub fn comprehensive_verify_files_with_config_and_reporter_in_dir<R: Verificatio
     reporter.report_verification_start(config.parallel);
 
     // Create global verification engine
-    let engine = match GlobalVerificationEngine::from_packets(&packets, &base_dir) {
+    let engine = match GlobalVerificationEngine::from_packets(&packet_set.packets, &base_dir) {
         Ok(engine) => engine,
         Err(err) => {
             // For empty packet lists or missing main packets, return empty results
@@ -99,10 +101,9 @@ pub fn comprehensive_verify_files_with_config_and_reporter_in_dir<R: Verificatio
     // Perform verification using global table
     let mut results = engine.verify_recovery_set(reporter);
 
-    // Add recovery block count
-    let recovery_blocks = count_recovery_blocks(&packets);
-    results.recovery_blocks_available = recovery_blocks;
-    results.repair_possible = recovery_blocks >= results.missing_block_count;
+    // Use the recovery block count from the packet set
+    results.recovery_blocks_available = packet_set.recovery_block_count;
+    results.repair_possible = packet_set.recovery_block_count >= results.missing_block_count;
 
     results
 }
@@ -115,18 +116,21 @@ pub fn comprehensive_verify_files_with_config_and_reporter_in_dir<R: Verificatio
 /// 3. Reports which blocks are broken and calculates repair requirements
 /// 4. Determines if repair is possible with available recovery blocks
 pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationResults {
-    comprehensive_verify_files_in_dir(packets, ".")
+    // Count recovery blocks from packets for backward compatibility
+    let packet_set = crate::par2_files::PacketSet::from_packets(packets);
+    let base_dir = packet_set.base_dir.clone();
+    comprehensive_verify_files_in_dir(packet_set, base_dir)
 }
 
 /// Comprehensive verification function with base directory support
 pub fn comprehensive_verify_files_in_dir(
-    packets: Vec<crate::Packet>,
+    packet_set: crate::par2_files::PacketSet,
     base_dir: impl AsRef<Path>,
 ) -> VerificationResults {
     let config = VerificationConfig::default();
     let reporter = ConsoleVerificationReporter::new();
     comprehensive_verify_files_with_config_and_reporter_in_dir(
-        packets, &config, &reporter, base_dir,
+        packet_set, &config, &reporter, base_dir,
     )
 }
 
@@ -134,11 +138,11 @@ pub fn comprehensive_verify_files_in_dir(
 ///
 /// Uses console reporter by default. For custom reporting, use the full function.
 pub fn comprehensive_verify_files_with_config(
-    packets: Vec<crate::Packet>,
+    packet_set: crate::par2_files::PacketSet,
     config: &VerificationConfig,
 ) -> VerificationResults {
     let reporter = ConsoleVerificationReporter::new();
-    comprehensive_verify_files_with_config_and_reporter(packets, config, &reporter)
+    comprehensive_verify_files_with_config_and_reporter(packet_set, config, &reporter)
 }
 
 /// Print verification results in par2cmdline style (legacy function)

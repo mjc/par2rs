@@ -12,6 +12,60 @@ use std::fs;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
 
+/// PAR2 packet set with associated metadata
+///
+/// This struct holds both the parsed packets and important metadata about them,
+/// such as the count of validated recovery blocks and base directory.
+/// This avoids having to pass recovery block counts and paths as separate parameters.
+#[derive(Debug)]
+pub struct PacketSet {
+    /// The parsed PAR2 packets (may or may not include recovery slice data)
+    pub packets: Vec<Packet>,
+    /// Number of validated recovery blocks available
+    /// (counted even if recovery slice data is not kept in memory)
+    pub recovery_block_count: usize,
+    /// Base directory for resolving relative file paths in the PAR2 set
+    pub base_dir: PathBuf,
+}
+
+impl PacketSet {
+    /// Create a new packet set with the given packets, recovery block count, and base directory
+    pub fn new(packets: Vec<Packet>, recovery_block_count: usize, base_dir: PathBuf) -> Self {
+        Self {
+            packets,
+            recovery_block_count,
+            base_dir,
+        }
+    }
+
+    /// Create a packet set by counting recovery blocks from the packets
+    /// Uses current directory as base_dir
+    pub fn from_packets(packets: Vec<Packet>) -> Self {
+        let recovery_block_count = packets
+            .iter()
+            .filter(|p| matches!(p, Packet::RecoverySlice(_)))
+            .count();
+        Self {
+            packets,
+            recovery_block_count,
+            base_dir: PathBuf::from("."),
+        }
+    }
+
+    /// Create a packet set with a specific base directory
+    pub fn from_packets_with_base_dir(packets: Vec<Packet>, base_dir: PathBuf) -> Self {
+        let recovery_block_count = packets
+            .iter()
+            .filter(|p| matches!(p, Packet::RecoverySlice(_)))
+            .count();
+        Self {
+            packets,
+            recovery_block_count,
+            base_dir,
+        }
+    }
+}
+
 /// Type alias for I/O results in this module
 type IoResult<T> = std::io::Result<T>;
 
@@ -162,15 +216,28 @@ fn print_packet_load_result(packet_count: usize, recovery_blocks: usize) {
 ///
 /// This prevents loading gigabytes of recovery data into memory.
 #[must_use]
-pub fn load_par2_packets(par2_files: &[PathBuf], show_progress: bool) -> Vec<Packet> {
+/// Load PAR2 packets with optional recovery slice validation
+///
+/// When `include_recovery_slices` is false:
+/// - Validates all recovery slices (checks they can be parsed)
+/// - Counts valid recovery blocks
+/// - Does NOT keep recovery slice data in memory (for efficiency)
+/// - Returns PacketSet with packets_without_recovery and recovery_block_count
+///
+/// When `include_recovery_slices` is true:
+/// - Includes recovery slices in the returned packet list
+/// - Returns PacketSet with all_packets and recovery_block_count
+pub fn load_par2_packets(par2_files: &[PathBuf], include_recovery_slices: bool) -> PacketSet {
     let mut seen_packet_hashes = HashSet::default();
+    let mut recovery_block_count = 0usize;
 
     // Parse files in parallel
     let all_packets: Vec<Vec<Packet>> = par2_files
         .par_iter()
         .filter_map(|par2_file| {
             let mut local_seen = HashSet::default();
-            match parse_par2_file_with_progress(par2_file, &mut local_seen, show_progress) {
+            match parse_par2_file_with_progress(par2_file, &mut local_seen, include_recovery_slices)
+            {
                 Ok((packets, _)) => Some(packets),
                 Err(e) => {
                     eprintln!(
@@ -185,40 +252,36 @@ pub fn load_par2_packets(par2_files: &[PathBuf], show_progress: bool) -> Vec<Pac
         .collect();
 
     // Deduplicate and filter in a single pass
-    all_packets
+    let packets: Vec<Packet> = all_packets
         .into_iter()
         .flatten()
         .filter(|p| {
+            // Count recovery slices before filtering
             if matches!(p, Packet::RecoverySlice(_)) {
-                return false;
+                recovery_block_count += 1;
+                return include_recovery_slices;
             }
             // Deduplicate based on packet hash
             let packet_hash = get_packet_hash(p);
             seen_packet_hashes.insert(packet_hash)
         })
-        .collect()
+        .collect();
+
+    // Determine base directory from the first PAR2 file
+    let base_dir = par2_files
+        .first()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    PacketSet::new(packets, recovery_block_count, base_dir)
 }
 
 /// Load all PAR2 packets INCLUDING recovery slices (in parallel)
-/// This is used by par2verify which needs to count recovery blocks
+/// This is a convenience wrapper around load_par2_packets(files, true)
 #[must_use]
-pub fn load_all_par2_packets(par2_files: &[PathBuf]) -> Vec<Packet> {
-    // Parse files in parallel
-    par2_files
-        .par_iter()
-        .flat_map(|par2_file| {
-            std::fs::File::open(par2_file)
-                .ok()
-                .map(|file| {
-                    let mut reader = std::io::BufReader::new(file);
-                    crate::parse_packets(&mut reader)
-                })
-                .unwrap_or_else(|| {
-                    eprintln!("Warning: Failed to open PAR2 file {}", par2_file.display());
-                    Vec::new()
-                })
-        })
-        .collect()
+pub fn load_all_par2_packets(par2_files: &[PathBuf]) -> PacketSet {
+    load_par2_packets(par2_files, true)
 }
 
 /// Parse recovery slice metadata from PAR2 files without loading data into memory

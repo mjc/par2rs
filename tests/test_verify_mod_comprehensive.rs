@@ -82,7 +82,10 @@ fn test_comprehensive_verify_with_custom_config() {
     let config = VerificationConfig::new(1, false);
 
     // This tests the comprehensive_verify_files_with_config function
-    let results = comprehensive_verify_files_with_config(packets, &config);
+    let results = comprehensive_verify_files_with_config(
+        par2rs::par2_files::PacketSet::from_packets(packets),
+        &config,
+    );
 
     assert_eq!(results.missing_file_count, 1);
 }
@@ -104,7 +107,10 @@ fn test_comprehensive_verify_parallel_mode() {
     ];
 
     let config = VerificationConfig::new(2, true);
-    let results = comprehensive_verify_files_with_config(packets, &config);
+    let results = comprehensive_verify_files_with_config(
+        par2rs::par2_files::PacketSet::from_packets(packets),
+        &config,
+    );
 
     assert_eq!(results.missing_file_count, 2);
     assert_eq!(results.total_block_count, 2); // Each file is small, so 1 block each
@@ -122,7 +128,10 @@ fn test_comprehensive_verify_sequential_mode() {
     ];
 
     let config = VerificationConfig::new(1, false);
-    let results = comprehensive_verify_files_with_config(packets, &config);
+    let results = comprehensive_verify_files_with_config(
+        par2rs::par2_files::PacketSet::from_packets(packets),
+        &config,
+    );
 
     assert_eq!(results.missing_file_count, 1);
 }
@@ -342,7 +351,11 @@ fn test_comprehensive_verify_with_silent_reporter() {
     let config = VerificationConfig::default();
     let reporter = SilentVerificationReporter::new();
 
-    let results = comprehensive_verify_files_with_config_and_reporter(packets, &config, &reporter);
+    let results = comprehensive_verify_files_with_config_and_reporter(
+        par2rs::par2_files::PacketSet::from_packets(packets),
+        &config,
+        &reporter,
+    );
 
     assert_eq!(results.missing_file_count, 1);
 }
