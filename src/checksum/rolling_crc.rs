@@ -179,6 +179,44 @@ impl RollingCrcTable {
             ^ CRC_TABLE[((crc ^ byte_in as u32) & 0xFF) as usize]
             ^ self.table[byte_out as usize]
     }
+
+    /// Compute CRC at a specific buffer position
+    /// Returns None if there's not enough data for a full block
+    pub fn compute_crc_at_position(
+        &self,
+        buffer: &[u8],
+        pos: usize,
+        block_size: usize,
+        bytes_in_buffer: usize,
+    ) -> Option<u32> {
+        use crate::checksum::compute_crc32;
+
+        if pos + block_size <= bytes_in_buffer {
+            let block = &buffer[pos..pos + block_size];
+            Some(compute_crc32(block).as_u32())
+        } else {
+            None
+        }
+    }
+
+    /// Slide CRC forward by one byte using the rolling window algorithm
+    /// Returns None if there's not enough data for a full block at the current position
+    pub fn slide_crc_forward(
+        &self,
+        current_crc: u32,
+        buffer: &[u8],
+        pos: usize,
+        block_size: usize,
+        bytes_in_buffer: usize,
+    ) -> Option<u32> {
+        if pos + block_size <= bytes_in_buffer {
+            let byte_out = buffer[pos - 1];
+            let byte_in = buffer[pos + block_size - 1];
+            Some(self.slide(current_crc, byte_in, byte_out))
+        } else {
+            None
+        }
+    }
 }
 
 /// Compute the window mask for a single byte value

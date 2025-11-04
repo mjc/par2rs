@@ -95,11 +95,6 @@ impl BlockSize {
     pub fn doubled(&self) -> usize {
         self.0 * 2
     }
-
-    /// Get the offset of the last byte in a block (size - 1)
-    pub fn last_byte_offset(&self) -> usize {
-        self.0 - 1
-    }
 }
 
 /// Bytes processed through a file (for progress tracking)
@@ -368,6 +363,11 @@ impl ScanBuffer {
         Self(vec![0u8; capacity])
     }
 
+    /// Get the underlying buffer as a slice
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
+
     /// Get a block at the given position
     pub fn block_at(&self, pos: BufferPosition, block_size: BlockSize) -> &[u8] {
         let range = pos.block_range(block_size);
@@ -398,16 +398,6 @@ impl ScanBuffer {
         } else {
             None
         }
-    }
-
-    /// Get byte before position (for rolling CRC)
-    pub fn byte_before(&self, pos: BufferPosition) -> u8 {
-        self.0[pos.as_usize() - 1]
-    }
-
-    /// Get byte at position + offset (for rolling CRC)
-    pub fn byte_at_offset(&self, pos: BufferPosition, offset: usize) -> u8 {
-        self.0[pos.as_usize() + offset]
     }
 
     /// Slide buffer window forward by one block

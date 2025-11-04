@@ -76,11 +76,6 @@ impl ScannerState {
         self.scan_pos.advance_by(block_size.as_usize());
     }
 
-    /// Update rolling CRC after advancing one byte
-    pub fn update_rolling_crc(&mut self, new_crc: Crc32Value) {
-        self.rolling_crc = Some(new_crc);
-    }
-
     /// Clear rolling CRC (when we can't maintain it)
     pub fn clear_rolling_crc(&mut self) {
         self.rolling_crc = None;
