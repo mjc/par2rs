@@ -290,75 +290,54 @@ impl GlobalVerificationEngine {
         // Initialize scanner state
         let mut state = ScannerState::new(bytes_read);
 
+        // PHASE 1: Try aligned blocks at file start (fast path for well-formed files)
+        self.scan_aligned_blocks(&buffer, &mut state, block_size, &mut local_block_map);
+
+        // PHASE 2: Byte-by-byte scanning with rolling CRC for remainder of file
         loop {
             if state.at_eof() {
-                break; // EOF
+                break;
             }
 
-            // OPTIMIZATION: At file start, try aligned blocks first (par2cmdline-turbo approach)
-            // Most PAR2 protected files have blocks perfectly aligned
-            if state.should_try_aligned_blocks(block_size) {
-                self.try_aligned_blocks(
-                    &buffer,
-                    &mut local_block_map,
-                    block_size,
-                    state.bytes_in_buffer,
-                );
-            }
-
-            // Initialize rolling CRC with first block if possible
-            let initial_crc = if state.bytes_in_buffer.has_at_least(block_size) {
-                Some(compute_crc32(buffer.first_block(block_size)))
+            // Initialize rolling CRC for this buffer window
+            let initial_crc = if state.can_fit_block(block_size) {
+                Some(compute_crc32(buffer.block_at(state.scan_pos, block_size)))
             } else {
                 None
             };
             state.set_rolling_crc(initial_crc);
 
-            // Scan byte-by-byte within the current 2-block buffer using rolling CRC
-            while state.can_fit_block(block_size) {
-                let action =
-                    self.scan_block_position(&buffer, &state, block_size, &mut local_block_map);
+            // Scan byte-by-byte within the current buffer
+            self.scan_byte_by_byte(
+                &buffer,
+                &mut state,
+                &rolling_table,
+                block_size,
+                &mut local_block_map,
+            );
 
-                match action {
-                    ScanAction::SkipBlock => {
-                        // Skip ahead by full block (blocks don't overlap in PAR2)
-                        state.skip_block(block_size);
-                        // Recompute rolling CRC for new position if still in buffer
-                        state.update_crc_after_skip(&rolling_table, &buffer, block_size);
-                    }
-                    ScanAction::AdvanceOneByte => {
-                        // No match - advance by 1 byte and roll
-                        state.advance_one_byte();
-                        // Update rolling CRC for next iteration
-                        state.slide_crc_one_byte(&rolling_table, &buffer, block_size);
-                    }
-                }
-            }
-
-            // Handle partial block at end
-            let remainder_size = state.remainder_size(block_size);
-            if remainder_size > 0 {
+            // Handle partial block at end of buffer
+            if state.remainder_size(block_size) > 0 && !state.is_remainder_at_start() {
                 let partial_data = buffer.slice_from(state.scan_pos, state.bytes_in_buffer);
-
                 self.try_match_and_insert_partial_block(
                     partial_data,
                     block_size.as_usize(),
                     &mut local_block_map,
                 );
+            }
 
-                if state.is_remainder_at_start() {
-                    break;
-                }
+            // Check if we're at a partial block at the start (can't slide further)
+            if state.is_remainder_at_start() {
+                break;
             }
 
             // Slide window forward and read more data
             match Self::slide_buffer_window(&mut file, &mut buffer, &mut state, block_size) {
                 Ok(BufferSlideResult::Success) => {
-                    // Successfully slid window, report progress
                     Self::report_progress(reporter_lock, &state, file_size);
                 }
                 Ok(BufferSlideResult::CannotSlide) => break,
-                Err(_) => break, // Read error
+                Err(_) => break,
             }
         }
 
@@ -502,6 +481,69 @@ impl GlobalVerificationEngine {
         }
     }
 
+    /// Scan aligned blocks at the start of a buffer (optimization for well-formed files)
+    fn scan_aligned_blocks(
+        &self,
+        buffer: &crate::verify::types::ScanBuffer,
+        state: &mut crate::verify::scanner_state::ScannerState,
+        block_size: crate::verify::types::BlockSize,
+        local_block_map: &mut LocalBlockMap,
+    ) {
+        if !state.bytes_in_buffer.has_at_least_n_blocks(2, block_size) {
+            return;
+        }
+
+        // Generate aligned block positions (0, block_size, 2*block_size, ...)
+        let mut aligned_positions = std::iter::successors(Some(0), |&pos| {
+            let next = pos + block_size.as_usize();
+            (next + block_size.as_usize() <= state.bytes_in_buffer.as_usize()).then_some(next)
+        });
+
+        // Scan aligned blocks until we hit a non-match, updating position functionally
+        let final_pos = aligned_positions
+            .try_fold(0, |_prev_pos, pos| {
+                let block_data =
+                    buffer.block_at(crate::verify::types::BufferPosition::new(pos), block_size);
+                let matched = self.try_match_and_insert_block(block_data, local_block_map);
+
+                if matched.is_match() {
+                    Ok(pos + block_size.as_usize())
+                } else {
+                    Err(pos) // Stop at first non-match
+                }
+            })
+            .unwrap_or_else(|pos| pos);
+
+        state.scan_pos = crate::verify::types::BufferPosition::new(final_pos);
+    }
+
+    /// Scan byte-by-byte through the buffer using rolling CRC
+    fn scan_byte_by_byte(
+        &self,
+        buffer: &crate::verify::types::ScanBuffer,
+        state: &mut crate::verify::scanner_state::ScannerState,
+        rolling_table: &crate::checksum::rolling_crc::RollingCrcTable,
+        block_size: crate::verify::types::BlockSize,
+        local_block_map: &mut LocalBlockMap,
+    ) {
+        loop {
+            if !state.can_fit_block(block_size) {
+                break;
+            }
+
+            match self.scan_block_position(buffer, state, block_size, local_block_map) {
+                ScanAction::SkipBlock => {
+                    state.skip_block(block_size);
+                    state.update_crc_after_skip(rolling_table, buffer, block_size);
+                }
+                ScanAction::AdvanceOneByte => {
+                    state.advance_one_byte();
+                    state.slide_crc_one_byte(rolling_table, buffer, block_size);
+                }
+            }
+        }
+    }
+
     /// Count available blocks and damaged blocks for a file
     fn count_file_blocks(
         &self,
@@ -574,22 +616,6 @@ impl GlobalVerificationEngine {
     }
 
     /// Try to find blocks at aligned positions (optimization for well-formed PAR2 files)
-    fn try_aligned_blocks(
-        &self,
-        buffer: &crate::verify::types::ScanBuffer,
-        local_block_map: &mut LocalBlockMap,
-        block_size: crate::verify::types::BlockSize,
-        bytes_in_buffer: crate::verify::types::BufferSize,
-    ) {
-        for block_idx in 0..2 {
-            if let Some(block_data) =
-                buffer.try_aligned_block(block_idx, block_size, bytes_in_buffer)
-            {
-                self.try_match_and_insert_block(block_data, local_block_map);
-            }
-        }
-    }
-
     /// Create file results based on available blocks (reporting already done)
     fn create_file_results(
         &self,
@@ -1495,5 +1521,259 @@ mod tests {
             "Should advance on non-match"
         );
         assert_eq!(local_map2.len(), 0, "Should not have inserted anything");
+    }
+
+    #[test]
+    fn test_scan_aligned_blocks() {
+        use crate::verify::global_table::GlobalBlockTableBuilder;
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::{BlockSize, BufferPosition, ScanBuffer};
+
+        // Create test data - first 2 blocks with 0x42, last 2 with 0x99
+        let mut buffer = ScanBuffer::with_capacity(4096);
+        for (i, byte) in buffer.iter_mut().enumerate() {
+            *byte = if i < 2048 { 0x42 } else { 0x99 };
+        }
+
+        let expected_crc32 = crate::checksum::compute_crc32(buffer.slice(0..1024));
+        let expected_md5 = crate::checksum::compute_md5_only(buffer.slice(0..1024));
+
+        // Build block table with only the first block's checksum (matching both first 2 blocks)
+        let mut builder = GlobalBlockTableBuilder::new(1024);
+        let file_id = FileId::new([1; 16]);
+        let checksums = vec![
+            (expected_md5, expected_crc32), // Block 0 matches
+            (expected_md5, expected_crc32), // Block 1 matches
+        ];
+        builder.add_file_blocks(file_id, &checksums);
+        let block_table = builder.build();
+
+        let engine = GlobalVerificationEngine {
+            block_table,
+            file_descriptions: HashMap::default(),
+            base_dir: std::path::PathBuf::from("."),
+        };
+
+        let block_size = BlockSize::new(1024);
+        let mut state = ScannerState::new(4096);
+        let mut local_map = HashMap::default();
+
+        // Scan aligned blocks
+        engine.scan_aligned_blocks(&buffer, &mut state, block_size, &mut local_map);
+
+        // Should have advanced past the 2 matching blocks and stopped at 3rd (non-matching)
+        assert_eq!(
+            state.scan_pos,
+            BufferPosition::new(2048),
+            "Should advance to position 2048 after 2 matching blocks, stop at first non-match"
+        );
+        assert_eq!(
+            local_map.len(),
+            1,
+            "Should have one entry for matching blocks"
+        );
+    }
+
+    #[test]
+    fn test_scan_aligned_blocks_stops_at_first_mismatch() {
+        use crate::verify::global_table::GlobalBlockTableBuilder;
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::{BlockSize, BufferPosition, ScanBuffer};
+
+        // Create buffer with different data for second block
+        let mut buffer = ScanBuffer::with_capacity(4096);
+        for (i, byte) in buffer.iter_mut().enumerate() {
+            *byte = if i < 1024 {
+                0x42
+            } else if i < 2048 {
+                0x99 // Different data
+            } else {
+                0x42
+            };
+        }
+
+        let expected_crc32 = crate::checksum::compute_crc32(buffer.slice(0..1024));
+        let expected_md5 = crate::checksum::compute_md5_only(buffer.slice(0..1024));
+
+        // Only first block matches
+        let mut builder = GlobalBlockTableBuilder::new(1024);
+        let file_id = FileId::new([1; 16]);
+        let checksums = vec![(expected_md5, expected_crc32)];
+        builder.add_file_blocks(file_id, &checksums);
+        let block_table = builder.build();
+
+        let engine = GlobalVerificationEngine {
+            block_table,
+            file_descriptions: HashMap::default(),
+            base_dir: std::path::PathBuf::from("."),
+        };
+
+        let block_size = BlockSize::new(1024);
+        let mut state = ScannerState::new(4096);
+        let mut local_map = HashMap::default();
+
+        // Scan aligned blocks
+        engine.scan_aligned_blocks(&buffer, &mut state, block_size, &mut local_map);
+
+        // Should stop at position 1024 (first mismatch)
+        assert_eq!(
+            state.scan_pos,
+            BufferPosition::new(1024),
+            "Should stop at first non-matching block"
+        );
+    }
+
+    #[test]
+    fn test_scan_byte_by_byte() {
+        use crate::checksum::rolling_crc::RollingCrcTable;
+        use crate::verify::global_table::GlobalBlockTableBuilder;
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::{BlockSize, ScanBuffer};
+
+        // Create test data with a matching block offset by 100 bytes
+        let mut buffer = ScanBuffer::with_capacity(2048);
+        for (i, byte) in buffer.iter_mut().enumerate() {
+            *byte = if (100..1124).contains(&i) { 0x42 } else { 0x00 };
+        }
+
+        let expected_crc32 = crate::checksum::compute_crc32(buffer.slice(100..1124));
+        let expected_md5 = crate::checksum::compute_md5_only(buffer.slice(100..1124));
+
+        // Build block table with the matching block
+        let mut builder = GlobalBlockTableBuilder::new(1024);
+        let file_id = FileId::new([1; 16]);
+        let checksums = vec![(expected_md5, expected_crc32)];
+        builder.add_file_blocks(file_id, &checksums);
+        let block_table = builder.build();
+
+        let engine = GlobalVerificationEngine {
+            block_table,
+            file_descriptions: HashMap::default(),
+            base_dir: std::path::PathBuf::from("."),
+        };
+
+        let block_size = BlockSize::new(1024);
+        let rolling_table = RollingCrcTable::new(1024);
+        let mut state = ScannerState::new(2048);
+        let mut local_map = HashMap::default();
+
+        // Set rolling CRC
+        let initial_crc = crate::checksum::compute_crc32(buffer.slice(0..1024));
+        state.set_rolling_crc(Some(initial_crc));
+
+        // Scan byte-by-byte
+        engine.scan_byte_by_byte(
+            &buffer,
+            &mut state,
+            &rolling_table,
+            block_size,
+            &mut local_map,
+        );
+
+        // Should have found the block at offset 100 and advanced past it
+        assert!(
+            state.scan_pos.as_usize() >= 1124,
+            "Should have advanced past the matching block at offset 100"
+        );
+        assert_eq!(local_map.len(), 1, "Should have found one matching block");
+    }
+
+    #[test]
+    fn test_scan_byte_by_byte_advances_to_end() {
+        use crate::checksum::rolling_crc::RollingCrcTable;
+        use crate::verify::global_table::GlobalBlockTableBuilder;
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::{BlockSize, ScanBuffer};
+
+        // Create buffer with no matching blocks
+        let mut buffer = ScanBuffer::with_capacity(2048);
+        buffer.fill(0x99);
+
+        let builder = GlobalBlockTableBuilder::new(1024);
+        let block_table = builder.build();
+
+        let engine = GlobalVerificationEngine {
+            block_table,
+            file_descriptions: HashMap::default(),
+            base_dir: std::path::PathBuf::from("."),
+        };
+
+        let block_size = BlockSize::new(1024);
+        let rolling_table = RollingCrcTable::new(1024);
+        let mut state = ScannerState::new(2048);
+        let mut local_map = HashMap::default();
+
+        let initial_crc = crate::checksum::compute_crc32(buffer.slice(0..1024));
+        state.set_rolling_crc(Some(initial_crc));
+
+        // Scan byte-by-byte
+        engine.scan_byte_by_byte(
+            &buffer,
+            &mut state,
+            &rolling_table,
+            block_size,
+            &mut local_map,
+        );
+
+        // Should have scanned to the end (can't fit more blocks)
+        assert!(
+            !state.can_fit_block(block_size),
+            "Should have scanned until can't fit more blocks"
+        );
+        assert_eq!(local_map.len(), 0, "Should have found no matching blocks");
+    }
+
+    #[test]
+    fn test_scan_single_file_buffer_overflow_regression() {
+        use crate::checksum::compute_crc32;
+        use crate::verify::global_table::GlobalBlockTableBuilder;
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::{BlockSize, ScanBuffer};
+
+        // Regression test for buffer overflow when scan_pos + block_size > buffer size
+        // This simulates the condition where we've scanned past most of the buffer
+        // and there's less than a full block remaining
+
+        let block_size = BlockSize::new(1024);
+        let builder = GlobalBlockTableBuilder::new(1024);
+        let block_table = builder.build();
+
+        let _engine = GlobalVerificationEngine {
+            block_table,
+            file_descriptions: HashMap::default(),
+            base_dir: std::path::PathBuf::from("."),
+        };
+
+        // Create a buffer with 2MB worth of data
+        let mut buffer = ScanBuffer::with_capacity(2 * 1024 * 1024);
+        buffer.fill(0x42);
+
+        // Simulate state where we're near the end of the buffer
+        // bytes_in_buffer is less than what we'd need for scan_pos + block_size
+        let mut state = ScannerState::new(1500); // Only 1500 bytes in buffer
+        state.scan_pos = crate::verify::types::BufferPosition::new(600); // Position at 600
+
+        // This should NOT panic - we only have 900 bytes remaining (1500 - 600)
+        // which is less than block_size (1024), so can_fit_block should return false
+        assert!(
+            !state.can_fit_block(block_size),
+            "Should not be able to fit a block with only 900 bytes remaining"
+        );
+
+        // The bug was here: we were checking bytes_in_buffer.has_at_least(block_size)
+        // which would return true (1500 >= 1024), but we should check if we can fit
+        // a block from the CURRENT scan position
+
+        // This should not panic with the fix
+        let initial_crc = if state.can_fit_block(block_size) {
+            Some(compute_crc32(buffer.block_at(state.scan_pos, block_size)))
+        } else {
+            None
+        };
+
+        assert!(
+            initial_crc.is_none(),
+            "Should not compute CRC when can't fit a block"
+        );
     }
 }

@@ -133,10 +133,6 @@ pub enum ScanPhase {
 }
 
 impl ScanPhase {
-    pub fn is_first_buffer(&self) -> bool {
-        matches!(self, ScanPhase::FirstBuffer)
-    }
-
     pub fn mark_advanced(&mut self) {
         *self = ScanPhase::SubsequentBuffer;
     }
@@ -375,29 +371,9 @@ impl ScanBuffer {
     }
 
     /// Get the first block from the buffer
-    pub fn first_block(&self, block_size: BlockSize) -> &[u8] {
-        &self.0[0..block_size.as_usize()]
-    }
-
     /// Get a slice from position to the end
     pub fn slice_from(&self, pos: BufferPosition, size: BufferSize) -> &[u8] {
         &self.0[pos.as_usize()..size.as_usize()]
-    }
-
-    /// Get aligned block at index (0 or 1)
-    pub fn try_aligned_block(
-        &self,
-        block_idx: usize,
-        block_size: BlockSize,
-        size: BufferSize,
-    ) -> Option<&[u8]> {
-        let start = block_idx * block_size.as_usize();
-        let end = start + block_size.as_usize();
-        if end <= size.as_usize() {
-            Some(&self.0[start..end])
-        } else {
-            None
-        }
     }
 
     /// Slide buffer window forward by one block

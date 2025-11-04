@@ -45,11 +45,6 @@ impl ScannerState {
     }
 
     /// Check if we should try aligned block optimization
-    pub fn should_try_aligned_blocks(&self, block_size: BlockSize) -> bool {
-        self.scan_phase.is_first_buffer()
-            && self.bytes_in_buffer.has_at_least_n_blocks(2, block_size)
-    }
-
     /// Get the remainder size (bytes after scan_pos that don't fit a full block)
     pub fn remainder_size(&self, block_size: BlockSize) -> usize {
         let remainder = self.bytes_in_buffer.remainder_from(self.scan_pos);
@@ -159,7 +154,7 @@ mod tests {
         assert_eq!(state.bytes_in_buffer.as_usize(), 2048);
         assert!(!state.at_eof());
         assert_eq!(state.scan_pos, BufferPosition::zero());
-        assert!(state.scan_phase.is_first_buffer());
+        assert!(matches!(state.scan_phase, ScanPhase::FirstBuffer));
     }
 
     #[test]
@@ -177,15 +172,17 @@ mod tests {
 
         // First buffer with enough data
         let mut state = ScannerState::new(2048);
-        assert!(state.should_try_aligned_blocks(block_size));
+        assert!(matches!(state.scan_phase, ScanPhase::FirstBuffer));
+        assert!(state.bytes_in_buffer.has_at_least_n_blocks(2, block_size));
 
         // Not first buffer
         state.scan_phase.mark_advanced();
-        assert!(!state.should_try_aligned_blocks(block_size));
+        assert!(matches!(state.scan_phase, ScanPhase::SubsequentBuffer));
 
         // First buffer but not enough data
         let state2 = ScannerState::new(1500);
-        assert!(!state2.should_try_aligned_blocks(block_size));
+        assert!(matches!(state2.scan_phase, ScanPhase::FirstBuffer));
+        assert!(!state2.bytes_in_buffer.has_at_least_n_blocks(2, block_size));
     }
 
     #[test]
@@ -207,11 +204,11 @@ mod tests {
         let mut state = ScannerState::new(2048);
 
         assert!(state.can_slide_window(block_size));
-        assert!(state.scan_phase.is_first_buffer());
+        assert!(matches!(state.scan_phase, ScanPhase::FirstBuffer));
 
         state.slide_window(block_size, BufferSize::new(1500));
 
-        assert!(!state.scan_phase.is_first_buffer());
+        assert!(!matches!(state.scan_phase, ScanPhase::FirstBuffer));
         assert_eq!(state.bytes_in_buffer.as_usize(), 1500);
         assert_eq!(state.scan_pos, BufferPosition::zero());
         assert!(state.rolling_crc.is_none());
