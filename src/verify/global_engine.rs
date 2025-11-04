@@ -52,6 +52,15 @@ pub enum BufferSlideResult {
     CannotSlide,
 }
 
+/// Action to take after scanning a block position
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanAction {
+    /// Found a match - skip ahead by a full block
+    SkipBlock,
+    /// No match - advance by one byte and continue rolling
+    AdvanceOneByte,
+}
+
 /// Local block map type: maps (MD5, CRC32) -> list of (FileId, block_number)
 /// Uses SmallVec to avoid heap allocation for 1-2 entries (common case)
 type LocalBlockMap = HashMap<(Md5Hash, Crc32Value), SmallVec<[(FileId, u32); 2]>>;
@@ -318,37 +327,23 @@ impl GlobalVerificationEngine {
 
             // Scan byte-by-byte within the current 2-block buffer using rolling CRC
             while state.can_fit_block(block_size) {
-                let start = state.scan_pos.as_usize();
-                let end = start + block_size.as_usize();
-                let block_data = &buffer[start..end];
+                let action =
+                    self.scan_block_position(&buffer, &state, block_size, &mut local_block_map);
 
-                // Use rolling CRC if we have it, otherwise compute fresh
-                let crc32 = state
-                    .rolling_crc
-                    .unwrap_or_else(|| compute_crc32(block_data));
-
-                // Fast CRC32 lookup in global table - only compute MD5 if CRC matches
-                let found_match = if self.block_table.find_by_crc32(crc32).is_some() {
-                    let md5_hash = crate::checksum::compute_md5_only(block_data);
-                    self.insert_matching_blocks(md5_hash, crc32, &mut local_block_map)
-                } else {
-                    BlockMatchResult::NotMatched
-                };
-
-                if found_match.is_match() {
-                    // Skip ahead by full block (blocks don't overlap in PAR2)
-                    state.skip_block(block_size);
-
-                    // Recompute rolling CRC for new position if still in buffer
-                    update_crc_after_skip(&buffer, &mut state);
-                    continue;
+                match action {
+                    ScanAction::SkipBlock => {
+                        // Skip ahead by full block (blocks don't overlap in PAR2)
+                        state.skip_block(block_size);
+                        // Recompute rolling CRC for new position if still in buffer
+                        update_crc_after_skip(&buffer, &mut state);
+                    }
+                    ScanAction::AdvanceOneByte => {
+                        // No match - advance by 1 byte and roll
+                        state.advance_one_byte();
+                        // Update rolling CRC for next iteration
+                        slide_crc_one_byte(&buffer, &mut state);
+                    }
                 }
-
-                // No match - advance by 1 byte and roll
-                state.advance_one_byte();
-
-                // Update rolling CRC for next iteration
-                slide_crc_one_byte(&buffer, &mut state);
             }
 
             // Handle partial block at end
@@ -521,6 +516,41 @@ impl GlobalVerificationEngine {
         let fraction = state.bytes_processed.progress_fraction(file_size.as_u64());
         if let Ok(reporter) = reporter_lock.lock() {
             reporter.report_scanning_progress(fraction);
+        }
+    }
+
+    /// Scan a single block position and determine action
+    /// Returns SkipBlock if match found, AdvanceOneByte if no match
+    fn scan_block_position(
+        &self,
+        buffer: &[u8],
+        state: &crate::verify::scanner_state::ScannerState,
+        block_size: crate::verify::types::BlockSize,
+        local_block_map: &mut LocalBlockMap,
+    ) -> ScanAction {
+        use crate::checksum::compute_crc32;
+
+        let start = state.scan_pos.as_usize();
+        let end = start + block_size.as_usize();
+        let block_data = &buffer[start..end];
+
+        // Use rolling CRC if we have it, otherwise compute fresh
+        let crc32 = state
+            .rolling_crc
+            .unwrap_or_else(|| compute_crc32(block_data));
+
+        // Fast CRC32 lookup in global table - only compute MD5 if CRC matches
+        let found_match = if self.block_table.find_by_crc32(crc32).is_some() {
+            let md5_hash = crate::checksum::compute_md5_only(block_data);
+            self.insert_matching_blocks(md5_hash, crc32, local_block_map)
+        } else {
+            BlockMatchResult::NotMatched
+        };
+
+        if found_match.is_match() {
+            ScanAction::SkipBlock
+        } else {
+            ScanAction::AdvanceOneByte
         }
     }
 
@@ -1487,5 +1517,53 @@ mod tests {
         );
 
         // All calls should succeed without panicking
+    }
+
+    #[test]
+    fn test_scan_block_position() {
+        use crate::verify::global_table::GlobalBlockTableBuilder;
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::BlockSize;
+
+        // Create a block table with one known block
+        let block_data = vec![0x42; 1024];
+        let expected_crc32 = crate::checksum::compute_crc32(&block_data);
+        let expected_md5 = crate::checksum::compute_md5_only(&block_data);
+
+        let mut builder = GlobalBlockTableBuilder::new(1024);
+        let file_id = FileId::new([1; 16]);
+        let checksums = vec![(expected_md5, expected_crc32)];
+        builder.add_file_blocks(file_id, &checksums);
+        let block_table = builder.build();
+
+        let engine = GlobalVerificationEngine {
+            block_table,
+            file_descriptions: HashMap::default(),
+            base_dir: std::path::PathBuf::from("."),
+        };
+
+        // Create a buffer with the matching block
+        let buffer = vec![0x42; 2048];
+        let block_size = BlockSize::new(1024);
+        let state = ScannerState::new(2048);
+
+        let mut local_map = HashMap::default();
+
+        // Test: matching block should return SkipBlock
+        let action = engine.scan_block_position(&buffer, &state, block_size, &mut local_map);
+        assert_eq!(action, ScanAction::SkipBlock, "Should skip matching block");
+        assert_eq!(local_map.len(), 1, "Should have inserted the match");
+
+        // Test: non-matching block should return AdvanceOneByte
+        let wrong_buffer = vec![0x99; 2048];
+        let mut local_map2 = HashMap::default();
+        let action2 =
+            engine.scan_block_position(&wrong_buffer, &state, block_size, &mut local_map2);
+        assert_eq!(
+            action2,
+            ScanAction::AdvanceOneByte,
+            "Should advance on non-match"
+        );
+        assert_eq!(local_map2.len(), 0, "Should not have inserted anything");
     }
 }
