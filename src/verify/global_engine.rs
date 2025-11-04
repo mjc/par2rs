@@ -324,23 +324,13 @@ impl GlobalVerificationEngine {
                         // Skip ahead by full block (blocks don't overlap in PAR2)
                         state.skip_block(block_size);
                         // Recompute rolling CRC for new position if still in buffer
-                        Self::update_rolling_crc_after_skip(
-                            &rolling_table,
-                            &buffer,
-                            &mut state,
-                            block_size,
-                        );
+                        state.update_crc_after_skip(&rolling_table, &buffer, block_size);
                     }
                     ScanAction::AdvanceOneByte => {
                         // No match - advance by 1 byte and roll
                         state.advance_one_byte();
                         // Update rolling CRC for next iteration
-                        Self::slide_rolling_crc_one_byte(
-                            &rolling_table,
-                            &buffer,
-                            &mut state,
-                            block_size,
-                        );
+                        state.slide_crc_one_byte(&rolling_table, &buffer, block_size);
                     }
                 }
             }
@@ -439,45 +429,6 @@ impl GlobalVerificationEngine {
 
         let (md5_hash, crc32) = compute_block_checksums_padded(partial_data, block_size);
         self.insert_matching_blocks(md5_hash, crc32, local_block_map)
-    }
-
-    /// Update rolling CRC after skipping forward by a full block
-    fn update_rolling_crc_after_skip(
-        rolling_table: &crate::checksum::rolling_crc::RollingCrcTable,
-        buffer: &crate::verify::types::ScanBuffer,
-        state: &mut crate::verify::scanner_state::ScannerState,
-        block_size: crate::verify::types::BlockSize,
-    ) {
-        let new_crc = rolling_table
-            .compute_crc_at_position(
-                buffer.as_slice(),
-                state.scan_pos.as_usize(),
-                block_size.as_usize(),
-                state.bytes_in_buffer.as_usize(),
-            )
-            .map(Crc32Value::new);
-        state.set_rolling_crc(new_crc);
-    }
-
-    /// Slide rolling CRC forward by one byte using rolling window algorithm
-    fn slide_rolling_crc_one_byte(
-        rolling_table: &crate::checksum::rolling_crc::RollingCrcTable,
-        buffer: &crate::verify::types::ScanBuffer,
-        state: &mut crate::verify::scanner_state::ScannerState,
-        block_size: crate::verify::types::BlockSize,
-    ) {
-        if let Some(crc) = state.rolling_crc {
-            let new_crc = rolling_table
-                .slide_crc_forward(
-                    crc.as_u32(),
-                    buffer.as_slice(),
-                    state.scan_pos.as_usize(),
-                    block_size.as_usize(),
-                    state.bytes_in_buffer.as_usize(),
-                )
-                .map(Crc32Value::new);
-            state.set_rolling_crc(new_crc);
-        }
     }
 
     /// Slide the buffer window forward and read more data from the file
@@ -1077,15 +1028,7 @@ mod tests {
         state.skip_block(block_size);
 
         // Update CRC after skip - should recompute from scratch at new position
-        let new_crc = rolling_table
-            .compute_crc_at_position(
-                buffer.as_slice(),
-                state.scan_pos.as_usize(),
-                block_size.as_usize(),
-                state.bytes_in_buffer.as_usize(),
-            )
-            .map(Crc32Value::new);
-        state.set_rolling_crc(new_crc);
+        state.update_crc_after_skip(&rolling_table, &buffer, block_size);
 
         // Should have computed CRC for block starting at position 1024
         assert!(state.rolling_crc.is_some(), "Should have rolling CRC");
@@ -1101,15 +1044,7 @@ mod tests {
         state2.set_rolling_crc(Some(Crc32Value::new(0x99999999)));
         state2.skip_block(block_size); // Now at position 1024 with buffer size 1024
 
-        let new_crc2 = rolling_table
-            .compute_crc_at_position(
-                buffer.as_slice(),
-                state2.scan_pos.as_usize(),
-                block_size.as_usize(),
-                state2.bytes_in_buffer.as_usize(),
-            )
-            .map(Crc32Value::new);
-        state2.set_rolling_crc(new_crc2);
+        state2.update_crc_after_skip(&rolling_table, &buffer, block_size);
 
         // Should have cleared CRC because we can't fit another block
         assert!(
@@ -1145,18 +1080,7 @@ mod tests {
         state.advance_one_byte();
 
         // Now slide the CRC - should use rolling algorithm
-        if let Some(crc) = state.rolling_crc {
-            let new_crc = rolling_table
-                .slide_crc_forward(
-                    crc.as_u32(),
-                    buffer.as_slice(),
-                    state.scan_pos.as_usize(),
-                    block_size.as_usize(),
-                    state.bytes_in_buffer.as_usize(),
-                )
-                .map(Crc32Value::new);
-            state.set_rolling_crc(new_crc);
-        }
+        state.slide_crc_one_byte(&rolling_table, &buffer, block_size);
 
         // Verify the CRC was updated correctly
         assert!(state.rolling_crc.is_some(), "Should have rolling CRC");
@@ -1173,18 +1097,7 @@ mod tests {
         let mut state2 = ScannerState::new(2048);
         state2.advance_one_byte(); // At position 1 but no CRC
 
-        if let Some(crc) = state2.rolling_crc {
-            let new_crc = rolling_table
-                .slide_crc_forward(
-                    crc.as_u32(),
-                    buffer.as_slice(),
-                    state2.scan_pos.as_usize(),
-                    block_size.as_usize(),
-                    state2.bytes_in_buffer.as_usize(),
-                )
-                .map(Crc32Value::new);
-            state2.set_rolling_crc(new_crc);
-        }
+        state2.slide_crc_one_byte(&rolling_table, &buffer, block_size);
 
         // Should remain None
         assert!(
@@ -1197,18 +1110,7 @@ mod tests {
         state3.set_rolling_crc(Some(Crc32Value::new(0x12345678)));
         state3.advance_one_byte();
 
-        if let Some(crc) = state3.rolling_crc {
-            let new_crc = rolling_table
-                .slide_crc_forward(
-                    crc.as_u32(),
-                    buffer.as_slice(),
-                    state3.scan_pos.as_usize(),
-                    block_size.as_usize(),
-                    state3.bytes_in_buffer.as_usize(),
-                )
-                .map(Crc32Value::new);
-            state3.set_rolling_crc(new_crc);
-        }
+        state3.slide_crc_one_byte(&rolling_table, &buffer, block_size);
 
         // CRC should be cleared since we can't fit a block
         assert!(
@@ -1236,15 +1138,7 @@ mod tests {
         let mut state1 = ScannerState::new(3072);
         state1.set_rolling_crc(Some(compute_crc32(buffer.slice(0..1024))));
         state1.skip_block(block_size); // Now at position 1024
-        let new_crc1 = rolling_table
-            .compute_crc_at_position(
-                buffer.as_slice(),
-                state1.scan_pos.as_usize(),
-                block_size.as_usize(),
-                state1.bytes_in_buffer.as_usize(),
-            )
-            .map(Crc32Value::new);
-        state1.set_rolling_crc(new_crc1);
+        state1.update_crc_after_skip(&rolling_table, &buffer, block_size);
 
         // Method 2: Advance byte by byte using rolling CRC
         let mut state2 = ScannerState::new(3072);
@@ -1252,18 +1146,7 @@ mod tests {
 
         for _ in 0..1024 {
             state2.advance_one_byte();
-            if let Some(crc) = state2.rolling_crc {
-                let new_crc = rolling_table
-                    .slide_crc_forward(
-                        crc.as_u32(),
-                        buffer.as_slice(),
-                        state2.scan_pos.as_usize(),
-                        block_size.as_usize(),
-                        state2.bytes_in_buffer.as_usize(),
-                    )
-                    .map(Crc32Value::new);
-                state2.set_rolling_crc(new_crc);
-            }
+            state2.slide_crc_one_byte(&rolling_table, &buffer, block_size);
         }
 
         // Both should produce the same CRC

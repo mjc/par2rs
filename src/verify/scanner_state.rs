@@ -104,6 +104,49 @@ impl ScannerState {
     pub fn can_slide_window(&self, block_size: BlockSize) -> bool {
         self.bytes_in_buffer.has_at_least(block_size)
     }
+
+    /// Update rolling CRC after skipping forward by a full block (recompute from scratch)
+    pub fn update_crc_after_skip(
+        &mut self,
+        rolling_table: &crate::checksum::rolling_crc::RollingCrcTable,
+        buffer: &crate::verify::types::ScanBuffer,
+        block_size: BlockSize,
+    ) {
+        use crate::domain::Crc32Value;
+
+        let new_crc = rolling_table
+            .compute_crc_at_position(
+                buffer.as_slice(),
+                self.scan_pos.as_usize(),
+                block_size.as_usize(),
+                self.bytes_in_buffer.as_usize(),
+            )
+            .map(Crc32Value::new);
+        self.set_rolling_crc(new_crc);
+    }
+
+    /// Slide rolling CRC forward by one byte using rolling window algorithm
+    pub fn slide_crc_one_byte(
+        &mut self,
+        rolling_table: &crate::checksum::rolling_crc::RollingCrcTable,
+        buffer: &crate::verify::types::ScanBuffer,
+        block_size: BlockSize,
+    ) {
+        use crate::domain::Crc32Value;
+
+        if let Some(crc) = self.rolling_crc {
+            let new_crc = rolling_table
+                .slide_crc_forward(
+                    crc.as_u32(),
+                    buffer.as_slice(),
+                    self.scan_pos.as_usize(),
+                    block_size.as_usize(),
+                    self.bytes_in_buffer.as_usize(),
+                )
+                .map(Crc32Value::new);
+            self.set_rolling_crc(new_crc);
+        }
+    }
 }
 
 #[cfg(test)]
