@@ -779,6 +779,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/verificationhashtable.h:253-264 (VerificationHashTable::Load)
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1580-1633 (ScanDataFile initialization)
     fn test_global_verification_engine_creation() {
         // Create minimal packet set
         let main_packet = crate::packets::MainPacket {
@@ -806,6 +808,7 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1599-1608 (handling empty/missing files)
     fn test_missing_file_verification() {
         let main_packet = crate::packets::MainPacket {
             length: 92,
@@ -836,6 +839,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/verificationhashtable.h:303-443 (FindMatch function)
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1702-1770 (match handling logic)
     fn test_insert_matching_blocks() {
         use crate::verify::global_table::GlobalBlockTableBuilder;
 
@@ -897,6 +902,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/verificationhashtable.h:303-443 (FindMatch full block check)
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1748-1755 (block match and recording)
     fn test_try_match_and_insert_block() {
         use crate::verify::global_table::GlobalBlockTableBuilder;
 
@@ -942,6 +949,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/verificationhashtable.h:319-327 (short block length handling)
+    // Reference: par2cmdline-turbo/src/filechecksummer.cpp:318-330 (ShortChecksum with padding)
     fn test_try_match_and_insert_partial_block() {
         use crate::verify::global_table::GlobalBlockTableBuilder;
 
@@ -989,6 +998,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/verificationhashtable.h:303-443 (all match paths converge to FindMatch)
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1702-1770 (single match logic for all paths)
     fn test_block_matching_is_consistent() {
         // This test verifies that the three different code paths
         // (aligned, byte-by-byte, partial) all use the same logic
@@ -1031,6 +1042,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/filechecksummer.cpp:351-376 (ComputeCurrentChecksum after Jump)
+    // Reference: par2cmdline-turbo/src/crc.cpp:119-122 (CRCUpdateBlock for recomputation)
     fn test_update_crc_after_skip() {
         use crate::checksum::compute_crc32;
         use crate::checksum::rolling_crc::RollingCrcTable;
@@ -1076,6 +1089,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/filechecksummer.h:169-192 (Step function with CRCSlideChar)
+    // Reference: par2cmdline-turbo/src/crc.h:100-104 (CRCSlideChar rolling update)
     fn test_slide_crc_one_byte() {
         use crate::checksum::compute_crc32;
         use crate::checksum::rolling_crc::RollingCrcTable;
@@ -1142,6 +1157,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/filechecksummer.cpp:351-376 (Jump vs Step equivalence)
+    // Reference: par2cmdline-turbo/src/crc.cpp:119-122 (both approaches use same CRC computation)
     fn test_crc_helpers_are_consistent() {
         // Verify that compute_crc_at_position and slide_crc_forward produce
         // consistent results with manual CRC computation
@@ -1187,6 +1204,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/filechecksummer.cpp:257-286 (Fill function for buffer management)
+    // Reference: par2cmdline-turbo/src/filechecksummer.h:185-191 (buffer sliding in Step)
     fn test_slide_buffer_window() {
         use crate::verify::scanner_state::ScannerState;
         use crate::verify::types::{BlockSize, ScanBuffer};
@@ -1274,6 +1293,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/filechecksummer.cpp:176-181 (handling insufficient buffer data)
+    // Reference: par2cmdline-turbo/src/filechecksummer.h:169-174 (early return when past EOF)
     fn test_slide_buffer_window_cant_slide() {
         use crate::verify::scanner_state::ScannerState;
         use crate::verify::types::{BlockSize, ScanBuffer};
@@ -1306,6 +1327,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1676-1695 (progress reporting during scan)
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1683 (percentage calculation)
     fn test_report_progress() {
         use crate::reporters::ConsoleVerificationReporter;
         use crate::verify::scanner_state::ScannerState;
@@ -1337,6 +1360,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/par2repairersourcefile.h:80-81 (GetBlockCount method)
+    // Reference: par2cmdline-turbo/src/verificationhashtable.cpp:56-71 (Load function block counting)
     fn test_count_file_blocks() {
         use crate::verify::global_table::GlobalBlockTableBuilder;
         use crate::verify::types::FileSize;
@@ -1406,6 +1431,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1866-1949 (VerifyExtraFile status determination)
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1735-1742 (match type determination logic)
     fn test_determine_file_status() {
         use crate::verify::types::BlockCount;
 
@@ -1432,6 +1459,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1707-1720 (file status reporting with match details)
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1839-1863 (VerifyExtraFile reporting)
     fn test_report_file_status() {
         use crate::reporters::ConsoleVerificationReporter;
         use crate::verify::types::BlockCount;
@@ -1474,6 +1503,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1702-1763 (match found, aligned block scan)
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1763 (Jump after successful match)
     fn test_scan_block_position() {
         use crate::verify::global_table::GlobalBlockTableBuilder;
         use crate::verify::scanner_state::ScannerState;
@@ -1524,6 +1555,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1702-1770 (aligned block scanning loop)
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1763 (Jump forward on match)
     fn test_scan_aligned_blocks() {
         use crate::verify::global_table::GlobalBlockTableBuilder;
         use crate::verify::scanner_state::ScannerState;
@@ -1575,6 +1608,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1771-1794 (mismatch handling, partial match)
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1794 (Step() on mismatch)
     fn test_scan_aligned_blocks_stops_at_first_mismatch() {
         use crate::verify::global_table::GlobalBlockTableBuilder;
         use crate::verify::scanner_state::ScannerState;
@@ -1624,6 +1659,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1794 (Step() one byte at a time)
+    // Reference: par2cmdline-turbo/src/filechecksummer.h:169-192 (Step with rolling CRC)
     fn test_scan_byte_by_byte() {
         use crate::checksum::rolling_crc::RollingCrcTable;
         use crate::verify::global_table::GlobalBlockTableBuilder;
@@ -1679,6 +1716,8 @@ mod tests {
     }
 
     #[test]
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1794 (Step loop continues until EOF)
+    // Reference: par2cmdline-turbo/src/filechecksummer.h:169-174 (Step returns false at EOF)
     fn test_scan_byte_by_byte_advances_to_end() {
         use crate::checksum::rolling_crc::RollingCrcTable;
         use crate::verify::global_table::GlobalBlockTableBuilder;
@@ -1724,6 +1763,9 @@ mod tests {
     }
 
     #[test]
+    // Regression test: buffer overflow bug not present in par2cmdline-turbo
+    // Reference: par2cmdline-turbo/src/filechecksummer.h:176-181 (proper bounds checking in Step)
+    // Our bug: used has_at_least(block_size) instead of can_fit_block(block_size)
     fn test_scan_single_file_buffer_overflow_regression() {
         use crate::checksum::compute_crc32;
         use crate::verify::global_table::GlobalBlockTableBuilder;
