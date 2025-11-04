@@ -15,8 +15,13 @@ use crate::packets::FileDescriptionPacket;
 use crate::reporters::VerificationReporter;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
+use smallvec::SmallVec;
 use std::path::Path;
 use std::sync::Mutex;
+
+/// Local block map type: maps (MD5, CRC32) -> list of (FileId, block_number)
+/// Uses SmallVec to avoid heap allocation for 1-2 entries (common case)
+type LocalBlockMap = HashMap<(Md5Hash, Crc32Value), SmallVec<[(FileId, u32); 2]>>;
 
 /// Enhanced verification engine with global block table
 ///
@@ -99,11 +104,12 @@ impl GlobalVerificationEngine {
     pub fn verify_recovery_set<R: VerificationReporter>(
         &self,
         reporter: &R,
+        parallel: bool,
     ) -> VerificationResults {
         // Note: report_verification_start and report_files_found should be called by the caller
 
         // Step 1: Scan all available files to build availability map
-        let available_blocks = self.scan_available_blocks(reporter);
+        let available_blocks = self.scan_available_blocks(reporter, parallel);
 
         // Step 2: Create aggregate results (individual file reporting already done in scan_available_blocks)
         let file_results = self.create_file_results(&available_blocks);
@@ -118,21 +124,10 @@ impl GlobalVerificationEngine {
     fn scan_available_blocks<R: VerificationReporter>(
         &self,
         reporter: &R,
+        parallel: bool,
     ) -> HashMap<(Md5Hash, Crc32Value), Vec<(FileId, u32)>> {
         // Wrap reporter in Mutex for thread-safe output (like par2cmdline-turbo's output_lock)
         let reporter_lock = Mutex::new(reporter);
-
-        // Calculate total size of all files for progress reporting
-        let total_size: u64 = self
-            .file_descriptions
-            .values()
-            .filter(|desc| {
-                let file_name = extract_file_name(desc);
-                let file_path = self.base_dir.join(&file_name);
-                file_path.exists()
-            })
-            .map(|desc| desc.file_length)
-            .sum();
 
         // Collect files to scan
         let files_to_scan: Vec<_> = self
@@ -145,85 +140,23 @@ impl GlobalVerificationEngine {
             })
             .collect();
 
-        // Scan files in parallel and collect individual results
-        let file_results: Vec<_> = files_to_scan
-            .par_iter()
-            .map(|file_desc| {
-                let file_name = extract_file_name(file_desc);
-                let file_path = self.base_dir.join(&file_name);
+        // Scan files in parallel or sequentially based on config
+        let file_results: Vec<_> = if parallel {
+            files_to_scan
+                .par_iter()
+                .map(|file_desc| self.process_single_file(file_desc, &reporter_lock))
+                .collect()
+        } else {
+            files_to_scan
+                .iter()
+                .map(|file_desc| self.process_single_file(file_desc, &reporter_lock))
+                .collect()
+        };
 
-                // Lock reporter for output
-                {
-                    let reporter = reporter_lock.lock().unwrap();
-                    reporter.report_verifying_file(&file_name);
-                }
-
-                // Scan this file and get its local block map
-                let local_block_map = self.scan_single_file(&file_path);
-
-                // Calculate status for this file
-                let total_blocks = self.calculate_total_blocks(file_desc.file_length);
-                let mut blocks_available = 0;
-                let mut damaged_blocks = Vec::new();
-                let file_blocks = self.block_table.get_file_blocks(file_desc.file_id);
-
-                for block_num in 0..total_blocks {
-                    if let Some(expected_block) = file_blocks.get(block_num) {
-                        let checksum_key = (
-                            expected_block.checksums.md5_hash,
-                            expected_block.checksums.crc32,
-                        );
-                        if local_block_map.contains_key(&checksum_key) {
-                            blocks_available += 1;
-                        } else {
-                            damaged_blocks.push(block_num as u32);
-                        }
-                    }
-                }
-
-                // Determine status
-                let status = if blocks_available == total_blocks {
-                    FileStatus::Present
-                } else if blocks_available == 0 {
-                    FileStatus::Missing
-                } else {
-                    FileStatus::Corrupted
-                };
-
-                // Lock reporter for status output
-                {
-                    let reporter = reporter_lock.lock().unwrap();
-                    match status {
-                        FileStatus::Present => {
-                            reporter.report_file_status(&file_name, status);
-                        }
-                        FileStatus::Missing => {
-                            reporter.report_file_status(&file_name, status);
-                        }
-                        FileStatus::Corrupted => {
-                            reporter.report_damaged_blocks(
-                                &file_name,
-                                &damaged_blocks,
-                                blocks_available,
-                                total_blocks,
-                            );
-                        }
-                        FileStatus::Renamed => {
-                            reporter.report_file_status(&file_name, status);
-                        }
-                    }
-                }
-
-                (local_block_map, file_desc.file_length)
-            })
-            .collect();
-
-        // Merge all local maps into global map and track progress
+        // Merge all local maps into global map
         let mut global_block_map = HashMap::default();
-        let mut bytes_scanned = 0u64;
-        let mut last_reported_fraction = 0u32;
 
-        for (local_map, file_size) in file_results {
+        for (local_map, _file_size) in file_results {
             // Merge local map into global
             for (key, entries) in local_map {
                 global_block_map
@@ -231,26 +164,94 @@ impl GlobalVerificationEngine {
                     .or_insert_with(Vec::new)
                     .extend(entries);
             }
-
-            // Update progress
-            bytes_scanned += file_size;
-            if total_size > 0 {
-                let new_fraction = ((bytes_scanned * 1000) / total_size) as u32;
-                if new_fraction != last_reported_fraction {
-                    reporter.report_scanning_progress(new_fraction as f64 / 1000.0);
-                    last_reported_fraction = new_fraction;
-                }
-            }
         }
 
         global_block_map
     }
 
-    /// Scan a single file and return its local block map
-    fn scan_single_file(
+    /// Process a single file: scan blocks and report status
+    fn process_single_file<R: VerificationReporter>(
+        &self,
+        file_desc: &FileDescriptionPacket,
+        reporter_lock: &Mutex<&R>,
+    ) -> (LocalBlockMap, u64) {
+        let file_name = extract_file_name(file_desc);
+        let file_path = self.base_dir.join(&file_name);
+        let file_size = file_desc.file_length;
+
+        // Lock reporter to start file
+        {
+            let reporter = reporter_lock.lock().unwrap();
+            reporter.report_verifying_file(&file_name);
+        }
+
+        // Scan this file and get its local block map, reporting progress
+        let local_block_map =
+            self.scan_single_file_with_progress(&file_path, file_size, reporter_lock);
+
+        // Calculate status for this file
+        let total_blocks = self.calculate_total_blocks(file_desc.file_length);
+        let mut blocks_available = 0;
+        let mut damaged_blocks = Vec::new();
+        let file_blocks = self.block_table.get_file_blocks(file_desc.file_id);
+
+        for block_num in 0..total_blocks {
+            if let Some(expected_block) = file_blocks.get(block_num) {
+                let checksum_key = (
+                    expected_block.checksums.md5_hash,
+                    expected_block.checksums.crc32,
+                );
+                if local_block_map.contains_key(&checksum_key) {
+                    blocks_available += 1;
+                } else {
+                    damaged_blocks.push(block_num as u32);
+                }
+            }
+        }
+
+        // Determine status
+        let status = if blocks_available == total_blocks {
+            FileStatus::Present
+        } else if blocks_available == 0 {
+            FileStatus::Missing
+        } else {
+            FileStatus::Corrupted
+        };
+
+        // Lock reporter for status output
+        {
+            let reporter = reporter_lock.lock().unwrap();
+            match status {
+                FileStatus::Present => {
+                    reporter.report_file_status(&file_name, status);
+                }
+                FileStatus::Missing => {
+                    reporter.report_file_status(&file_name, status);
+                }
+                FileStatus::Corrupted => {
+                    reporter.report_damaged_blocks(
+                        &file_name,
+                        &damaged_blocks,
+                        blocks_available,
+                        total_blocks,
+                    );
+                }
+                FileStatus::Renamed => {
+                    reporter.report_file_status(&file_name, status);
+                }
+            }
+        }
+
+        (local_block_map, file_desc.file_length)
+    }
+
+    /// Scan a single file and return its local block map with progress reporting
+    fn scan_single_file_with_progress<R: VerificationReporter>(
         &self,
         file_path: &Path,
-    ) -> HashMap<(Md5Hash, Crc32Value), Vec<(FileId, u32)>> {
+        file_size: u64,
+        reporter_lock: &Mutex<&R>,
+    ) -> LocalBlockMap {
         use crate::checksum::rolling_crc::RollingCrcTable;
         use crate::checksum::{compute_block_checksums_padded, compute_crc32};
         use std::fs::File;
@@ -276,9 +277,44 @@ impl GlobalVerificationEngine {
             Err(_) => return local_block_map,
         };
 
+        let mut is_first_buffer = true; // Track if we're at file start
+        let mut bytes_processed = 0u64; // Track bytes scanned for progress reporting
+
         loop {
             if bytes_in_buffer == 0 {
                 break; // EOF
+            }
+
+            // OPTIMIZATION: At file start, try aligned blocks first (par2cmdline-turbo approach)
+            // Most PAR2 protected files have blocks perfectly aligned
+            if is_first_buffer && bytes_in_buffer >= block_size * 2 {
+                // Try first two blocks at aligned positions
+                for block_idx in 0..2 {
+                    let start = block_idx * block_size;
+                    if start + block_size <= bytes_in_buffer {
+                        let block_data = &buffer[start..start + block_size];
+                        let crc32 = compute_crc32(block_data);
+
+                        if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
+                            let md5_hash = crate::checksum::compute_md5_only(block_data);
+
+                            for candidate in candidates {
+                                if candidate.checksums.md5_hash == md5_hash {
+                                    for duplicate in candidate.iter_duplicates() {
+                                        local_block_map
+                                            .entry((md5_hash, crc32))
+                                            .or_insert_with(SmallVec::new)
+                                            .push((
+                                                duplicate.position.file_id,
+                                                duplicate.position.block_number,
+                                            ));
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Scan byte-by-byte within the current 2-block buffer using rolling CRC
@@ -307,21 +343,41 @@ impl GlobalVerificationEngine {
                     let md5_hash = crate::checksum::compute_md5_only(block_data);
 
                     // Check MD5 hash against all candidates with this CRC32
+                    let mut found_match = false;
                     for candidate in candidates {
                         if candidate.checksums.md5_hash == md5_hash {
                             // Found valid block - record it in local map
+                            // Use SmallVec to avoid heap allocation for 1-2 entries (common case)
                             for duplicate in candidate.iter_duplicates() {
-                                local_block_map.entry((md5_hash, crc32)).or_default().push((
-                                    duplicate.position.file_id,
-                                    duplicate.position.block_number,
-                                ));
+                                local_block_map
+                                    .entry((md5_hash, crc32))
+                                    .or_insert_with(SmallVec::new)
+                                    .push((
+                                        duplicate.position.file_id,
+                                        duplicate.position.block_number,
+                                    ));
                             }
+                            found_match = true;
                             break;
                         }
                     }
+
+                    if found_match {
+                        // Skip ahead by full block (blocks don't overlap)
+                        scan_pos += block_size;
+
+                        // Recompute rolling CRC for new position if still in buffer
+                        if scan_pos + block_size <= bytes_in_buffer {
+                            rolling_crc =
+                                Some(compute_crc32(&buffer[scan_pos..scan_pos + block_size]));
+                        } else {
+                            rolling_crc = None;
+                        }
+                        continue; // Skip rolling update below
+                    }
                 }
 
-                // Advance scan position by 1 byte
+                // No match - advance by 1 byte and roll
                 scan_pos += 1;
 
                 // Update rolling CRC for next iteration
@@ -350,10 +406,13 @@ impl GlobalVerificationEngine {
                     for candidate in candidates {
                         if candidate.checksums.md5_hash == md5_hash {
                             for duplicate in candidate.iter_duplicates() {
-                                local_block_map.entry((md5_hash, crc32)).or_default().push((
-                                    duplicate.position.file_id,
-                                    duplicate.position.block_number,
-                                ));
+                                local_block_map
+                                    .entry((md5_hash, crc32))
+                                    .or_insert_with(SmallVec::new)
+                                    .push((
+                                        duplicate.position.file_id,
+                                        duplicate.position.block_number,
+                                    ));
                             }
                             break;
                         }
@@ -367,6 +426,7 @@ impl GlobalVerificationEngine {
 
             // Slide window forward
             if bytes_in_buffer >= block_size {
+                is_first_buffer = false; // No longer at file start
                 buffer.copy_within(block_size..bytes_in_buffer, 0);
                 let bytes_to_keep = bytes_in_buffer - block_size;
 
@@ -376,9 +436,21 @@ impl GlobalVerificationEngine {
                 };
 
                 bytes_in_buffer = bytes_to_keep + bytes_read;
+
+                // Update progress after reading each buffer
+                bytes_processed += block_size as u64;
+                let fraction = (bytes_processed as f64) / (file_size as f64);
+                if let Ok(reporter) = reporter_lock.lock() {
+                    reporter.report_scanning_progress(fraction);
+                }
             } else {
                 break;
             }
+        }
+
+        // Mark file as 100% scanned
+        if let Ok(reporter) = reporter_lock.lock() {
+            reporter.report_scanning_progress(1.0);
         }
 
         local_block_map
@@ -596,7 +668,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let engine = GlobalVerificationEngine::from_packets(&packets, temp_dir.path()).unwrap();
         let reporter = crate::reporters::ConsoleVerificationReporter::new();
-        let results = engine.verify_recovery_set(&reporter);
+        let results = engine.verify_recovery_set(&reporter, true); // parallel=true for tests
 
         // Since the file doesn't exist, it should be reported as missing
         assert_eq!(results.missing_file_count, 1);

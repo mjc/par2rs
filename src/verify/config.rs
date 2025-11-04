@@ -44,4 +44,9 @@ impl VerificationConfig {
             (true, n) => n,  // Use specified thread count
         }
     }
+
+    /// Whether to actually use parallel processing (false if threads=1)
+    pub fn should_parallelize(&self) -> bool {
+        self.parallel && self.effective_threads() > 1
+    }
 }

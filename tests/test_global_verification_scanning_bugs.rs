@@ -114,7 +114,7 @@ fn test_bug_1_file_position_desync_after_finding_block() {
 
     let engine = GlobalVerificationEngine::from_packets(&packets, temp_dir.path()).unwrap();
     let reporter = ConsoleVerificationReporter::new();
-    let results = engine.verify_recovery_set(&reporter);
+    let results = engine.verify_recovery_set(&reporter, true);
 
     // Both blocks should be found
     assert_eq!(
@@ -155,7 +155,7 @@ fn test_bug_2_missing_blocks_in_second_buffer() {
 
     let engine = GlobalVerificationEngine::from_packets(&packets, temp_dir.path()).unwrap();
     let reporter = ConsoleVerificationReporter::new();
-    let results = engine.verify_recovery_set(&reporter);
+    let results = engine.verify_recovery_set(&reporter, true);
 
     assert_eq!(
         results.available_block_count, 1,
@@ -217,7 +217,7 @@ fn test_bug_3_skipped_data_between_buffers() {
 
     let engine = GlobalVerificationEngine::from_packets(&packets, temp_dir.path()).unwrap();
     let reporter = ConsoleVerificationReporter::new();
-    let results = engine.verify_recovery_set(&reporter);
+    let results = engine.verify_recovery_set(&reporter, true);
 
     assert_eq!(
         results.available_block_count, 4,
@@ -257,7 +257,7 @@ fn test_bug_4_current_offset_tracking_incorrect() {
 
     let engine = GlobalVerificationEngine::from_packets(&packets, temp_dir.path()).unwrap();
     let reporter = ConsoleVerificationReporter::new();
-    let results = engine.verify_recovery_set(&reporter);
+    let results = engine.verify_recovery_set(&reporter, true);
 
     assert_eq!(
         results.available_block_count, 1,
@@ -310,7 +310,7 @@ fn test_bug_5_buffer_refill_without_seek() {
 
     let engine = GlobalVerificationEngine::from_packets(&packets, temp_dir.path()).unwrap();
     let reporter = ConsoleVerificationReporter::new();
-    let results = engine.verify_recovery_set(&reporter);
+    let results = engine.verify_recovery_set(&reporter, true);
 
     assert_eq!(
         results.available_block_count, 3,
@@ -350,7 +350,7 @@ fn test_bug_6_no_seek_in_no_match_path() {
 
     let engine = GlobalVerificationEngine::from_packets(&packets, temp_dir.path()).unwrap();
     let reporter = ConsoleVerificationReporter::new();
-    let results = engine.verify_recovery_set(&reporter);
+    let results = engine.verify_recovery_set(&reporter, true);
 
     assert_eq!(
         results.available_block_count, 1,
@@ -391,7 +391,7 @@ fn test_bug_7_buffer_copy_within_desync() {
 
     let engine = GlobalVerificationEngine::from_packets(&packets, temp_dir.path()).unwrap();
     let reporter = ConsoleVerificationReporter::new();
-    let results = engine.verify_recovery_set(&reporter);
+    let results = engine.verify_recovery_set(&reporter, true);
 
     assert_eq!(
         results.available_block_count, 1,

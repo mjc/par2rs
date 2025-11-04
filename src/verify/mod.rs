@@ -102,7 +102,8 @@ pub fn comprehensive_verify_files_with_config_and_reporter_in_dir<R: Verificatio
     }
 
     // Perform verification using global table
-    let mut results = engine.verify_recovery_set(reporter);
+    // Use should_parallelize() to avoid Rayon overhead when threads=1
+    let mut results = engine.verify_recovery_set(reporter, config.should_parallelize());
 
     // Use the recovery block count from the packet set
     results.recovery_blocks_available = packet_set.recovery_block_count;

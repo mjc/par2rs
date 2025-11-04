@@ -114,7 +114,7 @@ fn test_block_at_buffer_boundary() {
 
     let engine = GlobalVerificationEngine::from_packets(&packets, base_dir).unwrap();
     let reporter = SilentVerificationReporter::new();
-    let results = engine.verify_recovery_set(&reporter);
+    let results = engine.verify_recovery_set(&reporter, true);
 
     assert_eq!(results.files.len(), 1);
     let file_result = &results.files[0];
