@@ -28,6 +28,21 @@ impl BufferPosition {
     pub fn can_fit_block(&self, buffer_size: BufferSize, block_size: BlockSize) -> bool {
         self.0 + block_size.as_usize() <= buffer_size.as_usize()
     }
+
+    /// Get the range for a block starting at this position
+    pub fn block_range(&self, block_size: BlockSize) -> std::ops::Range<usize> {
+        self.0..self.0 + block_size.as_usize()
+    }
+
+    /// Get the byte at the position before this one (for rolling CRC)
+    pub fn byte_before(&self, buffer: &[u8]) -> u8 {
+        buffer[self.0 - 1]
+    }
+
+    /// Get the byte at position + offset (for rolling CRC window)
+    pub fn byte_at_offset(&self, buffer: &[u8], offset: usize) -> u8 {
+        buffer[self.0 + offset]
+    }
 }
 /// Size of data buffer in bytes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +71,33 @@ impl BufferSize {
 
     pub fn remainder_from(&self, pos: BufferPosition) -> usize {
         self.0.saturating_sub(pos.as_usize())
+    }
+
+    /// Get a slice from a position to the end of the buffer
+    pub fn slice_from<'a>(&self, pos: BufferPosition, buffer: &'a [u8]) -> &'a [u8] {
+        &buffer[pos.as_usize()..self.0]
+    }
+
+    /// Get a slice from start for a given block size
+    pub fn slice_first_block<'a>(&self, block_size: BlockSize, buffer: &'a [u8]) -> &'a [u8] {
+        &buffer[0..block_size.as_usize()]
+    }
+
+    /// Try to get an aligned block at the given index (0 or 1)
+    /// Returns Some(slice) if the block fits, None otherwise
+    pub fn try_aligned_block<'a>(
+        &self,
+        block_idx: usize,
+        block_size: BlockSize,
+        buffer: &'a [u8],
+    ) -> Option<&'a [u8]> {
+        let start = block_idx * block_size.as_usize();
+        let end = start + block_size.as_usize();
+        if end <= self.0 {
+            Some(&buffer[start..end])
+        } else {
+            None
+        }
     }
 }
 
@@ -164,6 +206,11 @@ impl BlockCount {
 
     pub fn increment(&mut self) {
         self.0 += 1;
+    }
+
+    /// Iterate over block numbers from 0 to count-1
+    pub fn iter_block_numbers(&self) -> impl Iterator<Item = BlockNumber> {
+        (0..self.0).map(BlockNumber::new)
     }
 }
 

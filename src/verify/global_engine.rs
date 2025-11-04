@@ -319,7 +319,9 @@ impl GlobalVerificationEngine {
 
             // Initialize rolling CRC with first block if possible
             let initial_crc = if state.bytes_in_buffer.has_at_least(block_size) {
-                Some(compute_crc32(&buffer[0..block_size.as_usize()]))
+                Some(compute_crc32(
+                    state.bytes_in_buffer.slice_first_block(block_size, &buffer),
+                ))
             } else {
                 None
             };
@@ -349,8 +351,7 @@ impl GlobalVerificationEngine {
             // Handle partial block at end
             let remainder_size = state.remainder_size(block_size);
             if remainder_size > 0 {
-                let start = state.scan_pos.as_usize();
-                let partial_data = &buffer[start..state.bytes_in_buffer.as_usize()];
+                let partial_data = state.bytes_in_buffer.slice_from(state.scan_pos, &buffer);
 
                 self.try_match_and_insert_partial_block(
                     partial_data,
@@ -452,10 +453,8 @@ impl GlobalVerificationEngine {
         use crate::checksum::compute_crc32;
 
         let new_crc = if state.can_fit_block(block_size) {
-            Some(compute_crc32(
-                &buffer
-                    [state.scan_pos.as_usize()..state.scan_pos.as_usize() + block_size.as_usize()],
-            ))
+            let block_range = state.scan_pos.block_range(block_size);
+            Some(compute_crc32(&buffer[block_range]))
         } else {
             None
         };
@@ -471,8 +470,10 @@ impl GlobalVerificationEngine {
     ) {
         if state.can_fit_block(block_size) {
             if let Some(crc) = state.rolling_crc {
-                let byte_out = buffer[state.scan_pos.as_usize() - 1];
-                let byte_in = buffer[state.scan_pos.as_usize() + block_size.as_usize() - 1];
+                let byte_out = state.scan_pos.byte_before(buffer);
+                let byte_in = state
+                    .scan_pos
+                    .byte_at_offset(buffer, block_size.as_usize() - 1);
                 let new_crc = Crc32Value::new(rolling_table.slide(crc.as_u32(), byte_in, byte_out));
                 state.update_rolling_crc(new_crc);
             }
@@ -530,9 +531,8 @@ impl GlobalVerificationEngine {
     ) -> ScanAction {
         use crate::checksum::compute_crc32;
 
-        let start = state.scan_pos.as_usize();
-        let end = start + block_size.as_usize();
-        let block_data = &buffer[start..end];
+        let block_range = state.scan_pos.block_range(block_size);
+        let block_data = &buffer[block_range];
 
         // Use rolling CRC if we have it, otherwise compute fresh
         let crc32 = state
@@ -561,16 +561,15 @@ impl GlobalVerificationEngine {
         file_size: FileSize,
         local_block_map: &LocalBlockMap,
     ) -> (BlockCount, Vec<u32>) {
-        use crate::verify::types::{BlockCount, BlockNumber};
+        use crate::verify::types::BlockCount;
 
         let total_blocks = self.calculate_total_blocks(file_size);
         let mut blocks_available = BlockCount::zero();
         let mut damaged_blocks = Vec::new();
         let file_blocks = self.block_table.get_file_blocks(file_id);
 
-        for block_num in 0..total_blocks.as_usize() {
-            let block_number = BlockNumber::new(block_num);
-            if let Some(expected_block) = file_blocks.get(block_num) {
+        for block_number in total_blocks.iter_block_numbers() {
+            if let Some(expected_block) = file_blocks.get(block_number.as_usize()) {
                 let checksum_key = (
                     expected_block.checksums.md5_hash,
                     expected_block.checksums.crc32,
@@ -635,11 +634,9 @@ impl GlobalVerificationEngine {
         bytes_in_buffer: crate::verify::types::BufferSize,
     ) {
         for block_idx in 0..2 {
-            let start = block_idx * block_size.as_usize();
-            let end = start + block_size.as_usize();
-
-            if end <= bytes_in_buffer.as_usize() {
-                let block_data = &buffer[start..end];
+            if let Some(block_data) =
+                bytes_in_buffer.try_aligned_block(block_idx, block_size, buffer)
+            {
                 self.try_match_and_insert_block(block_data, local_block_map);
             }
         }
