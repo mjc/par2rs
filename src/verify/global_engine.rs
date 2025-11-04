@@ -256,8 +256,8 @@ impl GlobalVerificationEngine {
         file_size: FileSize,
         reporter_lock: &Mutex<&R>,
     ) -> LocalBlockMap {
+        use crate::checksum::compute_crc32;
         use crate::checksum::rolling_crc::RollingCrcTable;
-        use crate::checksum::{compute_block_checksums_padded, compute_crc32};
         use crate::verify::types::{
             BlockSize, BufferPosition, BufferSize, BytesProcessed, ScanPhase,
         };
@@ -318,39 +318,28 @@ impl GlobalVerificationEngine {
                 // Use rolling CRC if we have it, otherwise compute fresh
                 let crc32 = rolling_crc.unwrap_or_else(|| compute_crc32(block_data));
 
-                // Fast CRC32 lookup in global table
-                if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
+                // Fast CRC32 lookup in global table - only compute MD5 if CRC matches
+                let found_match = if self.block_table.find_by_crc32(crc32).is_some() {
                     let md5_hash = crate::checksum::compute_md5_only(block_data);
+                    self.insert_matching_blocks(md5_hash, crc32, &mut local_block_map)
+                } else {
+                    false
+                };
 
-                    let found_match = candidates.iter().any(|candidate| {
-                        if candidate.checksums.md5_hash == md5_hash {
-                            for duplicate in candidate.iter_duplicates() {
-                                local_block_map.entry((md5_hash, crc32)).or_default().push((
-                                    duplicate.position.file_id,
-                                    duplicate.position.block_number,
-                                ));
-                            }
-                            true
-                        } else {
-                            false
-                        }
-                    });
+                if found_match {
+                    // Skip ahead by full block (blocks don't overlap in PAR2)
+                    scan_pos.advance_by(block_size.as_usize());
 
-                    if found_match {
-                        // Skip ahead by full block (blocks don't overlap in PAR2)
-                        scan_pos.advance_by(block_size.as_usize());
-
-                        // Recompute rolling CRC for new position if still in buffer
-                        rolling_crc = if scan_pos.can_fit_block(bytes_in_buffer, block_size) {
-                            Some(compute_crc32(
-                                &buffer[scan_pos.as_usize()
-                                    ..scan_pos.as_usize() + block_size.as_usize()],
-                            ))
-                        } else {
-                            None
-                        };
-                        continue;
-                    }
+                    // Recompute rolling CRC for new position if still in buffer
+                    rolling_crc = if scan_pos.can_fit_block(bytes_in_buffer, block_size) {
+                        Some(compute_crc32(
+                            &buffer
+                                [scan_pos.as_usize()..scan_pos.as_usize() + block_size.as_usize()],
+                        ))
+                    } else {
+                        None
+                    };
+                    continue;
                 }
 
                 // No match - advance by 1 byte and roll
@@ -375,22 +364,12 @@ impl GlobalVerificationEngine {
             if remainder_size > 0 && remainder_size < block_size.as_usize() {
                 let start = scan_pos.as_usize();
                 let partial_data = &buffer[start..bytes_in_buffer.as_usize()];
-                let (md5_hash, crc32) =
-                    compute_block_checksums_padded(partial_data, block_size.as_usize());
 
-                if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
-                    for candidate in candidates {
-                        if candidate.checksums.md5_hash == md5_hash {
-                            for duplicate in candidate.iter_duplicates() {
-                                local_block_map.entry((md5_hash, crc32)).or_default().push((
-                                    duplicate.position.file_id,
-                                    duplicate.position.block_number,
-                                ));
-                            }
-                            break;
-                        }
-                    }
-                }
+                self.try_match_and_insert_partial_block(
+                    partial_data,
+                    block_size.as_usize(),
+                    &mut local_block_map,
+                );
 
                 if scan_pos == BufferPosition::zero() {
                     break;
@@ -432,6 +411,71 @@ impl GlobalVerificationEngine {
         local_block_map
     }
 
+    /// Insert all matching blocks from the global table into the local block map
+    /// Returns true if at least one match was found
+    fn insert_matching_blocks(
+        &self,
+        md5_hash: Md5Hash,
+        crc32: Crc32Value,
+        local_block_map: &mut LocalBlockMap,
+    ) -> bool {
+        if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
+            let mut found_any = false;
+
+            for candidate in candidates {
+                if candidate.checksums.md5_hash == md5_hash {
+                    for duplicate in candidate.iter_duplicates() {
+                        local_block_map
+                            .entry((md5_hash, crc32))
+                            .or_default()
+                            .push((duplicate.position.file_id, duplicate.position.block_number));
+                    }
+                    found_any = true;
+                    break; // Only need to match once per unique checksum
+                }
+            }
+
+            found_any
+        } else {
+            false
+        }
+    }
+
+    /// Try to match a block of data against the global block table
+    /// If found, insert all matching blocks into the local map
+    /// Returns true if the block matched
+    fn try_match_and_insert_block(
+        &self,
+        block_data: &[u8],
+        local_block_map: &mut LocalBlockMap,
+    ) -> bool {
+        use crate::checksum::{compute_crc32, compute_md5_only};
+
+        let crc32 = compute_crc32(block_data);
+
+        // Fast CRC32 lookup - only compute expensive MD5 if CRC matches
+        if self.block_table.find_by_crc32(crc32).is_some() {
+            let md5_hash = compute_md5_only(block_data);
+            self.insert_matching_blocks(md5_hash, crc32, local_block_map)
+        } else {
+            false
+        }
+    }
+
+    /// Try to match a partial block (with padding) against the global block table
+    /// Returns true if the block matched
+    fn try_match_and_insert_partial_block(
+        &self,
+        partial_data: &[u8],
+        block_size: usize,
+        local_block_map: &mut LocalBlockMap,
+    ) -> bool {
+        use crate::checksum::compute_block_checksums_padded;
+
+        let (md5_hash, crc32) = compute_block_checksums_padded(partial_data, block_size);
+        self.insert_matching_blocks(md5_hash, crc32, local_block_map)
+    }
+
     /// Try to find blocks at aligned positions (optimization for well-formed PAR2 files)
     fn try_aligned_blocks(
         &self,
@@ -440,31 +484,13 @@ impl GlobalVerificationEngine {
         block_size: crate::verify::types::BlockSize,
         bytes_in_buffer: crate::verify::types::BufferSize,
     ) {
-        use crate::checksum::compute_crc32;
-
         for block_idx in 0..2 {
             let start = block_idx * block_size.as_usize();
             let end = start + block_size.as_usize();
 
             if end <= bytes_in_buffer.as_usize() {
                 let block_data = &buffer[start..end];
-                let crc32 = compute_crc32(block_data);
-
-                if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
-                    let md5_hash = crate::checksum::compute_md5_only(block_data);
-
-                    for candidate in candidates {
-                        if candidate.checksums.md5_hash == md5_hash {
-                            for duplicate in candidate.iter_duplicates() {
-                                local_block_map.entry((md5_hash, crc32)).or_default().push((
-                                    duplicate.position.file_id,
-                                    duplicate.position.block_number,
-                                ));
-                            }
-                            break;
-                        }
-                    }
-                }
+                self.try_match_and_insert_block(block_data, local_block_map);
             }
         }
     }
@@ -686,5 +712,172 @@ mod tests {
         assert_eq!(results.missing_file_count, 1);
         assert_eq!(results.present_file_count, 0);
         assert_eq!(results.total_block_count, 1); // 1024 bytes = 1 block of 1024
+    }
+
+    #[test]
+    fn test_insert_matching_blocks() {
+        use crate::verify::global_table::GlobalBlockTableBuilder;
+
+        // Create a simple block table with one known block
+        let mut builder = GlobalBlockTableBuilder::new(1024);
+        let file_id = FileId::new([1; 16]);
+        let checksums = vec![(Md5Hash::new([0xAA; 16]), Crc32Value::new(0x12345678))];
+        builder.add_file_blocks(file_id, &checksums);
+        let block_table = builder.build();
+
+        let engine = GlobalVerificationEngine {
+            block_table,
+            file_descriptions: HashMap::default(),
+            base_dir: std::path::PathBuf::from("."),
+        };
+
+        let mut local_map = HashMap::default();
+
+        // Test matching block
+        let found = engine.insert_matching_blocks(
+            Md5Hash::new([0xAA; 16]),
+            Crc32Value::new(0x12345678),
+            &mut local_map,
+        );
+        assert!(found, "Should find matching block");
+        assert_eq!(local_map.len(), 1, "Should have one entry in local map");
+
+        // Test non-matching MD5
+        let mut local_map2 = HashMap::default();
+        let found = engine.insert_matching_blocks(
+            Md5Hash::new([0xBB; 16]),
+            Crc32Value::new(0x12345678),
+            &mut local_map2,
+        );
+        assert!(!found, "Should not find block with wrong MD5");
+        assert_eq!(local_map2.len(), 0, "Should have no entries");
+
+        // Test non-matching CRC32
+        let mut local_map3 = HashMap::default();
+        let found = engine.insert_matching_blocks(
+            Md5Hash::new([0xAA; 16]),
+            Crc32Value::new(0x99999999),
+            &mut local_map3,
+        );
+        assert!(!found, "Should not find block with wrong CRC32");
+        assert_eq!(local_map3.len(), 0, "Should have no entries");
+    }
+
+    #[test]
+    fn test_try_match_and_insert_block() {
+        use crate::verify::global_table::GlobalBlockTableBuilder;
+
+        // Create a block of test data
+        let block_data = vec![0x42; 1024];
+        let expected_crc32 = crate::checksum::compute_crc32(&block_data);
+        let expected_md5 = crate::checksum::compute_md5_only(&block_data);
+
+        // Build a block table with this block
+        let mut builder = GlobalBlockTableBuilder::new(1024);
+        let file_id = FileId::new([1; 16]);
+        let checksums = vec![(expected_md5, expected_crc32)];
+        builder.add_file_blocks(file_id, &checksums);
+        let block_table = builder.build();
+
+        let engine = GlobalVerificationEngine {
+            block_table,
+            file_descriptions: HashMap::default(),
+            base_dir: std::path::PathBuf::from("."),
+        };
+
+        let mut local_map = HashMap::default();
+
+        // Test matching
+        let found = engine.try_match_and_insert_block(&block_data, &mut local_map);
+        assert!(found, "Should find matching block");
+        assert_eq!(local_map.len(), 1, "Should have one entry");
+
+        // Test non-matching data
+        let wrong_data = vec![0x99; 1024];
+        let mut local_map2 = HashMap::default();
+        let found = engine.try_match_and_insert_block(&wrong_data, &mut local_map2);
+        assert!(!found, "Should not find non-matching block");
+        assert_eq!(local_map2.len(), 0, "Should have no entries");
+    }
+
+    #[test]
+    fn test_try_match_and_insert_partial_block() {
+        use crate::verify::global_table::GlobalBlockTableBuilder;
+
+        // Create a partial block (500 bytes of a 1024 byte block)
+        let partial_data = vec![0x42; 500];
+
+        // Compute what the checksums should be with padding
+        let (expected_md5, expected_crc32) =
+            crate::checksum::compute_block_checksums_padded(&partial_data, 1024);
+
+        // Build a block table with this block
+        let mut builder = GlobalBlockTableBuilder::new(1024);
+        let file_id = FileId::new([1; 16]);
+        let checksums = vec![(expected_md5, expected_crc32)];
+        builder.add_file_blocks(file_id, &checksums);
+        let block_table = builder.build();
+
+        let engine = GlobalVerificationEngine {
+            block_table,
+            file_descriptions: HashMap::default(),
+            base_dir: std::path::PathBuf::from("."),
+        };
+
+        let mut local_map = HashMap::default();
+
+        // Test matching partial block
+        let found = engine.try_match_and_insert_partial_block(&partial_data, 1024, &mut local_map);
+        assert!(found, "Should find matching partial block");
+        assert_eq!(local_map.len(), 1, "Should have one entry");
+
+        // Test non-matching partial data
+        let wrong_data = vec![0x99; 500];
+        let mut local_map2 = HashMap::default();
+        let found = engine.try_match_and_insert_partial_block(&wrong_data, 1024, &mut local_map2);
+        assert!(!found, "Should not find non-matching partial block");
+        assert_eq!(local_map2.len(), 0, "Should have no entries");
+    }
+
+    #[test]
+    fn test_block_matching_is_consistent() {
+        // This test verifies that the three different code paths
+        // (aligned, byte-by-byte, partial) all use the same logic
+
+        use crate::verify::global_table::GlobalBlockTableBuilder;
+
+        let block_data = vec![0x42; 1024];
+        let expected_crc32 = crate::checksum::compute_crc32(&block_data);
+        let expected_md5 = crate::checksum::compute_md5_only(&block_data);
+
+        let mut builder = GlobalBlockTableBuilder::new(1024);
+        let file_id = FileId::new([1; 16]);
+        let checksums = vec![(expected_md5, expected_crc32)];
+        builder.add_file_blocks(file_id, &checksums);
+        let block_table = builder.build();
+
+        let engine = GlobalVerificationEngine {
+            block_table,
+            file_descriptions: HashMap::default(),
+            base_dir: std::path::PathBuf::from("."),
+        };
+
+        // Test 1: Direct insertion
+        let mut map1 = HashMap::default();
+        let found1 = engine.insert_matching_blocks(expected_md5, expected_crc32, &mut map1);
+
+        // Test 2: Via try_match_and_insert_block
+        let mut map2 = HashMap::default();
+        let found2 = engine.try_match_and_insert_block(&block_data, &mut map2);
+
+        // Both should find the block
+        assert_eq!(found1, found2, "Both methods should return same result");
+        assert_eq!(map1.len(), map2.len(), "Both maps should have same size");
+
+        // Verify the maps contain the same entries
+        for (key, value1) in &map1 {
+            let value2 = map2.get(key).expect("Key should exist in map2");
+            assert_eq!(value1, value2, "Values should match for key {:?}", key);
+        }
     }
 }
