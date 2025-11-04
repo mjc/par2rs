@@ -47,6 +47,9 @@
 
               cargoLock = {
                 lockFile = ./Cargo.lock;
+                outputHashes = {
+                  "md-5-0.11.0-rc.2" = "sha256-PJK3ydyvgIIYvyXRmtAk/8eovuGow3+a6BTyPidtWHI=";
+                };
               };
 
               # Skip integration tests - test_binaries requires binaries in target/debug/
