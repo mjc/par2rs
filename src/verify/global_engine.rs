@@ -6,7 +6,8 @@
 
 use super::global_table::{GlobalBlockTable, GlobalBlockTableBuilder};
 use super::types::{
-    BlockVerificationResult, FileStatus, FileVerificationResult, VerificationResults,
+    BlockCount, BlockNumber, BlockVerificationResult, FileSize, FileStatus, FileVerificationResult,
+    VerificationResults,
 };
 use super::utils::extract_file_name;
 
@@ -174,10 +175,12 @@ impl GlobalVerificationEngine {
         &self,
         file_desc: &FileDescriptionPacket,
         reporter_lock: &Mutex<&R>,
-    ) -> (LocalBlockMap, u64) {
+    ) -> (LocalBlockMap, FileSize) {
+        use crate::verify::types::{BlockCount, BlockNumber, FileSize};
+
         let file_name = extract_file_name(file_desc);
         let file_path = self.base_dir.join(&file_name);
-        let file_size = file_desc.file_length;
+        let file_size = FileSize::new(file_desc.file_length);
 
         // Lock reporter to start file
         {
@@ -190,21 +193,22 @@ impl GlobalVerificationEngine {
             self.scan_single_file_with_progress(&file_path, file_size, reporter_lock);
 
         // Calculate status for this file
-        let total_blocks = self.calculate_total_blocks(file_desc.file_length);
-        let mut blocks_available = 0;
+        let total_blocks = self.calculate_total_blocks(file_size);
+        let mut blocks_available = BlockCount::zero();
         let mut damaged_blocks = Vec::new();
         let file_blocks = self.block_table.get_file_blocks(file_desc.file_id);
 
-        for block_num in 0..total_blocks {
+        for block_num in 0..total_blocks.as_usize() {
+            let block_number = BlockNumber::new(block_num);
             if let Some(expected_block) = file_blocks.get(block_num) {
                 let checksum_key = (
                     expected_block.checksums.md5_hash,
                     expected_block.checksums.crc32,
                 );
                 if local_block_map.contains_key(&checksum_key) {
-                    blocks_available += 1;
+                    blocks_available.increment();
                 } else {
-                    damaged_blocks.push(block_num as u32);
+                    damaged_blocks.push(block_number.as_u32());
                 }
             }
         }
@@ -212,7 +216,7 @@ impl GlobalVerificationEngine {
         // Determine status
         let status = if blocks_available == total_blocks {
             FileStatus::Present
-        } else if blocks_available == 0 {
+        } else if blocks_available == BlockCount::zero() {
             FileStatus::Missing
         } else {
             FileStatus::Corrupted
@@ -232,8 +236,8 @@ impl GlobalVerificationEngine {
                     reporter.report_damaged_blocks(
                         &file_name,
                         &damaged_blocks,
-                        blocks_available,
-                        total_blocks,
+                        blocks_available.as_usize(),
+                        total_blocks.as_usize(),
                     );
                 }
                 FileStatus::Renamed => {
@@ -242,18 +246,21 @@ impl GlobalVerificationEngine {
             }
         }
 
-        (local_block_map, file_desc.file_length)
+        (local_block_map, file_size)
     }
 
     /// Scan a single file and return its local block map with progress reporting
     fn scan_single_file_with_progress<R: VerificationReporter>(
         &self,
         file_path: &Path,
-        file_size: u64,
+        file_size: FileSize,
         reporter_lock: &Mutex<&R>,
     ) -> LocalBlockMap {
         use crate::checksum::rolling_crc::RollingCrcTable;
         use crate::checksum::{compute_block_checksums_padded, compute_crc32};
+        use crate::verify::types::{
+            BlockSize, BufferPosition, BufferSize, BytesProcessed, ScanPhase,
+        };
         use std::fs::File;
         use std::io::Read;
 
@@ -264,127 +271,96 @@ impl GlobalVerificationEngine {
             Err(_) => return local_block_map,
         };
 
-        let block_size = self.block_table.block_size() as usize;
-        let buffer_size = block_size * 2; // 2-block buffer like par2cmdline
-        let mut buffer = vec![0u8; buffer_size];
+        let block_size = BlockSize::new(self.block_table.block_size() as usize);
+        let buffer_capacity = block_size.doubled();
+        let mut buffer = vec![0u8; buffer_capacity];
 
         // Create rolling CRC table for efficient scanning
-        let rolling_table = RollingCrcTable::new(block_size);
+        let rolling_table = RollingCrcTable::new(block_size.as_usize());
 
         // Initial fill of the buffer
-        let mut bytes_in_buffer = match file.read(&mut buffer) {
+        let bytes_read = match file.read(&mut buffer) {
             Ok(n) => n,
             Err(_) => return local_block_map,
         };
+        let mut bytes_in_buffer = BufferSize::new(bytes_read);
 
-        let mut is_first_buffer = true; // Track if we're at file start
-        let mut bytes_processed = 0u64; // Track bytes scanned for progress reporting
+        let mut scan_phase = ScanPhase::FirstBuffer;
+        let mut bytes_processed = BytesProcessed::zero();
 
         loop {
-            if bytes_in_buffer == 0 {
+            if bytes_in_buffer.is_empty() {
                 break; // EOF
             }
 
             // OPTIMIZATION: At file start, try aligned blocks first (par2cmdline-turbo approach)
             // Most PAR2 protected files have blocks perfectly aligned
-            if is_first_buffer && bytes_in_buffer >= block_size * 2 {
-                // Try first two blocks at aligned positions
-                for block_idx in 0..2 {
-                    let start = block_idx * block_size;
-                    if start + block_size <= bytes_in_buffer {
-                        let block_data = &buffer[start..start + block_size];
-                        let crc32 = compute_crc32(block_data);
-
-                        if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
-                            let md5_hash = crate::checksum::compute_md5_only(block_data);
-
-                            for candidate in candidates {
-                                if candidate.checksums.md5_hash == md5_hash {
-                                    for duplicate in candidate.iter_duplicates() {
-                                        local_block_map
-                                            .entry((md5_hash, crc32))
-                                            .or_insert_with(SmallVec::new)
-                                            .push((
-                                                duplicate.position.file_id,
-                                                duplicate.position.block_number,
-                                            ));
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
+            if scan_phase.is_first_buffer() && bytes_in_buffer.has_at_least_n_blocks(2, block_size)
+            {
+                self.try_aligned_blocks(&buffer, &mut local_block_map, block_size, bytes_in_buffer);
             }
 
             // Scan byte-by-byte within the current 2-block buffer using rolling CRC
-            let mut scan_pos = 0;
+            let mut scan_pos = BufferPosition::zero();
 
             // Initialize rolling CRC with first block if possible
-            let mut rolling_crc: Option<Crc32Value> = if bytes_in_buffer >= block_size {
-                Some(compute_crc32(&buffer[0..block_size]))
+            let mut rolling_crc: Option<Crc32Value> = if bytes_in_buffer.has_at_least(block_size) {
+                Some(compute_crc32(&buffer[0..block_size.as_usize()]))
             } else {
                 None
             };
 
-            while scan_pos + block_size <= bytes_in_buffer {
-                let block_data = &buffer[scan_pos..scan_pos + block_size];
+            while scan_pos.can_fit_block(bytes_in_buffer, block_size) {
+                let start = scan_pos.as_usize();
+                let end = start + block_size.as_usize();
+                let block_data = &buffer[start..end];
 
                 // Use rolling CRC if we have it, otherwise compute fresh
-                let crc32 = if let Some(crc) = rolling_crc {
-                    crc
-                } else {
-                    compute_crc32(block_data)
-                };
+                let crc32 = rolling_crc.unwrap_or_else(|| compute_crc32(block_data));
 
                 // Fast CRC32 lookup in global table
                 if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
-                    // Only compute MD5 if we have a CRC32 match
                     let md5_hash = crate::checksum::compute_md5_only(block_data);
 
-                    // Check MD5 hash against all candidates with this CRC32
-                    let mut found_match = false;
-                    for candidate in candidates {
+                    let found_match = candidates.iter().any(|candidate| {
                         if candidate.checksums.md5_hash == md5_hash {
-                            // Found valid block - record it in local map
-                            // Use SmallVec to avoid heap allocation for 1-2 entries (common case)
                             for duplicate in candidate.iter_duplicates() {
-                                local_block_map
-                                    .entry((md5_hash, crc32))
-                                    .or_insert_with(SmallVec::new)
-                                    .push((
-                                        duplicate.position.file_id,
-                                        duplicate.position.block_number,
-                                    ));
+                                local_block_map.entry((md5_hash, crc32)).or_default().push((
+                                    duplicate.position.file_id,
+                                    duplicate.position.block_number,
+                                ));
                             }
-                            found_match = true;
-                            break;
+                            true
+                        } else {
+                            false
                         }
-                    }
+                    });
 
                     if found_match {
-                        // Skip ahead by full block (blocks don't overlap)
-                        scan_pos += block_size;
+                        // Skip ahead by full block (blocks don't overlap in PAR2)
+                        scan_pos.advance_by(block_size.as_usize());
 
                         // Recompute rolling CRC for new position if still in buffer
-                        if scan_pos + block_size <= bytes_in_buffer {
-                            rolling_crc =
-                                Some(compute_crc32(&buffer[scan_pos..scan_pos + block_size]));
+                        rolling_crc = if scan_pos.can_fit_block(bytes_in_buffer, block_size) {
+                            Some(compute_crc32(
+                                &buffer[scan_pos.as_usize()
+                                    ..scan_pos.as_usize() + block_size.as_usize()],
+                            ))
                         } else {
-                            rolling_crc = None;
-                        }
-                        continue; // Skip rolling update below
+                            None
+                        };
+                        continue;
                     }
                 }
 
                 // No match - advance by 1 byte and roll
-                scan_pos += 1;
+                scan_pos.advance_by(1);
 
                 // Update rolling CRC for next iteration
-                if scan_pos + block_size <= bytes_in_buffer {
+                if scan_pos.can_fit_block(bytes_in_buffer, block_size) {
                     if let Some(crc) = rolling_crc {
-                        let byte_out = buffer[scan_pos - 1];
-                        let byte_in = buffer[scan_pos + block_size - 1];
+                        let byte_out = buffer[scan_pos.as_usize() - 1];
+                        let byte_in = buffer[scan_pos.as_usize() + block_size.as_usize() - 1];
                         rolling_crc = Some(Crc32Value::new(rolling_table.slide(
                             crc.as_u32(),
                             byte_in,
@@ -395,51 +371,51 @@ impl GlobalVerificationEngine {
             }
 
             // Handle partial block at end
-            let remainder_start = scan_pos;
-            let remainder_size = bytes_in_buffer.saturating_sub(remainder_start);
-
-            if remainder_size > 0 && remainder_size < block_size {
-                let partial_data = &buffer[remainder_start..bytes_in_buffer];
-                let (md5_hash, crc32) = compute_block_checksums_padded(partial_data, block_size);
+            let remainder_size = bytes_in_buffer.remainder_from(scan_pos);
+            if remainder_size > 0 && remainder_size < block_size.as_usize() {
+                let start = scan_pos.as_usize();
+                let partial_data = &buffer[start..bytes_in_buffer.as_usize()];
+                let (md5_hash, crc32) =
+                    compute_block_checksums_padded(partial_data, block_size.as_usize());
 
                 if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
                     for candidate in candidates {
                         if candidate.checksums.md5_hash == md5_hash {
                             for duplicate in candidate.iter_duplicates() {
-                                local_block_map
-                                    .entry((md5_hash, crc32))
-                                    .or_insert_with(SmallVec::new)
-                                    .push((
-                                        duplicate.position.file_id,
-                                        duplicate.position.block_number,
-                                    ));
+                                local_block_map.entry((md5_hash, crc32)).or_default().push((
+                                    duplicate.position.file_id,
+                                    duplicate.position.block_number,
+                                ));
                             }
                             break;
                         }
                     }
                 }
 
-                if scan_pos == 0 {
+                if scan_pos == BufferPosition::zero() {
                     break;
                 }
             }
 
             // Slide window forward
-            if bytes_in_buffer >= block_size {
-                is_first_buffer = false; // No longer at file start
-                buffer.copy_within(block_size..bytes_in_buffer, 0);
-                let bytes_to_keep = bytes_in_buffer - block_size;
+            if bytes_in_buffer.has_at_least(block_size) {
+                scan_phase.mark_advanced();
+
+                let block_sz = block_size.as_usize();
+                let buf_sz = bytes_in_buffer.as_usize();
+                buffer.copy_within(block_sz..buf_sz, 0);
+                let bytes_to_keep = buf_sz - block_sz;
 
                 let bytes_read = match file.read(&mut buffer[bytes_to_keep..]) {
                     Ok(n) => n,
                     Err(_) => break,
                 };
 
-                bytes_in_buffer = bytes_to_keep + bytes_read;
+                bytes_in_buffer = BufferSize::new(bytes_to_keep + bytes_read);
 
-                // Update progress after reading each buffer
-                bytes_processed += block_size as u64;
-                let fraction = (bytes_processed as f64) / (file_size as f64);
+                // Update progress after sliding
+                bytes_processed.advance_by(block_size);
+                let fraction = bytes_processed.progress_fraction(file_size.as_u64());
                 if let Ok(reporter) = reporter_lock.lock() {
                     reporter.report_scanning_progress(fraction);
                 }
@@ -456,6 +432,43 @@ impl GlobalVerificationEngine {
         local_block_map
     }
 
+    /// Try to find blocks at aligned positions (optimization for well-formed PAR2 files)
+    fn try_aligned_blocks(
+        &self,
+        buffer: &[u8],
+        local_block_map: &mut LocalBlockMap,
+        block_size: crate::verify::types::BlockSize,
+        bytes_in_buffer: crate::verify::types::BufferSize,
+    ) {
+        use crate::checksum::compute_crc32;
+
+        for block_idx in 0..2 {
+            let start = block_idx * block_size.as_usize();
+            let end = start + block_size.as_usize();
+
+            if end <= bytes_in_buffer.as_usize() {
+                let block_data = &buffer[start..end];
+                let crc32 = compute_crc32(block_data);
+
+                if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
+                    let md5_hash = crate::checksum::compute_md5_only(block_data);
+
+                    for candidate in candidates {
+                        if candidate.checksums.md5_hash == md5_hash {
+                            for duplicate in candidate.iter_duplicates() {
+                                local_block_map.entry((md5_hash, crc32)).or_default().push((
+                                    duplicate.position.file_id,
+                                    duplicate.position.block_number,
+                                ));
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Create file results based on available blocks (reporting already done)
     fn create_file_results(
         &self,
@@ -465,40 +478,41 @@ impl GlobalVerificationEngine {
 
         for file_desc in self.file_descriptions.values() {
             let file_name = extract_file_name(file_desc);
-            let total_blocks = self.calculate_total_blocks(file_desc.file_length);
+            let file_size = FileSize::new(file_desc.file_length);
+            let total_blocks = self.calculate_total_blocks(file_size);
 
             // Count available blocks for this file by checking if each block's
             // checksum is available in any location
-            let mut blocks_available = 0;
+            let mut blocks_available = BlockCount::zero();
             let mut damaged_blocks = Vec::new();
             let file_blocks = self.block_table.get_file_blocks(file_desc.file_id);
 
-            for block_num in 0..total_blocks {
-                let mut found = false;
+            for block_num in 0..total_blocks.as_usize() {
+                let block_number = BlockNumber::new(block_num);
 
                 // Look for this block's checksum in our available blocks map
-                if let Some(expected_block) = file_blocks.get(block_num) {
-                    let checksum_key = (
-                        expected_block.checksums.md5_hash,
-                        expected_block.checksums.crc32,
-                    );
-                    if let Some(_locations) = available_blocks.get(&checksum_key) {
-                        // Block data is available somewhere (could be used for repair)
-                        found = true;
-                    }
-                }
+                let is_available = file_blocks
+                    .get(block_num)
+                    .and_then(|expected_block| {
+                        let checksum_key = (
+                            expected_block.checksums.md5_hash,
+                            expected_block.checksums.crc32,
+                        );
+                        available_blocks.get(&checksum_key)
+                    })
+                    .is_some();
 
-                if found {
-                    blocks_available += 1;
+                if is_available {
+                    blocks_available.increment();
                 } else {
-                    damaged_blocks.push(block_num as u32);
+                    damaged_blocks.push(block_number.as_u32());
                 }
             }
 
             // Determine file status
             let status = if blocks_available == total_blocks {
                 FileStatus::Present
-            } else if blocks_available == 0 {
+            } else if blocks_available == BlockCount::zero() {
                 FileStatus::Missing
             } else {
                 FileStatus::Corrupted
@@ -510,8 +524,8 @@ impl GlobalVerificationEngine {
                 file_name,
                 file_id: file_desc.file_id,
                 status,
-                blocks_available,
-                total_blocks,
+                blocks_available: blocks_available.as_usize(),
+                total_blocks: total_blocks.as_usize(),
                 damaged_blocks,
             });
         }
@@ -544,13 +558,11 @@ impl GlobalVerificationEngine {
     }
 
     /// Calculate total blocks for a file
-    fn calculate_total_blocks(&self, file_length: u64) -> usize {
-        let block_size = self.block_table.block_size();
-        if block_size > 0 {
-            file_length.div_ceil(block_size) as usize
-        } else {
-            0
-        }
+    fn calculate_total_blocks(&self, file_length: FileSize) -> BlockCount {
+        use crate::verify::types::BlockSize;
+
+        let block_size = BlockSize::new(self.block_table.block_size() as usize);
+        file_length.total_blocks(block_size)
     }
 
     /// Aggregate results into final verification results

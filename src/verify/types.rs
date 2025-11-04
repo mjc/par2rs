@@ -3,6 +3,194 @@
 use crate::domain::{Crc32Value, FileId, Md5Hash};
 use std::fmt;
 
+/// Position within a file buffer (in bytes)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BufferPosition(usize);
+
+impl BufferPosition {
+    #[allow(dead_code)]
+    pub fn new(pos: usize) -> Self {
+        Self(pos)
+    }
+
+    pub fn zero() -> Self {
+        Self(0)
+    }
+
+    pub fn as_usize(&self) -> usize {
+        self.0
+    }
+
+    pub fn advance_by(&mut self, bytes: usize) {
+        self.0 += bytes;
+    }
+
+    pub fn can_fit_block(&self, buffer_size: BufferSize, block_size: BlockSize) -> bool {
+        self.0 + block_size.as_usize() <= buffer_size.as_usize()
+    }
+}
+/// Size of data buffer in bytes
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferSize(usize);
+
+impl BufferSize {
+    pub fn new(size: usize) -> Self {
+        Self(size)
+    }
+
+    pub fn as_usize(&self) -> usize {
+        self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn has_at_least(&self, block_size: BlockSize) -> bool {
+        self.0 >= block_size.as_usize()
+    }
+
+    pub fn has_at_least_n_blocks(&self, n: usize, block_size: BlockSize) -> bool {
+        self.0 >= n * block_size.as_usize()
+    }
+
+    pub fn remainder_from(&self, pos: BufferPosition) -> usize {
+        self.0.saturating_sub(pos.as_usize())
+    }
+}
+
+/// Size of a PAR2 block in bytes
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockSize(usize);
+
+impl BlockSize {
+    pub fn new(size: usize) -> Self {
+        Self(size)
+    }
+
+    pub fn as_usize(&self) -> usize {
+        self.0
+    }
+
+    pub fn doubled(&self) -> usize {
+        self.0 * 2
+    }
+}
+
+/// Bytes processed through a file (for progress tracking)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BytesProcessed(u64);
+
+impl BytesProcessed {
+    pub fn zero() -> Self {
+        Self(0)
+    }
+
+    pub fn advance_by(&mut self, block_size: BlockSize) {
+        self.0 += block_size.as_usize() as u64;
+    }
+
+    #[allow(dead_code)]
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+
+    pub fn progress_fraction(&self, total: u64) -> f64 {
+        if total == 0 {
+            0.0
+        } else {
+            self.0 as f64 / total as f64
+        }
+    }
+}
+/// Scanning phase - replacing boolean flags with explicit state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanPhase {
+    /// First buffer of the file - can try aligned block optimization
+    FirstBuffer,
+    /// Subsequent buffers - already past file start
+    SubsequentBuffer,
+}
+
+impl ScanPhase {
+    pub fn is_first_buffer(&self) -> bool {
+        matches!(self, ScanPhase::FirstBuffer)
+    }
+
+    pub fn mark_advanced(&mut self) {
+        *self = ScanPhase::SubsequentBuffer;
+    }
+}
+
+/// File size in bytes
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FileSize(u64);
+
+impl FileSize {
+    pub fn new(size: u64) -> Self {
+        Self(size)
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+
+    pub fn total_blocks(&self, block_size: BlockSize) -> BlockCount {
+        let count = self.0.div_ceil(block_size.as_usize() as u64) as usize;
+        BlockCount::new(count)
+    }
+
+    #[allow(dead_code)]
+    pub fn is_zero(&self) -> bool {
+        self.0 == 0
+    }
+}
+/// Number of blocks in a file
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BlockCount(usize);
+
+impl BlockCount {
+    pub fn new(count: usize) -> Self {
+        Self(count)
+    }
+
+    pub fn zero() -> Self {
+        Self(0)
+    }
+
+    pub fn as_usize(&self) -> usize {
+        self.0
+    }
+
+    pub fn increment(&mut self) {
+        self.0 += 1;
+    }
+}
+
+/// Block number within a file (0-indexed)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BlockNumber(usize);
+
+impl BlockNumber {
+    pub fn new(num: usize) -> Self {
+        Self(num)
+    }
+
+    #[allow(dead_code)]
+    pub fn as_usize(&self) -> usize {
+        self.0
+    }
+
+    pub fn as_u32(&self) -> u32 {
+        self.0 as u32
+    }
+}
+impl From<usize> for BlockNumber {
+    fn from(num: usize) -> Self {
+        Self(num)
+    }
+}
+
 /// Unified file verification status used by both verify and repair operations
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileStatus {
