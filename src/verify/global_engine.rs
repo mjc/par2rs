@@ -258,9 +258,8 @@ impl GlobalVerificationEngine {
     ) -> LocalBlockMap {
         use crate::checksum::compute_crc32;
         use crate::checksum::rolling_crc::RollingCrcTable;
-        use crate::verify::types::{
-            BlockSize, BufferPosition, BufferSize, BytesProcessed, ScanPhase,
-        };
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::BlockSize;
         use std::fs::File;
         use std::io::Read;
 
@@ -283,40 +282,44 @@ impl GlobalVerificationEngine {
             Ok(n) => n,
             Err(_) => return local_block_map,
         };
-        let mut bytes_in_buffer = BufferSize::new(bytes_read);
 
-        let mut scan_phase = ScanPhase::FirstBuffer;
-        let mut bytes_processed = BytesProcessed::zero();
+        // Initialize scanner state
+        let mut state = ScannerState::new(bytes_read);
 
         loop {
-            if bytes_in_buffer.is_empty() {
+            if state.at_eof() {
                 break; // EOF
             }
 
             // OPTIMIZATION: At file start, try aligned blocks first (par2cmdline-turbo approach)
             // Most PAR2 protected files have blocks perfectly aligned
-            if scan_phase.is_first_buffer() && bytes_in_buffer.has_at_least_n_blocks(2, block_size)
-            {
-                self.try_aligned_blocks(&buffer, &mut local_block_map, block_size, bytes_in_buffer);
+            if state.should_try_aligned_blocks(block_size) {
+                self.try_aligned_blocks(
+                    &buffer,
+                    &mut local_block_map,
+                    block_size,
+                    state.bytes_in_buffer,
+                );
             }
 
-            // Scan byte-by-byte within the current 2-block buffer using rolling CRC
-            let mut scan_pos = BufferPosition::zero();
-
             // Initialize rolling CRC with first block if possible
-            let mut rolling_crc: Option<Crc32Value> = if bytes_in_buffer.has_at_least(block_size) {
+            let initial_crc = if state.bytes_in_buffer.has_at_least(block_size) {
                 Some(compute_crc32(&buffer[0..block_size.as_usize()]))
             } else {
                 None
             };
+            state.set_rolling_crc(initial_crc);
 
-            while scan_pos.can_fit_block(bytes_in_buffer, block_size) {
-                let start = scan_pos.as_usize();
+            // Scan byte-by-byte within the current 2-block buffer using rolling CRC
+            while state.can_fit_block(block_size) {
+                let start = state.scan_pos.as_usize();
                 let end = start + block_size.as_usize();
                 let block_data = &buffer[start..end];
 
                 // Use rolling CRC if we have it, otherwise compute fresh
-                let crc32 = rolling_crc.unwrap_or_else(|| compute_crc32(block_data));
+                let crc32 = state
+                    .rolling_crc
+                    .unwrap_or_else(|| compute_crc32(block_data));
 
                 // Fast CRC32 lookup in global table - only compute MD5 if CRC matches
                 let found_match = if self.block_table.find_by_crc32(crc32).is_some() {
@@ -328,42 +331,41 @@ impl GlobalVerificationEngine {
 
                 if found_match {
                     // Skip ahead by full block (blocks don't overlap in PAR2)
-                    scan_pos.advance_by(block_size.as_usize());
+                    state.skip_block(block_size);
 
                     // Recompute rolling CRC for new position if still in buffer
-                    rolling_crc = if scan_pos.can_fit_block(bytes_in_buffer, block_size) {
+                    let new_crc = if state.can_fit_block(block_size) {
                         Some(compute_crc32(
-                            &buffer
-                                [scan_pos.as_usize()..scan_pos.as_usize() + block_size.as_usize()],
+                            &buffer[state.scan_pos.as_usize()
+                                ..state.scan_pos.as_usize() + block_size.as_usize()],
                         ))
                     } else {
                         None
                     };
+                    state.set_rolling_crc(new_crc);
                     continue;
                 }
 
                 // No match - advance by 1 byte and roll
-                scan_pos.advance_by(1);
+                state.advance_one_byte();
 
                 // Update rolling CRC for next iteration
-                if scan_pos.can_fit_block(bytes_in_buffer, block_size) {
-                    if let Some(crc) = rolling_crc {
-                        let byte_out = buffer[scan_pos.as_usize() - 1];
-                        let byte_in = buffer[scan_pos.as_usize() + block_size.as_usize() - 1];
-                        rolling_crc = Some(Crc32Value::new(rolling_table.slide(
-                            crc.as_u32(),
-                            byte_in,
-                            byte_out,
-                        )));
+                if state.can_fit_block(block_size) {
+                    if let Some(crc) = state.rolling_crc {
+                        let byte_out = buffer[state.scan_pos.as_usize() - 1];
+                        let byte_in = buffer[state.scan_pos.as_usize() + block_size.as_usize() - 1];
+                        let new_crc =
+                            Crc32Value::new(rolling_table.slide(crc.as_u32(), byte_in, byte_out));
+                        state.update_rolling_crc(new_crc);
                     }
                 }
             }
 
             // Handle partial block at end
-            let remainder_size = bytes_in_buffer.remainder_from(scan_pos);
-            if remainder_size > 0 && remainder_size < block_size.as_usize() {
-                let start = scan_pos.as_usize();
-                let partial_data = &buffer[start..bytes_in_buffer.as_usize()];
+            let remainder_size = state.remainder_size(block_size);
+            if remainder_size > 0 {
+                let start = state.scan_pos.as_usize();
+                let partial_data = &buffer[start..state.bytes_in_buffer.as_usize()];
 
                 self.try_match_and_insert_partial_block(
                     partial_data,
@@ -371,17 +373,15 @@ impl GlobalVerificationEngine {
                     &mut local_block_map,
                 );
 
-                if scan_pos == BufferPosition::zero() {
+                if state.is_remainder_at_start() {
                     break;
                 }
             }
 
             // Slide window forward
-            if bytes_in_buffer.has_at_least(block_size) {
-                scan_phase.mark_advanced();
-
+            if state.can_slide_window(block_size) {
                 let block_sz = block_size.as_usize();
-                let buf_sz = bytes_in_buffer.as_usize();
+                let buf_sz = state.bytes_in_buffer.as_usize();
                 buffer.copy_within(block_sz..buf_sz, 0);
                 let bytes_to_keep = buf_sz - block_sz;
 
@@ -390,11 +390,12 @@ impl GlobalVerificationEngine {
                     Err(_) => break,
                 };
 
-                bytes_in_buffer = BufferSize::new(bytes_to_keep + bytes_read);
+                let new_buffer_size =
+                    crate::verify::types::BufferSize::new(bytes_to_keep + bytes_read);
+                state.slide_window(block_size, new_buffer_size);
 
                 // Update progress after sliding
-                bytes_processed.advance_by(block_size);
-                let fraction = bytes_processed.progress_fraction(file_size.as_u64());
+                let fraction = state.bytes_processed.progress_fraction(file_size.as_u64());
                 if let Ok(reporter) = reporter_lock.lock() {
                     reporter.report_scanning_progress(fraction);
                 }
