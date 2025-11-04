@@ -176,7 +176,7 @@ impl GlobalVerificationEngine {
         file_desc: &FileDescriptionPacket,
         reporter_lock: &Mutex<&R>,
     ) -> (LocalBlockMap, FileSize) {
-        use crate::verify::types::{BlockCount, BlockNumber, FileSize};
+        use crate::verify::types::FileSize;
 
         let file_name = extract_file_name(file_desc);
         let file_path = self.base_dir.join(&file_name);
@@ -194,57 +194,21 @@ impl GlobalVerificationEngine {
 
         // Calculate status for this file
         let total_blocks = self.calculate_total_blocks(file_size);
-        let mut blocks_available = BlockCount::zero();
-        let mut damaged_blocks = Vec::new();
-        let file_blocks = self.block_table.get_file_blocks(file_desc.file_id);
-
-        for block_num in 0..total_blocks.as_usize() {
-            let block_number = BlockNumber::new(block_num);
-            if let Some(expected_block) = file_blocks.get(block_num) {
-                let checksum_key = (
-                    expected_block.checksums.md5_hash,
-                    expected_block.checksums.crc32,
-                );
-                if local_block_map.contains_key(&checksum_key) {
-                    blocks_available.increment();
-                } else {
-                    damaged_blocks.push(block_number.as_u32());
-                }
-            }
-        }
+        let (blocks_available, damaged_blocks) =
+            self.count_file_blocks(file_desc.file_id, file_size, &local_block_map);
 
         // Determine status
-        let status = if blocks_available == total_blocks {
-            FileStatus::Present
-        } else if blocks_available == BlockCount::zero() {
-            FileStatus::Missing
-        } else {
-            FileStatus::Corrupted
-        };
+        let status = Self::determine_file_status(blocks_available, total_blocks);
 
-        // Lock reporter for status output
-        {
-            let reporter = reporter_lock.lock().unwrap();
-            match status {
-                FileStatus::Present => {
-                    reporter.report_file_status(&file_name, status);
-                }
-                FileStatus::Missing => {
-                    reporter.report_file_status(&file_name, status);
-                }
-                FileStatus::Corrupted => {
-                    reporter.report_damaged_blocks(
-                        &file_name,
-                        &damaged_blocks,
-                        blocks_available.as_usize(),
-                        total_blocks.as_usize(),
-                    );
-                }
-                FileStatus::Renamed => {
-                    reporter.report_file_status(&file_name, status);
-                }
-            }
-        }
+        // Report status
+        Self::report_file_status(
+            reporter_lock,
+            &file_name,
+            status,
+            &damaged_blocks,
+            blocks_available,
+            total_blocks,
+        );
 
         (local_block_map, file_size)
     }
@@ -285,6 +249,16 @@ impl GlobalVerificationEngine {
 
         // Initialize scanner state
         let mut state = ScannerState::new(bytes_read);
+
+        // Helper: Update rolling CRC after skipping forward (recompute from scratch)
+        let update_crc_after_skip = |buffer: &[u8], state: &mut ScannerState| {
+            Self::update_crc_after_skip(buffer, state, block_size);
+        };
+
+        // Helper: Slide rolling CRC forward by one byte
+        let slide_crc_one_byte = |buffer: &[u8], state: &mut ScannerState| {
+            Self::slide_crc_one_byte(buffer, state, block_size, &rolling_table);
+        };
 
         loop {
             if state.at_eof() {
@@ -334,15 +308,7 @@ impl GlobalVerificationEngine {
                     state.skip_block(block_size);
 
                     // Recompute rolling CRC for new position if still in buffer
-                    let new_crc = if state.can_fit_block(block_size) {
-                        Some(compute_crc32(
-                            &buffer[state.scan_pos.as_usize()
-                                ..state.scan_pos.as_usize() + block_size.as_usize()],
-                        ))
-                    } else {
-                        None
-                    };
-                    state.set_rolling_crc(new_crc);
+                    update_crc_after_skip(&buffer, &mut state);
                     continue;
                 }
 
@@ -350,15 +316,7 @@ impl GlobalVerificationEngine {
                 state.advance_one_byte();
 
                 // Update rolling CRC for next iteration
-                if state.can_fit_block(block_size) {
-                    if let Some(crc) = state.rolling_crc {
-                        let byte_out = buffer[state.scan_pos.as_usize() - 1];
-                        let byte_in = buffer[state.scan_pos.as_usize() + block_size.as_usize() - 1];
-                        let new_crc =
-                            Crc32Value::new(rolling_table.slide(crc.as_u32(), byte_in, byte_out));
-                        state.update_rolling_crc(new_crc);
-                    }
-                }
+                slide_crc_one_byte(&buffer, &mut state);
             }
 
             // Handle partial block at end
@@ -378,36 +336,19 @@ impl GlobalVerificationEngine {
                 }
             }
 
-            // Slide window forward
-            if state.can_slide_window(block_size) {
-                let block_sz = block_size.as_usize();
-                let buf_sz = state.bytes_in_buffer.as_usize();
-                buffer.copy_within(block_sz..buf_sz, 0);
-                let bytes_to_keep = buf_sz - block_sz;
-
-                let bytes_read = match file.read(&mut buffer[bytes_to_keep..]) {
-                    Ok(n) => n,
-                    Err(_) => break,
-                };
-
-                let new_buffer_size =
-                    crate::verify::types::BufferSize::new(bytes_to_keep + bytes_read);
-                state.slide_window(block_size, new_buffer_size);
-
-                // Update progress after sliding
-                let fraction = state.bytes_processed.progress_fraction(file_size.as_u64());
-                if let Ok(reporter) = reporter_lock.lock() {
-                    reporter.report_scanning_progress(fraction);
+            // Slide window forward and read more data
+            match Self::slide_buffer_window(&mut file, &mut buffer, &mut state, block_size) {
+                Ok(true) => {
+                    // Successfully slid window, report progress
+                    Self::report_progress(reporter_lock, &state, file_size);
                 }
-            } else {
-                break;
+                Ok(false) => break, // Can't slide (not enough data)
+                Err(_) => break,    // Read error
             }
         }
 
         // Mark file as 100% scanned
-        if let Ok(reporter) = reporter_lock.lock() {
-            reporter.report_scanning_progress(1.0);
-        }
+        Self::report_progress(reporter_lock, &state, file_size);
 
         local_block_map
     }
@@ -475,6 +416,155 @@ impl GlobalVerificationEngine {
 
         let (md5_hash, crc32) = compute_block_checksums_padded(partial_data, block_size);
         self.insert_matching_blocks(md5_hash, crc32, local_block_map)
+    }
+
+    /// Update rolling CRC after skipping forward (recompute from scratch at new position)
+    fn update_crc_after_skip(
+        buffer: &[u8],
+        state: &mut crate::verify::scanner_state::ScannerState,
+        block_size: crate::verify::types::BlockSize,
+    ) {
+        use crate::checksum::compute_crc32;
+
+        let new_crc = if state.can_fit_block(block_size) {
+            Some(compute_crc32(
+                &buffer
+                    [state.scan_pos.as_usize()..state.scan_pos.as_usize() + block_size.as_usize()],
+            ))
+        } else {
+            None
+        };
+        state.set_rolling_crc(new_crc);
+    }
+
+    /// Slide rolling CRC forward by one byte
+    fn slide_crc_one_byte(
+        buffer: &[u8],
+        state: &mut crate::verify::scanner_state::ScannerState,
+        block_size: crate::verify::types::BlockSize,
+        rolling_table: &crate::checksum::rolling_crc::RollingCrcTable,
+    ) {
+        if state.can_fit_block(block_size) {
+            if let Some(crc) = state.rolling_crc {
+                let byte_out = buffer[state.scan_pos.as_usize() - 1];
+                let byte_in = buffer[state.scan_pos.as_usize() + block_size.as_usize() - 1];
+                let new_crc = Crc32Value::new(rolling_table.slide(crc.as_u32(), byte_in, byte_out));
+                state.update_rolling_crc(new_crc);
+            }
+        }
+    }
+
+    /// Slide the buffer window forward and read more data from the file
+    /// Returns Ok(true) if successful, Ok(false) if can't slide, Err if read error
+    fn slide_buffer_window<F: std::io::Read>(
+        file: &mut F,
+        buffer: &mut [u8],
+        state: &mut crate::verify::scanner_state::ScannerState,
+        block_size: crate::verify::types::BlockSize,
+    ) -> Result<bool, ()> {
+        if !state.can_slide_window(block_size) {
+            return Ok(false);
+        }
+
+        let block_sz = block_size.as_usize();
+        let buf_sz = state.bytes_in_buffer.as_usize();
+
+        // Slide buffer contents
+        buffer.copy_within(block_sz..buf_sz, 0);
+        let bytes_to_keep = buf_sz - block_sz;
+
+        // Read more data
+        let bytes_read = file.read(&mut buffer[bytes_to_keep..]).map_err(|_| ())?;
+
+        // Update state
+        let new_buffer_size = crate::verify::types::BufferSize::new(bytes_to_keep + bytes_read);
+        state.slide_window(block_size, new_buffer_size);
+
+        Ok(true)
+    }
+
+    /// Report scanning progress to the reporter
+    fn report_progress<R: VerificationReporter>(
+        reporter_lock: &Mutex<&R>,
+        state: &crate::verify::scanner_state::ScannerState,
+        file_size: crate::verify::types::FileSize,
+    ) {
+        let fraction = state.bytes_processed.progress_fraction(file_size.as_u64());
+        if let Ok(reporter) = reporter_lock.lock() {
+            reporter.report_scanning_progress(fraction);
+        }
+    }
+
+    /// Count available blocks and damaged blocks for a file
+    fn count_file_blocks(
+        &self,
+        file_id: FileId,
+        file_size: FileSize,
+        local_block_map: &LocalBlockMap,
+    ) -> (BlockCount, Vec<u32>) {
+        use crate::verify::types::{BlockCount, BlockNumber};
+
+        let total_blocks = self.calculate_total_blocks(file_size);
+        let mut blocks_available = BlockCount::zero();
+        let mut damaged_blocks = Vec::new();
+        let file_blocks = self.block_table.get_file_blocks(file_id);
+
+        for block_num in 0..total_blocks.as_usize() {
+            let block_number = BlockNumber::new(block_num);
+            if let Some(expected_block) = file_blocks.get(block_num) {
+                let checksum_key = (
+                    expected_block.checksums.md5_hash,
+                    expected_block.checksums.crc32,
+                );
+                if local_block_map.contains_key(&checksum_key) {
+                    blocks_available.increment();
+                } else {
+                    damaged_blocks.push(block_number.as_u32());
+                }
+            }
+        }
+
+        (blocks_available, damaged_blocks)
+    }
+
+    /// Determine file status based on available blocks
+    fn determine_file_status(blocks_available: BlockCount, total_blocks: BlockCount) -> FileStatus {
+        if blocks_available == total_blocks {
+            FileStatus::Present
+        } else if blocks_available == BlockCount::zero() {
+            FileStatus::Missing
+        } else {
+            FileStatus::Corrupted
+        }
+    }
+
+    /// Report file verification status to the reporter
+    fn report_file_status<R: VerificationReporter>(
+        reporter_lock: &Mutex<&R>,
+        file_name: &str,
+        status: FileStatus,
+        damaged_blocks: &[u32],
+        blocks_available: BlockCount,
+        total_blocks: BlockCount,
+    ) {
+        let reporter = match reporter_lock.lock() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+        match status {
+            FileStatus::Present | FileStatus::Missing | FileStatus::Renamed => {
+                reporter.report_file_status(file_name, status);
+            }
+            FileStatus::Corrupted => {
+                reporter.report_damaged_blocks(
+                    file_name,
+                    damaged_blocks,
+                    blocks_available.as_usize(),
+                    total_blocks.as_usize(),
+                );
+            }
+        }
     }
 
     /// Try to find blocks at aligned positions (optimization for well-formed PAR2 files)
@@ -880,5 +970,453 @@ mod tests {
             let value2 = map2.get(key).expect("Key should exist in map2");
             assert_eq!(value1, value2, "Values should match for key {:?}", key);
         }
+    }
+
+    #[test]
+    fn test_update_crc_after_skip() {
+        use crate::checksum::compute_crc32;
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::BlockSize;
+
+        let block_size = BlockSize::new(1024);
+        let buffer = vec![0x42u8; 2048]; // Two blocks
+
+        // Create state at position 0
+        let mut state = ScannerState::new(2048);
+        state.set_rolling_crc(Some(Crc32Value::new(0x12345678))); // Set some initial CRC
+
+        // Skip forward by one block
+        state.skip_block(block_size);
+
+        // Update CRC after skip - should recompute from scratch at new position
+        GlobalVerificationEngine::update_crc_after_skip(&buffer, &mut state, block_size);
+
+        // Should have computed CRC for block starting at position 1024
+        assert!(state.rolling_crc.is_some(), "Should have rolling CRC");
+        let expected_crc = compute_crc32(&buffer[1024..2048]);
+        assert_eq!(
+            state.rolling_crc.unwrap(),
+            expected_crc,
+            "CRC should match expected value for second block"
+        );
+
+        // Test case where we can't fit another block (at end)
+        let mut state2 = ScannerState::new(1024); // Only one block
+        state2.set_rolling_crc(Some(Crc32Value::new(0x99999999)));
+        state2.skip_block(block_size); // Now at position 1024 with buffer size 1024
+
+        GlobalVerificationEngine::update_crc_after_skip(&buffer, &mut state2, block_size);
+
+        // Should have cleared CRC because we can't fit another block
+        assert!(
+            state2.rolling_crc.is_none(),
+            "Should clear CRC when can't fit block"
+        );
+    }
+
+    #[test]
+    fn test_slide_crc_one_byte() {
+        use crate::checksum::compute_crc32;
+        use crate::checksum::rolling_crc::RollingCrcTable;
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::BlockSize;
+
+        let block_size = BlockSize::new(1024);
+        let rolling_table = RollingCrcTable::new(1024);
+
+        // Create a buffer with known pattern
+        let mut buffer = vec![0x00u8; 2048];
+        for (i, item) in buffer.iter_mut().enumerate().take(2048) {
+            *item = (i % 256) as u8;
+        }
+
+        // Create state at position 1 (after advancing from 0)
+        let mut state = ScannerState::new(2048);
+
+        // Compute initial CRC for block at position 0
+        let initial_crc = compute_crc32(&buffer[0..1024]);
+        state.set_rolling_crc(Some(initial_crc));
+
+        // Advance one byte to position 1
+        state.advance_one_byte();
+
+        // Now slide the CRC - should use rolling algorithm
+        GlobalVerificationEngine::slide_crc_one_byte(
+            &buffer,
+            &mut state,
+            block_size,
+            &rolling_table,
+        );
+
+        // Verify the CRC was updated correctly
+        assert!(state.rolling_crc.is_some(), "Should have rolling CRC");
+
+        // The rolled CRC should match a fresh computation at position 1
+        let expected_crc = compute_crc32(&buffer[1..1025]);
+        assert_eq!(
+            state.rolling_crc.unwrap(),
+            expected_crc,
+            "Rolled CRC should match fresh CRC at position 1"
+        );
+
+        // Test case where state has no rolling CRC
+        let mut state2 = ScannerState::new(2048);
+        state2.advance_one_byte(); // At position 1 but no CRC
+
+        GlobalVerificationEngine::slide_crc_one_byte(
+            &buffer,
+            &mut state2,
+            block_size,
+            &rolling_table,
+        );
+
+        // Should remain None
+        assert!(
+            state2.rolling_crc.is_none(),
+            "Should stay None when no initial CRC"
+        );
+
+        // Test case where we can't fit a full block after current position
+        let mut state3 = ScannerState::new(1000); // Less than a full block
+        state3.set_rolling_crc(Some(Crc32Value::new(0x12345678)));
+        state3.advance_one_byte();
+
+        GlobalVerificationEngine::slide_crc_one_byte(
+            &buffer,
+            &mut state3,
+            block_size,
+            &rolling_table,
+        );
+
+        // CRC should remain unchanged since we can't fit a block
+        assert_eq!(
+            state3.rolling_crc,
+            Some(Crc32Value::new(0x12345678)),
+            "CRC should remain unchanged when can't fit block"
+        );
+    }
+
+    #[test]
+    fn test_crc_helpers_are_consistent() {
+        // Verify that update_crc_after_skip and slide_crc_one_byte produce
+        // consistent results with manual CRC computation
+
+        use crate::checksum::compute_crc32;
+        use crate::checksum::rolling_crc::RollingCrcTable;
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::BlockSize;
+
+        let block_size = BlockSize::new(1024);
+        let rolling_table = RollingCrcTable::new(1024);
+        let buffer = vec![0x42u8; 3072]; // Three blocks
+
+        // Method 1: Skip forward and recompute
+        let mut state1 = ScannerState::new(3072);
+        state1.set_rolling_crc(Some(compute_crc32(&buffer[0..1024])));
+        state1.skip_block(block_size); // Now at position 1024
+        GlobalVerificationEngine::update_crc_after_skip(&buffer, &mut state1, block_size);
+
+        // Method 2: Advance byte by byte using rolling CRC
+        let mut state2 = ScannerState::new(3072);
+        state2.set_rolling_crc(Some(compute_crc32(&buffer[0..1024])));
+
+        for _ in 0..1024 {
+            state2.advance_one_byte();
+            GlobalVerificationEngine::slide_crc_one_byte(
+                &buffer,
+                &mut state2,
+                block_size,
+                &rolling_table,
+            );
+        }
+
+        // Both should produce the same CRC
+        assert_eq!(
+            state1.rolling_crc, state2.rolling_crc,
+            "Skip-and-recompute should match rolling CRC after 1024 slides"
+        );
+
+        // And both should match manual computation
+        let expected_crc = compute_crc32(&buffer[1024..2048]);
+        assert_eq!(
+            state1.rolling_crc.unwrap(),
+            expected_crc,
+            "Both methods should match manual CRC computation"
+        );
+    }
+
+    #[test]
+    fn test_slide_buffer_window() {
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::BlockSize;
+        use std::io::{Cursor, Read};
+
+        let block_size = BlockSize::new(1024);
+
+        // Create a mock file with 3 blocks of data
+        let file_data = vec![0x42u8; 3072];
+        let mut file = Cursor::new(file_data);
+
+        // Create buffer that can hold 2 blocks
+        let mut buffer = vec![0u8; 2048];
+
+        // Initial read
+        let bytes_read = file.read(&mut buffer).unwrap();
+        let mut state = ScannerState::new(bytes_read);
+
+        assert_eq!(
+            state.bytes_in_buffer.as_usize(),
+            2048,
+            "Should have 2 blocks initially"
+        );
+
+        // Slide the window
+        let result = GlobalVerificationEngine::slide_buffer_window(
+            &mut file,
+            &mut buffer,
+            &mut state,
+            block_size,
+        );
+
+        assert!(result.is_ok(), "Slide should succeed");
+        assert!(result.unwrap(), "Should return true on successful slide");
+
+        // After sliding, should have 1 old block + 1 new block
+        assert_eq!(
+            state.bytes_in_buffer.as_usize(),
+            2048,
+            "Should still have 2 blocks"
+        );
+
+        // Check bytes processed - should be 1 block worth
+        assert_eq!(
+            state.bytes_processed.as_u64(),
+            1024,
+            "Should have processed 1 block"
+        );
+
+        // Slide again
+        let result2 = GlobalVerificationEngine::slide_buffer_window(
+            &mut file,
+            &mut buffer,
+            &mut state,
+            block_size,
+        );
+
+        assert!(result2.is_ok(), "Second slide should succeed");
+        assert!(result2.unwrap(), "Should return true on second slide");
+
+        assert_eq!(
+            state.bytes_processed.as_u64(),
+            2048,
+            "Should have processed 2 blocks"
+        );
+
+        // Try to slide when at EOF (no more data)
+        let result3 = GlobalVerificationEngine::slide_buffer_window(
+            &mut file,
+            &mut buffer,
+            &mut state,
+            block_size,
+        );
+
+        assert!(result3.is_ok(), "Should succeed but return false");
+        // At this point we have less than a full block remaining, so can't slide
+    }
+
+    #[test]
+    fn test_slide_buffer_window_cant_slide() {
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::BlockSize;
+        use std::io::{Cursor, Read};
+
+        let block_size = BlockSize::new(1024);
+
+        // Create a file with less than 1 block
+        let file_data = vec![0x42u8; 512];
+        let mut file = Cursor::new(file_data);
+
+        let mut buffer = vec![0u8; 2048];
+        let bytes_read = file.read(&mut buffer).unwrap();
+        let mut state = ScannerState::new(bytes_read);
+
+        // Can't slide because buffer has less than 1 block
+        let result = GlobalVerificationEngine::slide_buffer_window(
+            &mut file,
+            &mut buffer,
+            &mut state,
+            block_size,
+        );
+
+        assert!(result.is_ok(), "Should not error");
+        assert!(!result.unwrap(), "Should return false when can't slide");
+    }
+
+    #[test]
+    fn test_report_progress() {
+        use crate::reporters::ConsoleVerificationReporter;
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::{BlockSize, FileSize};
+        use std::sync::Mutex;
+
+        let reporter = ConsoleVerificationReporter::new();
+        let reporter_lock = Mutex::new(&reporter);
+
+        let block_size = BlockSize::new(1024);
+
+        // Create state that's halfway through a 2048 byte file
+        let mut state = ScannerState::new(2048);
+        // Advance by one block to simulate processing
+        state.bytes_processed.advance_by(block_size);
+
+        let file_size = FileSize::new(2048);
+
+        // Report progress - should be 50%
+        GlobalVerificationEngine::report_progress(&reporter_lock, &state, file_size);
+
+        // Verify the reporter was called (we can't easily inspect the output,
+        // but at least we verify it doesn't panic)
+        // The function should compute fraction = 1024 / 2048 = 0.5
+
+        // Test at 100%
+        state.bytes_processed.advance_by(block_size);
+        GlobalVerificationEngine::report_progress(&reporter_lock, &state, file_size);
+    }
+
+    #[test]
+    fn test_count_file_blocks() {
+        use crate::verify::global_table::GlobalBlockTableBuilder;
+        use crate::verify::types::FileSize;
+
+        // Create a block table with 3 blocks for a file
+        let mut builder = GlobalBlockTableBuilder::new(1024);
+        let file_id = FileId::new([1; 16]);
+
+        let checksums = vec![
+            (Md5Hash::new([0xAA; 16]), Crc32Value::new(0x11111111)),
+            (Md5Hash::new([0xBB; 16]), Crc32Value::new(0x22222222)),
+            (Md5Hash::new([0xCC; 16]), Crc32Value::new(0x33333333)),
+        ];
+        builder.add_file_blocks(file_id, &checksums);
+        let block_table = builder.build();
+
+        let engine = GlobalVerificationEngine {
+            block_table,
+            file_descriptions: HashMap::default(),
+            base_dir: std::path::PathBuf::from("."),
+        };
+
+        // Case 1: All blocks available
+        let mut local_map = HashMap::default();
+        local_map.insert(
+            (Md5Hash::new([0xAA; 16]), Crc32Value::new(0x11111111)),
+            SmallVec::new(),
+        );
+        local_map.insert(
+            (Md5Hash::new([0xBB; 16]), Crc32Value::new(0x22222222)),
+            SmallVec::new(),
+        );
+        local_map.insert(
+            (Md5Hash::new([0xCC; 16]), Crc32Value::new(0x33333333)),
+            SmallVec::new(),
+        );
+
+        let (available, damaged) =
+            engine.count_file_blocks(file_id, FileSize::new(3072), &local_map);
+        assert_eq!(available.as_usize(), 3, "Should have all 3 blocks");
+        assert_eq!(damaged.len(), 0, "Should have no damaged blocks");
+
+        // Case 2: Some blocks missing
+        let mut local_map2 = HashMap::default();
+        local_map2.insert(
+            (Md5Hash::new([0xAA; 16]), Crc32Value::new(0x11111111)),
+            SmallVec::new(),
+        );
+        // Block 1 missing
+        local_map2.insert(
+            (Md5Hash::new([0xCC; 16]), Crc32Value::new(0x33333333)),
+            SmallVec::new(),
+        );
+
+        let (available2, damaged2) =
+            engine.count_file_blocks(file_id, FileSize::new(3072), &local_map2);
+        assert_eq!(available2.as_usize(), 2, "Should have 2 blocks");
+        assert_eq!(damaged2.len(), 1, "Should have 1 damaged block");
+        assert_eq!(damaged2[0], 1, "Block 1 should be damaged");
+
+        // Case 3: No blocks available
+        let local_map3 = HashMap::default();
+        let (available3, damaged3) =
+            engine.count_file_blocks(file_id, FileSize::new(3072), &local_map3);
+        assert_eq!(available3.as_usize(), 0, "Should have 0 blocks");
+        assert_eq!(damaged3.len(), 3, "Should have 3 damaged blocks");
+    }
+
+    #[test]
+    fn test_determine_file_status() {
+        use crate::verify::types::BlockCount;
+
+        // All blocks present
+        let status = GlobalVerificationEngine::determine_file_status(
+            BlockCount::new(10),
+            BlockCount::new(10),
+        );
+        assert_eq!(status, FileStatus::Present);
+
+        // No blocks present
+        let status2 = GlobalVerificationEngine::determine_file_status(
+            BlockCount::zero(),
+            BlockCount::new(10),
+        );
+        assert_eq!(status2, FileStatus::Missing);
+
+        // Some blocks present
+        let status3 = GlobalVerificationEngine::determine_file_status(
+            BlockCount::new(5),
+            BlockCount::new(10),
+        );
+        assert_eq!(status3, FileStatus::Corrupted);
+    }
+
+    #[test]
+    fn test_report_file_status() {
+        use crate::reporters::ConsoleVerificationReporter;
+        use crate::verify::types::BlockCount;
+        use std::sync::Mutex;
+
+        let reporter = ConsoleVerificationReporter::new();
+        let reporter_lock = Mutex::new(&reporter);
+
+        // Test reporting present file
+        GlobalVerificationEngine::report_file_status(
+            &reporter_lock,
+            "test.txt",
+            FileStatus::Present,
+            &[],
+            BlockCount::new(10),
+            BlockCount::new(10),
+        );
+
+        // Test reporting missing file
+        GlobalVerificationEngine::report_file_status(
+            &reporter_lock,
+            "test.txt",
+            FileStatus::Missing,
+            &[],
+            BlockCount::zero(),
+            BlockCount::new(10),
+        );
+
+        // Test reporting corrupted file
+        GlobalVerificationEngine::report_file_status(
+            &reporter_lock,
+            "test.txt",
+            FileStatus::Corrupted,
+            &[1, 5, 7],
+            BlockCount::new(7),
+            BlockCount::new(10),
+        );
+
+        // All calls should succeed without panicking
     }
 }
