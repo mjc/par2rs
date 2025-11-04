@@ -2414,4 +2414,166 @@ mod tests {
         );
         assert_eq!(status3, FileStatus::Missing);
     }
+
+    #[test]
+    #[ignore = "Not implemented: first block offset check"]
+    fn test_first_block_not_at_offset_zero_should_be_corrupted() {
+        // Reference: par2cmdline-turbo/src/par2repairer.cpp:1722-1725
+        // if (!currententry->FirstBlock() || filechecksummer.Offset() != 0)
+        //     matchtype = ePartialMatch;
+        //
+        // If the first matching block is found at offset > 0, the file should be marked
+        // as Corrupted even if all blocks are present.
+
+        use std::fs::File;
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_path = temp_dir.path();
+
+        // Create file with junk at start, then valid block
+        let file_path = base_path.join("test.txt");
+        let mut file = File::create(&file_path).unwrap();
+        file.write_all(&[0xFF; 100]).unwrap(); // Junk
+        file.write_all(&[0x42; 1024]).unwrap(); // Valid block
+        file.flush().unwrap();
+        drop(file);
+
+        let file_id = FileId::new([1; 16]);
+        let file_desc = create_test_file_desc(file_id, 1024);
+
+        let main_packet = crate::packets::MainPacket {
+            length: 92,
+            md5: Md5Hash::new([0; 16]),
+            set_id: crate::domain::RecoverySetId::new([1; 16]),
+            slice_size: 1024,
+            file_count: 1,
+            file_ids: vec![file_id],
+            non_recovery_file_ids: vec![],
+        };
+
+        let packets = vec![
+            crate::Packet::Main(main_packet),
+            crate::Packet::FileDescription(file_desc),
+        ];
+
+        let engine = GlobalVerificationEngine::from_packets(&packets, base_path).unwrap();
+        let reporter = crate::reporters::ConsoleVerificationReporter::new();
+        let results = engine.verify_recovery_set(&reporter, false);
+
+        // Block will be found but file should be Corrupted because it doesn't start at offset 0
+        assert_eq!(results.files[0].blocks_available, 1);
+        assert_eq!(
+            results.files[0].status,
+            FileStatus::Corrupted,
+            "File should be Corrupted when first block is not at offset 0"
+        );
+    }
+
+    #[test]
+    #[ignore = "Not implemented: block sequence checking"]
+    fn test_blocks_out_of_sequence_should_be_corrupted() {
+        // Reference: par2cmdline-turbo/src/par2repairer.cpp:1728-1732
+        // if (currententry != nextentry)
+        //     matchtype = ePartialMatch;
+        //
+        // If blocks are found but not in the expected order, file should be Corrupted
+        // even if all blocks are present.
+
+        use std::fs::File;
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_path = temp_dir.path();
+
+        let file_path = base_path.join("test.txt");
+        let mut file = File::create(&file_path).unwrap();
+        // Write block 2 then block 1 (reversed)
+        file.write_all(&[0xBB; 1024]).unwrap();
+        file.write_all(&[0xAA; 1024]).unwrap();
+        file.flush().unwrap();
+        drop(file);
+
+        let file_id = FileId::new([2; 16]);
+        let file_desc = create_test_file_desc(file_id, 2048);
+
+        let main_packet = crate::packets::MainPacket {
+            length: 92,
+            md5: Md5Hash::new([0; 16]),
+            set_id: crate::domain::RecoverySetId::new([1; 16]),
+            slice_size: 1024,
+            file_count: 1,
+            file_ids: vec![file_id],
+            non_recovery_file_ids: vec![],
+        };
+
+        let packets = vec![
+            crate::Packet::Main(main_packet),
+            crate::Packet::FileDescription(file_desc),
+        ];
+
+        let engine = GlobalVerificationEngine::from_packets(&packets, base_path).unwrap();
+        let reporter = crate::reporters::ConsoleVerificationReporter::new();
+        let results = engine.verify_recovery_set(&reporter, false);
+
+        // Both blocks will be found but file should be Corrupted because they're out of order
+        assert_eq!(results.files[0].blocks_available, 2);
+        assert_eq!(
+            results.files[0].status,
+            FileStatus::Corrupted,
+            "File should be Corrupted when blocks are found out of sequence"
+        );
+    }
+
+    #[test]
+    #[ignore = "Not implemented: file hash verification"]
+    fn test_file_hash_mismatch_should_be_corrupted() {
+        // Reference: par2cmdline-turbo/src/par2repairer.cpp:1851-1863
+        // Even if all blocks match, if hashfull or hash16k doesn't match the
+        // FileDescriptionPacket, it should be marked as Corrupted.
+
+        use std::fs::File;
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_path = temp_dir.path();
+
+        let file_path = base_path.join("test.txt");
+        let mut file = File::create(&file_path).unwrap();
+        file.write_all(&[0x42; 1024]).unwrap();
+        file.write_all(&[0xFF; 512]).unwrap(); // Extra data that breaks the file hash
+        file.flush().unwrap();
+        drop(file);
+
+        let file_id = FileId::new([3; 16]);
+        // File desc expects 1024 bytes, not 1536
+        let file_desc = create_test_file_desc(file_id, 1024);
+
+        let main_packet = crate::packets::MainPacket {
+            length: 92,
+            md5: Md5Hash::new([0; 16]),
+            set_id: crate::domain::RecoverySetId::new([1; 16]),
+            slice_size: 1024,
+            file_count: 1,
+            file_ids: vec![file_id],
+            non_recovery_file_ids: vec![],
+        };
+
+        let packets = vec![
+            crate::Packet::Main(main_packet),
+            crate::Packet::FileDescription(file_desc),
+        ];
+
+        let engine = GlobalVerificationEngine::from_packets(&packets, base_path).unwrap();
+        let reporter = crate::reporters::ConsoleVerificationReporter::new();
+        let results = engine.verify_recovery_set(&reporter, false);
+
+        // Block will be found but file should be Corrupted due to hash/size mismatch
+        assert_eq!(results.files[0].blocks_available, 1);
+        assert_eq!(
+            results.files[0].status,
+            FileStatus::Corrupted,
+            "File should be Corrupted when file hash doesn't match even if blocks do"
+        );
+    }
 }
