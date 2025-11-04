@@ -496,7 +496,7 @@ impl GlobalVerificationEngine {
         let bytes_to_keep = state.bytes_in_buffer.bytes_after_slide(block_size);
 
         // Slide buffer contents
-        buffer.copy_within(block_size.as_usize()..state.bytes_in_buffer.as_usize(), 0);
+        buffer.copy_within(state.bytes_in_buffer.slide_range(block_size), 0);
 
         // Read more data
         let bytes_read = file.read(&mut buffer[bytes_to_keep..]).map_err(|_| ())?;

@@ -78,6 +78,11 @@ impl BufferSize {
         self.0.saturating_sub(block_size.as_usize())
     }
 
+    /// Get the range to slide buffer contents when moving forward by one block
+    pub fn slide_range(&self, block_size: BlockSize) -> std::ops::Range<usize> {
+        block_size.as_usize()..self.0
+    }
+
     /// Create new buffer size from kept bytes plus newly read bytes
     pub fn from_slide(bytes_kept: usize, bytes_read: usize) -> Self {
         Self(bytes_kept + bytes_read)
