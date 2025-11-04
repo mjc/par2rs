@@ -157,7 +157,14 @@ impl GlobalVerificationEngine {
         let file_results = self.create_file_results(&available_blocks);
         let block_results = self.create_block_verification_results(&available_blocks);
 
-        self.aggregate_results(file_results, block_results)
+        // TODO: Extract recovery blocks available from recovery packets
+        let recovery_blocks_available = 0;
+
+        VerificationResults::from_file_results(
+            file_results,
+            block_results,
+            recovery_blocks_available,
+        )
     }
 
     /// Scan all available files and build a global map of which blocks exist where
@@ -710,52 +717,6 @@ impl GlobalVerificationEngine {
 
         let block_size = BlockSize::new(self.block_table.block_size() as usize);
         file_length.total_blocks(block_size)
-    }
-
-    /// Aggregate results into final verification results
-    fn aggregate_results(
-        &self,
-        file_results: Vec<FileVerificationResult>,
-        block_results: Vec<BlockVerificationResult>,
-    ) -> VerificationResults {
-        let mut present_count = 0;
-        let mut renamed_count = 0;
-        let mut corrupted_count = 0;
-        let mut missing_count = 0;
-        let mut available_blocks = 0;
-        let mut missing_blocks = 0;
-        let mut total_blocks = 0;
-
-        for file_result in &file_results {
-            total_blocks += file_result.total_blocks;
-            available_blocks += file_result.blocks_available;
-            missing_blocks += file_result.damaged_blocks.len();
-
-            match file_result.status {
-                FileStatus::Present => present_count += 1,
-                FileStatus::Renamed => renamed_count += 1,
-                FileStatus::Corrupted => corrupted_count += 1,
-                FileStatus::Missing => missing_count += 1,
-            }
-        }
-
-        // Count recovery blocks (would need to be passed in or calculated)
-        let recovery_blocks_available = 0; // TODO: Extract from recovery packets
-
-        VerificationResults {
-            files: file_results,
-            blocks: block_results,
-            present_file_count: present_count,
-            renamed_file_count: renamed_count,
-            corrupted_file_count: corrupted_count,
-            missing_file_count: missing_count,
-            available_block_count: available_blocks,
-            missing_block_count: missing_blocks,
-            total_block_count: total_blocks,
-            recovery_blocks_available,
-            repair_possible: recovery_blocks_available >= missing_blocks,
-            blocks_needed_for_repair: missing_blocks,
-        }
     }
 }
 

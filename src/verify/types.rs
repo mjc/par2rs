@@ -280,6 +280,52 @@ pub struct VerificationResults {
     pub blocks_needed_for_repair: usize,
 }
 
+impl VerificationResults {
+    /// Create verification results by aggregating file and block results
+    /// Reference: par2cmdline-turbo/src/par2repairer.cpp:1853-1863 (post-scan validation)
+    pub fn from_file_results(
+        file_results: Vec<FileVerificationResult>,
+        block_results: Vec<BlockVerificationResult>,
+        recovery_blocks_available: usize,
+    ) -> Self {
+        let mut present_count = 0;
+        let mut renamed_count = 0;
+        let mut corrupted_count = 0;
+        let mut missing_count = 0;
+        let mut available_blocks = 0;
+        let mut missing_blocks = 0;
+        let mut total_blocks = 0;
+
+        for file_result in &file_results {
+            total_blocks += file_result.total_blocks;
+            available_blocks += file_result.blocks_available;
+            missing_blocks += file_result.damaged_blocks.len();
+
+            match file_result.status {
+                FileStatus::Present => present_count += 1,
+                FileStatus::Renamed => renamed_count += 1,
+                FileStatus::Corrupted => corrupted_count += 1,
+                FileStatus::Missing => missing_count += 1,
+            }
+        }
+
+        Self {
+            files: file_results,
+            blocks: block_results,
+            present_file_count: present_count,
+            renamed_file_count: renamed_count,
+            corrupted_file_count: corrupted_count,
+            missing_file_count: missing_count,
+            available_block_count: available_blocks,
+            missing_block_count: missing_blocks,
+            total_block_count: total_blocks,
+            recovery_blocks_available,
+            repair_possible: recovery_blocks_available >= missing_blocks,
+            blocks_needed_for_repair: missing_blocks,
+        }
+    }
+}
+
 impl fmt::Display for VerificationResults {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Verification Results:")?;
