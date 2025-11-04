@@ -20,6 +20,38 @@ use smallvec::SmallVec;
 use std::path::Path;
 use std::sync::Mutex;
 
+/// Result of attempting to match a block against the global table
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockMatchResult {
+    /// Block matched and was inserted into the local map
+    Matched,
+    /// Block did not match any entry in the global table
+    NotMatched,
+}
+
+impl BlockMatchResult {
+    pub fn is_match(self) -> bool {
+        matches!(self, BlockMatchResult::Matched)
+    }
+
+    pub fn from_bool(matched: bool) -> Self {
+        if matched {
+            BlockMatchResult::Matched
+        } else {
+            BlockMatchResult::NotMatched
+        }
+    }
+}
+
+/// Result of attempting to slide the buffer window
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferSlideResult {
+    /// Successfully slid the window and read more data
+    Success,
+    /// Cannot slide - buffer doesn't have enough data
+    CannotSlide,
+}
+
 /// Local block map type: maps (MD5, CRC32) -> list of (FileId, block_number)
 /// Uses SmallVec to avoid heap allocation for 1-2 entries (common case)
 type LocalBlockMap = HashMap<(Md5Hash, Crc32Value), SmallVec<[(FileId, u32); 2]>>;
@@ -300,10 +332,10 @@ impl GlobalVerificationEngine {
                     let md5_hash = crate::checksum::compute_md5_only(block_data);
                     self.insert_matching_blocks(md5_hash, crc32, &mut local_block_map)
                 } else {
-                    false
+                    BlockMatchResult::NotMatched
                 };
 
-                if found_match {
+                if found_match.is_match() {
                     // Skip ahead by full block (blocks don't overlap in PAR2)
                     state.skip_block(block_size);
 
@@ -338,12 +370,12 @@ impl GlobalVerificationEngine {
 
             // Slide window forward and read more data
             match Self::slide_buffer_window(&mut file, &mut buffer, &mut state, block_size) {
-                Ok(true) => {
+                Ok(BufferSlideResult::Success) => {
                     // Successfully slid window, report progress
                     Self::report_progress(reporter_lock, &state, file_size);
                 }
-                Ok(false) => break, // Can't slide (not enough data)
-                Err(_) => break,    // Read error
+                Ok(BufferSlideResult::CannotSlide) => break,
+                Err(_) => break, // Read error
             }
         }
 
@@ -354,13 +386,13 @@ impl GlobalVerificationEngine {
     }
 
     /// Insert all matching blocks from the global table into the local block map
-    /// Returns true if at least one match was found
+    /// Returns whether at least one match was found
     fn insert_matching_blocks(
         &self,
         md5_hash: Md5Hash,
         crc32: Crc32Value,
         local_block_map: &mut LocalBlockMap,
-    ) -> bool {
+    ) -> BlockMatchResult {
         if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
             let mut found_any = false;
 
@@ -377,20 +409,19 @@ impl GlobalVerificationEngine {
                 }
             }
 
-            found_any
+            BlockMatchResult::from_bool(found_any)
         } else {
-            false
+            BlockMatchResult::NotMatched
         }
     }
 
     /// Try to match a block of data against the global block table
     /// If found, insert all matching blocks into the local map
-    /// Returns true if the block matched
     fn try_match_and_insert_block(
         &self,
         block_data: &[u8],
         local_block_map: &mut LocalBlockMap,
-    ) -> bool {
+    ) -> BlockMatchResult {
         use crate::checksum::{compute_crc32, compute_md5_only};
 
         let crc32 = compute_crc32(block_data);
@@ -400,18 +431,17 @@ impl GlobalVerificationEngine {
             let md5_hash = compute_md5_only(block_data);
             self.insert_matching_blocks(md5_hash, crc32, local_block_map)
         } else {
-            false
+            BlockMatchResult::NotMatched
         }
     }
 
     /// Try to match a partial block (with padding) against the global block table
-    /// Returns true if the block matched
     fn try_match_and_insert_partial_block(
         &self,
         partial_data: &[u8],
         block_size: usize,
         local_block_map: &mut LocalBlockMap,
-    ) -> bool {
+    ) -> BlockMatchResult {
         use crate::checksum::compute_block_checksums_padded;
 
         let (md5_hash, crc32) = compute_block_checksums_padded(partial_data, block_size);
@@ -455,15 +485,14 @@ impl GlobalVerificationEngine {
     }
 
     /// Slide the buffer window forward and read more data from the file
-    /// Returns Ok(true) if successful, Ok(false) if can't slide, Err if read error
     fn slide_buffer_window<F: std::io::Read>(
         file: &mut F,
         buffer: &mut [u8],
         state: &mut crate::verify::scanner_state::ScannerState,
         block_size: crate::verify::types::BlockSize,
-    ) -> Result<bool, ()> {
+    ) -> Result<BufferSlideResult, ()> {
         if !state.can_slide_window(block_size) {
-            return Ok(false);
+            return Ok(BufferSlideResult::CannotSlide);
         }
 
         let block_sz = block_size.as_usize();
@@ -480,7 +509,7 @@ impl GlobalVerificationEngine {
         let new_buffer_size = crate::verify::types::BufferSize::new(bytes_to_keep + bytes_read);
         state.slide_window(block_size, new_buffer_size);
 
-        Ok(true)
+        Ok(BufferSlideResult::Success)
     }
 
     /// Report scanning progress to the reporter
@@ -830,7 +859,11 @@ mod tests {
             Crc32Value::new(0x12345678),
             &mut local_map,
         );
-        assert!(found, "Should find matching block");
+        assert_eq!(
+            found,
+            BlockMatchResult::Matched,
+            "Should find matching block"
+        );
         assert_eq!(local_map.len(), 1, "Should have one entry in local map");
 
         // Test non-matching MD5
@@ -840,7 +873,11 @@ mod tests {
             Crc32Value::new(0x12345678),
             &mut local_map2,
         );
-        assert!(!found, "Should not find block with wrong MD5");
+        assert_eq!(
+            found,
+            BlockMatchResult::NotMatched,
+            "Should not find block with wrong MD5"
+        );
         assert_eq!(local_map2.len(), 0, "Should have no entries");
 
         // Test non-matching CRC32
@@ -850,7 +887,11 @@ mod tests {
             Crc32Value::new(0x99999999),
             &mut local_map3,
         );
-        assert!(!found, "Should not find block with wrong CRC32");
+        assert_eq!(
+            found,
+            BlockMatchResult::NotMatched,
+            "Should not find block with wrong CRC32"
+        );
         assert_eq!(local_map3.len(), 0, "Should have no entries");
     }
 
@@ -880,14 +921,22 @@ mod tests {
 
         // Test matching
         let found = engine.try_match_and_insert_block(&block_data, &mut local_map);
-        assert!(found, "Should find matching block");
+        assert_eq!(
+            found,
+            BlockMatchResult::Matched,
+            "Should find matching block"
+        );
         assert_eq!(local_map.len(), 1, "Should have one entry");
 
         // Test non-matching data
         let wrong_data = vec![0x99; 1024];
         let mut local_map2 = HashMap::default();
         let found = engine.try_match_and_insert_block(&wrong_data, &mut local_map2);
-        assert!(!found, "Should not find non-matching block");
+        assert_eq!(
+            found,
+            BlockMatchResult::NotMatched,
+            "Should not find non-matching block"
+        );
         assert_eq!(local_map2.len(), 0, "Should have no entries");
     }
 
@@ -919,14 +968,22 @@ mod tests {
 
         // Test matching partial block
         let found = engine.try_match_and_insert_partial_block(&partial_data, 1024, &mut local_map);
-        assert!(found, "Should find matching partial block");
+        assert_eq!(
+            found,
+            BlockMatchResult::Matched,
+            "Should find matching partial block"
+        );
         assert_eq!(local_map.len(), 1, "Should have one entry");
 
         // Test non-matching partial data
         let wrong_data = vec![0x99; 500];
         let mut local_map2 = HashMap::default();
         let found = engine.try_match_and_insert_partial_block(&wrong_data, 1024, &mut local_map2);
-        assert!(!found, "Should not find non-matching partial block");
+        assert_eq!(
+            found,
+            BlockMatchResult::NotMatched,
+            "Should not find non-matching partial block"
+        );
         assert_eq!(local_map2.len(), 0, "Should have no entries");
     }
 
@@ -1179,7 +1236,11 @@ mod tests {
         );
 
         assert!(result.is_ok(), "Slide should succeed");
-        assert!(result.unwrap(), "Should return true on successful slide");
+        assert_eq!(
+            result.unwrap(),
+            BufferSlideResult::Success,
+            "Should return Success on successful slide"
+        );
 
         // After sliding, should have 1 old block + 1 new block
         assert_eq!(
@@ -1204,7 +1265,11 @@ mod tests {
         );
 
         assert!(result2.is_ok(), "Second slide should succeed");
-        assert!(result2.unwrap(), "Should return true on second slide");
+        assert_eq!(
+            result2.unwrap(),
+            BufferSlideResult::Success,
+            "Should return Success on second slide"
+        );
 
         assert_eq!(
             state.bytes_processed.as_u64(),
@@ -1249,7 +1314,11 @@ mod tests {
         );
 
         assert!(result.is_ok(), "Should not error");
-        assert!(!result.unwrap(), "Should return false when can't slide");
+        assert_eq!(
+            result.unwrap(),
+            BufferSlideResult::CannotSlide,
+            "Should return CannotSlide when can't slide"
+        );
     }
 
     #[test]
