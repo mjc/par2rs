@@ -368,11 +368,6 @@ impl ScanBuffer {
         Self(vec![0u8; capacity])
     }
 
-    /// Get a mutable reference to the underlying buffer for reading into
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        &mut self.0
-    }
-
     /// Get a block at the given position
     pub fn block_at(&self, pos: BufferPosition, block_size: BlockSize) -> &[u8] {
         let range = pos.block_range(block_size);
@@ -419,5 +414,37 @@ impl ScanBuffer {
     pub fn slide_window(&mut self, size: BufferSize, block_size: BlockSize) {
         let range = size.slide_range(block_size);
         self.0.copy_within(range, 0);
+    }
+
+    /// Read data from a reader into the buffer
+    pub fn read_from<R: std::io::Read>(&mut self, reader: &mut R) -> std::io::Result<usize> {
+        reader.read(&mut self.0)
+    }
+
+    /// Read data from a reader into a specific slice of the buffer
+    pub fn read_into_slice<R: std::io::Read>(
+        &mut self,
+        reader: &mut R,
+        start: usize,
+    ) -> std::io::Result<usize> {
+        reader.read(&mut self.0[start..])
+    }
+
+    /// Fill buffer with a value (test-only utility)
+    #[cfg(test)]
+    pub fn fill(&mut self, value: u8) {
+        self.0.fill(value);
+    }
+
+    /// Get mutable iterator over buffer contents (test-only utility)
+    #[cfg(test)]
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, u8> {
+        self.0.iter_mut()
+    }
+
+    /// Get a slice at a specific range (test-only for CRC computation)
+    #[cfg(test)]
+    pub fn slice(&self, range: std::ops::Range<usize>) -> &[u8] {
+        &self.0[range]
     }
 }

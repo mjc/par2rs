@@ -266,7 +266,6 @@ impl GlobalVerificationEngine {
         use crate::verify::scanner_state::ScannerState;
         use crate::verify::types::{BlockSize, ScanBuffer};
         use std::fs::File;
-        use std::io::Read;
 
         let mut local_block_map = HashMap::default();
 
@@ -283,7 +282,7 @@ impl GlobalVerificationEngine {
         let rolling_table = RollingCrcTable::new(block_size.as_usize());
 
         // Initial fill of the buffer
-        let bytes_read = match file.read(buffer.as_mut_slice()) {
+        let bytes_read = match buffer.read_from(&mut file) {
             Ok(n) => n,
             Err(_) => return local_block_map,
         };
@@ -494,8 +493,8 @@ impl GlobalVerificationEngine {
         buffer.slide_window(state.bytes_in_buffer, block_size);
 
         // Read more data
-        let bytes_read = file
-            .read(&mut buffer.as_mut_slice()[bytes_to_keep..])
+        let bytes_read = buffer
+            .read_into_slice(file, bytes_to_keep)
             .map_err(|_| ())?;
 
         // Update state
@@ -1060,7 +1059,7 @@ mod tests {
 
         let block_size = BlockSize::new(1024);
         let mut buffer = ScanBuffer::with_capacity(2048);
-        buffer.as_mut_slice().fill(0x42u8);
+        buffer.fill(0x42u8);
 
         // Create state at position 0
         let mut state = ScannerState::new(2048);
@@ -1074,7 +1073,7 @@ mod tests {
 
         // Should have computed CRC for block starting at position 1024
         assert!(state.rolling_crc.is_some(), "Should have rolling CRC");
-        let expected_crc = compute_crc32(&buffer.as_mut_slice()[1024..2048]);
+        let expected_crc = compute_crc32(buffer.slice(1024..2048));
         assert_eq!(
             state.rolling_crc.unwrap(),
             expected_crc,
@@ -1107,7 +1106,7 @@ mod tests {
 
         // Create a buffer with known pattern
         let mut buffer = ScanBuffer::with_capacity(2048);
-        for (i, item) in buffer.as_mut_slice().iter_mut().enumerate().take(2048) {
+        for (i, item) in buffer.iter_mut().enumerate().take(2048) {
             *item = (i % 256) as u8;
         }
 
@@ -1115,7 +1114,7 @@ mod tests {
         let mut state = ScannerState::new(2048);
 
         // Compute initial CRC for block at position 0
-        let initial_crc = compute_crc32(&buffer.as_mut_slice()[0..1024]);
+        let initial_crc = compute_crc32(buffer.slice(0..1024));
         state.set_rolling_crc(Some(initial_crc));
 
         // Advance one byte to position 1
@@ -1133,7 +1132,7 @@ mod tests {
         assert!(state.rolling_crc.is_some(), "Should have rolling CRC");
 
         // The rolled CRC should match a fresh computation at position 1
-        let expected_crc = compute_crc32(&buffer.as_mut_slice()[1..1025]);
+        let expected_crc = compute_crc32(buffer.slice(1..1025));
         assert_eq!(
             state.rolling_crc.unwrap(),
             expected_crc,
@@ -1190,17 +1189,17 @@ mod tests {
         let block_size = BlockSize::new(1024);
         let rolling_table = RollingCrcTable::new(1024);
         let mut buffer = ScanBuffer::with_capacity(3072);
-        buffer.as_mut_slice().fill(0x42u8);
+        buffer.fill(0x42u8);
 
         // Method 1: Skip forward and recompute
         let mut state1 = ScannerState::new(3072);
-        state1.set_rolling_crc(Some(compute_crc32(&buffer.as_mut_slice()[0..1024])));
+        state1.set_rolling_crc(Some(compute_crc32(buffer.slice(0..1024))));
         state1.skip_block(block_size); // Now at position 1024
         GlobalVerificationEngine::update_crc_after_skip(&buffer, &mut state1, block_size);
 
         // Method 2: Advance byte by byte using rolling CRC
         let mut state2 = ScannerState::new(3072);
-        state2.set_rolling_crc(Some(compute_crc32(&buffer.as_mut_slice()[0..1024])));
+        state2.set_rolling_crc(Some(compute_crc32(buffer.slice(0..1024))));
 
         for _ in 0..1024 {
             state2.advance_one_byte();
@@ -1219,7 +1218,7 @@ mod tests {
         );
 
         // And both should match manual computation
-        let expected_crc = compute_crc32(&buffer.as_mut_slice()[1024..2048]);
+        let expected_crc = compute_crc32(buffer.slice(1024..2048));
         assert_eq!(
             state1.rolling_crc.unwrap(),
             expected_crc,
@@ -1231,7 +1230,7 @@ mod tests {
     fn test_slide_buffer_window() {
         use crate::verify::scanner_state::ScannerState;
         use crate::verify::types::{BlockSize, ScanBuffer};
-        use std::io::{Cursor, Read};
+        use std::io::Cursor;
 
         let block_size = BlockSize::new(1024);
 
@@ -1243,7 +1242,7 @@ mod tests {
         let mut buffer = ScanBuffer::with_capacity(2048);
 
         // Initial read
-        let bytes_read = file.read(buffer.as_mut_slice()).unwrap();
+        let bytes_read = buffer.read_from(&mut file).unwrap();
         let mut state = ScannerState::new(bytes_read);
 
         assert_eq!(
@@ -1318,7 +1317,7 @@ mod tests {
     fn test_slide_buffer_window_cant_slide() {
         use crate::verify::scanner_state::ScannerState;
         use crate::verify::types::{BlockSize, ScanBuffer};
-        use std::io::{Cursor, Read};
+        use std::io::Cursor;
 
         let block_size = BlockSize::new(1024);
 
@@ -1327,7 +1326,7 @@ mod tests {
         let mut file = Cursor::new(file_data);
 
         let mut buffer = ScanBuffer::with_capacity(2048);
-        let bytes_read = file.read(buffer.as_mut_slice()).unwrap();
+        let bytes_read = buffer.read_from(&mut file).unwrap();
         let mut state = ScannerState::new(bytes_read);
 
         // Can't slide because buffer has less than 1 block
@@ -1539,7 +1538,7 @@ mod tests {
 
         // Create a buffer with the matching block
         let mut buffer = ScanBuffer::with_capacity(2048);
-        buffer.as_mut_slice().fill(0x42);
+        buffer.fill(0x42);
         let block_size = BlockSize::new(1024);
         let state = ScannerState::new(2048);
 
@@ -1552,7 +1551,7 @@ mod tests {
 
         // Test: non-matching block should return AdvanceOneByte
         let mut wrong_buffer = ScanBuffer::with_capacity(2048);
-        wrong_buffer.as_mut_slice().fill(0x99);
+        wrong_buffer.fill(0x99);
         let mut local_map2 = HashMap::default();
         let action2 =
             engine.scan_block_position(&wrong_buffer, &state, block_size, &mut local_map2);
