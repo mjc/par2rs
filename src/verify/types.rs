@@ -33,16 +33,6 @@ impl BufferPosition {
     pub fn block_range(&self, block_size: BlockSize) -> std::ops::Range<usize> {
         self.0..self.0 + block_size.as_usize()
     }
-
-    /// Get the byte at the position before this one (for rolling CRC)
-    pub fn byte_before(&self, buffer: &[u8]) -> u8 {
-        buffer[self.0 - 1]
-    }
-
-    /// Get the byte at position + offset (for rolling CRC window)
-    pub fn byte_at_offset(&self, buffer: &[u8], offset: usize) -> u8 {
-        buffer[self.0 + offset]
-    }
 }
 /// Size of data buffer in bytes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,33 +76,6 @@ impl BufferSize {
     /// Create new buffer size from kept bytes plus newly read bytes
     pub fn from_slide(bytes_kept: usize, bytes_read: usize) -> Self {
         Self(bytes_kept + bytes_read)
-    }
-
-    /// Get a slice from a position to the end of the buffer
-    pub fn slice_from<'a>(&self, pos: BufferPosition, buffer: &'a [u8]) -> &'a [u8] {
-        &buffer[pos.as_usize()..self.0]
-    }
-
-    /// Get a slice from start for a given block size
-    pub fn slice_first_block<'a>(&self, block_size: BlockSize, buffer: &'a [u8]) -> &'a [u8] {
-        &buffer[0..block_size.as_usize()]
-    }
-
-    /// Try to get an aligned block at the given index (0 or 1)
-    /// Returns Some(slice) if the block fits, None otherwise
-    pub fn try_aligned_block<'a>(
-        &self,
-        block_idx: usize,
-        block_size: BlockSize,
-        buffer: &'a [u8],
-    ) -> Option<&'a [u8]> {
-        let start = block_idx * block_size.as_usize();
-        let end = start + block_size.as_usize();
-        if end <= self.0 {
-            Some(&buffer[start..end])
-        } else {
-            None
-        }
     }
 }
 
@@ -394,4 +357,67 @@ pub struct FileVerificationResult {
     pub blocks_available: usize,
     pub total_blocks: usize,
     pub damaged_blocks: Vec<u32>,
+}
+
+/// Buffer for scanning file data
+pub struct ScanBuffer(Vec<u8>);
+
+impl ScanBuffer {
+    /// Create a new scan buffer with the given capacity
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self(vec![0u8; capacity])
+    }
+
+    /// Get a mutable reference to the underlying buffer for reading into
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+
+    /// Get a block at the given position
+    pub fn block_at(&self, pos: BufferPosition, block_size: BlockSize) -> &[u8] {
+        let range = pos.block_range(block_size);
+        &self.0[range]
+    }
+
+    /// Get the first block from the buffer
+    pub fn first_block(&self, block_size: BlockSize) -> &[u8] {
+        &self.0[0..block_size.as_usize()]
+    }
+
+    /// Get a slice from position to the end
+    pub fn slice_from(&self, pos: BufferPosition, size: BufferSize) -> &[u8] {
+        &self.0[pos.as_usize()..size.as_usize()]
+    }
+
+    /// Get aligned block at index (0 or 1)
+    pub fn try_aligned_block(
+        &self,
+        block_idx: usize,
+        block_size: BlockSize,
+        size: BufferSize,
+    ) -> Option<&[u8]> {
+        let start = block_idx * block_size.as_usize();
+        let end = start + block_size.as_usize();
+        if end <= size.as_usize() {
+            Some(&self.0[start..end])
+        } else {
+            None
+        }
+    }
+
+    /// Get byte before position (for rolling CRC)
+    pub fn byte_before(&self, pos: BufferPosition) -> u8 {
+        self.0[pos.as_usize() - 1]
+    }
+
+    /// Get byte at position + offset (for rolling CRC)
+    pub fn byte_at_offset(&self, pos: BufferPosition, offset: usize) -> u8 {
+        self.0[pos.as_usize() + offset]
+    }
+
+    /// Slide buffer window forward by one block
+    pub fn slide_window(&mut self, size: BufferSize, block_size: BlockSize) {
+        let range = size.slide_range(block_size);
+        self.0.copy_within(range, 0);
+    }
 }

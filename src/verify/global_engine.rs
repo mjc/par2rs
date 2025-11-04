@@ -264,7 +264,7 @@ impl GlobalVerificationEngine {
         use crate::checksum::compute_crc32;
         use crate::checksum::rolling_crc::RollingCrcTable;
         use crate::verify::scanner_state::ScannerState;
-        use crate::verify::types::BlockSize;
+        use crate::verify::types::{BlockSize, ScanBuffer};
         use std::fs::File;
         use std::io::Read;
 
@@ -277,13 +277,13 @@ impl GlobalVerificationEngine {
 
         let block_size = BlockSize::new(self.block_table.block_size() as usize);
         let buffer_capacity = block_size.doubled();
-        let mut buffer = vec![0u8; buffer_capacity];
+        let mut buffer = ScanBuffer::with_capacity(buffer_capacity);
 
         // Create rolling CRC table for efficient scanning
         let rolling_table = RollingCrcTable::new(block_size.as_usize());
 
         // Initial fill of the buffer
-        let bytes_read = match file.read(&mut buffer) {
+        let bytes_read = match file.read(buffer.as_mut_slice()) {
             Ok(n) => n,
             Err(_) => return local_block_map,
         };
@@ -292,12 +292,12 @@ impl GlobalVerificationEngine {
         let mut state = ScannerState::new(bytes_read);
 
         // Helper: Update rolling CRC after skipping forward (recompute from scratch)
-        let update_crc_after_skip = |buffer: &[u8], state: &mut ScannerState| {
+        let update_crc_after_skip = |buffer: &ScanBuffer, state: &mut ScannerState| {
             Self::update_crc_after_skip(buffer, state, block_size);
         };
 
         // Helper: Slide rolling CRC forward by one byte
-        let slide_crc_one_byte = |buffer: &[u8], state: &mut ScannerState| {
+        let slide_crc_one_byte = |buffer: &ScanBuffer, state: &mut ScannerState| {
             Self::slide_crc_one_byte(buffer, state, block_size, &rolling_table);
         };
 
@@ -319,9 +319,7 @@ impl GlobalVerificationEngine {
 
             // Initialize rolling CRC with first block if possible
             let initial_crc = if state.bytes_in_buffer.has_at_least(block_size) {
-                Some(compute_crc32(
-                    state.bytes_in_buffer.slice_first_block(block_size, &buffer),
-                ))
+                Some(compute_crc32(buffer.first_block(block_size)))
             } else {
                 None
             };
@@ -351,7 +349,7 @@ impl GlobalVerificationEngine {
             // Handle partial block at end
             let remainder_size = state.remainder_size(block_size);
             if remainder_size > 0 {
-                let partial_data = state.bytes_in_buffer.slice_from(state.scan_pos, &buffer);
+                let partial_data = buffer.slice_from(state.scan_pos, state.bytes_in_buffer);
 
                 self.try_match_and_insert_partial_block(
                     partial_data,
@@ -446,15 +444,14 @@ impl GlobalVerificationEngine {
 
     /// Update rolling CRC after skipping forward (recompute from scratch at new position)
     fn update_crc_after_skip(
-        buffer: &[u8],
+        buffer: &crate::verify::types::ScanBuffer,
         state: &mut crate::verify::scanner_state::ScannerState,
         block_size: crate::verify::types::BlockSize,
     ) {
         use crate::checksum::compute_crc32;
 
         let new_crc = if state.can_fit_block(block_size) {
-            let block_range = state.scan_pos.block_range(block_size);
-            Some(compute_crc32(&buffer[block_range]))
+            Some(compute_crc32(buffer.block_at(state.scan_pos, block_size)))
         } else {
             None
         };
@@ -463,17 +460,15 @@ impl GlobalVerificationEngine {
 
     /// Slide rolling CRC forward by one byte
     fn slide_crc_one_byte(
-        buffer: &[u8],
+        buffer: &crate::verify::types::ScanBuffer,
         state: &mut crate::verify::scanner_state::ScannerState,
         block_size: crate::verify::types::BlockSize,
         rolling_table: &crate::checksum::rolling_crc::RollingCrcTable,
     ) {
         if state.can_fit_block(block_size) {
             if let Some(crc) = state.rolling_crc {
-                let byte_out = state.scan_pos.byte_before(buffer);
-                let byte_in = state
-                    .scan_pos
-                    .byte_at_offset(buffer, block_size.last_byte_offset());
+                let byte_out = buffer.byte_before(state.scan_pos);
+                let byte_in = buffer.byte_at_offset(state.scan_pos, block_size.last_byte_offset());
                 let new_crc = Crc32Value::new(rolling_table.slide(crc.as_u32(), byte_in, byte_out));
                 state.update_rolling_crc(new_crc);
             }
@@ -483,7 +478,7 @@ impl GlobalVerificationEngine {
     /// Slide the buffer window forward and read more data from the file
     fn slide_buffer_window<F: std::io::Read>(
         file: &mut F,
-        buffer: &mut [u8],
+        buffer: &mut crate::verify::types::ScanBuffer,
         state: &mut crate::verify::scanner_state::ScannerState,
         block_size: crate::verify::types::BlockSize,
     ) -> Result<BufferSlideResult, ()> {
@@ -496,10 +491,12 @@ impl GlobalVerificationEngine {
         let bytes_to_keep = state.bytes_in_buffer.bytes_after_slide(block_size);
 
         // Slide buffer contents
-        buffer.copy_within(state.bytes_in_buffer.slide_range(block_size), 0);
+        buffer.slide_window(state.bytes_in_buffer, block_size);
 
         // Read more data
-        let bytes_read = file.read(&mut buffer[bytes_to_keep..]).map_err(|_| ())?;
+        let bytes_read = file
+            .read(&mut buffer.as_mut_slice()[bytes_to_keep..])
+            .map_err(|_| ())?;
 
         // Update state
         let new_buffer_size = BufferSize::from_slide(bytes_to_keep, bytes_read);
@@ -524,15 +521,14 @@ impl GlobalVerificationEngine {
     /// Returns SkipBlock if match found, AdvanceOneByte if no match
     fn scan_block_position(
         &self,
-        buffer: &[u8],
+        buffer: &crate::verify::types::ScanBuffer,
         state: &crate::verify::scanner_state::ScannerState,
         block_size: crate::verify::types::BlockSize,
         local_block_map: &mut LocalBlockMap,
     ) -> ScanAction {
         use crate::checksum::compute_crc32;
 
-        let block_range = state.scan_pos.block_range(block_size);
-        let block_data = &buffer[block_range];
+        let block_data = buffer.block_at(state.scan_pos, block_size);
 
         // Use rolling CRC if we have it, otherwise compute fresh
         let crc32 = state
@@ -628,14 +624,14 @@ impl GlobalVerificationEngine {
     /// Try to find blocks at aligned positions (optimization for well-formed PAR2 files)
     fn try_aligned_blocks(
         &self,
-        buffer: &[u8],
+        buffer: &crate::verify::types::ScanBuffer,
         local_block_map: &mut LocalBlockMap,
         block_size: crate::verify::types::BlockSize,
         bytes_in_buffer: crate::verify::types::BufferSize,
     ) {
         for block_idx in 0..2 {
             if let Some(block_data) =
-                bytes_in_buffer.try_aligned_block(block_idx, block_size, buffer)
+                buffer.try_aligned_block(block_idx, block_size, bytes_in_buffer)
             {
                 self.try_match_and_insert_block(block_data, local_block_map);
             }
@@ -1060,10 +1056,11 @@ mod tests {
     fn test_update_crc_after_skip() {
         use crate::checksum::compute_crc32;
         use crate::verify::scanner_state::ScannerState;
-        use crate::verify::types::BlockSize;
+        use crate::verify::types::{BlockSize, ScanBuffer};
 
         let block_size = BlockSize::new(1024);
-        let buffer = vec![0x42u8; 2048]; // Two blocks
+        let mut buffer = ScanBuffer::with_capacity(2048);
+        buffer.as_mut_slice().fill(0x42u8);
 
         // Create state at position 0
         let mut state = ScannerState::new(2048);
@@ -1077,7 +1074,7 @@ mod tests {
 
         // Should have computed CRC for block starting at position 1024
         assert!(state.rolling_crc.is_some(), "Should have rolling CRC");
-        let expected_crc = compute_crc32(&buffer[1024..2048]);
+        let expected_crc = compute_crc32(&buffer.as_mut_slice()[1024..2048]);
         assert_eq!(
             state.rolling_crc.unwrap(),
             expected_crc,
@@ -1103,14 +1100,14 @@ mod tests {
         use crate::checksum::compute_crc32;
         use crate::checksum::rolling_crc::RollingCrcTable;
         use crate::verify::scanner_state::ScannerState;
-        use crate::verify::types::BlockSize;
+        use crate::verify::types::{BlockSize, ScanBuffer};
 
         let block_size = BlockSize::new(1024);
         let rolling_table = RollingCrcTable::new(1024);
 
         // Create a buffer with known pattern
-        let mut buffer = vec![0x00u8; 2048];
-        for (i, item) in buffer.iter_mut().enumerate().take(2048) {
+        let mut buffer = ScanBuffer::with_capacity(2048);
+        for (i, item) in buffer.as_mut_slice().iter_mut().enumerate().take(2048) {
             *item = (i % 256) as u8;
         }
 
@@ -1118,7 +1115,7 @@ mod tests {
         let mut state = ScannerState::new(2048);
 
         // Compute initial CRC for block at position 0
-        let initial_crc = compute_crc32(&buffer[0..1024]);
+        let initial_crc = compute_crc32(&buffer.as_mut_slice()[0..1024]);
         state.set_rolling_crc(Some(initial_crc));
 
         // Advance one byte to position 1
@@ -1136,7 +1133,7 @@ mod tests {
         assert!(state.rolling_crc.is_some(), "Should have rolling CRC");
 
         // The rolled CRC should match a fresh computation at position 1
-        let expected_crc = compute_crc32(&buffer[1..1025]);
+        let expected_crc = compute_crc32(&buffer.as_mut_slice()[1..1025]);
         assert_eq!(
             state.rolling_crc.unwrap(),
             expected_crc,
@@ -1188,21 +1185,22 @@ mod tests {
         use crate::checksum::compute_crc32;
         use crate::checksum::rolling_crc::RollingCrcTable;
         use crate::verify::scanner_state::ScannerState;
-        use crate::verify::types::BlockSize;
+        use crate::verify::types::{BlockSize, ScanBuffer};
 
         let block_size = BlockSize::new(1024);
         let rolling_table = RollingCrcTable::new(1024);
-        let buffer = vec![0x42u8; 3072]; // Three blocks
+        let mut buffer = ScanBuffer::with_capacity(3072);
+        buffer.as_mut_slice().fill(0x42u8);
 
         // Method 1: Skip forward and recompute
         let mut state1 = ScannerState::new(3072);
-        state1.set_rolling_crc(Some(compute_crc32(&buffer[0..1024])));
+        state1.set_rolling_crc(Some(compute_crc32(&buffer.as_mut_slice()[0..1024])));
         state1.skip_block(block_size); // Now at position 1024
         GlobalVerificationEngine::update_crc_after_skip(&buffer, &mut state1, block_size);
 
         // Method 2: Advance byte by byte using rolling CRC
         let mut state2 = ScannerState::new(3072);
-        state2.set_rolling_crc(Some(compute_crc32(&buffer[0..1024])));
+        state2.set_rolling_crc(Some(compute_crc32(&buffer.as_mut_slice()[0..1024])));
 
         for _ in 0..1024 {
             state2.advance_one_byte();
@@ -1221,7 +1219,7 @@ mod tests {
         );
 
         // And both should match manual computation
-        let expected_crc = compute_crc32(&buffer[1024..2048]);
+        let expected_crc = compute_crc32(&buffer.as_mut_slice()[1024..2048]);
         assert_eq!(
             state1.rolling_crc.unwrap(),
             expected_crc,
@@ -1232,7 +1230,7 @@ mod tests {
     #[test]
     fn test_slide_buffer_window() {
         use crate::verify::scanner_state::ScannerState;
-        use crate::verify::types::BlockSize;
+        use crate::verify::types::{BlockSize, ScanBuffer};
         use std::io::{Cursor, Read};
 
         let block_size = BlockSize::new(1024);
@@ -1242,10 +1240,10 @@ mod tests {
         let mut file = Cursor::new(file_data);
 
         // Create buffer that can hold 2 blocks
-        let mut buffer = vec![0u8; 2048];
+        let mut buffer = ScanBuffer::with_capacity(2048);
 
         // Initial read
-        let bytes_read = file.read(&mut buffer).unwrap();
+        let bytes_read = file.read(buffer.as_mut_slice()).unwrap();
         let mut state = ScannerState::new(bytes_read);
 
         assert_eq!(
@@ -1319,7 +1317,7 @@ mod tests {
     #[test]
     fn test_slide_buffer_window_cant_slide() {
         use crate::verify::scanner_state::ScannerState;
-        use crate::verify::types::BlockSize;
+        use crate::verify::types::{BlockSize, ScanBuffer};
         use std::io::{Cursor, Read};
 
         let block_size = BlockSize::new(1024);
@@ -1328,8 +1326,8 @@ mod tests {
         let file_data = vec![0x42u8; 512];
         let mut file = Cursor::new(file_data);
 
-        let mut buffer = vec![0u8; 2048];
-        let bytes_read = file.read(&mut buffer).unwrap();
+        let mut buffer = ScanBuffer::with_capacity(2048);
+        let bytes_read = file.read(buffer.as_mut_slice()).unwrap();
         let mut state = ScannerState::new(bytes_read);
 
         // Can't slide because buffer has less than 1 block
@@ -1520,7 +1518,7 @@ mod tests {
     fn test_scan_block_position() {
         use crate::verify::global_table::GlobalBlockTableBuilder;
         use crate::verify::scanner_state::ScannerState;
-        use crate::verify::types::BlockSize;
+        use crate::verify::types::{BlockSize, ScanBuffer};
 
         // Create a block table with one known block
         let block_data = vec![0x42; 1024];
@@ -1540,7 +1538,8 @@ mod tests {
         };
 
         // Create a buffer with the matching block
-        let buffer = vec![0x42; 2048];
+        let mut buffer = ScanBuffer::with_capacity(2048);
+        buffer.as_mut_slice().fill(0x42);
         let block_size = BlockSize::new(1024);
         let state = ScannerState::new(2048);
 
@@ -1552,7 +1551,8 @@ mod tests {
         assert_eq!(local_map.len(), 1, "Should have inserted the match");
 
         // Test: non-matching block should return AdvanceOneByte
-        let wrong_buffer = vec![0x99; 2048];
+        let mut wrong_buffer = ScanBuffer::with_capacity(2048);
+        wrong_buffer.as_mut_slice().fill(0x99);
         let mut local_map2 = HashMap::default();
         let action2 =
             engine.scan_block_position(&wrong_buffer, &state, block_size, &mut local_map2);
