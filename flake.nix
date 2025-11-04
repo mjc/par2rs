@@ -88,7 +88,7 @@
               openssl
               openssl.dev
               pkg-config
-              par2cmdline
+              par2cmdline-turbo
               xxd
               python3 # for copilot
               rust-analyzer
