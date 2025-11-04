@@ -420,6 +420,23 @@ impl ScanBuffer {
         reader.read(&mut self.0[start..])
     }
 
+    /// Slide window and read more data from a reader
+    /// Returns number of bytes read, or error
+    pub fn slide_and_read<R: std::io::Read>(
+        &mut self,
+        reader: &mut R,
+        bytes_in_buffer: BufferSize,
+        block_size: BlockSize,
+    ) -> std::io::Result<usize> {
+        let bytes_to_keep = bytes_in_buffer.bytes_after_slide(block_size);
+
+        // Slide buffer contents
+        self.slide_window(bytes_in_buffer, block_size);
+
+        // Read more data
+        self.read_into_slice(reader, bytes_to_keep)
+    }
+
     /// Fill buffer with a value (test-only utility)
     #[cfg(test)]
     pub fn fill(&mut self, value: u8) {

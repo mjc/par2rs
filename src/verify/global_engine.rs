@@ -444,17 +444,13 @@ impl GlobalVerificationEngine {
             return Ok(BufferSlideResult::CannotSlide);
         }
 
-        let bytes_to_keep = state.bytes_in_buffer.bytes_after_slide(block_size);
-
-        // Slide buffer contents
-        buffer.slide_window(state.bytes_in_buffer, block_size);
-
-        // Read more data
+        // Slide buffer and read more data
         let bytes_read = buffer
-            .read_into_slice(file, bytes_to_keep)
+            .slide_and_read(file, state.bytes_in_buffer, block_size)
             .map_err(|_| ())?;
 
         // Update state
+        let bytes_to_keep = state.bytes_in_buffer.bytes_after_slide(block_size);
         let new_buffer_size = BufferSize::from_slide(bytes_to_keep, bytes_read);
         state.slide_window(block_size, new_buffer_size);
 
