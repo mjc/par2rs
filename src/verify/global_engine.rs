@@ -473,7 +473,7 @@ impl GlobalVerificationEngine {
                 let byte_out = state.scan_pos.byte_before(buffer);
                 let byte_in = state
                     .scan_pos
-                    .byte_at_offset(buffer, block_size.as_usize() - 1);
+                    .byte_at_offset(buffer, block_size.last_byte_offset());
                 let new_crc = Crc32Value::new(rolling_table.slide(crc.as_u32(), byte_in, byte_out));
                 state.update_rolling_crc(new_crc);
             }
@@ -487,22 +487,22 @@ impl GlobalVerificationEngine {
         state: &mut crate::verify::scanner_state::ScannerState,
         block_size: crate::verify::types::BlockSize,
     ) -> Result<BufferSlideResult, ()> {
+        use crate::verify::types::BufferSize;
+
         if !state.can_slide_window(block_size) {
             return Ok(BufferSlideResult::CannotSlide);
         }
 
-        let block_sz = block_size.as_usize();
-        let buf_sz = state.bytes_in_buffer.as_usize();
+        let bytes_to_keep = state.bytes_in_buffer.bytes_after_slide(block_size);
 
         // Slide buffer contents
-        buffer.copy_within(block_sz..buf_sz, 0);
-        let bytes_to_keep = buf_sz - block_sz;
+        buffer.copy_within(block_size.as_usize()..state.bytes_in_buffer.as_usize(), 0);
 
         // Read more data
         let bytes_read = file.read(&mut buffer[bytes_to_keep..]).map_err(|_| ())?;
 
         // Update state
-        let new_buffer_size = crate::verify::types::BufferSize::new(bytes_to_keep + bytes_read);
+        let new_buffer_size = BufferSize::from_slide(bytes_to_keep, bytes_read);
         state.slide_window(block_size, new_buffer_size);
 
         Ok(BufferSlideResult::Success)
@@ -587,9 +587,9 @@ impl GlobalVerificationEngine {
 
     /// Determine file status based on available blocks
     fn determine_file_status(blocks_available: BlockCount, total_blocks: BlockCount) -> FileStatus {
-        if blocks_available == total_blocks {
+        if blocks_available.is_complete(total_blocks) {
             FileStatus::Present
-        } else if blocks_available == BlockCount::zero() {
+        } else if blocks_available.is_empty() {
             FileStatus::Missing
         } else {
             FileStatus::Corrupted
@@ -683,9 +683,9 @@ impl GlobalVerificationEngine {
             }
 
             // Determine file status
-            let status = if blocks_available == total_blocks {
+            let status = if blocks_available.is_complete(total_blocks) {
                 FileStatus::Present
-            } else if blocks_available == BlockCount::zero() {
+            } else if blocks_available.is_empty() {
                 FileStatus::Missing
             } else {
                 FileStatus::Corrupted

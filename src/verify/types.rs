@@ -73,6 +73,16 @@ impl BufferSize {
         self.0.saturating_sub(pos.as_usize())
     }
 
+    /// Calculate bytes to keep after sliding window by one block
+    pub fn bytes_after_slide(&self, block_size: BlockSize) -> usize {
+        self.0.saturating_sub(block_size.as_usize())
+    }
+
+    /// Create new buffer size from kept bytes plus newly read bytes
+    pub fn from_slide(bytes_kept: usize, bytes_read: usize) -> Self {
+        Self(bytes_kept + bytes_read)
+    }
+
     /// Get a slice from a position to the end of the buffer
     pub fn slice_from<'a>(&self, pos: BufferPosition, buffer: &'a [u8]) -> &'a [u8] {
         &buffer[pos.as_usize()..self.0]
@@ -116,6 +126,11 @@ impl BlockSize {
 
     pub fn doubled(&self) -> usize {
         self.0 * 2
+    }
+
+    /// Get the offset of the last byte in a block (size - 1)
+    pub fn last_byte_offset(&self) -> usize {
+        self.0 - 1
     }
 }
 
@@ -206,6 +221,16 @@ impl BlockCount {
 
     pub fn increment(&mut self) {
         self.0 += 1;
+    }
+
+    /// Check if all blocks are available
+    pub fn is_complete(&self, total: BlockCount) -> bool {
+        *self == total
+    }
+
+    /// Check if no blocks are available
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
     }
 
     /// Iterate over block numbers from 0 to count-1
