@@ -324,32 +324,23 @@ impl GlobalVerificationEngine {
                         // Skip ahead by full block (blocks don't overlap in PAR2)
                         state.skip_block(block_size);
                         // Recompute rolling CRC for new position if still in buffer
-                        let new_crc = rolling_table
-                            .compute_crc_at_position(
-                                buffer.as_slice(),
-                                state.scan_pos.as_usize(),
-                                block_size.as_usize(),
-                                state.bytes_in_buffer.as_usize(),
-                            )
-                            .map(Crc32Value::new);
-                        state.set_rolling_crc(new_crc);
+                        Self::update_rolling_crc_after_skip(
+                            &rolling_table,
+                            &buffer,
+                            &mut state,
+                            block_size,
+                        );
                     }
                     ScanAction::AdvanceOneByte => {
                         // No match - advance by 1 byte and roll
                         state.advance_one_byte();
                         // Update rolling CRC for next iteration
-                        if let Some(crc) = state.rolling_crc {
-                            let new_crc = rolling_table
-                                .slide_crc_forward(
-                                    crc.as_u32(),
-                                    buffer.as_slice(),
-                                    state.scan_pos.as_usize(),
-                                    block_size.as_usize(),
-                                    state.bytes_in_buffer.as_usize(),
-                                )
-                                .map(Crc32Value::new);
-                            state.set_rolling_crc(new_crc);
-                        }
+                        Self::slide_rolling_crc_one_byte(
+                            &rolling_table,
+                            &buffer,
+                            &mut state,
+                            block_size,
+                        );
                     }
                 }
             }
@@ -448,6 +439,45 @@ impl GlobalVerificationEngine {
 
         let (md5_hash, crc32) = compute_block_checksums_padded(partial_data, block_size);
         self.insert_matching_blocks(md5_hash, crc32, local_block_map)
+    }
+
+    /// Update rolling CRC after skipping forward by a full block
+    fn update_rolling_crc_after_skip(
+        rolling_table: &crate::checksum::rolling_crc::RollingCrcTable,
+        buffer: &crate::verify::types::ScanBuffer,
+        state: &mut crate::verify::scanner_state::ScannerState,
+        block_size: crate::verify::types::BlockSize,
+    ) {
+        let new_crc = rolling_table
+            .compute_crc_at_position(
+                buffer.as_slice(),
+                state.scan_pos.as_usize(),
+                block_size.as_usize(),
+                state.bytes_in_buffer.as_usize(),
+            )
+            .map(Crc32Value::new);
+        state.set_rolling_crc(new_crc);
+    }
+
+    /// Slide rolling CRC forward by one byte using rolling window algorithm
+    fn slide_rolling_crc_one_byte(
+        rolling_table: &crate::checksum::rolling_crc::RollingCrcTable,
+        buffer: &crate::verify::types::ScanBuffer,
+        state: &mut crate::verify::scanner_state::ScannerState,
+        block_size: crate::verify::types::BlockSize,
+    ) {
+        if let Some(crc) = state.rolling_crc {
+            let new_crc = rolling_table
+                .slide_crc_forward(
+                    crc.as_u32(),
+                    buffer.as_slice(),
+                    state.scan_pos.as_usize(),
+                    block_size.as_usize(),
+                    state.bytes_in_buffer.as_usize(),
+                )
+                .map(Crc32Value::new);
+            state.set_rolling_crc(new_crc);
+        }
     }
 
     /// Slide the buffer window forward and read more data from the file
