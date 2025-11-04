@@ -227,7 +227,7 @@ impl From<usize> for BlockNumber {
 }
 
 /// Unified file verification status used by both verify and repair operations
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum FileStatus {
     /// File is perfect match
     Present,
@@ -521,21 +521,23 @@ impl FileScanMetadata {
             .collect();
 
         if target_blocks.is_empty() {
-            self.first_block_at_offset_zero = false;
-            self.blocks_in_sequence = false;
+            // For files with no blocks (empty files), consider them perfectly aligned
+            // since there's nothing to misalign
+            self.first_block_at_offset_zero = true;
+            self.blocks_in_sequence = true;
             return;
         }
 
         // Sort by file offset
         target_blocks.sort_by_key(|(offset, _)| *offset);
 
-        // Check if first block is at offset 0
-        self.first_block_at_offset_zero = target_blocks[0].0 == 0;
+        // Check if BLOCK 0 is at offset 0 (not just any block at offset 0)
+        self.first_block_at_offset_zero = target_blocks[0].0 == 0 && target_blocks[0].1 == 0;
 
-        // Check if blocks are in sequence
+        // Check if blocks are in sequence (block numbers increment by 1)
         self.blocks_in_sequence = target_blocks.windows(2).all(|w| w[1].1 == w[0].1 + 1);
 
-        // Also check that first block found is block 0
+        // Also verify that the first block is block 0
         if !target_blocks.is_empty() && target_blocks[0].1 != 0 {
             self.blocks_in_sequence = false;
         }

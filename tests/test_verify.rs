@@ -573,7 +573,7 @@ mod file_status_tests {
     #[test]
     fn file_status_is_cloneable() {
         let status = FileStatus::Present;
-        let cloned = status.clone();
+        let cloned = status;
         assert_eq!(format!("{:?}", status), format!("{:?}", cloned));
     }
 

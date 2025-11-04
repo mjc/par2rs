@@ -21,6 +21,11 @@ use smallvec::SmallVec;
 use std::path::Path;
 use std::sync::Mutex;
 
+/// Map of block checksums to file locations where they were found
+type AvailableBlocksMap = HashMap<(Md5Hash, Crc32Value), Vec<(FileId, u32)>>;
+/// Map of file IDs to their determined status
+type FileStatusMap = HashMap<FileId, FileStatus>;
+
 /// Result of attempting to match a block against the global table
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockMatchResult {
@@ -152,10 +157,10 @@ impl GlobalVerificationEngine {
         // Note: report_verification_start and report_files_found should be called by the caller
 
         // Step 1: Scan all available files to build availability map
-        let available_blocks = self.scan_available_blocks(reporter, parallel);
+        let (available_blocks, file_statuses) = self.scan_available_blocks(reporter, parallel);
 
         // Step 2: Create aggregate results (individual file reporting already done in scan_available_blocks)
-        let file_results = self.create_file_results(&available_blocks);
+        let file_results = self.create_file_results(&available_blocks, &file_statuses);
         let block_results = self.create_block_verification_results(&available_blocks);
 
         // TODO: Extract recovery blocks available from recovery packets
@@ -175,7 +180,7 @@ impl GlobalVerificationEngine {
         &self,
         reporter: &R,
         parallel: bool,
-    ) -> HashMap<(Md5Hash, Crc32Value), Vec<(FileId, u32)>> {
+    ) -> (AvailableBlocksMap, FileStatusMap) {
         // Wrap reporter in Mutex for thread-safe output (like par2cmdline-turbo's output_lock)
         let reporter_lock = Mutex::new(reporter);
 
@@ -203,10 +208,14 @@ impl GlobalVerificationEngine {
                 .collect()
         };
 
-        // Merge all local maps into global map
+        // Merge all local maps into global map and collect statuses
         let mut global_block_map = HashMap::default();
+        let mut file_statuses = HashMap::default();
 
-        for (local_map, _file_size) in file_results {
+        for (local_map, _file_size, file_id, status) in file_results {
+            // Store the computed status
+            file_statuses.insert(file_id, status);
+
             // Merge local map into global
             for (key, entries) in local_map {
                 global_block_map
@@ -216,7 +225,7 @@ impl GlobalVerificationEngine {
             }
         }
 
-        global_block_map
+        (global_block_map, file_statuses)
     }
 
     /// Process a single file: scan blocks and report status
@@ -224,7 +233,7 @@ impl GlobalVerificationEngine {
         &self,
         file_description: &FileDescriptionPacket,
         reporter_lock: &Mutex<&R>,
-    ) -> (LocalBlockMap, FileSize) {
+    ) -> (LocalBlockMap, FileSize, FileId, FileStatus) {
         use crate::verify::types::FileSize;
 
         let file_name = extract_file_name(file_description);
@@ -267,7 +276,7 @@ impl GlobalVerificationEngine {
             total_blocks,
         );
 
-        (local_block_map, file_size)
+        (local_block_map, file_size, file_description.file_id, status)
     }
 
     /// Scan a single file and return its local block map with progress reporting
@@ -712,7 +721,8 @@ impl GlobalVerificationEngine {
     /// Create file results based on available blocks (reporting already done)
     fn create_file_results(
         &self,
-        available_blocks: &HashMap<(Md5Hash, Crc32Value), Vec<(FileId, u32)>>,
+        available_blocks: &AvailableBlocksMap,
+        file_statuses: &FileStatusMap,
     ) -> Vec<FileVerificationResult> {
         let mut file_results = Vec::new();
 
@@ -749,14 +759,20 @@ impl GlobalVerificationEngine {
                 }
             }
 
-            // Determine file status
-            let status = if blocks_available.is_complete(total_blocks) {
-                FileStatus::Present
-            } else if blocks_available.is_empty() {
-                FileStatus::Missing
-            } else {
-                FileStatus::Corrupted
-            };
+            // Use the pre-computed status from scanning if available,
+            // otherwise fall back to basic block-based determination
+            let status = file_statuses
+                .get(&file_description.file_id)
+                .copied()
+                .unwrap_or_else(|| {
+                    if blocks_available.is_complete(total_blocks) {
+                        FileStatus::Present
+                    } else if blocks_available.is_empty() {
+                        FileStatus::Missing
+                    } else {
+                        FileStatus::Corrupted
+                    }
+                });
 
             // Just create the result record (reporting already done inline)
 
@@ -776,7 +792,7 @@ impl GlobalVerificationEngine {
     /// Create block verification results
     fn create_block_verification_results(
         &self,
-        available_blocks: &HashMap<(Md5Hash, Crc32Value), Vec<(FileId, u32)>>,
+        available_blocks: &AvailableBlocksMap,
     ) -> Vec<BlockVerificationResult> {
         let mut block_results = Vec::new();
 
@@ -1911,6 +1927,10 @@ mod tests {
         // Create an empty file
         File::create(&file_path).unwrap();
 
+        // Compute correct MD5 hash for empty file
+        use crate::checksum::compute_md5;
+        let empty_md5 = compute_md5(b"");
+
         let main_packet = crate::packets::MainPacket {
             length: 92,
             md5: Md5Hash::new([0; 16]),
@@ -1923,6 +1943,8 @@ mod tests {
 
         let mut file_description = create_test_file_desc(FileId::new([2; 16]), 0);
         file_description.file_name = b"empty.txt".to_vec();
+        file_description.md5_hash = empty_md5;
+        file_description.md5_16k = empty_md5;
 
         let packets = vec![
             crate::Packet::Main(main_packet),
@@ -2539,7 +2561,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Not implemented: first block offset check"]
     fn test_first_block_not_at_offset_zero_should_be_corrupted() {
         // Reference: par2cmdline-turbo/src/par2repairer.cpp:1722-1725
         // if (!currententry->FirstBlock() || filechecksummer.Offset() != 0)
@@ -2563,7 +2584,21 @@ mod tests {
         drop(file);
 
         let file_id = FileId::new([1; 16]);
-        let file_description = create_test_file_desc(file_id, 1024);
+
+        // Compute checksums for the valid block
+        use crate::checksum::compute_block_checksums;
+        let (md5_hash, crc32) = compute_block_checksums(&[0x42; 1024]);
+
+        // Compute file hash (will be wrong because of the junk at start)
+        use crate::checksum::compute_md5;
+        let mut file_data = vec![0xFF; 100];
+        file_data.extend_from_slice(&[0x42; 1024]);
+        let file_md5 = compute_md5(&file_data);
+        let file_md5_16k = compute_md5(&file_data[..file_data.len().min(16384)]);
+
+        let mut file_description = create_test_file_desc(file_id, 1024);
+        file_description.md5_hash = file_md5;
+        file_description.md5_16k = file_md5_16k;
 
         let main_packet = crate::packets::MainPacket {
             length: 92,
@@ -2578,6 +2613,13 @@ mod tests {
         let packets = vec![
             crate::Packet::Main(main_packet),
             crate::Packet::FileDescription(file_description),
+            crate::Packet::InputFileSliceChecksum(crate::packets::InputFileSliceChecksumPacket {
+                length: 64 + 16 + 20,
+                md5: Md5Hash::new([0; 16]),
+                set_id: crate::domain::RecoverySetId::new([1; 16]),
+                file_id,
+                slice_checksums: vec![(md5_hash, crc32)],
+            }),
         ];
 
         let engine = GlobalVerificationEngine::from_packets(&packets, base_path).unwrap();
@@ -2594,7 +2636,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Not implemented: block sequence checking"]
     fn test_blocks_out_of_sequence_should_be_corrupted() {
         // Reference: par2cmdline-turbo/src/par2repairer.cpp:1728-1732
         // if (currententry != nextentry)
@@ -2611,14 +2652,29 @@ mod tests {
 
         let file_path = base_path.join("test.txt");
         let mut file = File::create(&file_path).unwrap();
-        // Write block 2 then block 1 (reversed)
-        file.write_all(&[0xBB; 1024]).unwrap();
-        file.write_all(&[0xAA; 1024]).unwrap();
+        // Write block 1 then block 0 (reversed)
+        file.write_all(&[0xBB; 1024]).unwrap(); // This is block 1
+        file.write_all(&[0xAA; 1024]).unwrap(); // This is block 0
         file.flush().unwrap();
         drop(file);
 
         let file_id = FileId::new([2; 16]);
-        let file_description = create_test_file_desc(file_id, 2048);
+
+        // Compute checksums for both blocks
+        use crate::checksum::compute_block_checksums;
+        let (md5_block0, crc32_block0) = compute_block_checksums(&[0xAA; 1024]);
+        let (md5_block1, crc32_block1) = compute_block_checksums(&[0xBB; 1024]);
+
+        // Compute file hash (actual file content)
+        let mut file_data = vec![0xBB; 1024];
+        file_data.extend_from_slice(&[0xAA; 1024]);
+        use crate::checksum::compute_md5;
+        let file_md5 = compute_md5(&file_data);
+        let file_md5_16k = compute_md5(&file_data[..file_data.len().min(16384)]);
+
+        let mut file_description = create_test_file_desc(file_id, 2048);
+        file_description.md5_hash = file_md5;
+        file_description.md5_16k = file_md5_16k;
 
         let main_packet = crate::packets::MainPacket {
             length: 92,
@@ -2633,6 +2689,13 @@ mod tests {
         let packets = vec![
             crate::Packet::Main(main_packet),
             crate::Packet::FileDescription(file_description),
+            crate::Packet::InputFileSliceChecksum(crate::packets::InputFileSliceChecksumPacket {
+                length: 64 + 16 + 20,
+                md5: Md5Hash::new([0; 16]),
+                set_id: crate::domain::RecoverySetId::new([1; 16]),
+                file_id,
+                slice_checksums: vec![(md5_block0, crc32_block0), (md5_block1, crc32_block1)],
+            }),
         ];
 
         let engine = GlobalVerificationEngine::from_packets(&packets, base_path).unwrap();
@@ -2649,7 +2712,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Not implemented: file hash validation"]
     fn test_file_hash_mismatch_should_be_corrupted() {
         // Reference: par2cmdline-turbo/src/par2repairer.cpp:1851-1863
         // Even if all blocks match, if hashfull or hash16k doesn't match the
@@ -2669,8 +2731,19 @@ mod tests {
         drop(file);
 
         let file_id = FileId::new([3; 16]);
-        // File desc expects 1024 bytes, not 1536
-        let file_description = create_test_file_desc(file_id, 1024);
+
+        // Compute checksum for the valid block
+        use crate::checksum::compute_block_checksums;
+        let (md5_hash, crc32) = compute_block_checksums(&[0x42; 1024]);
+
+        // Expected file hash is for just the first block (1024 bytes)
+        use crate::checksum::compute_md5;
+        let expected_md5 = compute_md5(&[0x42; 1024]);
+        let expected_md5_16k = compute_md5(&[0x42; 1024]);
+
+        let mut file_description = create_test_file_desc(file_id, 1024);
+        file_description.md5_hash = expected_md5;
+        file_description.md5_16k = expected_md5_16k;
 
         let main_packet = crate::packets::MainPacket {
             length: 92,
@@ -2685,6 +2758,13 @@ mod tests {
         let packets = vec![
             crate::Packet::Main(main_packet),
             crate::Packet::FileDescription(file_description),
+            crate::Packet::InputFileSliceChecksum(crate::packets::InputFileSliceChecksumPacket {
+                length: 64 + 16 + 20,
+                md5: Md5Hash::new([0; 16]),
+                set_id: crate::domain::RecoverySetId::new([1; 16]),
+                file_id,
+                slice_checksums: vec![(md5_hash, crc32)],
+            }),
         ];
 
         let engine = GlobalVerificationEngine::from_packets(&packets, base_path).unwrap();

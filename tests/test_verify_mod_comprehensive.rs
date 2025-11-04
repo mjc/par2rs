@@ -272,6 +272,9 @@ fn test_comprehensive_verify_with_padding() {
     // Compute checksums with padding
     use par2rs::checksum::{compute_block_checksums_padded, compute_md5};
     let (md5_1, crc32_1) = compute_block_checksums_padded(content1, block_size as usize);
+
+    // File MD5 is for the actual file content, not the padded block
+    let file_md5 = compute_md5(content1);
     let md5_16k_1 = compute_md5(&content1[..content1.len().min(16384)]);
 
     let packets = vec![
@@ -280,7 +283,7 @@ fn test_comprehensive_verify_with_padding() {
             file_id1,
             "small.txt",
             content1.len() as u64,
-            md5_1,
+            file_md5, // Use actual file MD5, not padded block MD5
             md5_16k_1,
         )),
         Packet::InputFileSliceChecksum(InputFileSliceChecksumPacket {

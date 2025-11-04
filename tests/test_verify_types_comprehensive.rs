@@ -42,7 +42,7 @@ fn test_file_status_eq() {
 #[test]
 fn test_file_status_clone() {
     let status1 = FileStatus::Corrupted;
-    let status2 = status1.clone();
+    let status2 = status1;
     assert_eq!(status1, status2);
 }
 
