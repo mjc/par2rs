@@ -5,9 +5,10 @@
 //! rather than individual files in isolation.
 
 use super::global_table::{GlobalBlockTable, GlobalBlockTableBuilder};
+use super::scanner_state::ScannerState;
 use super::types::{
-    BlockCount, BlockNumber, BlockVerificationResult, FileSize, FileStatus, FileVerificationResult,
-    VerificationResults,
+    BlockCount, BlockNumber, BlockVerificationResult, FileScanMetadata, FileSize, FileStatus,
+    FileVerificationResult, VerificationResults,
 };
 use super::utils::extract_file_name;
 
@@ -111,9 +112,9 @@ impl GlobalVerificationEngine {
         // Build global block table
         let mut builder = GlobalBlockTableBuilder::new(block_size);
 
-        for file_desc in &file_descriptions {
-            if let Some(checksums) = slice_checksums.get(&file_desc.file_id) {
-                builder.add_file_blocks(file_desc.file_id, checksums);
+        for file_description in &file_descriptions {
+            if let Some(checksums) = slice_checksums.get(&file_description.file_id) {
+                builder.add_file_blocks(file_description.file_id, checksums);
             }
         }
 
@@ -193,12 +194,12 @@ impl GlobalVerificationEngine {
         let file_results: Vec<_> = if parallel {
             files_to_scan
                 .par_iter()
-                .map(|file_desc| self.process_single_file(file_desc, &reporter_lock))
+                .map(|file_description| self.process_single_file(file_description, &reporter_lock))
                 .collect()
         } else {
             files_to_scan
                 .iter()
-                .map(|file_desc| self.process_single_file(file_desc, &reporter_lock))
+                .map(|file_description| self.process_single_file(file_description, &reporter_lock))
                 .collect()
         };
 
@@ -221,14 +222,14 @@ impl GlobalVerificationEngine {
     /// Process a single file: scan blocks and report status
     fn process_single_file<R: VerificationReporter>(
         &self,
-        file_desc: &FileDescriptionPacket,
+        file_description: &FileDescriptionPacket,
         reporter_lock: &Mutex<&R>,
     ) -> (LocalBlockMap, FileSize) {
         use crate::verify::types::FileSize;
 
-        let file_name = extract_file_name(file_desc);
+        let file_name = extract_file_name(file_description);
         let file_path = self.base_dir.join(&file_name);
-        let file_size = FileSize::new(file_desc.file_length);
+        let file_size = FileSize::new(file_description.file_length);
 
         // Lock reporter to start file
         {
@@ -237,16 +238,24 @@ impl GlobalVerificationEngine {
         }
 
         // Scan this file and get its local block map, reporting progress
-        let local_block_map =
+        let (local_block_map, mut scan_metadata) =
             self.scan_single_file_with_progress(&file_path, file_size, reporter_lock);
 
         // Calculate status for this file
         let total_blocks = self.calculate_total_blocks(file_size);
         let (blocks_available, damaged_blocks) =
-            self.count_file_blocks(file_desc.file_id, file_size, &local_block_map);
+            self.count_file_blocks(file_description.file_id, file_size, &local_block_map);
 
-        // Determine status
-        let status = Self::determine_file_status(blocks_available, total_blocks);
+        // Analyze block positions to determine if blocks are properly aligned
+        scan_metadata.analyze_block_positions(file_description.file_id);
+
+        // Determine status (considering scan metadata)
+        let status = Self::determine_file_status_with_metadata(
+            blocks_available,
+            total_blocks,
+            &scan_metadata,
+            &file_description.md5_hash,
+        );
 
         // Report status
         Self::report_file_status(
@@ -267,7 +276,7 @@ impl GlobalVerificationEngine {
         file_path: &Path,
         file_size: FileSize,
         reporter_lock: &Mutex<&R>,
-    ) -> LocalBlockMap {
+    ) -> (LocalBlockMap, FileScanMetadata) {
         use crate::checksum::compute_crc32;
         use crate::checksum::rolling_crc::RollingCrcTable;
         use crate::verify::scanner_state::ScannerState;
@@ -278,7 +287,7 @@ impl GlobalVerificationEngine {
 
         let mut file = match File::open(file_path) {
             Ok(f) => f,
-            Err(_) => return local_block_map,
+            Err(_) => return (local_block_map, FileScanMetadata::new()),
         };
 
         let block_size = BlockSize::new(self.block_table.block_size() as usize);
@@ -291,14 +300,26 @@ impl GlobalVerificationEngine {
         // Initial fill of the buffer
         let bytes_read = match buffer.read_from(&mut file) {
             Ok(n) => n,
-            Err(_) => return local_block_map,
+            Err(_) => return (local_block_map, FileScanMetadata::new()),
         };
 
-        // Initialize scanner state
+        // Initialize scanner state (includes scan metadata)
         let mut state = ScannerState::new(bytes_read);
 
         // PHASE 1: Try aligned blocks at file start (fast path for well-formed files)
         self.scan_aligned_blocks(&buffer, &mut state, block_size, &mut local_block_map);
+
+        // PHASE 1.5: Handle files that are entirely smaller than one block
+        // If we're still at position 0 and have less than a full block, this is a partial block file
+        if state.is_remainder_at_start() && state.remainder_size(block_size) > 0 {
+            let partial_data = buffer.slice_from(state.buffer_position, state.bytes_in_buffer);
+            self.try_match_and_insert_partial_block(
+                partial_data,
+                block_size.as_usize(),
+                &mut local_block_map,
+                &mut state,
+            );
+        }
 
         // PHASE 2: Byte-by-byte scanning with rolling CRC for remainder of file
         loop {
@@ -308,7 +329,9 @@ impl GlobalVerificationEngine {
 
             // Initialize rolling CRC for this buffer window
             let initial_crc = if state.can_fit_block(block_size) {
-                Some(compute_crc32(buffer.block_at(state.scan_pos, block_size)))
+                Some(compute_crc32(
+                    buffer.block_at(state.buffer_position, block_size),
+                ))
             } else {
                 None
             };
@@ -325,11 +348,12 @@ impl GlobalVerificationEngine {
 
             // Handle partial block at end of buffer
             if state.remainder_size(block_size) > 0 && !state.is_remainder_at_start() {
-                let partial_data = buffer.slice_from(state.scan_pos, state.bytes_in_buffer);
+                let partial_data = buffer.slice_from(state.buffer_position, state.bytes_in_buffer);
                 self.try_match_and_insert_partial_block(
                     partial_data,
                     block_size.as_usize(),
                     &mut local_block_map,
+                    &mut state,
                 );
             }
 
@@ -351,7 +375,18 @@ impl GlobalVerificationEngine {
         // Mark file as 100% scanned
         Self::report_progress(reporter_lock, &state, file_size);
 
-        local_block_map
+        // Compute file MD5 hash and store in metadata
+        if let Ok(mut file) = File::open(file_path) {
+            use crate::checksum::compute_md5_only;
+            use std::io::Read;
+
+            let mut file_data = Vec::new();
+            if file.read_to_end(&mut file_data).is_ok() {
+                state.scan_metadata.actual_file_hash = Some(compute_md5_only(&file_data));
+            }
+        }
+
+        (local_block_map, state.scan_metadata)
     }
 
     /// Insert all matching blocks from the global table into the local block map
@@ -361,6 +396,7 @@ impl GlobalVerificationEngine {
         md5_hash: Md5Hash,
         crc32: Crc32Value,
         local_block_map: &mut LocalBlockMap,
+        state: &mut ScannerState,
     ) -> BlockMatchResult {
         if let Some(candidates) = self.block_table.find_by_crc32(crc32) {
             let mut found_any = false;
@@ -372,6 +408,12 @@ impl GlobalVerificationEngine {
                             .entry((md5_hash, crc32))
                             .or_default()
                             .push((duplicate.position.file_id, duplicate.position.block_number));
+
+                        // Record block discovery in state metadata
+                        state.record_block_found(
+                            duplicate.position.file_id,
+                            duplicate.position.block_number,
+                        );
                     }
                     found_any = true;
                     break; // Only need to match once per unique checksum
@@ -390,6 +432,7 @@ impl GlobalVerificationEngine {
         &self,
         block_data: &[u8],
         local_block_map: &mut LocalBlockMap,
+        state: &mut ScannerState,
     ) -> BlockMatchResult {
         use crate::checksum::{compute_crc32, compute_md5_only};
 
@@ -398,7 +441,7 @@ impl GlobalVerificationEngine {
         // Fast CRC32 lookup - only compute expensive MD5 if CRC matches
         if self.block_table.find_by_crc32(crc32).is_some() {
             let md5_hash = compute_md5_only(block_data);
-            self.insert_matching_blocks(md5_hash, crc32, local_block_map)
+            self.insert_matching_blocks(md5_hash, crc32, local_block_map, state)
         } else {
             BlockMatchResult::NotMatched
         }
@@ -410,11 +453,12 @@ impl GlobalVerificationEngine {
         partial_data: &[u8],
         block_size: usize,
         local_block_map: &mut LocalBlockMap,
+        state: &mut ScannerState,
     ) -> BlockMatchResult {
         use crate::checksum::compute_block_checksums_padded;
 
         let (md5_hash, crc32) = compute_block_checksums_padded(partial_data, block_size);
-        self.insert_matching_blocks(md5_hash, crc32, local_block_map)
+        self.insert_matching_blocks(md5_hash, crc32, local_block_map, state)
     }
 
     /// Slide the buffer window forward and read more data from the file
@@ -460,13 +504,13 @@ impl GlobalVerificationEngine {
     fn scan_block_position(
         &self,
         buffer: &crate::verify::types::ScanBuffer,
-        state: &crate::verify::scanner_state::ScannerState,
+        state: &mut crate::verify::scanner_state::ScannerState,
         block_size: crate::verify::types::BlockSize,
         local_block_map: &mut LocalBlockMap,
     ) -> ScanAction {
         use crate::checksum::compute_crc32;
 
-        let block_data = buffer.block_at(state.scan_pos, block_size);
+        let block_data = buffer.block_at(state.buffer_position, block_size);
 
         // Use rolling CRC if we have it, otherwise compute fresh
         let crc32 = state
@@ -476,7 +520,7 @@ impl GlobalVerificationEngine {
         // Fast CRC32 lookup in global table - only compute MD5 if CRC matches
         let found_match = if self.block_table.find_by_crc32(crc32).is_some() {
             let md5_hash = crate::checksum::compute_md5_only(block_data);
-            self.insert_matching_blocks(md5_hash, crc32, local_block_map)
+            self.insert_matching_blocks(md5_hash, crc32, local_block_map, state)
         } else {
             BlockMatchResult::NotMatched
         };
@@ -500,28 +544,32 @@ impl GlobalVerificationEngine {
             return;
         }
 
+        let bytes_in_buffer = state.bytes_in_buffer.as_usize();
+        let block_size_usize = block_size.as_usize();
+
         // Generate aligned block positions (0, block_size, 2*block_size, ...)
-        let mut aligned_positions = std::iter::successors(Some(0), |&pos| {
-            let next = pos + block_size.as_usize();
-            (next + block_size.as_usize() <= state.bytes_in_buffer.as_usize()).then_some(next)
-        });
+        let mut pos = 0;
+        while pos + block_size_usize <= bytes_in_buffer {
+            // Temporarily set buffer position for the scan
+            let old_pos = state.buffer_position;
+            state.buffer_position = crate::verify::types::BufferPosition::new(pos);
 
-        // Scan aligned blocks until we hit a non-match, updating position functionally
-        let final_pos = aligned_positions
-            .try_fold(0, |_prev_pos, pos| {
-                let block_data =
-                    buffer.block_at(crate::verify::types::BufferPosition::new(pos), block_size);
-                let matched = self.try_match_and_insert_block(block_data, local_block_map);
+            let block_data =
+                buffer.block_at(crate::verify::types::BufferPosition::new(pos), block_size);
+            let matched = self.try_match_and_insert_block(block_data, local_block_map, state);
 
-                if matched.is_match() {
-                    Ok(pos + block_size.as_usize())
-                } else {
-                    Err(pos) // Stop at first non-match
-                }
-            })
-            .unwrap_or_else(|pos| pos);
+            // Restore position
+            state.buffer_position = old_pos;
 
-        state.scan_pos = crate::verify::types::BufferPosition::new(final_pos);
+            if !matched.is_match() {
+                // Stop at first non-match
+                break;
+            }
+
+            pos += block_size_usize;
+        }
+
+        state.buffer_position = crate::verify::types::BufferPosition::new(pos);
     }
 
     /// Scan byte-by-byte through the buffer using rolling CRC
@@ -593,6 +641,44 @@ impl GlobalVerificationEngine {
         }
     }
 
+    /// Determine file status considering scan metadata (first block offset, sequence, hash)
+    /// Based on par2repairer.cpp:1722-1732 and 1851-1863
+    fn determine_file_status_with_metadata(
+        blocks_available: BlockCount,
+        total_blocks: BlockCount,
+        metadata: &FileScanMetadata,
+        expected_hash: &Md5Hash,
+    ) -> FileStatus {
+        // First check basic block availability
+        let basic_status = Self::determine_file_status(blocks_available, total_blocks);
+
+        // If not present (missing or corrupted), return early
+        if basic_status != FileStatus::Present {
+            return basic_status;
+        }
+
+        // All blocks found - check additional criteria from par2cmdline-turbo
+
+        // Check if blocks are perfectly aligned (first at offset 0 and in sequence)
+        // Reference: par2repairer.cpp:1722-1725, 1728-1732
+        if !metadata.is_perfect_match() {
+            return FileStatus::Corrupted;
+        }
+
+        // Check file hash matches (par2repairer.cpp:1851-1863)
+        if let Some(actual_hash) = &metadata.actual_file_hash {
+            if actual_hash != expected_hash {
+                return FileStatus::Corrupted;
+            }
+        } else {
+            // Could not compute hash - mark as corrupted
+            return FileStatus::Corrupted;
+        }
+
+        // All checks passed
+        FileStatus::Present
+    }
+
     /// Report file verification status to the reporter
     fn report_file_status<R: VerificationReporter>(
         reporter_lock: &Mutex<&R>,
@@ -630,16 +716,16 @@ impl GlobalVerificationEngine {
     ) -> Vec<FileVerificationResult> {
         let mut file_results = Vec::new();
 
-        for file_desc in self.file_descriptions.values() {
-            let file_name = extract_file_name(file_desc);
-            let file_size = FileSize::new(file_desc.file_length);
+        for file_description in self.file_descriptions.values() {
+            let file_name = extract_file_name(file_description);
+            let file_size = FileSize::new(file_description.file_length);
             let total_blocks = self.calculate_total_blocks(file_size);
 
             // Count available blocks for this file by checking if each block's
             // checksum is available in any location
             let mut blocks_available = BlockCount::zero();
             let mut damaged_blocks = Vec::new();
-            let file_blocks = self.block_table.get_file_blocks(file_desc.file_id);
+            let file_blocks = self.block_table.get_file_blocks(file_description.file_id);
 
             for block_num in 0..total_blocks.as_usize() {
                 let block_number = BlockNumber::new(block_num);
@@ -676,7 +762,7 @@ impl GlobalVerificationEngine {
 
             file_results.push(FileVerificationResult {
                 file_name,
-                file_id: file_desc.file_id,
+                file_id: file_description.file_id,
                 status,
                 blocks_available: blocks_available.as_usize(),
                 total_blocks: total_blocks.as_usize(),
@@ -723,6 +809,7 @@ impl GlobalVerificationEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::verify::scanner_state::ScannerState;
 
     fn create_test_file_desc(file_id: FileId, length: u64) -> FileDescriptionPacket {
         use crate::domain::RecoverySetId;
@@ -754,11 +841,11 @@ mod tests {
             non_recovery_file_ids: vec![],
         };
 
-        let file_desc = create_test_file_desc(FileId::new([2; 16]), 1024);
+        let file_description = create_test_file_desc(FileId::new([2; 16]), 1024);
 
         let packets = vec![
             crate::Packet::Main(main_packet),
-            crate::Packet::FileDescription(file_desc),
+            crate::Packet::FileDescription(file_description),
         ];
 
         let engine = GlobalVerificationEngine::from_packets(&packets, ".");
@@ -781,15 +868,16 @@ mod tests {
             non_recovery_file_ids: vec![],
         };
 
-        let file_desc = create_test_file_desc(FileId::new([2; 16]), 1024);
+        let file_description = create_test_file_desc(FileId::new([2; 16]), 1024);
 
         let packets = vec![
             crate::Packet::Main(main_packet),
-            crate::Packet::FileDescription(file_desc.clone()),
+            crate::Packet::FileDescription(file_description.clone()),
         ];
 
-        let temp_dir = tempfile::tempdir().unwrap();
-        let engine = GlobalVerificationEngine::from_packets(&packets, temp_dir.path()).unwrap();
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let engine =
+            GlobalVerificationEngine::from_packets(&packets, temporary_directory.path()).unwrap();
         let reporter = crate::reporters::ConsoleVerificationReporter::new();
         let results = engine.verify_recovery_set(&reporter, true); // parallel=true for tests
 
@@ -819,12 +907,14 @@ mod tests {
         };
 
         let mut local_map = HashMap::default();
+        let mut state = ScannerState::new(0);
 
         // Test matching block
         let found = engine.insert_matching_blocks(
             Md5Hash::new([0xAA; 16]),
             Crc32Value::new(0x12345678),
             &mut local_map,
+            &mut state,
         );
         assert_eq!(
             found,
@@ -835,10 +925,12 @@ mod tests {
 
         // Test non-matching MD5
         let mut local_map2 = HashMap::default();
+        let mut state2 = ScannerState::new(0);
         let found = engine.insert_matching_blocks(
             Md5Hash::new([0xBB; 16]),
             Crc32Value::new(0x12345678),
             &mut local_map2,
+            &mut state2,
         );
         assert_eq!(
             found,
@@ -849,10 +941,12 @@ mod tests {
 
         // Test non-matching CRC32
         let mut local_map3 = HashMap::default();
+        let mut state3 = ScannerState::new(0);
         let found = engine.insert_matching_blocks(
             Md5Hash::new([0xAA; 16]),
             Crc32Value::new(0x99999999),
             &mut local_map3,
+            &mut state3,
         );
         assert_eq!(
             found,
@@ -887,9 +981,10 @@ mod tests {
         };
 
         let mut local_map = HashMap::default();
+        let mut state = ScannerState::new(0);
 
         // Test matching
-        let found = engine.try_match_and_insert_block(&block_data, &mut local_map);
+        let found = engine.try_match_and_insert_block(&block_data, &mut local_map, &mut state);
         assert_eq!(
             found,
             BlockMatchResult::Matched,
@@ -900,7 +995,8 @@ mod tests {
         // Test non-matching data
         let wrong_data = vec![0x99; 1024];
         let mut local_map2 = HashMap::default();
-        let found = engine.try_match_and_insert_block(&wrong_data, &mut local_map2);
+        let mut state2 = ScannerState::new(0);
+        let found = engine.try_match_and_insert_block(&wrong_data, &mut local_map2, &mut state2);
         assert_eq!(
             found,
             BlockMatchResult::NotMatched,
@@ -938,7 +1034,12 @@ mod tests {
         let mut local_map = HashMap::default();
 
         // Test matching partial block
-        let found = engine.try_match_and_insert_partial_block(&partial_data, 1024, &mut local_map);
+        let found = engine.try_match_and_insert_partial_block(
+            &partial_data,
+            1024,
+            &mut local_map,
+            &mut ScannerState::new(0),
+        );
         assert_eq!(
             found,
             BlockMatchResult::Matched,
@@ -949,7 +1050,12 @@ mod tests {
         // Test non-matching partial data
         let wrong_data = vec![0x99; 500];
         let mut local_map2 = HashMap::default();
-        let found = engine.try_match_and_insert_partial_block(&wrong_data, 1024, &mut local_map2);
+        let found = engine.try_match_and_insert_partial_block(
+            &wrong_data,
+            1024,
+            &mut local_map2,
+            &mut ScannerState::new(0),
+        );
         assert_eq!(
             found,
             BlockMatchResult::NotMatched,
@@ -985,11 +1091,17 @@ mod tests {
 
         // Test 1: Direct insertion
         let mut map1 = HashMap::default();
-        let found1 = engine.insert_matching_blocks(expected_md5, expected_crc32, &mut map1);
+        let found1 = engine.insert_matching_blocks(
+            expected_md5,
+            expected_crc32,
+            &mut map1,
+            &mut ScannerState::new(0),
+        );
 
         // Test 2: Via try_match_and_insert_block
         let mut map2 = HashMap::default();
-        let found2 = engine.try_match_and_insert_block(&block_data, &mut map2);
+        let found2 =
+            engine.try_match_and_insert_block(&block_data, &mut map2, &mut ScannerState::new(0));
 
         // Both should find the block
         assert_eq!(found1, found2, "Both methods should return same result");
@@ -1492,12 +1604,12 @@ mod tests {
         let mut buffer = ScanBuffer::with_capacity(2048);
         buffer.fill(0x42);
         let block_size = BlockSize::new(1024);
-        let state = ScannerState::new(2048);
+        let mut state = ScannerState::new(2048);
 
         let mut local_map = HashMap::default();
 
         // Test: matching block should return SkipBlock
-        let action = engine.scan_block_position(&buffer, &state, block_size, &mut local_map);
+        let action = engine.scan_block_position(&buffer, &mut state, block_size, &mut local_map);
         assert_eq!(action, ScanAction::SkipBlock, "Should skip matching block");
         assert_eq!(local_map.len(), 1, "Should have inserted the match");
 
@@ -1506,7 +1618,7 @@ mod tests {
         wrong_buffer.fill(0x99);
         let mut local_map2 = HashMap::default();
         let action2 =
-            engine.scan_block_position(&wrong_buffer, &state, block_size, &mut local_map2);
+            engine.scan_block_position(&wrong_buffer, &mut state, block_size, &mut local_map2);
         assert_eq!(
             action2,
             ScanAction::AdvanceOneByte,
@@ -1557,7 +1669,7 @@ mod tests {
 
         // Should have advanced past the 2 matching blocks and stopped at 3rd (non-matching)
         assert_eq!(
-            state.scan_pos,
+            state.buffer_position,
             BufferPosition::new(2048),
             "Should advance to position 2048 after 2 matching blocks, stop at first non-match"
         );
@@ -1613,7 +1725,7 @@ mod tests {
 
         // Should stop at position 1024 (first mismatch)
         assert_eq!(
-            state.scan_pos,
+            state.buffer_position,
             BufferPosition::new(1024),
             "Should stop at first non-matching block"
         );
@@ -1670,7 +1782,7 @@ mod tests {
 
         // Should have found the block at offset 100 and advanced past it
         assert!(
-            state.scan_pos.as_usize() >= 1124,
+            state.buffer_position.as_usize() >= 1124,
             "Should have advanced past the matching block at offset 100"
         );
         assert_eq!(local_map.len(), 1, "Should have found one matching block");
@@ -1754,7 +1866,7 @@ mod tests {
         // Simulate state where we're near the end of the buffer
         // bytes_in_buffer is less than what we'd need for scan_pos + block_size
         let mut state = ScannerState::new(1500); // Only 1500 bytes in buffer
-        state.scan_pos = crate::verify::types::BufferPosition::new(600); // Position at 600
+        state.buffer_position = crate::verify::types::BufferPosition::new(600); // Position at 600
 
         // This should NOT panic - we only have 900 bytes remaining (1500 - 600)
         // which is less than block_size (1024), so can_fit_block should return false
@@ -1769,7 +1881,9 @@ mod tests {
 
         // This should not panic with the fix
         let initial_crc = if state.can_fit_block(block_size) {
-            Some(compute_crc32(buffer.block_at(state.scan_pos, block_size)))
+            Some(compute_crc32(
+                buffer.block_at(state.buffer_position, block_size),
+            ))
         } else {
             None
         };
@@ -1791,8 +1905,8 @@ mod tests {
         use std::fs::File;
         use tempfile::tempdir;
 
-        let temp_dir = tempdir().unwrap();
-        let file_path = temp_dir.path().join("empty.txt");
+        let temporary_directory = tempdir().unwrap();
+        let file_path = temporary_directory.path().join("empty.txt");
 
         // Create an empty file
         File::create(&file_path).unwrap();
@@ -1807,15 +1921,16 @@ mod tests {
             non_recovery_file_ids: vec![],
         };
 
-        let mut file_desc = create_test_file_desc(FileId::new([2; 16]), 0);
-        file_desc.file_name = b"empty.txt".to_vec();
+        let mut file_description = create_test_file_desc(FileId::new([2; 16]), 0);
+        file_description.file_name = b"empty.txt".to_vec();
 
         let packets = vec![
             crate::Packet::Main(main_packet),
-            crate::Packet::FileDescription(file_desc),
+            crate::Packet::FileDescription(file_description),
         ];
 
-        let engine = GlobalVerificationEngine::from_packets(&packets, temp_dir.path()).unwrap();
+        let engine =
+            GlobalVerificationEngine::from_packets(&packets, temporary_directory.path()).unwrap();
         let reporter = crate::reporters::ConsoleVerificationReporter::new();
         let results = engine.verify_recovery_set(&reporter, false);
 
@@ -1864,7 +1979,7 @@ mod tests {
         }
 
         // Scan and find the match
-        let action = engine.scan_block_position(&buffer, &state, block_size, &mut local_map);
+        let action = engine.scan_block_position(&buffer, &mut state, block_size, &mut local_map);
         assert_eq!(
             action,
             ScanAction::SkipBlock,
@@ -1988,7 +2103,11 @@ mod tests {
         let mut local_map = HashMap::default();
 
         // Try to match the block
-        let result = engine.try_match_and_insert_block(&block_data, &mut local_map);
+        let result = engine.try_match_and_insert_block(
+            &block_data,
+            &mut local_map,
+            &mut ScannerState::new(0),
+        );
         assert_eq!(result, BlockMatchResult::Matched);
 
         // Should have entries for BOTH file IDs
@@ -2052,7 +2171,7 @@ mod tests {
         // First aligned scan should find block at 0
         engine.scan_aligned_blocks(&buffer, &mut state, block_size, &mut local_map);
         assert_eq!(
-            state.scan_pos.as_usize(),
+            state.buffer_position.as_usize(),
             1024,
             "Should stop after first block"
         );
@@ -2156,7 +2275,11 @@ mod tests {
         let mut local_map = HashMap::default();
 
         // Match the block - should find BOTH entries in the global table
-        let result = engine.try_match_and_insert_block(&block_data, &mut local_map);
+        let result = engine.try_match_and_insert_block(
+            &block_data,
+            &mut local_map,
+            &mut ScannerState::new(0),
+        );
         assert_eq!(result, BlockMatchResult::Matched);
 
         // Should have BOTH block positions recorded (blocks 0 and 1)
@@ -2428,8 +2551,8 @@ mod tests {
         use std::fs::File;
         use std::io::Write;
 
-        let temp_dir = tempfile::tempdir().unwrap();
-        let base_path = temp_dir.path();
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let base_path = temporary_directory.path();
 
         // Create file with junk at start, then valid block
         let file_path = base_path.join("test.txt");
@@ -2440,7 +2563,7 @@ mod tests {
         drop(file);
 
         let file_id = FileId::new([1; 16]);
-        let file_desc = create_test_file_desc(file_id, 1024);
+        let file_description = create_test_file_desc(file_id, 1024);
 
         let main_packet = crate::packets::MainPacket {
             length: 92,
@@ -2454,7 +2577,7 @@ mod tests {
 
         let packets = vec![
             crate::Packet::Main(main_packet),
-            crate::Packet::FileDescription(file_desc),
+            crate::Packet::FileDescription(file_description),
         ];
 
         let engine = GlobalVerificationEngine::from_packets(&packets, base_path).unwrap();
@@ -2483,8 +2606,8 @@ mod tests {
         use std::fs::File;
         use std::io::Write;
 
-        let temp_dir = tempfile::tempdir().unwrap();
-        let base_path = temp_dir.path();
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let base_path = temporary_directory.path();
 
         let file_path = base_path.join("test.txt");
         let mut file = File::create(&file_path).unwrap();
@@ -2495,7 +2618,7 @@ mod tests {
         drop(file);
 
         let file_id = FileId::new([2; 16]);
-        let file_desc = create_test_file_desc(file_id, 2048);
+        let file_description = create_test_file_desc(file_id, 2048);
 
         let main_packet = crate::packets::MainPacket {
             length: 92,
@@ -2509,7 +2632,7 @@ mod tests {
 
         let packets = vec![
             crate::Packet::Main(main_packet),
-            crate::Packet::FileDescription(file_desc),
+            crate::Packet::FileDescription(file_description),
         ];
 
         let engine = GlobalVerificationEngine::from_packets(&packets, base_path).unwrap();
@@ -2526,7 +2649,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Not implemented: file hash verification"]
+    #[ignore = "Not implemented: file hash validation"]
     fn test_file_hash_mismatch_should_be_corrupted() {
         // Reference: par2cmdline-turbo/src/par2repairer.cpp:1851-1863
         // Even if all blocks match, if hashfull or hash16k doesn't match the
@@ -2535,8 +2658,8 @@ mod tests {
         use std::fs::File;
         use std::io::Write;
 
-        let temp_dir = tempfile::tempdir().unwrap();
-        let base_path = temp_dir.path();
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let base_path = temporary_directory.path();
 
         let file_path = base_path.join("test.txt");
         let mut file = File::create(&file_path).unwrap();
@@ -2547,7 +2670,7 @@ mod tests {
 
         let file_id = FileId::new([3; 16]);
         // File desc expects 1024 bytes, not 1536
-        let file_desc = create_test_file_desc(file_id, 1024);
+        let file_description = create_test_file_desc(file_id, 1024);
 
         let main_packet = crate::packets::MainPacket {
             length: 92,
@@ -2561,7 +2684,7 @@ mod tests {
 
         let packets = vec![
             crate::Packet::Main(main_packet),
-            crate::Packet::FileDescription(file_desc),
+            crate::Packet::FileDescription(file_description),
         ];
 
         let engine = GlobalVerificationEngine::from_packets(&packets, base_path).unwrap();

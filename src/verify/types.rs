@@ -115,6 +115,10 @@ impl BytesProcessed {
         self.0
     }
 
+    pub fn as_usize(&self) -> usize {
+        self.0 as usize
+    }
+
     pub fn progress_fraction(&self, total: u64) -> f64 {
         if total == 0 {
             0.0
@@ -475,5 +479,65 @@ impl ScanBuffer {
     #[cfg(test)]
     pub fn slice(&self, range: std::ops::Range<usize>) -> &[u8] {
         &self.0[range]
+    }
+}
+
+/// Metadata collected during file scanning
+#[derive(Debug, Clone, Default)]
+pub struct FileScanMetadata {
+    /// Whether the first block found was at offset 0
+    pub first_block_at_offset_zero: bool,
+    /// Whether all blocks were found in sequence
+    pub blocks_in_sequence: bool,
+    /// Actual MD5 hash of the scanned file
+    pub actual_file_hash: Option<Md5Hash>,
+    /// Blocks found during scan with their file offsets
+    pub found_blocks: Vec<(usize, FileId, u32)>, // (file_offset, file_id, block_number)
+}
+
+impl FileScanMetadata {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_perfect_match(&self) -> bool {
+        self.first_block_at_offset_zero && self.blocks_in_sequence
+    }
+
+    /// Record that a block was found at a specific file offset
+    pub fn record_block_found(&mut self, file_offset: usize, file_id: FileId, block_number: u32) {
+        self.found_blocks.push((file_offset, file_id, block_number));
+    }
+
+    /// Analyze found blocks to determine if they're at offset 0 and in sequence
+    /// Should be called after scanning is complete
+    pub fn analyze_block_positions(&mut self, target_file_id: FileId) {
+        // Filter to only blocks from the target file and sort by offset
+        let mut target_blocks: Vec<_> = self
+            .found_blocks
+            .iter()
+            .filter(|(_, fid, _)| *fid == target_file_id)
+            .map(|(offset, _, block_num)| (*offset, *block_num))
+            .collect();
+
+        if target_blocks.is_empty() {
+            self.first_block_at_offset_zero = false;
+            self.blocks_in_sequence = false;
+            return;
+        }
+
+        // Sort by file offset
+        target_blocks.sort_by_key(|(offset, _)| *offset);
+
+        // Check if first block is at offset 0
+        self.first_block_at_offset_zero = target_blocks[0].0 == 0;
+
+        // Check if blocks are in sequence
+        self.blocks_in_sequence = target_blocks.windows(2).all(|w| w[1].1 == w[0].1 + 1);
+
+        // Also check that first block found is block 0
+        if !target_blocks.is_empty() && target_blocks[0].1 != 0 {
+            self.blocks_in_sequence = false;
+        }
     }
 }
