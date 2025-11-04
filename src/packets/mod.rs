@@ -103,10 +103,77 @@ impl Packet {
 }
 
 pub fn parse_packets<R: Read + Seek>(reader: &mut R) -> Vec<Packet> {
+    parse_packets_with_options(reader, false)
+}
+
+/// Parse packets with optional recovery slice skipping for memory efficiency
+///
+/// When `include_recovery_slices` is false, recovery slice packets are skipped
+/// entirely (only their headers are read to count them). This avoids allocating
+/// gigabytes of recovery data during verification.
+///
+/// For a PAR2 set with 98 recovery blocks of 15MB each, this saves ~1.47GB of
+/// temporary allocations during packet parsing.
+pub fn parse_packets_with_options<R: Read + Seek>(
+    reader: &mut R,
+    include_recovery_slices: bool,
+) -> Vec<Packet> {
     let mut packets = Vec::new();
 
-    while let Some(packet) = Packet::parse(reader) {
-        packets.push(packet);
+    loop {
+        // Read packet header to determine type
+        let mut header = [0u8; 64];
+        if reader.read_exact(&mut header).is_err() {
+            break;
+        }
+
+        // Check magic signature
+        if &header[0..8] != MAGIC_BYTES {
+            // Rewind and stop parsing
+            let _ = reader.seek(std::io::SeekFrom::Current(-64));
+            break;
+        }
+
+        let type_of_packet: [u8; 16] = match header[48..64].try_into() {
+            Ok(t) => t,
+            Err(_) => break,
+        };
+
+        let packet_length = u64::from_le_bytes(match header[8..16].try_into() {
+            Ok(bytes) => bytes,
+            Err(_) => break,
+        });
+
+        // Validate packet length
+        if !(64..=100 * 1024 * 1024).contains(&(packet_length as usize)) {
+            break;
+        }
+
+        // Skip recovery slice packets if not needed (huge memory savings)
+        if !include_recovery_slices && type_of_packet == recovery_slice_packet::TYPE_OF_PACKET {
+            // Seek past the packet body (we already read the 64-byte header)
+            if reader
+                .seek(std::io::SeekFrom::Current((packet_length - 64) as i64))
+                .is_err()
+            {
+                break;
+            }
+            continue;
+        }
+
+        // Read the entire packet into a buffer for fast parsing
+        let mut packet_data = vec![0u8; packet_length as usize];
+        packet_data[..64].copy_from_slice(&header);
+
+        if reader.read_exact(&mut packet_data[64..]).is_err() {
+            break;
+        }
+
+        // Parse from memory buffer
+        let mut cursor = std::io::Cursor::new(&packet_data);
+        if let Some(packet) = Packet::match_packet_type(&mut cursor, &type_of_packet) {
+            packets.push(packet);
+        }
     }
 
     packets

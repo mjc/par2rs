@@ -155,10 +155,20 @@ pub fn parse_par2_file(
     par2_file: &Path,
     seen_packet_hashes: &mut HashSet<Md5Hash>,
 ) -> IoResult<Vec<Packet>> {
+    parse_par2_file_impl(par2_file, seen_packet_hashes, false)
+}
+
+/// Internal implementation with recovery slice inclusion control
+fn parse_par2_file_impl(
+    par2_file: &Path,
+    seen_packet_hashes: &mut HashSet<Md5Hash>,
+    include_recovery_slices: bool,
+) -> IoResult<Vec<Packet>> {
     let file = fs::File::open(par2_file)?;
     // Use 1MB buffer - recovery slices can be 100KB+ each
     let mut buffered = BufReader::with_capacity(BUFFER_SIZE, file);
-    let all_packets = crate::parse_packets(&mut buffered);
+    let all_packets =
+        crate::packets::parse_packets_with_options(&mut buffered, include_recovery_slices);
 
     // Filter out packets we've already seen (based on packet MD5)
     let new_packets = all_packets
@@ -176,21 +186,21 @@ pub fn parse_par2_file(
 pub fn parse_par2_file_with_progress(
     par2_file: &Path,
     seen_packet_hashes: &mut HashSet<Md5Hash>,
-    show_progress: bool,
+    include_recovery_slices: bool,
 ) -> IoResult<(Vec<Packet>, usize)> {
     let filename = par2_file
         .file_name()
         .map(|n| n.to_string_lossy())
         .unwrap_or_else(|| "unknown".into());
 
-    if show_progress {
+    if include_recovery_slices {
         println!("Loading \"{}\".", filename);
     }
 
-    let new_packets = parse_par2_file(par2_file, seen_packet_hashes)?;
+    let new_packets = parse_par2_file_impl(par2_file, seen_packet_hashes, include_recovery_slices)?;
     let recovery_blocks = crate::packets::processing::count_recovery_blocks(&new_packets);
 
-    if show_progress {
+    if include_recovery_slices {
         print_packet_load_result(new_packets.len(), recovery_blocks);
     }
 

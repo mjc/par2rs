@@ -384,15 +384,10 @@ impl GlobalVerificationEngine {
         // Mark file as 100% scanned
         Self::report_progress(reporter_lock, &state, file_size);
 
-        // Compute file MD5 hash and store in metadata
-        if let Ok(mut file) = File::open(file_path) {
-            use crate::checksum::compute_md5_only;
-            use std::io::Read;
-
-            let mut file_data = Vec::new();
-            if file.read_to_end(&mut file_data).is_ok() {
-                state.scan_metadata.actual_file_hash = Some(compute_md5_only(&file_data));
-            }
+        // Compute file MD5 hash and store in metadata using a streaming hasher
+        // (avoid reading entire file into memory for large files)
+        if let Ok(md5) = crate::checksum::calculate_file_md5(file_path) {
+            state.scan_metadata.actual_file_hash = Some(md5);
         }
 
         (local_block_map, state.scan_metadata)

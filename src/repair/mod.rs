@@ -983,8 +983,10 @@ pub fn repair_files_with_reporter(
     // Load metadata for memory-efficient recovery slice loading
     let metadata = crate::par2_files::parse_recovery_slice_metadata(&par2_files, false);
 
-    // Load packets WITH recovery slices (repair needs the actual recovery data)
-    let packet_set = crate::par2_files::load_par2_packets(&par2_files, true);
+    // Load packets WITHOUT recovery slices (use metadata for lazy loading instead)
+    // This saves ~1.5GB of memory for large PAR2 sets since recovery data is
+    // loaded on-demand during reconstruction via RecoverySliceProvider
+    let packet_set = crate::par2_files::load_par2_packets(&par2_files, false);
     if packet_set.packets.is_empty() {
         return Err(RepairError::NoValidPackets);
     }
