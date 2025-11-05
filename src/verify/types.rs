@@ -47,10 +47,6 @@ impl BufferSize {
         self.0
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.0 == 0
-    }
-
     pub fn has_at_least(&self, block_size: BlockSize) -> bool {
         self.0 >= block_size.as_usize()
     }

@@ -16,7 +16,7 @@ mod packet_parsing {
     fn missing_magic_bytes() {
         let data = vec![0xFF; 8];
         let mut cursor = Cursor::new(data);
-        assert!(Packet::parse(&mut cursor).is_none());
+        assert!(Packet::parse(&mut cursor).is_err());
     }
 
     #[test]
@@ -26,7 +26,7 @@ mod packet_parsing {
         data[8..16].copy_from_slice(&(32u64).to_le_bytes());
         data[48..64].copy_from_slice(b"PAR 2.0\0MainPack");
         let mut cursor = Cursor::new(data);
-        assert!(Packet::parse(&mut cursor).is_none());
+        assert!(Packet::parse(&mut cursor).is_err());
     }
 
     #[test]
@@ -36,14 +36,14 @@ mod packet_parsing {
         data[8..16].copy_from_slice(&(200_000_000u64).to_le_bytes());
         data[48..64].copy_from_slice(b"PAR 2.0\0MainPack");
         let mut cursor = Cursor::new(data);
-        assert!(Packet::parse(&mut cursor).is_none());
+        assert!(Packet::parse(&mut cursor).is_err());
     }
 
     #[test]
     fn incomplete_data() {
         let data = vec![0u8; 10];
         let mut cursor = Cursor::new(data);
-        assert!(Packet::parse(&mut cursor).is_none());
+        assert!(Packet::parse(&mut cursor).is_err());
     }
 
     #[test]
@@ -53,7 +53,7 @@ mod packet_parsing {
             let mut buffer = Vec::new();
             if file.read_to_end(&mut buffer).is_ok() {
                 let mut cursor = Cursor::new(&buffer);
-                if let Some(packet) = Packet::parse(&mut cursor) {
+                if let Ok(packet) = Packet::parse(&mut cursor) {
                     let _ = packet.verify();
                 }
             }

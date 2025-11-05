@@ -664,6 +664,9 @@ impl GlobalVerificationEngine {
     }
 
     /// Scan byte-by-byte through the buffer using rolling CRC
+    /// Reference: par2cmdline-turbo/src/par2repairer.cpp:1676-1795 (byte-by-byte scan loop)
+    /// Reference: par2cmdline-turbo/src/filechecksummer.h:169-192 (Step function)
+    #[cfg(test)]
     fn scan_byte_by_byte(
         &self,
         buffer: &crate::verify::types::ScanBuffer,
@@ -672,17 +675,38 @@ impl GlobalVerificationEngine {
         block_size: crate::verify::types::BlockSize,
         local_block_map: &mut LocalBlockMap,
     ) {
+        use crate::checksum::compute_crc32;
+
+        // Initialize rolling CRC for current position if we have a full block
+        if state.can_fit_block(block_size) {
+            let initial_crc = compute_crc32(buffer.block_at(state.buffer_position, block_size));
+            state.set_rolling_crc(Some(initial_crc));
+        }
+
+        // Scan byte-by-byte through the buffer
         loop {
+            // Stop if we can't fit another block
             if !state.can_fit_block(block_size) {
                 break;
             }
 
+            // Try to match block at current position
             match self.scan_block_position(buffer, state, block_size, local_block_map) {
                 ScanAction::SkipBlock => {
+                    // Found a match - jump forward by block size
                     state.skip_block(block_size);
-                    state.update_crc_after_skip(rolling_table, buffer, block_size);
+
+                    // Recompute CRC after skip
+                    if state.can_fit_block(block_size) {
+                        let new_crc =
+                            compute_crc32(buffer.block_at(state.buffer_position, block_size));
+                        state.set_rolling_crc(Some(new_crc));
+                    } else {
+                        state.set_rolling_crc(None);
+                    }
                 }
                 ScanAction::AdvanceOneByte => {
+                    // No match - advance one byte with rolling CRC
                     state.advance_one_byte();
                     state.slide_crc_one_byte(rolling_table, buffer, block_size);
                 }

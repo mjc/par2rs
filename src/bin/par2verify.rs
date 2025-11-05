@@ -47,7 +47,7 @@ fn main() -> Result<()> {
 
     // Parse packets excluding recovery slices but validate and count them
     println!("Loading PAR2 files...\n");
-    let packet_set = par2_files::load_par2_packets(&par2_files, false);
+    let packet_set = par2_files::load_par2_packets(&par2_files, false, true);
 
     println!(); // Blank line after loading
 

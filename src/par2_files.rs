@@ -182,25 +182,26 @@ fn parse_par2_file_impl(
     Ok(new_packets)
 }
 
-/// Parse a single PAR2 file with progress output
+/// Parse a single PAR2 file with optional progress output
 pub fn parse_par2_file_with_progress(
     par2_file: &Path,
     seen_packet_hashes: &mut HashSet<Md5Hash>,
     include_recovery_slices: bool,
+    show_progress: bool,
 ) -> IoResult<(Vec<Packet>, usize)> {
     let filename = par2_file
         .file_name()
         .map(|n| n.to_string_lossy())
         .unwrap_or_else(|| "unknown".into());
 
-    if include_recovery_slices {
+    if show_progress {
         println!("Loading \"{}\".", filename);
     }
 
     let new_packets = parse_par2_file_impl(par2_file, seen_packet_hashes, include_recovery_slices)?;
     let recovery_blocks = crate::packets::processing::count_recovery_blocks(&new_packets);
 
-    if include_recovery_slices {
+    if show_progress {
         print_packet_load_result(new_packets.len(), recovery_blocks);
     }
 
@@ -237,7 +238,11 @@ fn print_packet_load_result(packet_count: usize, recovery_blocks: usize) {
 /// When `include_recovery_slices` is true:
 /// - Includes recovery slices in the returned packet list
 /// - Returns PacketSet with all_packets and recovery_block_count
-pub fn load_par2_packets(par2_files: &[PathBuf], include_recovery_slices: bool) -> PacketSet {
+pub fn load_par2_packets(
+    par2_files: &[PathBuf],
+    include_recovery_slices: bool,
+    show_progress: bool,
+) -> PacketSet {
     let mut seen_packet_hashes = HashSet::default();
     let mut recovery_block_count = 0usize;
 
@@ -246,8 +251,12 @@ pub fn load_par2_packets(par2_files: &[PathBuf], include_recovery_slices: bool) 
         .par_iter()
         .filter_map(|par2_file| {
             let mut local_seen = HashSet::default();
-            match parse_par2_file_with_progress(par2_file, &mut local_seen, include_recovery_slices)
-            {
+            match parse_par2_file_with_progress(
+                par2_file,
+                &mut local_seen,
+                include_recovery_slices,
+                show_progress,
+            ) {
                 Ok((packets, _)) => Some(packets),
                 Err(e) => {
                     eprintln!(
@@ -288,10 +297,10 @@ pub fn load_par2_packets(par2_files: &[PathBuf], include_recovery_slices: bool) 
 }
 
 /// Load all PAR2 packets INCLUDING recovery slices (in parallel)
-/// This is a convenience wrapper around load_par2_packets(files, true)
+/// This is a convenience wrapper around load_par2_packets(files, true, true)
 #[must_use]
 pub fn load_all_par2_packets(par2_files: &[PathBuf]) -> PacketSet {
-    load_par2_packets(par2_files, true)
+    load_par2_packets(par2_files, true, true)
 }
 
 /// Parse recovery slice metadata from PAR2 files without loading data into memory

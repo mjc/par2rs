@@ -220,7 +220,7 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
 
     // Parse packets including recovery slices (we need to count them for repair possibility)
     // Note: For very large PAR2 sets, this loads recovery data into memory
-    let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, true);
+    let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, true, !quiet);
 
     if !quiet {
         println!(); // Blank line after loading

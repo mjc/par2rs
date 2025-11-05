@@ -32,5 +32,6 @@ pub mod reed_solomon;
 // Re-export commonly used types for convenience (used internally and by binaries)
 pub use args::parse_args;
 pub use packets::{
-    parse_packets, InputFileSliceChecksumPacket, Packet, RecoverySliceMetadata, RecoverySlicePacket,
+    parse_packets, parse_packets_with_options, InputFileSliceChecksumPacket, Packet,
+    RecoverySliceMetadata, RecoverySlicePacket,
 };

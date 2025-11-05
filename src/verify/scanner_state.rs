@@ -49,11 +49,6 @@ impl ScannerState {
             .record_block_found(self.current_file_offset(), file_id, block_number);
     }
 
-    /// Check if we're at end of file (no more data in buffer)
-    pub fn at_eof(&self) -> bool {
-        self.bytes_in_buffer.is_empty()
-    }
-
     /// Check if we can fit a full block starting at current scan position
     pub fn can_fit_block(&self, block_size: BlockSize) -> bool {
         self.buffer_position
@@ -97,11 +92,6 @@ impl ScannerState {
         self.rolling_crc = crc;
     }
 
-    /// Reset scan position to start of buffer
-    pub fn reset_scan_pos(&mut self) {
-        self.buffer_position = BufferPosition::zero();
-    }
-
     /// Update state after sliding the buffer window
     /// Reference: par2cmdline-turbo/src/filechecksummer.cpp:110-163 (Jump function)
     /// When we slide, we keep blocksize bytes at the start of the buffer and discard earlier data
@@ -123,26 +113,6 @@ impl ScannerState {
     /// Check if we have enough data to slide the window
     pub fn can_slide_window(&self, block_size: BlockSize) -> bool {
         self.bytes_in_buffer.has_at_least(block_size)
-    }
-
-    /// Update rolling CRC after skipping forward by a full block (recompute from scratch)
-    pub fn update_crc_after_skip(
-        &mut self,
-        rolling_table: &crate::checksum::rolling_crc::RollingCrcTable,
-        buffer: &crate::verify::types::ScanBuffer,
-        block_size: BlockSize,
-    ) {
-        use crate::domain::Crc32Value;
-
-        let new_crc = rolling_table
-            .compute_crc_at_position(
-                buffer.as_slice(),
-                self.buffer_position.as_usize(),
-                block_size.as_usize(),
-                self.bytes_in_buffer.as_usize(),
-            )
-            .map(Crc32Value::new);
-        self.set_rolling_crc(new_crc);
     }
 
     /// Slide rolling CRC forward by one byte using rolling window algorithm
@@ -167,6 +137,31 @@ impl ScannerState {
             self.set_rolling_crc(new_crc);
         }
     }
+
+    /// Update CRC after skipping forward (recomputes from scratch at new position)
+    /// Used after finding a block match - we skip ahead and need to recompute CRC
+    /// Reference: par2cmdline-turbo/src/crc.cpp:119-122
+    #[cfg(test)]
+    pub fn update_crc_after_skip(
+        &mut self,
+        _rolling_table: &crate::checksum::rolling_crc::RollingCrcTable,
+        buffer: &crate::verify::types::ScanBuffer,
+        block_size: BlockSize,
+    ) {
+        use crate::checksum::compute_crc32;
+
+        // Check if we can fit another block at current position
+        if !self.can_fit_block(block_size) {
+            self.clear_rolling_crc();
+            return;
+        }
+
+        // Recompute CRC for the block at current position
+        let start = self.buffer_position.as_usize();
+        let end = start + block_size.as_usize();
+        let crc = compute_crc32(buffer.slice(start..end));
+        self.set_rolling_crc(Some(crc));
+    }
 }
 
 #[cfg(test)]
@@ -177,18 +172,8 @@ mod tests {
     fn test_scanner_state_creation() {
         let state = ScannerState::new(2048);
         assert_eq!(state.bytes_in_buffer.as_usize(), 2048);
-        assert!(!state.at_eof());
         assert_eq!(state.buffer_position, BufferPosition::zero());
         assert!(matches!(state.scan_phase, ScanPhase::FirstBuffer));
-    }
-
-    #[test]
-    fn test_eof_detection() {
-        let mut state = ScannerState::new(0);
-        assert!(state.at_eof());
-
-        state.bytes_in_buffer = BufferSize::new(100);
-        assert!(!state.at_eof());
     }
 
     #[test]
