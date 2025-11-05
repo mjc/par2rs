@@ -336,37 +336,15 @@ impl GlobalVerificationEngine {
         // Initialize scanner state (includes scan metadata)
         let mut state = ScannerState::new(bytes_read);
 
+        // PHASE 1 & 1.5: Aligned blocks and short file detection
+        // The type system ensures short files are handled completely here
+
         // PHASE 1: Try aligned blocks at file start (fast path for well-formed files)
         self.scan_aligned_blocks(&buffer, &mut state, block_size, &mut local_block_map);
 
-        log::debug!(
-            "After aligned scan: buffer_position={}, bytes_in_buffer={}, blocks_found={}",
-            state.buffer_position.as_usize(),
-            state.bytes_in_buffer.as_usize(),
-            local_block_map.len()
-        );
-
-        // If aligned scan consumed the buffer, refill before byte-by-byte scan
-        if !state.can_fit_block(block_size) && state.bytes_processed.as_u64() < file_size.as_u64() {
-            log::debug!("Buffer depleted after aligned scan, sliding and refilling");
-            match Self::slide_buffer_window(&mut file, &mut buffer, &mut state, block_size) {
-                Ok(BufferSlideResult::Success) => {
-                    Self::report_progress(reporter_lock, &state, file_size);
-                    log::debug!(
-                        "After refill: buffer_position={}, bytes_in_buffer={}",
-                        state.buffer_position.as_usize(),
-                        state.bytes_in_buffer.as_usize()
-                    );
-                }
-                Ok(BufferSlideResult::CannotSlide) => {
-                    log::debug!("Cannot slide after aligned scan");
-                }
-                Err(_) => return (local_block_map, FileScanMetadata::new()),
-            }
-        }
-
-        // PHASE 1.5: Handle files that are entirely smaller than one block
-        // If we're still at position 0 and have less than a full block, this is a partial block file
+        // PHASE 1.5: Detect and handle files entirely smaller than one block
+        // This is the ONLY place where short files should be processed
+        // Reference: par2cmdline-turbo handles short files in filechecksummer.cpp
         if state.is_remainder_at_start() && state.remainder_size(block_size) > 0 {
             let partial_data = buffer.slice_from(state.buffer_position, state.bytes_in_buffer);
             self.try_match_and_insert_partial_block(
@@ -375,6 +353,16 @@ impl GlobalVerificationEngine {
                 &mut local_block_map,
                 &mut state,
             );
+
+            // Short file is now complete - mark as 100% scanned and compute file hash
+            Self::report_progress(reporter_lock, &state, file_size);
+
+            if let Ok(md5) = crate::checksum::calculate_file_md5(file_path) {
+                state.scan_metadata.actual_file_hash = Some(md5);
+            }
+
+            // Return early - file is complete, prevent duplicate detection in Phase 2
+            return (local_block_map, state.scan_metadata);
         }
 
         // PHASE 2: Byte-by-byte scanning through entire file
@@ -777,16 +765,27 @@ impl GlobalVerificationEngine {
         // Check if blocks are perfectly aligned (first at offset 0 and in sequence)
         // Reference: par2repairer.cpp:1722-1725, 1728-1732
         if !metadata.is_perfect_match() {
+            log::debug!(
+                "File marked corrupted: not perfect match (first_at_zero={}, in_sequence={})",
+                metadata.first_block_at_offset_zero,
+                metadata.blocks_in_sequence
+            );
             return FileStatus::Corrupted;
         }
 
         // Check file hash matches (par2repairer.cpp:1851-1863)
         if let Some(actual_hash) = &metadata.actual_file_hash {
             if actual_hash != expected_hash {
+                log::debug!(
+                    "File marked corrupted: hash mismatch (actual={:?}, expected={:?})",
+                    actual_hash,
+                    expected_hash
+                );
                 return FileStatus::Corrupted;
             }
         } else {
             // Could not compute hash - mark as corrupted
+            log::debug!("File marked corrupted: no file hash computed");
             return FileStatus::Corrupted;
         }
 

@@ -277,6 +277,13 @@ fn test_comprehensive_verify_with_padding() {
     let file_md5 = compute_md5(content1);
     let md5_16k_1 = compute_md5(&content1[..content1.len().min(16384)]);
 
+    println!("Test setup:");
+    println!("  Content: {:?} ({} bytes)", content1, content1.len());
+    println!("  Block size: {}", block_size);
+    println!("  Block MD5: {:?}", md5_1);
+    println!("  Block CRC32: {:?}", crc32_1);
+    println!("  File MD5: {:?}", file_md5);
+
     let packets = vec![
         Packet::Main(create_main_packet(vec![file_id1], block_size)),
         Packet::FileDescription(create_file_desc(
