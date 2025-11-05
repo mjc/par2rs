@@ -312,11 +312,45 @@ impl GlobalVerificationEngine {
             Err(_) => return (local_block_map, FileScanMetadata::new()),
         };
 
+        log::debug!(
+            "Starting scan: block_size={}, buffer_capacity={}, bytes_read={}, file_size={}",
+            block_size.as_usize(),
+            buffer_capacity,
+            bytes_read,
+            file_size.as_u64()
+        );
+
         // Initialize scanner state (includes scan metadata)
         let mut state = ScannerState::new(bytes_read);
 
         // PHASE 1: Try aligned blocks at file start (fast path for well-formed files)
         self.scan_aligned_blocks(&buffer, &mut state, block_size, &mut local_block_map);
+
+        log::debug!(
+            "After aligned scan: buffer_position={}, bytes_in_buffer={}, blocks_found={}",
+            state.buffer_position.as_usize(),
+            state.bytes_in_buffer.as_usize(),
+            local_block_map.len()
+        );
+
+        // If aligned scan consumed the buffer, refill before byte-by-byte scan
+        if !state.can_fit_block(block_size) && state.bytes_processed.as_u64() < file_size.as_u64() {
+            log::debug!("Buffer depleted after aligned scan, sliding and refilling");
+            match Self::slide_buffer_window(&mut file, &mut buffer, &mut state, block_size) {
+                Ok(BufferSlideResult::Success) => {
+                    Self::report_progress(reporter_lock, &state, file_size);
+                    log::debug!(
+                        "After refill: buffer_position={}, bytes_in_buffer={}",
+                        state.buffer_position.as_usize(),
+                        state.bytes_in_buffer.as_usize()
+                    );
+                }
+                Ok(BufferSlideResult::CannotSlide) => {
+                    log::debug!("Cannot slide after aligned scan");
+                }
+                Err(_) => return (local_block_map, FileScanMetadata::new()),
+            }
+        }
 
         // PHASE 1.5: Handle files that are entirely smaller than one block
         // If we're still at position 0 and have less than a full block, this is a partial block file
@@ -330,54 +364,92 @@ impl GlobalVerificationEngine {
             );
         }
 
-        // PHASE 2: Byte-by-byte scanning with rolling CRC for remainder of file
+        // PHASE 2: Byte-by-byte scanning through entire file
+        // Reference: par2cmdline-turbo/src/par2repairer.cpp:1676-1795 (byte-by-byte scan loop)
+        // Reference: par2cmdline-turbo/src/filechecksummer.h:169-192 (Step function)
+
+        // Initialize rolling CRC for current position if we have a full block
+        if state.can_fit_block(block_size) {
+            let initial_crc = compute_crc32(buffer.block_at(state.buffer_position, block_size));
+            state.set_rolling_crc(Some(initial_crc));
+        }
+
+        // Scan byte-by-byte through the entire file (like par2cmdline-turbo's Step loop)
+        let mut step_count = 0;
         loop {
-            if state.at_eof() {
-                break;
-            }
+            step_count += 1;
 
-            // Initialize rolling CRC for this buffer window
-            let initial_crc = if state.can_fit_block(block_size) {
-                Some(compute_crc32(
-                    buffer.block_at(state.buffer_position, block_size),
-                ))
-            } else {
-                None
-            };
-            state.set_rolling_crc(initial_crc);
-
-            // Scan byte-by-byte within the current buffer
-            self.scan_byte_by_byte(
-                &buffer,
-                &mut state,
-                &rolling_table,
-                block_size,
-                &mut local_block_map,
-            );
-
-            // Handle partial block at end of buffer
-            if state.remainder_size(block_size) > 0 && !state.is_remainder_at_start() {
-                let partial_data = buffer.slice_from(state.buffer_position, state.bytes_in_buffer);
-                self.try_match_and_insert_partial_block(
-                    partial_data,
-                    block_size.as_usize(),
-                    &mut local_block_map,
-                    &mut state,
+            // Check if we've reached end of file
+            if state.bytes_processed.as_u64() >= file_size.as_u64() {
+                log::debug!(
+                    "Reached EOF after {} steps, found {} blocks",
+                    step_count,
+                    local_block_map.len()
                 );
-            }
-
-            // Check if we're at a partial block at the start (can't slide further)
-            if state.is_remainder_at_start() {
                 break;
             }
 
-            // Slide window forward and read more data
-            match Self::slide_buffer_window(&mut file, &mut buffer, &mut state, block_size) {
-                Ok(BufferSlideResult::Success) => {
-                    Self::report_progress(reporter_lock, &state, file_size);
+            // Handle partial block at end of file
+            if !state.can_fit_block(block_size) {
+                if state.remainder_size(block_size) > 0 {
+                    let partial_data =
+                        buffer.slice_from(state.buffer_position, state.bytes_in_buffer);
+                    self.try_match_and_insert_partial_block(
+                        partial_data,
+                        block_size.as_usize(),
+                        &mut local_block_map,
+                        &mut state,
+                    );
                 }
-                Ok(BufferSlideResult::CannotSlide) => break,
-                Err(_) => break,
+                log::debug!(
+                    "Cannot fit block, exiting after {} steps, found {} blocks",
+                    step_count,
+                    local_block_map.len()
+                );
+                break;
+            }
+
+            // Try to match block at current position
+            match self.scan_block_position(&buffer, &mut state, block_size, &mut local_block_map) {
+                ScanAction::SkipBlock => {
+                    // Found a match - jump forward by block size (like par2cmdline-turbo's Jump)
+                    state.skip_block(block_size);
+
+                    // Recompute CRC after skip (can't roll forward a full block)
+                    if state.can_fit_block(block_size) {
+                        let new_crc =
+                            compute_crc32(buffer.block_at(state.buffer_position, block_size));
+                        state.set_rolling_crc(Some(new_crc));
+                    } else {
+                        state.set_rolling_crc(None);
+                    }
+                }
+                ScanAction::AdvanceOneByte => {
+                    // No match - advance one byte with rolling CRC (like par2cmdline-turbo's Step)
+                    state.advance_one_byte();
+                    state.slide_crc_one_byte(&rolling_table, &buffer, block_size);
+                }
+            }
+
+            // Check if we need to refill the buffer
+            // When buffer position reaches blocksize, slide the buffer to keep data available
+            if state.buffer_position.as_usize() >= block_size.as_usize() {
+                match Self::slide_buffer_window(&mut file, &mut buffer, &mut state, block_size) {
+                    Ok(BufferSlideResult::Success) => {
+                        Self::report_progress(reporter_lock, &state, file_size);
+
+                        // Recompute CRC at new buffer position
+                        if state.can_fit_block(block_size) {
+                            let new_crc =
+                                compute_crc32(buffer.block_at(state.buffer_position, block_size));
+                            state.set_rolling_crc(Some(new_crc));
+                        } else {
+                            state.set_rolling_crc(None);
+                        }
+                    }
+                    Ok(BufferSlideResult::CannotSlide) => break,
+                    Err(_) => break,
+                }
             }
         }
 
@@ -537,6 +609,9 @@ impl GlobalVerificationEngine {
     }
 
     /// Scan aligned blocks at the start of a buffer (optimization for well-formed files)
+    /// Reference: par2cmdline-turbo/src/par2repairer.cpp:1702-1720 (checks aligned positions first)
+    /// This function does NOT advance buffer_position - it just tries aligned positions
+    /// The byte-by-byte scan will start from wherever this leaves off
     fn scan_aligned_blocks(
         &self,
         buffer: &crate::verify::types::ScanBuffer,
@@ -555,25 +630,24 @@ impl GlobalVerificationEngine {
         let mut pos = 0;
         while pos + block_size_usize <= bytes_in_buffer {
             // Temporarily set buffer position for the scan
-            let old_pos = state.buffer_position;
             state.buffer_position = crate::verify::types::BufferPosition::new(pos);
 
             let block_data =
                 buffer.block_at(crate::verify::types::BufferPosition::new(pos), block_size);
             let matched = self.try_match_and_insert_block(block_data, local_block_map, state);
 
-            // Restore position
-            state.buffer_position = old_pos;
-
             if !matched.is_match() {
-                // Stop at first non-match
-                break;
+                // Stop at first non-match - this is where byte-by-byte scanning should start
+                state.buffer_position = crate::verify::types::BufferPosition::new(pos);
+                return;
             }
 
             pos += block_size_usize;
         }
 
-        state.buffer_position = crate::verify::types::BufferPosition::new(pos);
+        // If we scanned all aligned positions, start byte-by-byte from position 0
+        // (we'll revisit these positions but with rolling CRC this time)
+        state.buffer_position = crate::verify::types::BufferPosition::zero();
     }
 
     /// Scan byte-by-byte through the buffer using rolling CRC

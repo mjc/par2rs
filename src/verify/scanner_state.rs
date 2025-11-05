@@ -103,11 +103,20 @@ impl ScannerState {
     }
 
     /// Update state after sliding the buffer window
+    /// Reference: par2cmdline-turbo/src/filechecksummer.cpp:110-163 (Jump function)
+    /// When we slide, we keep blocksize bytes at the start of the buffer and discard earlier data
+    /// The buffer_position stays relative to the new buffer start
     pub fn slide_window(&mut self, block_size: BlockSize, new_bytes_in_buffer: BufferSize) {
         self.scan_phase.mark_advanced();
         self.bytes_in_buffer = new_bytes_in_buffer;
         self.bytes_processed.advance_by(block_size);
-        self.reset_scan_pos();
+        // Buffer position adjusts by -blocksize (we kept blocksize bytes, discarded earlier data)
+        // So if we were at position 1500 and blocksize is 1024, we're now at position 476
+        self.buffer_position = BufferPosition::new(
+            self.buffer_position
+                .as_usize()
+                .saturating_sub(block_size.as_usize()),
+        );
         self.clear_rolling_crc();
     }
 
