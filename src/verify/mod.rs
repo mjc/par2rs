@@ -28,7 +28,10 @@ pub use global_engine::{GlobalFileVerificationResult, GlobalVerificationEngine};
 pub use global_table::{
     GlobalBlockEntry, GlobalBlockPosition, GlobalBlockTable, GlobalBlockTableBuilder,
 };
-pub use types::{BlockVerificationResult, FileStatus, FileVerificationResult, VerificationResults};
+pub use types::{
+    BlockVerificationResult, FileScanMetadata, FileStatus, FileVerificationResult,
+    VerificationResults,
+};
 pub use utils::extract_file_name;
 pub use validation::{validate_slices_crc32, validate_slices_crc32_with_progress};
 pub use verifier::FileVerifier;
