@@ -83,6 +83,8 @@ pub struct GlobalVerificationEngine {
     file_descriptions: HashMap<FileId, FileDescriptionPacket>,
     /// Base directory for file operations
     base_dir: std::path::PathBuf,
+    /// Number of recovery blocks available
+    recovery_block_count: usize,
 }
 
 /// Result of verifying a single file using global block table
@@ -114,6 +116,15 @@ impl GlobalVerificationEngine {
         let file_descriptions = crate::packets::processing::extract_file_descriptions(packets);
         let slice_checksums = crate::packets::processing::extract_slice_checksums(packets);
 
+        // Count recovery blocks available
+        let recovery_block_count = packets
+            .iter()
+            .filter_map(|p| match p {
+                crate::Packet::RecoverySlice(_) => Some(1),
+                _ => None,
+            })
+            .sum();
+
         // Build global block table
         let mut builder = GlobalBlockTableBuilder::new(block_size);
 
@@ -135,6 +146,7 @@ impl GlobalVerificationEngine {
             block_table,
             file_descriptions: file_lookup,
             base_dir: base_dir.as_ref().to_path_buf(),
+            recovery_block_count,
         })
     }
 
@@ -163,8 +175,9 @@ impl GlobalVerificationEngine {
         let file_results = self.create_file_results(&available_blocks, &file_statuses);
         let block_results = self.create_block_verification_results(&available_blocks);
 
-        // TODO: Extract recovery blocks available from recovery packets
-        let recovery_blocks_available = 0;
+        // Count recovery blocks available from recovery packets
+        // Note: We count ALL recovery packets that were loaded, not just those needed
+        let recovery_blocks_available = self.recovery_block_count;
 
         VerificationResults::from_file_results(
             file_results,
@@ -986,6 +999,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1060,6 +1074,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1111,6 +1126,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1169,6 +1185,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1537,6 +1554,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1680,6 +1698,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1740,6 +1759,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1796,6 +1816,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1842,6 +1863,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1890,6 +1912,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1939,6 +1962,7 @@ mod tests {
         let block_table = builder.build();
 
         let _engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -2055,6 +2079,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -2113,6 +2138,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -2186,6 +2212,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -2250,6 +2277,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -2294,6 +2322,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -2358,6 +2387,7 @@ mod tests {
         let block_table = builder.build();
 
         let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),

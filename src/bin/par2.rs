@@ -218,9 +218,9 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         println!("Loading PAR2 files...\n");
     }
 
-    // Parse packets excluding recovery slices but validate and count them
-    // This is more memory-efficient than loading all recovery data
-    let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false);
+    // Parse packets including recovery slices (we need to count them for repair possibility)
+    // Note: For very large PAR2 sets, this loads recovery data into memory
+    let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, true);
 
     if !quiet {
         println!(); // Blank line after loading
