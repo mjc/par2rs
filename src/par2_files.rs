@@ -4,7 +4,7 @@
 //! It includes utilities for finding PAR2 files in a directory and parsing their
 //! packet structures from disk with minimal memory overhead.
 
-use crate::domain::{Md5Hash, RecoverySetId};
+use crate::domain::Md5Hash;
 use crate::Packet;
 use rayon::prelude::*;
 use rustc_hash::FxHashSet as HashSet;
@@ -93,44 +93,37 @@ const TYPE_END: usize = 64;
 /// Find all PAR2 files in a directory, excluding the specified file
 #[must_use]
 pub fn find_par2_files_in_directory(folder_path: &Path, exclude_file: &Path) -> Vec<PathBuf> {
-    match fs::read_dir(folder_path) {
-        Ok(entries) => entries
-            .filter_map(|entry| {
-                let path = entry.ok()?.path();
-                (path.extension().is_some_and(|ext| ext == "par2") && path != exclude_file)
-                    .then_some(path)
-            })
-            .collect(),
-        Err(e) => {
+    fs::read_dir(folder_path)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.extension().is_some_and(|ext| ext == "par2") && path != exclude_file
+                })
+                .collect()
+        })
+        .unwrap_or_else(|e| {
             eprintln!(
                 "Warning: Failed to read directory {}: {}",
                 folder_path.display(),
                 e
             );
             Vec::new()
-        }
-    }
+        })
 }
 
 /// Collect all PAR2 files related to the input file (main file + volume files)
 #[must_use]
 pub fn collect_par2_files(file_path: &Path) -> Vec<PathBuf> {
-    let mut par2_files = vec![file_path.to_path_buf()];
-
     // Get the directory containing the PAR2 file
-    let folder_path = if file_path.is_absolute() {
-        // For absolute paths, use the parent directory
-        file_path.parent().unwrap_or(Path::new("."))
-    } else {
-        // For relative paths, get the parent or use current directory
-        match file_path.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => parent,
-            _ => Path::new("."),
-        }
-    };
+    let folder_path = file_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
 
-    let additional_files = find_par2_files_in_directory(folder_path, file_path);
-    par2_files.extend(additional_files);
+    let mut par2_files = vec![file_path.to_path_buf()];
+    par2_files.extend(find_par2_files_in_directory(folder_path, file_path));
 
     // Sort files to match system par2verify order
     par2_files.sort();
@@ -171,54 +164,94 @@ fn parse_par2_file_impl(
         crate::packets::parse_packets_with_options(&mut buffered, include_recovery_slices);
 
     // Filter out packets we've already seen (based on packet MD5)
-    let new_packets = all_packets
+    Ok(all_packets
         .into_iter()
-        .filter_map(|packet| {
-            let packet_hash = get_packet_hash(&packet);
-            seen_packet_hashes.insert(packet_hash).then_some(packet)
+        .filter(|packet| {
+            let packet_hash = get_packet_hash(packet);
+            seen_packet_hashes.insert(packet_hash)
         })
-        .collect();
+        .collect())
+}
 
-    Ok(new_packets)
+/// Parse result containing packets and metadata
+#[derive(Debug)]
+struct ParseResult {
+    packets: Vec<Packet>,
+    recovery_block_count: usize,
+}
+
+impl ParseResult {
+    /// Create a new parse result, computing recovery block count from packets
+    fn new(packets: Vec<Packet>) -> Self {
+        let recovery_block_count = crate::packets::processing::count_recovery_blocks(&packets);
+        Self {
+            packets,
+            recovery_block_count,
+        }
+    }
 }
 
 /// Parse a single PAR2 file with optional progress output
+fn parse_single_file(
+    par2_file: &Path,
+    include_recovery_slices: bool,
+    show_progress: bool,
+) -> IoResult<ParseResult> {
+    let filename = par2_file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
+
+    if show_progress {
+        println!("Loading \"{}\".", filename);
+    }
+
+    // Parse without deduplication - that happens at the global level
+    let file = fs::File::open(par2_file)?;
+    let mut buffered = BufReader::with_capacity(BUFFER_SIZE, file);
+    let packets =
+        crate::packets::parse_packets_with_options(&mut buffered, include_recovery_slices);
+
+    let result = ParseResult::new(packets);
+
+    if show_progress {
+        print_packet_load_result(result.packets.len(), result.recovery_block_count);
+    }
+
+    Ok(result)
+}
+
+/// Legacy wrapper for compatibility - prefer parse_single_file
 pub fn parse_par2_file_with_progress(
     par2_file: &Path,
     seen_packet_hashes: &mut HashSet<Md5Hash>,
     include_recovery_slices: bool,
     show_progress: bool,
 ) -> IoResult<(Vec<Packet>, usize)> {
-    let filename = par2_file
-        .file_name()
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_else(|| "unknown".into());
+    let result = parse_single_file(par2_file, include_recovery_slices, show_progress)?;
 
-    if show_progress {
-        println!("Loading \"{}\".", filename);
-    }
+    // Apply deduplication using the provided set
+    let new_packets: Vec<Packet> = result
+        .packets
+        .into_iter()
+        .filter(|p| {
+            let packet_hash = get_packet_hash(p);
+            seen_packet_hashes.insert(packet_hash)
+        })
+        .collect();
 
-    let new_packets = parse_par2_file_impl(par2_file, seen_packet_hashes, include_recovery_slices)?;
     let recovery_blocks = crate::packets::processing::count_recovery_blocks(&new_packets);
-
-    if show_progress {
-        print_packet_load_result(new_packets.len(), recovery_blocks);
-    }
-
     Ok((new_packets, recovery_blocks))
 }
 
 /// Print the result of loading packets from a file
 fn print_packet_load_result(packet_count: usize, recovery_blocks: usize) {
-    if packet_count == 0 {
-        println!("No new packets found");
-    } else if recovery_blocks > 0 {
-        println!(
-            "Loaded {} new packets including {} recovery blocks",
-            packet_count, recovery_blocks
-        );
-    } else {
-        println!("Loaded {} new packets", packet_count);
+    match (packet_count, recovery_blocks) {
+        (0, _) => println!("No new packets found"),
+        (count, 0) => println!("Loaded {count} new packets"),
+        (count, blocks) => {
+            println!("Loaded {count} new packets including {blocks} recovery blocks")
+        }
     }
 }
 
@@ -243,46 +276,45 @@ pub fn load_par2_packets(
     include_recovery_slices: bool,
     show_progress: bool,
 ) -> PacketSet {
-    let mut seen_packet_hashes = HashSet::default();
-    let mut recovery_block_count = 0usize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    // Parse files in parallel
+    // Parse files in parallel and collect results
+    let total_recovery_blocks = AtomicUsize::new(0);
+
     let all_packets: Vec<Vec<Packet>> = par2_files
         .par_iter()
         .filter_map(|par2_file| {
-            let mut local_seen = HashSet::default();
-            match parse_par2_file_with_progress(
-                par2_file,
-                &mut local_seen,
-                include_recovery_slices,
-                show_progress,
-            ) {
-                Ok((packets, _)) => Some(packets),
-                Err(e) => {
+            parse_single_file(par2_file, include_recovery_slices, show_progress)
+                .map(|result| {
+                    // Accumulate recovery block count atomically
+                    total_recovery_blocks.fetch_add(result.recovery_block_count, Ordering::Relaxed);
+                    result.packets
+                })
+                .map_err(|e| {
                     eprintln!(
                         "Warning: Failed to parse PAR2 file {}: {}",
                         par2_file.display(),
                         e
                     );
-                    None
-                }
-            }
+                    e
+                })
+                .ok()
         })
         .collect();
 
-    // Deduplicate and filter in a single pass
+    // Deduplicate packets in a single pass
+    let mut seen_hashes = HashSet::default();
     let packets: Vec<Packet> = all_packets
         .into_iter()
         .flatten()
-        .filter(|p| {
-            // Count recovery slices before filtering
-            if matches!(p, Packet::RecoverySlice(_)) {
-                recovery_block_count += 1;
-                return include_recovery_slices;
+        .filter(|packet| {
+            // Skip recovery slices if not including them (already counted above)
+            if !include_recovery_slices && matches!(packet, Packet::RecoverySlice(_)) {
+                return false;
             }
             // Deduplicate based on packet hash
-            let packet_hash = get_packet_hash(p);
-            seen_packet_hashes.insert(packet_hash)
+            let packet_hash = get_packet_hash(packet);
+            seen_hashes.insert(packet_hash)
         })
         .collect();
 
@@ -290,10 +322,10 @@ pub fn load_par2_packets(
     let base_dir = par2_files
         .first()
         .and_then(|p| p.parent())
-        .map(|p| p.to_path_buf())
+        .map(ToOwned::to_owned)
         .unwrap_or_else(|| PathBuf::from("."));
 
-    PacketSet::new(packets, recovery_block_count, base_dir)
+    PacketSet::new(packets, total_recovery_blocks.into_inner(), base_dir)
 }
 
 /// Load all PAR2 packets INCLUDING recovery slices (in parallel)
@@ -311,28 +343,31 @@ pub fn parse_recovery_slice_metadata(
     par2_files: &[PathBuf],
     show_progress: bool,
 ) -> Vec<crate::RecoverySliceMetadata> {
-    let mut seen_recovery_slices: HashSet<(RecoverySetId, u32)> = HashSet::default();
-
     // Parse files in parallel
     let all_metadata: Vec<Vec<crate::RecoverySliceMetadata>> = par2_files
         .par_iter()
         .filter_map(|par2_file| {
             parse_recovery_metadata_from_file(par2_file, show_progress)
-                .ok()
-                .or_else(|| {
-                    eprintln!("Warning: Failed to parse PAR2 file {}", par2_file.display());
-                    None
+                .map_err(|e| {
+                    eprintln!(
+                        "Warning: Failed to parse PAR2 file {}: {}",
+                        par2_file.display(),
+                        e
+                    );
+                    e
                 })
+                .ok()
         })
         .collect();
 
-    // Deduplicate recovery slices
+    // Deduplicate recovery slices based on (set_id, exponent)
+    let mut seen_recovery_slices = HashSet::default();
     all_metadata
         .into_iter()
         .flatten()
-        .filter_map(|metadata| {
+        .filter(|metadata| {
             let dedup_key = (metadata.set_id, metadata.exponent);
-            seen_recovery_slices.insert(dedup_key).then_some(metadata)
+            seen_recovery_slices.insert(dedup_key)
         })
         .collect()
 }
