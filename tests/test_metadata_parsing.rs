@@ -57,7 +57,7 @@ fn test_metadata_parsing_vs_packet_parsing() {
         let file = File::open(par2_file).unwrap();
         let mut reader = BufReader::new(file);
         // Use parse_packets_with_options to include recovery slices
-        let packets = par2rs::parse_packets_with_options(&mut reader, true);
+        let (packets, _recovery_count) = par2rs::parse_packets_with_options(&mut reader, true);
         packet_recovery_count += packets
             .iter()
             .filter(|p| matches!(p, par2rs::Packet::RecoverySlice(_)))

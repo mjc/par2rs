@@ -194,7 +194,8 @@ impl Packet {
 ///
 /// Returns empty vector if any I/O errors occur or no valid packets found.
 pub fn parse_packets<R: Read + Seek>(reader: &mut R) -> Vec<Packet> {
-    parse_packets_with_options(reader, false)
+    let (packets, _recovery_count) = parse_packets_with_options(reader, false);
+    packets
 }
 
 /// Parse packets with optional recovery slice inclusion
@@ -211,11 +212,15 @@ pub fn parse_packets<R: Read + Seek>(reader: &mut R) -> Vec<Packet> {
 ///
 /// Reference: par2cmdline-turbo/src/par2repairer.cpp:458-550
 /// The reference implementation reads all packets but we optimize by skipping recovery data.
+///
+/// Returns (packets, recovery_block_count) where recovery_block_count includes validated
+/// recovery blocks even when include_recovery_slices=false.
 pub fn parse_packets_with_options<R: Read + Seek>(
     reader: &mut R,
     include_recovery_slices: bool,
-) -> Vec<Packet> {
+) -> (Vec<Packet>, usize) {
     let mut packets = Vec::new();
+    let mut recovery_block_count = 0;
 
     loop {
         // Try to parse packet header
@@ -242,7 +247,10 @@ pub fn parse_packets_with_options<R: Read + Seek>(
         // Special handling for recovery slice packets when not loading data
         if !include_recovery_slices && header.packet_type == recovery_slice_packet::TYPE_OF_PACKET {
             // Validate the recovery packet structure without loading data
-            if validate_recovery_packet_header(reader, &header).is_err() {
+            if validate_recovery_packet_header(reader, &header).is_ok() {
+                // Valid recovery packet - count it but don't load into memory
+                recovery_block_count += 1;
+            } else {
                 // Invalid recovery packet - skip it
                 if reader
                     .seek(std::io::SeekFrom::Current((header.length - 64) as i64))
@@ -251,7 +259,6 @@ pub fn parse_packets_with_options<R: Read + Seek>(
                     break;
                 }
             }
-            // Valid recovery packet validated, but not loaded
             continue;
         }
 
@@ -263,12 +270,16 @@ pub fn parse_packets_with_options<R: Read + Seek>(
 
         let mut cursor = std::io::Cursor::new(&packet_data);
         if let Ok(packet) = Packet::match_packet_type(&mut cursor, &header.packet_type) {
+            // Count recovery slices when we're loading them
+            if matches!(packet, Packet::RecoverySlice(_)) {
+                recovery_block_count += 1;
+            }
             packets.push(packet);
         }
         // Note: We silently skip unknown packet types to maintain forward compatibility
     }
 
-    packets
+    (packets, recovery_block_count)
 }
 
 /// Validate a recovery packet by loading it into a buffer and verifying MD5

@@ -251,7 +251,7 @@ mod recovery_skip_behavior {
 
         // This will try to parse the recovery packet (and likely fail due to missing data)
         // but it won't skip it like the default behavior
-        let _packets = parse_packets_with_options(&mut cursor, true);
+        let (_packets, _) = parse_packets_with_options(&mut cursor, true);
 
         // The packet structure is minimal so parsing may fail, but the skip didn't happen
         // We can verify by checking cursor position
@@ -327,12 +327,12 @@ mod real_world_scenarios {
         let fixture_path = "tests/fixtures/testfile.par2";
         if let Ok(file) = File::open(fixture_path) {
             let mut reader = BufReader::new(file);
-            let packets_with_recovery = parse_packets_with_options(&mut reader, true);
+            let (packets_with_recovery, _) = parse_packets_with_options(&mut reader, true);
 
             // Reopen and parse without recovery
             let file2 = File::open(fixture_path).unwrap();
             let mut reader2 = BufReader::new(file2);
-            let packets_without_recovery = parse_packets_with_options(&mut reader2, false);
+            let (packets_without_recovery, _) = parse_packets_with_options(&mut reader2, false);
 
             // Should have more packets when including recovery
             assert!(

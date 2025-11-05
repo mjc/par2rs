@@ -218,14 +218,15 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         println!("Loading PAR2 files...\n");
     }
 
-    // Parse packets including recovery slices (we need to count them for repair possibility)
-    // Note: For very large PAR2 sets, this loads recovery data into memory
-    let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, true, !quiet);
+    // Parse packets excluding recovery slices but validate and count them
+    // Recovery slice data is NOT loaded into memory (saves gigabytes for large PAR2 sets)
+    // but they are validated and counted for repair possibility checking
+    let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false, !quiet);
 
     if !quiet {
         println!(); // Blank line after loading
 
-        // Show summary statistics
+        // Show rsummary statistics
         let stats = par2rs::analysis::calculate_par2_stats(
             &packet_set.packets,
             packet_set.recovery_block_count,

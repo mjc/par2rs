@@ -160,7 +160,7 @@ fn parse_par2_file_impl(
     let file = fs::File::open(par2_file)?;
     // Use 1MB buffer - recovery slices can be 100KB+ each
     let mut buffered = BufReader::with_capacity(BUFFER_SIZE, file);
-    let all_packets =
+    let (all_packets, _recovery_count) =
         crate::packets::parse_packets_with_options(&mut buffered, include_recovery_slices);
 
     // Filter out packets we've already seen (based on packet MD5)
@@ -178,17 +178,6 @@ fn parse_par2_file_impl(
 struct ParseResult {
     packets: Vec<Packet>,
     recovery_block_count: usize,
-}
-
-impl ParseResult {
-    /// Create a new parse result, computing recovery block count from packets
-    fn new(packets: Vec<Packet>) -> Self {
-        let recovery_block_count = crate::packets::processing::count_recovery_blocks(&packets);
-        Self {
-            packets,
-            recovery_block_count,
-        }
-    }
 }
 
 /// Parse a single PAR2 file with optional progress output
@@ -209,10 +198,13 @@ fn parse_single_file(
     // Parse without deduplication - that happens at the global level
     let file = fs::File::open(par2_file)?;
     let mut buffered = BufReader::with_capacity(BUFFER_SIZE, file);
-    let packets =
+    let (packets, recovery_block_count) =
         crate::packets::parse_packets_with_options(&mut buffered, include_recovery_slices);
 
-    let result = ParseResult::new(packets);
+    let result = ParseResult {
+        packets,
+        recovery_block_count,
+    };
 
     if show_progress {
         print_packet_load_result(result.packets.len(), result.recovery_block_count);

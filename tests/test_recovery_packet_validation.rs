@@ -23,7 +23,7 @@ fn test_recovery_packets_validated_when_not_loaded() {
         // Reopen and parse WITH recovery slices
         let file2 = File::open(fixture_path).unwrap();
         let mut reader2 = BufReader::new(file2);
-        let packets_with = parse_packets_with_options(&mut reader2, true);
+        let (packets_with, _recovery_count_with) = parse_packets_with_options(&mut reader2, true);
 
         // Both should succeed (validation happens in both cases)
         assert!(
@@ -157,7 +157,7 @@ fn test_valid_recovery_packet_accepted() {
 
     // Now parse with recovery slices included
     let mut cursor2 = Cursor::new(&data);
-    let packets_with = parse_packets_with_options(&mut cursor2, true);
+    let (packets_with, _) = parse_packets_with_options(&mut cursor2, true);
 
     // Should successfully parse and include the packet
     assert_eq!(
@@ -250,7 +250,7 @@ fn test_volume_file_with_only_recovery_packets() {
             // Now parse with recovery slices
             let file2 = File::open(volume_path).unwrap();
             let mut reader2 = BufReader::new(file2);
-            let packets_with = parse_packets_with_options(&mut reader2, true);
+            let (packets_with, _) = parse_packets_with_options(&mut reader2, true);
 
             let recovery_count_with = packets_with
                 .iter()
