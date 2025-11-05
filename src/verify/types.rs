@@ -508,34 +508,103 @@ impl FileScanMetadata {
     /// Analyze found blocks to determine if they're at offset 0 and in sequence
     /// Should be called after scanning is complete
     pub fn analyze_block_positions(&mut self, target_file_id: FileId) {
-        // Filter to only blocks from the target file and sort by offset
-        let mut target_blocks: Vec<_> = self
+        // Filter and collect blocks for the target file, sorted by offset
+        let target_blocks: Vec<_> = self
             .found_blocks
             .iter()
             .filter(|(_, fid, _)| *fid == target_file_id)
             .map(|(offset, _, block_num)| (*offset, *block_num))
             .collect();
 
-        if target_blocks.is_empty() {
-            // For files with no blocks (empty files), consider them perfectly aligned
-            // since there's nothing to misalign
-            self.first_block_at_offset_zero = true;
-            self.blocks_in_sequence = true;
-            return;
+        // Delegate to pure function for easier testing
+        let (first_at_zero, in_sequence) = Self::analyze_sorted_blocks(&target_blocks);
+        self.first_block_at_offset_zero = first_at_zero;
+        self.blocks_in_sequence = in_sequence;
+    }
+
+    /// Pure function: Analyze a sequence of (offset, block_number) pairs
+    /// Returns (first_block_at_offset_zero, blocks_in_sequence)
+    fn analyze_sorted_blocks(blocks: &[(usize, u32)]) -> (bool, bool) {
+        if blocks.is_empty() {
+            // Empty files are considered perfectly aligned
+            return (true, true);
         }
 
-        // Sort by file offset
-        target_blocks.sort_by_key(|(offset, _)| *offset);
+        // Sort by offset to get physical order
+        let mut sorted = blocks.to_vec();
+        sorted.sort_by_key(|(offset, _)| *offset);
 
-        // Check if BLOCK 0 is at offset 0 (not just any block at offset 0)
-        self.first_block_at_offset_zero = target_blocks[0].0 == 0 && target_blocks[0].1 == 0;
+        // Check if BLOCK 0 is at offset 0
+        let first_at_zero = sorted[0] == (0, 0);
 
-        // Check if blocks are in sequence (block numbers increment by 1)
-        self.blocks_in_sequence = target_blocks.windows(2).all(|w| w[1].1 == w[0].1 + 1);
+        // Check if blocks are in perfect sequence: 0, 1, 2, 3, ...
+        let in_sequence = sorted
+            .iter()
+            .enumerate()
+            .all(|(expected_num, &(_, actual_num))| expected_num as u32 == actual_num);
 
-        // Also verify that the first block is block 0
-        if !target_blocks.is_empty() && target_blocks[0].1 != 0 {
-            self.blocks_in_sequence = false;
-        }
+        (first_at_zero, in_sequence)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_analyze_sorted_blocks_empty() {
+        let blocks = [];
+        let (first_at_zero, in_sequence) = FileScanMetadata::analyze_sorted_blocks(&blocks);
+        assert!(first_at_zero);
+        assert!(in_sequence);
+    }
+
+    #[test]
+    fn test_analyze_sorted_blocks_perfect_sequence() {
+        let blocks = [(0, 0), (1024, 1), (2048, 2)];
+        let (first_at_zero, in_sequence) = FileScanMetadata::analyze_sorted_blocks(&blocks);
+        assert!(first_at_zero);
+        assert!(in_sequence);
+    }
+
+    #[test]
+    fn test_analyze_sorted_blocks_unsorted_input() {
+        // Function should sort by offset
+        let blocks = [(2048, 2), (0, 0), (1024, 1)];
+        let (first_at_zero, in_sequence) = FileScanMetadata::analyze_sorted_blocks(&blocks);
+        assert!(first_at_zero);
+        assert!(in_sequence);
+    }
+
+    #[test]
+    fn test_analyze_sorted_blocks_missing_block() {
+        let blocks = [(0, 0), (2048, 2)]; // Missing block 1
+        let (first_at_zero, in_sequence) = FileScanMetadata::analyze_sorted_blocks(&blocks);
+        assert!(first_at_zero);
+        assert!(!in_sequence);
+    }
+
+    #[test]
+    fn test_analyze_sorted_blocks_wrong_start_offset() {
+        let blocks = [(1024, 0), (2048, 1)];
+        let (first_at_zero, in_sequence) = FileScanMetadata::analyze_sorted_blocks(&blocks);
+        assert!(!first_at_zero);
+        assert!(in_sequence); // Blocks ARE in sequence (0, 1), just not at offset 0
+    }
+
+    #[test]
+    fn test_analyze_sorted_blocks_duplicate() {
+        let blocks = [(0, 0), (0, 0)];
+        let (first_at_zero, in_sequence) = FileScanMetadata::analyze_sorted_blocks(&blocks);
+        assert!(first_at_zero);
+        assert!(!in_sequence); // Duplicate breaks sequence
+    }
+
+    #[test]
+    fn test_analyze_sorted_blocks_starts_with_non_zero_block() {
+        let blocks = [(0, 1), (1024, 2)]; // Starts with block 1
+        let (first_at_zero, in_sequence) = FileScanMetadata::analyze_sorted_blocks(&blocks);
+        assert!(!first_at_zero);
+        assert!(!in_sequence);
     }
 }
