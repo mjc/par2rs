@@ -49,11 +49,12 @@ impl CreateContext {
     /// Create a new CreateContext
     ///
     /// Called by CreateContextBuilder after validation
+    /// Performs initial setup: scans files, calculates block size and recovery count
     pub(super) fn new(
         config: CreateConfig,
         reporter: Box<dyn CreateReporter>,
     ) -> CreateResult<Self> {
-        Ok(CreateContext {
+        let mut context = CreateContext {
             config,
             reporter,
             recovery_set_id: None,
@@ -62,34 +63,33 @@ impl CreateContext {
             source_block_count: 0,
             recovery_block_count: 0,
             output_files: Vec::new(),
-        })
+        };
+
+        // Perform initial setup
+        context.scan_source_files()?;
+        context.calculate_block_size()?;
+        context.calculate_recovery_blocks()?;
+
+        Ok(context)
     }
 
     /// Execute the PAR2 creation process
     ///
     /// This is the main entry point that orchestrates all creation steps
+    /// Note: Initial setup (file scanning, block size calculation) is done during build()
     ///
     /// Reference: par2cmdline-turbo/src/par2creator.cpp Par2Creator::Process()
     pub fn create(&mut self) -> CreateResult<()> {
-        // Step 1: Scan and validate source files
-        self.scan_source_files()?;
-
-        // Step 2: Calculate block size if not specified
-        self.calculate_block_size()?;
-
-        // Step 3: Calculate recovery block count
-        self.calculate_recovery_blocks()?;
-
-        // Step 4: Compute file hashes and block checksums
+        // Step 1: Compute file hashes and block checksums
         self.hash_source_files()?;
 
-        // Step 5: Generate recovery set ID
+        // Step 2: Generate recovery set ID
         self.generate_recovery_set_id()?;
 
-        // Step 6: Generate recovery blocks
+        // Step 3: Generate recovery blocks
         self.generate_recovery_blocks()?;
 
-        // Step 7: Write PAR2 files
+        // Step 4: Write PAR2 files
         self.write_par2_files()?;
 
         // Report completion
