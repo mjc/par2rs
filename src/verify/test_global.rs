@@ -166,7 +166,11 @@ mod tests {
             Packet::FileDescription(file_desc),
         ];
 
-        let results = comprehensive_verify_files(packets);
+        let packet_set = crate::par2_files::PacketSet::from_packets(packets);
+        let base_dir = packet_set.base_dir.clone();
+        let config = crate::verify::VerificationConfig::default();
+        let reporter = crate::reporters::SilentVerificationReporter;
+        let results = comprehensive_verify_files(packet_set, &config, &reporter, base_dir);
 
         // Since the file doesn't exist, it should be reported as missing
         assert_eq!(results.missing_file_count, 1);
@@ -208,7 +212,9 @@ mod tests {
             packets,
             temp_dir.path().to_path_buf(),
         );
-        let results = comprehensive_verify_files_in_dir(packet_set, temp_dir.path());
+        let config = crate::verify::VerificationConfig::default();
+        let reporter = crate::reporters::SilentVerificationReporter;
+        let results = comprehensive_verify_files(packet_set, &config, &reporter, temp_dir.path());
 
         // File should be present since MD5 matches
         assert_eq!(results.present_file_count, 1);
@@ -266,7 +272,11 @@ mod tests {
         ];
 
         // Test verification using global block table
-        let results = comprehensive_verify_files(packets);
+        let packet_set = crate::par2_files::PacketSet::from_packets(packets);
+        let base_dir = packet_set.base_dir.clone();
+        let config = crate::verify::VerificationConfig::default();
+        let reporter = crate::reporters::SilentVerificationReporter;
+        let results = comprehensive_verify_files(packet_set, &config, &reporter, base_dir);
 
         // Should detect the missing file
         assert_eq!(results.missing_file_count, 1);

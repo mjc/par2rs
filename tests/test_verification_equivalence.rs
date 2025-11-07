@@ -1,5 +1,6 @@
 use par2rs::par2_files::load_all_par2_packets;
-use par2rs::verify::{comprehensive_verify_files_with_config, VerificationConfig};
+use par2rs::reporters::SilentVerificationReporter;
+use par2rs::verify::{comprehensive_verify_files, VerificationConfig};
 
 #[test]
 fn test_parallel_sequential_equivalence() {
@@ -34,16 +35,26 @@ fn test_parallel_sequential_equivalence() {
             threads: 2, // Use 2 threads for deterministic testing
             parallel: true,
         };
-        let parallel_results =
-            comprehensive_verify_files_with_config(packets_parallel, &parallel_config);
+        let base_dir_parallel = packets_parallel.base_dir.clone();
+        let parallel_results = comprehensive_verify_files(
+            packets_parallel,
+            &parallel_config,
+            &SilentVerificationReporter,
+            base_dir_parallel,
+        );
 
         // Test with sequential mode
         let sequential_config = VerificationConfig {
             threads: 0, // Threads don't matter in sequential mode
             parallel: false,
         };
-        let sequential_results =
-            comprehensive_verify_files_with_config(packets_sequential, &sequential_config);
+        let base_dir_sequential = packets_sequential.base_dir.clone();
+        let sequential_results = comprehensive_verify_files(
+            packets_sequential,
+            &sequential_config,
+            &SilentVerificationReporter,
+            base_dir_sequential,
+        );
 
         // Compare core verification results
         assert_eq!(
@@ -192,7 +203,9 @@ fn test_thread_count_consistency() {
             threads: *threads,
             parallel: true,
         };
-        let result = comprehensive_verify_files_with_config(packets, &config);
+        let base_dir = packets.base_dir.clone();
+        let result =
+            comprehensive_verify_files(packets, &config, &SilentVerificationReporter, base_dir);
         results.push(result);
     }
 

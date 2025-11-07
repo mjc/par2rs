@@ -45,12 +45,8 @@ fn test_recovery_blocks_counted_in_verification() {
     // Run verification in the temp directory
     let config = par2rs::verify::VerificationConfig::default();
     let reporter = par2rs::reporters::ConsoleVerificationReporter::new();
-    let results = par2rs::verify::comprehensive_verify_files_with_config_and_reporter_in_dir(
-        packet_set,
-        &config,
-        &reporter,
-        temp_dir.path(),
-    );
+    let results =
+        par2rs::verify::comprehensive_verify_files(packet_set, &config, &reporter, temp_dir.path());
 
     // ASSERTIONS:
     // 1. Should detect the damaged file
@@ -145,7 +141,7 @@ fn test_repair_possible_calculation() {
 
     let config = par2rs::verify::VerificationConfig::default();
     let reporter = par2rs::reporters::SilentVerificationReporter;
-    let results = par2rs::verify::comprehensive_verify_files_with_config_and_reporter_in_dir(
+    let results = par2rs::verify::comprehensive_verify_files(
         packet_set,
         &config,
         &reporter,

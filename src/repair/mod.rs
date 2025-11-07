@@ -527,10 +527,6 @@ impl RepairContext {
             files_to_repair.len()
         );
 
-        // Print initial progress for sabnzbd
-        print!("\rRepairing: 0.0%");
-        std::io::Write::flush(&mut std::io::stdout()).ok();
-
         // Check if we have enough recovery blocks
         if all_missing_global.len() > self.recovery_set.recovery_slices_metadata.len() {
             return Err(RepairError::InsufficientRecovery {
@@ -688,7 +684,15 @@ impl RepairContext {
         //   = 12,500 × 2MB = 25GB total (each slice read exactly once)
         //
         // This reduces I/O from ~126GB to ~50GB (2x file size, not 5x)
-        let optimal_chunk_size = self.recovery_set.slice_size as usize;
+        //
+        // PROGRESS FIX: Use smaller chunks for better progress visibility
+        // For very large slices (>2MB), use 1MB chunks to show incremental progress
+        // For smaller slices, use full slice_size for optimal I/O performance
+        let optimal_chunk_size = if self.recovery_set.slice_size > 2 * 1024 * 1024 {
+            1024 * 1024 // 1MB chunks for progress visibility
+        } else {
+            self.recovery_set.slice_size as usize
+        };
         let result = reconstruction_engine.reconstruct_missing_slices_chunked(
             &mut input_provider,
             &recovery_provider,
@@ -969,55 +973,20 @@ impl RepairContext {
 /// High-level repair function - loads PAR2 files and performs repair
 ///
 /// This is the main entry point for repair operations. It loads the PAR2 file,
-/// creates a repair context with a console reporter, and performs the repair operation.
+/// creates a repair context, and performs the repair operation.
 ///
 /// # Arguments
 /// * `par2_file` - Path to the PAR2 file
-///
-/// # Returns
-/// * `Ok((RepairContext, RepairResult))` - Repair operation completed with context and result
-/// * `Err(...)` - Failed to load PAR2 files or create repair context
-pub fn repair_files(par2_file: &str) -> Result<(RepairContext, RepairResult)> {
-    repair_files_with_reporter(par2_file, Box::new(ConsoleReporter::new(false)))
-}
-
-/// High-level repair function with custom progress reporter and verification config
-///
-/// Allows specifying a custom progress reporter and verification configuration
-/// for unified verification behavior between verify and repair commands.
-///
-/// # Arguments
-/// * `par2_file` - Path to the PAR2 file
-/// * `reporter` - Progress reporter implementation
+/// * `reporter` - Progress reporter implementation (use ConsoleReporter, SilentReporter, or custom)
 /// * `verify_config` - Verification configuration (threading, parallel/sequential)
 ///
 /// # Returns
 /// * `Ok((RepairContext, RepairResult))` - Repair operation completed with context and result
 /// * `Err(...)` - Failed to load PAR2 files or create repair context
-pub fn repair_files_with_config(
+pub fn repair_files(
     par2_file: &str,
     reporter: Box<dyn ProgressReporter>,
-    _verify_config: &crate::verify::VerificationConfig,
-) -> Result<(RepairContext, RepairResult)> {
-    // TODO: Integrate verification config into the repair process
-    repair_files_with_reporter(par2_file, reporter)
-}
-
-/// High-level repair function with custom progress reporter
-///
-/// Allows specifying a custom progress reporter (e.g., SilentReporter for tests,
-/// ConsoleReporter with quiet flag, or custom implementations).
-///
-/// # Arguments
-/// * `par2_file` - Path to the PAR2 file
-/// * `reporter` - Progress reporter implementation
-///
-/// # Returns
-/// * `Ok((RepairContext, RepairResult))` - Repair operation completed with context and result
-/// * `Err(...)` - Failed to load PAR2 files or create repair context
-pub fn repair_files_with_reporter(
-    par2_file: &str,
-    reporter: Box<dyn ProgressReporter>,
+    verify_config: &crate::verify::VerificationConfig,
 ) -> Result<(RepairContext, RepairResult)> {
     let par2_path = Path::new(par2_file);
 
@@ -1051,15 +1020,13 @@ pub fn repair_files_with_reporter(
     //
     // This ensures repair uses the SAME verification logic as the verify command,
     // preventing cases where verify says "487 blocks available" but repair only finds 121.
-    let verification_config = crate::verify::VerificationConfig::default();
     let silent_reporter = crate::reporters::SilentVerificationReporter;
-    let verification_results =
-        crate::verify::comprehensive_verify_files_with_config_and_reporter_in_dir(
-            packet_set,
-            &verification_config,
-            &silent_reporter,
-            &base_path,
-        );
+    let verification_results = crate::verify::comprehensive_verify_files(
+        packet_set,
+        verify_config,
+        &silent_reporter,
+        &base_path,
+    );
 
     // Re-load packets for repair context (verification consumed them)
     // This is acceptable since packet parsing is fast (no recovery slice data)

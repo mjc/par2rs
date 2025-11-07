@@ -4,10 +4,8 @@
 
 use par2rs::domain::{FileId, Md5Hash, RecoverySetId};
 use par2rs::packets::{FileDescriptionPacket, MainPacket, Packet};
-use par2rs::repair::{
-    repair_files, repair_files_with_config, repair_files_with_reporter, ConsoleReporter,
-    RepairContext, SilentReporter,
-};
+use par2rs::repair::{repair_files, ConsoleReporter, RepairContext, SilentReporter};
+use par2rs::verify::VerificationConfig;
 use std::fs;
 use std::io::Write;
 use tempfile::TempDir;
@@ -111,7 +109,8 @@ fn test_repair_files_with_reporter_silent() {
     file.write_all(b"PAR2\0PKT").unwrap(); // Simplified header
 
     let reporter = Box::new(SilentReporter::new());
-    let result = repair_files_with_reporter(par2_file.to_str().unwrap(), reporter);
+    let config = VerificationConfig::default();
+    let result = repair_files(par2_file.to_str().unwrap(), reporter, &config);
 
     // May fail due to invalid PAR2 structure, but should handle reporter
     let _ = result;
@@ -127,7 +126,8 @@ fn test_repair_files_with_reporter_console() {
     file.write_all(b"PAR2\0PKT").unwrap();
 
     let reporter = Box::new(ConsoleReporter::new(false));
-    let result = repair_files_with_reporter(par2_file.to_str().unwrap(), reporter);
+    let config = VerificationConfig::default();
+    let result = repair_files(par2_file.to_str().unwrap(), reporter, &config);
 
     // May fail, but should handle console reporter
     let _ = result;
@@ -141,14 +141,13 @@ fn test_repair_files_with_config_parallel() {
     let mut file = fs::File::create(&par2_file).unwrap();
     file.write_all(b"PAR2\0PKT").unwrap();
 
-    use par2rs::verify::VerificationConfig;
     let config = VerificationConfig {
         parallel: true,
         ..Default::default()
     };
 
     let reporter = Box::new(SilentReporter::new());
-    let result = repair_files_with_config(par2_file.to_str().unwrap(), reporter, &config);
+    let result = repair_files(par2_file.to_str().unwrap(), reporter, &config);
     let _ = result;
 }
 
@@ -160,26 +159,29 @@ fn test_repair_files_with_config_sequential() {
     let mut file = fs::File::create(&par2_file).unwrap();
     file.write_all(b"PAR2\0PKT").unwrap();
 
-    use par2rs::verify::VerificationConfig;
     let config = VerificationConfig {
         parallel: false,
         ..Default::default()
     };
 
     let reporter = Box::new(SilentReporter::new());
-    let result = repair_files_with_config(par2_file.to_str().unwrap(), reporter, &config);
+    let result = repair_files(par2_file.to_str().unwrap(), reporter, &config);
     let _ = result;
 }
 
 #[test]
 fn test_repair_files_nonexistent() {
-    let result = repair_files("/nonexistent/file.par2");
+    let result = repair_files(
+        "/nonexistent/file.par2",
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    );
     assert!(result.is_err());
 }
 
 #[test]
 fn test_repair_files_invalid_path() {
-    let result = repair_files("");
+    let result = repair_files("", Box::new(SilentReporter), &VerificationConfig::default());
     assert!(result.is_err());
 }
 
@@ -215,8 +217,10 @@ fn test_repair_with_slices_no_recovery() {
 
     // Run verification first
     let packet_set = par2rs::par2_files::PacketSet::new(packets, 0, dir.path().to_path_buf());
+    let config = par2rs::verify::VerificationConfig::default();
+    let reporter = par2rs::reporters::SilentVerificationReporter;
     let verification_results =
-        par2rs::verify::comprehensive_verify_files_in_dir(packet_set, dir.path());
+        par2rs::verify::comprehensive_verify_files(packet_set, &config, &reporter, dir.path());
 
     let packets2 = vec![
         Packet::Main(create_main_packet(vec![file_id])),
@@ -245,8 +249,10 @@ fn test_repair_no_recovery_data() {
     ];
 
     let packet_set = par2rs::par2_files::PacketSet::new(packets, 0, dir.path().to_path_buf());
+    let config = par2rs::verify::VerificationConfig::default();
+    let reporter = par2rs::reporters::SilentVerificationReporter;
     let verification_results =
-        par2rs::verify::comprehensive_verify_files_in_dir(packet_set, dir.path());
+        par2rs::verify::comprehensive_verify_files(packet_set, &config, &reporter, dir.path());
 
     let packets2 = vec![
         Packet::Main(create_main_packet(vec![file_id])),

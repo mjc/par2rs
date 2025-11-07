@@ -11,7 +11,7 @@
 //! - Determines if repair is possible with available recovery blocks
 
 use anyhow::{Context, Result};
-use par2rs::{analysis, par2_files, verify};
+use par2rs::{analysis, par2_files, reporters::VerificationReporter, verify};
 use std::path::Path;
 
 fn main() -> Result<()> {
@@ -56,13 +56,16 @@ fn main() -> Result<()> {
         analysis::calculate_par2_stats(&packet_set.packets, packet_set.recovery_block_count);
     analysis::print_summary_stats(&stats);
 
+    let base_dir = packet_set.base_dir.clone();
+
     // Perform comprehensive verification with configuration
     println!("\nVerifying source files:\n");
+    let reporter = par2rs::reporters::ConsoleVerificationReporter::new();
     let verification_results =
-        verify::comprehensive_verify_files_with_config(packet_set, &verify_config);
+        verify::comprehensive_verify_files(packet_set, &verify_config, &reporter, base_dir);
 
     // Print detailed results
-    verify::print_verification_results(&verification_results);
+    reporter.report_verification_results(&verification_results);
 
     // Return success if no repair is needed, error if repair is required
     anyhow::ensure!(

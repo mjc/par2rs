@@ -109,8 +109,14 @@ impl TestEnv {
         // Run comprehensive verification first
         let par2_files = par2_files::collect_par2_files(&self.par2_file);
         let packet_set = par2_files::load_par2_packets(&par2_files, false, false);
-        let verification_results =
-            par2rs::verify::comprehensive_verify_files_in_dir(packet_set, self.temp_dir.path());
+        let config = par2rs::verify::VerificationConfig::default();
+        let reporter = par2rs::reporters::SilentVerificationReporter;
+        let verification_results = par2rs::verify::comprehensive_verify_files(
+            packet_set,
+            &config,
+            &reporter,
+            self.temp_dir.path(),
+        );
 
         // Then repair with verification results
         self.load_context().repair(verification_results).unwrap()

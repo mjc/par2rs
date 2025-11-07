@@ -93,7 +93,8 @@ fn test_actual_par2_slice_checksums() {
 #[test]
 fn test_load_all_slices_with_padding_during_verify() {
     // Test that verification works correctly with padding
-    use par2rs::repair::repair_files;
+    use par2rs::repair::{repair_files, SilentReporter};
+    use par2rs::verify::VerificationConfig;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -117,7 +118,12 @@ fn test_load_all_slices_with_padding_during_verify() {
 
     // Verify files without any corruption
     let par2_file = temp_path.join("textfiles.par2");
-    let (_context, result) = repair_files(par2_file.to_str().unwrap()).unwrap();
+    let (_context, result) = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    )
+    .unwrap();
 
     // All files should verify successfully if we're computing slice checksums correctly
     match result {
@@ -136,7 +142,8 @@ fn test_load_all_slices_during_repair_needs_padding() {
     // This test will FAIL until we fix load_all_slices to pad slices properly
     // The issue is that load_all_slices is called during REPAIR to load existing slices,
     // and it needs to compute checksums to verify which slices are valid.
-    use par2rs::repair::repair_files;
+    use par2rs::repair::{repair_files, SilentReporter};
+    use par2rs::verify::VerificationConfig;
     use std::io::Write;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -170,7 +177,12 @@ fn test_load_all_slices_during_repair_needs_padding() {
 
     // Try to repair
     let par2_file = temp_path.join("textfiles.par2");
-    let (_context, result) = repair_files(par2_file.to_str().unwrap()).unwrap();
+    let (_context, result) = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    )
+    .unwrap();
 
     println!("\n=== Repair Result ===");
     println!("Files repaired: {:?}", result.repaired_files());

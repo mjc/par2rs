@@ -131,8 +131,10 @@ fn debug_repair_issue() {
 
     // Run comprehensive verification first
     let packet_set = par2_files::load_par2_packets(&par2_files, false, false);
+    let config = verify::VerificationConfig::default();
+    let reporter = par2rs::reporters::SilentVerificationReporter;
     let verification_results =
-        verify::comprehensive_verify_files_in_dir(packet_set, temp_dir.path());
+        verify::comprehensive_verify_files(packet_set, &config, &reporter, temp_dir.path());
 
     #[allow(deprecated)]
     let result = context.repair(verification_results);

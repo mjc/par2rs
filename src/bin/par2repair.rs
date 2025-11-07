@@ -22,7 +22,7 @@ fn main() -> Result<()> {
     // Create verification config from command line arguments
     let verify_config = VerificationConfig::from_args(&matches);
 
-    let (context, result) = par2rs::repair::repair_files_with_config(
+    let (context, result) = par2rs::repair::repair_files(
         par2_file,
         Box::new(par2rs::repair::ConsoleReporter::new(quiet)),
         &verify_config,

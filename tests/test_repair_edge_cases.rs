@@ -1,6 +1,7 @@
 //! Additional edge case tests to push repair.rs coverage above 90%
 
 use par2rs::repair::*;
+use par2rs::verify::VerificationConfig;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -33,7 +34,11 @@ fn test_no_repair_needed_path() {
     let par2_file = temp_dir.path().join("test_valid.par2");
 
     // Don't corrupt the file - it should trigger NoRepairNeeded path
-    let result = repair_files(par2_file.to_str().unwrap());
+    let result = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    );
     assert!(result.is_ok());
 
     let (_, repair_result) = result.unwrap();
@@ -69,7 +74,11 @@ fn test_insufficient_recovery_error_path() {
 
     // Try to repair - should fail with insufficient recovery
     let par2_file = temp_dir.path().join("large_test.par2");
-    let result = repair_files(par2_file.to_str().unwrap());
+    let result = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    );
     // Might succeed (if not enough damage) or fail (insufficient recovery)
     // Either way, we're exercising the code path
     let _ = result;
@@ -94,7 +103,11 @@ fn test_file_verification_after_repair() {
     fs::write(&test_file, &corrupted).unwrap();
 
     // Repair and verify
-    let result = repair_files(par2_file.to_str().unwrap());
+    let result = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    );
     assert!(result.is_ok());
 
     let (_, repair_result) = result.unwrap();
@@ -123,7 +136,11 @@ fn test_multiple_files_scenario() {
     fs::write(&file2, b"Corrupted!!!").unwrap();
 
     // Repair should handle multiple files
-    let result = repair_files(par2_file.to_str().unwrap());
+    let result = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    );
     assert!(result.is_ok());
 }
 
@@ -136,7 +153,11 @@ fn test_context_creation_error_path() {
     fs::write(&bad_par2, b"Not a valid PAR2 file at all").unwrap();
 
     // Should fail to create context
-    let result = repair_files(bad_par2.to_str().unwrap());
+    let result = repair_files(
+        bad_par2.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    );
     // Should get an error (NoValidPackets or ContextCreation)
     assert!(result.is_err());
 }
@@ -163,7 +184,11 @@ fn test_corrupted_status_detection() {
     fs::write(&test_file, vec![0x88; 100]).unwrap();
 
     // Repair should detect corruption
-    let result = repair_files(par2_file.to_str().unwrap());
+    let result = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    );
     assert!(result.is_ok());
 }
 
@@ -189,7 +214,11 @@ fn test_empty_file_edge_case() {
 
     // Only test if PAR2 creation succeeded
     if output.status.success() && par2_file.exists() {
-        let result = repair_files(par2_file.to_str().unwrap());
+        let result = repair_files(
+            par2_file.to_str().unwrap(),
+            Box::new(SilentReporter),
+            &VerificationConfig::default(),
+        );
         // Should handle empty file gracefully
         let _ = result;
     }
@@ -211,7 +240,11 @@ fn test_single_byte_file() {
     fs::write(&test_file, b"Y").unwrap();
 
     // Repair should handle single byte
-    let result = repair_files(par2_file.to_str().unwrap());
+    let result = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    );
     assert!(result.is_ok());
 }
 
@@ -242,6 +275,10 @@ fn test_large_file_with_many_slices() {
     fs::write(&test_file, &corrupted).unwrap();
 
     // Should repair successfully
-    let result = repair_files(par2_file.to_str().unwrap());
+    let result = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    );
     assert!(result.is_ok());
 }

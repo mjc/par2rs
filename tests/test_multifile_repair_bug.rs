@@ -241,12 +241,9 @@ fn test_multifile_repair_with_two_damaged_files() {
     println!("\nPerforming repair...");
     let silent_reporter = Box::new(par2rs::repair::SilentReporter);
     let verify_config = par2rs::verify::VerificationConfig::default();
-    let (_context, result) = par2rs::repair::repair_files_with_config(
-        par2_file.to_str().unwrap(),
-        silent_reporter,
-        &verify_config,
-    )
-    .expect("Repair operation should complete");
+    let (_context, result) =
+        par2rs::repair::repair_files(par2_file.to_str().unwrap(), silent_reporter, &verify_config)
+            .expect("Repair operation should complete");
 
     match result {
         par2rs::repair::RepairResult::Success {

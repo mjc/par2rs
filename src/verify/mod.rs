@@ -36,28 +36,25 @@ pub use utils::extract_file_name;
 pub use validation::{validate_slices_crc32, validate_slices_crc32_with_progress};
 pub use verifier::FileVerifier;
 
-use crate::reporters::{ConsoleVerificationReporter, VerificationReporter};
+use crate::reporters::VerificationReporter;
 use std::path::Path;
 
 /// Comprehensive verification with global block table approach
+///
+/// This is the main verification function. All other verification APIs should use this.
 ///
 /// This function performs detailed verification using global block table approach:
 /// 1. Builds a global block table from all slice checksums  
 /// 2. Scans all available files with rolling CRC to find blocks anywhere
 /// 3. Reports which blocks are available and calculates repair requirements
 /// 4. Determines if repair is possible with available recovery blocks
-pub fn comprehensive_verify_files_with_config_and_reporter<R: VerificationReporter>(
-    packet_set: crate::par2_files::PacketSet,
-    config: &VerificationConfig,
-    reporter: &R,
-) -> VerificationResults {
-    let base_dir = packet_set.base_dir.clone();
-    comprehensive_verify_files_with_config_and_reporter_in_dir(
-        packet_set, config, reporter, base_dir,
-    )
-}
-
-pub fn comprehensive_verify_files_with_config_and_reporter_in_dir<R: VerificationReporter>(
+///
+/// # Arguments
+/// * `packet_set` - PAR2 packets and metadata
+/// * `config` - Verification configuration (threading, parallel/sequential)
+/// * `reporter` - Progress reporter for verification events
+/// * `base_dir` - Base directory for resolving file paths
+pub fn comprehensive_verify_files<R: VerificationReporter>(
     packet_set: crate::par2_files::PacketSet,
     config: &VerificationConfig,
     reporter: &R,
@@ -114,47 +111,4 @@ pub fn comprehensive_verify_files_with_config_and_reporter_in_dir<R: Verificatio
     results.repair_possible = packet_set.recovery_block_count >= results.missing_block_count;
 
     results
-}
-
-/// Comprehensive verification function based on par2cmdline approach
-///
-/// This function performs detailed verification similar to par2cmdline:
-/// 1. Verifies files at the whole-file level using MD5 hashes (SINGLE PASS)
-/// 2. For corrupted files, performs block-level verification using slice checksums
-/// 3. Reports which blocks are broken and calculates repair requirements
-/// 4. Determines if repair is possible with available recovery blocks
-pub fn comprehensive_verify_files(packets: Vec<crate::Packet>) -> VerificationResults {
-    // Count recovery blocks from packets for backward compatibility
-    let packet_set = crate::par2_files::PacketSet::from_packets(packets);
-    let base_dir = packet_set.base_dir.clone();
-    comprehensive_verify_files_in_dir(packet_set, base_dir)
-}
-
-/// Comprehensive verification function with base directory support
-pub fn comprehensive_verify_files_in_dir(
-    packet_set: crate::par2_files::PacketSet,
-    base_dir: impl AsRef<Path>,
-) -> VerificationResults {
-    let config = VerificationConfig::default();
-    let reporter = ConsoleVerificationReporter::new();
-    comprehensive_verify_files_with_config_and_reporter_in_dir(
-        packet_set, &config, &reporter, base_dir,
-    )
-}
-
-/// Comprehensive verification function with configuration support
-///
-/// Uses console reporter by default. For custom reporting, use the full function.
-pub fn comprehensive_verify_files_with_config(
-    packet_set: crate::par2_files::PacketSet,
-    config: &VerificationConfig,
-) -> VerificationResults {
-    let reporter = ConsoleVerificationReporter::new();
-    comprehensive_verify_files_with_config_and_reporter(packet_set, config, &reporter)
-}
-
-/// Print verification results in par2cmdline style (legacy function)
-pub fn print_verification_results(results: &VerificationResults) {
-    let reporter = ConsoleVerificationReporter::new();
-    reporter.report_verification_results(results);
 }

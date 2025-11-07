@@ -41,7 +41,13 @@ fn test_file_deduplication_with_real_data() {
 
     // Run verification which should deduplicate files
     let config = VerificationConfig::new(2, true);
-    let results = par2rs::verify::comprehensive_verify_files_with_config(packets, &config);
+    let base_dir = packets.base_dir.clone();
+    let results = par2rs::verify::comprehensive_verify_files(
+        packets,
+        &config,
+        &par2rs::reporters::SilentVerificationReporter,
+        base_dir,
+    );
 
     // In most cases, there should be fewer unique files than FileDescription packets
     // (unless it's a single-volume PAR2 set with no duplicates)

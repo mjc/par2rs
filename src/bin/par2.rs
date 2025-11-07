@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
+use par2rs::reporters::VerificationReporter;
 
 fn main() -> Result<()> {
     env_logger::Builder::from_default_env()
@@ -236,19 +237,19 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         println!("\nVerifying source files:\n");
     }
 
+    let base_dir = packet_set.base_dir.clone();
+    let reporter = par2rs::reporters::ConsoleVerificationReporter::new();
+
     // Perform comprehensive verification
     let results = if quiet {
-        par2rs::verify::comprehensive_verify_files_with_config_and_reporter(
-            packet_set,
-            &verify_config,
-            &par2rs::reporters::SilentVerificationReporter,
-        )
+        let silent = par2rs::reporters::SilentVerificationReporter;
+        par2rs::verify::comprehensive_verify_files(packet_set, &verify_config, &silent, base_dir)
     } else {
-        par2rs::verify::comprehensive_verify_files_with_config(packet_set, &verify_config)
+        par2rs::verify::comprehensive_verify_files(packet_set, &verify_config, &reporter, base_dir)
     };
 
     if !quiet {
-        par2rs::verify::print_verification_results(&results);
+        reporter.report_verification_results(&results);
     }
 
     if results.missing_block_count == 0 {
@@ -276,7 +277,7 @@ fn handle_repair(matches: &clap::ArgMatches) -> Result<()> {
     // Create verification config from command line arguments (like par2repair does)
     let verify_config = par2rs::verify::VerificationConfig::from_args(matches);
 
-    let (context, result) = par2rs::repair::repair_files_with_config(
+    let (context, result) = par2rs::repair::repair_files(
         par2_file,
         Box::new(par2rs::repair::ConsoleReporter::new(quiet)),
         &verify_config,
