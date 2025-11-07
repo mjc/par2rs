@@ -85,6 +85,8 @@ pub struct GlobalVerificationEngine {
     base_dir: std::path::PathBuf,
     /// Number of recovery blocks available
     recovery_block_count: usize,
+    /// Skip full file MD5 computation (for pre-repair verification)
+    skip_full_md5: bool,
 }
 
 /// Result of verifying a single file using global block table
@@ -107,6 +109,15 @@ impl GlobalVerificationEngine {
     pub fn from_packets(
         packets: &[crate::Packet],
         base_dir: impl AsRef<Path>,
+    ) -> Result<Self, String> {
+        Self::from_packets_with_config(packets, base_dir, &super::VerificationConfig::default())
+    }
+
+    /// Create a new verification engine from packets with config
+    pub fn from_packets_with_config(
+        packets: &[crate::Packet],
+        base_dir: impl AsRef<Path>,
+        config: &super::VerificationConfig,
     ) -> Result<Self, String> {
         // Extract packet information
         let block_size = crate::packets::processing::extract_main_packet(packets)
@@ -147,6 +158,7 @@ impl GlobalVerificationEngine {
             file_descriptions: file_lookup,
             base_dir: base_dir.as_ref().to_path_buf(),
             recovery_block_count,
+            skip_full_md5: config.skip_full_file_md5,
         })
     }
 
@@ -379,8 +391,10 @@ impl GlobalVerificationEngine {
             // Short file is now complete - mark as 100% scanned and compute file hash
             Self::report_progress(reporter_lock, &state, file_size);
 
-            if let Ok(md5) = crate::checksum::calculate_file_md5(file_path) {
-                state.scan_metadata.actual_file_hash = Some(md5);
+            if !self.skip_full_md5 {
+                if let Ok(md5) = crate::checksum::calculate_file_md5(file_path) {
+                    state.scan_metadata.actual_file_hash = Some(md5);
+                }
             }
 
             // Return early - file is complete, prevent duplicate detection in Phase 2
@@ -481,8 +495,10 @@ impl GlobalVerificationEngine {
 
         // Compute file MD5 hash and store in metadata using a streaming hasher
         // (avoid reading entire file into memory for large files)
-        if let Ok(md5) = crate::checksum::calculate_file_md5(file_path) {
-            state.scan_metadata.actual_file_hash = Some(md5);
+        if !self.skip_full_md5 {
+            if let Ok(md5) = crate::checksum::calculate_file_md5(file_path) {
+                state.scan_metadata.actual_file_hash = Some(md5);
+            }
         }
 
         (local_block_map, state.scan_metadata)
@@ -1060,6 +1076,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1135,6 +1152,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1187,6 +1205,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1246,6 +1265,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1615,6 +1635,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1759,6 +1780,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1820,6 +1842,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1877,6 +1900,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1924,6 +1948,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -1973,6 +1998,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -2023,6 +2049,7 @@ mod tests {
 
         let _engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -2140,6 +2167,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -2199,6 +2227,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -2273,6 +2302,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -2338,6 +2368,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -2383,6 +2414,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
@@ -2448,6 +2480,7 @@ mod tests {
 
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
+            skip_full_md5: false,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),

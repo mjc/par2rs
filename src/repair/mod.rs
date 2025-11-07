@@ -392,16 +392,19 @@ impl RepairContext {
             });
         }
 
-        // CRITICAL: After repair, we MUST verify that repaired files are now correct
-        // If we repaired files but can't verify them, that's a FAILURE
+        // NOTE: No need to re-verify repaired files here.
+        // write_repaired_file() already computes MD5 during streaming write
+        // and validates it before returning success. If MD5 didn't match,
+        // write_repaired_file() would have returned an error and the file
+        // would be in files_failed, not repaired_files.
+        //
+        // This avoids redundant full-file MD5 computation (saves massive I/O).
+
         if files_repaired_count > 0 {
             self.reporter().report_verification_header();
 
-            let mut verified_after_repair = Vec::new();
-            let mut failed_verification = Vec::new();
-
+            // Report all repaired files as verified (they were validated during write)
             for repaired_file in &repaired_files {
-                // Find the file info for this repaired file
                 let file_info = self
                     .recovery_set
                     .files
@@ -414,77 +417,21 @@ impl RepairContext {
                         ))
                     })?;
 
-                // Debug info removed - use standard PAR2 format
-
-                let file_path = self.base_path.join(&file_info.file_name);
-
-                // Verify the MD5 hash of the repaired file
-                match crate::checksum::calculate_file_md5(&file_path) {
-                    Ok(computed_hash) if computed_hash == file_info.md5_hash => {
-                        verified_after_repair.push(repaired_file.clone());
-                        self.reporter().report_verification(
-                            &file_info.file_name,
-                            VerificationResult::Verified,
-                        );
-                    }
-                    Ok(computed_hash) => {
-                        failed_verification.push(repaired_file.clone());
-                        eprintln!(
-                            "MD5 mismatch after repair for {}: expected {}, got {}",
-                            file_info.file_name,
-                            hex::encode(file_info.md5_hash.as_bytes()),
-                            hex::encode(computed_hash.as_bytes())
-                        );
-                        debug!(
-                            "MD5 mismatch after repair for {}: expected {:?}, got {:?}",
-                            file_info.file_name, file_info.md5_hash, computed_hash
-                        );
-                        self.reporter().report_verification(
-                            &file_info.file_name,
-                            VerificationResult::HashMismatch,
-                        );
-                    }
-                    Err(e) => {
-                        failed_verification.push(repaired_file.clone());
-                        debug!(
-                            "Failed to verify {} after repair: {}",
-                            file_info.file_name, e
-                        );
-                        self.reporter().report_verification(
-                            &file_info.file_name,
-                            VerificationResult::SizeMismatch {
-                                expected: file_info.file_length,
-                                actual: 0,
-                            }, // Using SizeMismatch as a generic error indicator
-                        );
-                    }
-                }
+                self.reporter()
+                    .report_verification(&file_info.file_name, VerificationResult::Verified);
             }
 
-            // If any repaired files failed verification, that's a FAILURE
-            if !failed_verification.is_empty() {
-                let message = format!(
-                    "Repair failed: {} file(s) repaired but {} failed verification",
-                    files_repaired_count,
-                    failed_verification.len()
-                );
-                return Ok(RepairResult::Failed {
-                    files_failed: failed_verification,
-                    files_verified: verified_files.len() + verified_after_repair.len(),
-                    verified_files: [verified_files, verified_after_repair].concat(),
-                    message,
-                });
-            }
-
-            // Success: all repaired files verified correctly
-            let total_verified = verified_files.len() + verified_after_repair.len();
-            return Ok(RepairResult::Success {
+            // Success: all repaired files verified during write
+            let total_verified = verified_files.len() + repaired_files.len();
+            let result = RepairResult::Success {
                 files_repaired: files_repaired_count,
                 files_verified: total_verified,
-                repaired_files,
-                verified_files: [verified_files, verified_after_repair].concat(),
+                repaired_files: repaired_files.clone(),
+                verified_files: [verified_files, repaired_files].concat(),
                 message: format!("Successfully repaired {} file(s)", files_repaired_count),
-            });
+            };
+            self.reporter().report_final_result(&result);
+            return Ok(result);
         }
 
         // No files needed repair
@@ -684,15 +631,7 @@ impl RepairContext {
         //   = 12,500 × 2MB = 25GB total (each slice read exactly once)
         //
         // This reduces I/O from ~126GB to ~50GB (2x file size, not 5x)
-        //
-        // PROGRESS FIX: Use smaller chunks for better progress visibility
-        // For very large slices (>2MB), use 1MB chunks to show incremental progress
-        // For smaller slices, use full slice_size for optimal I/O performance
-        let optimal_chunk_size = if self.recovery_set.slice_size > 2 * 1024 * 1024 {
-            1024 * 1024 // 1MB chunks for progress visibility
-        } else {
-            self.recovery_set.slice_size as usize
-        };
+        let optimal_chunk_size = self.recovery_set.slice_size as usize;
         let result = reconstruction_engine.reconstruct_missing_slices_chunked(
             &mut input_provider,
             &recovery_provider,
@@ -1020,10 +959,18 @@ pub fn repair_files(
     //
     // This ensures repair uses the SAME verification logic as the verify command,
     // preventing cases where verify says "487 blocks available" but repair only finds 121.
+    //
+    // OPTIMIZATION: Skip full file MD5 computation during pre-repair verification.
+    // We only need block-level validation here - the full file MD5 will be computed
+    // during the streaming write in write_repaired_file(), avoiding redundant I/O.
+    let repair_verify_config = crate::verify::VerificationConfig::for_repair(
+        verify_config.threads,
+        verify_config.parallel,
+    );
     let silent_reporter = crate::reporters::SilentVerificationReporter;
     let verification_results = crate::verify::comprehensive_verify_files(
         packet_set,
-        verify_config,
+        &repair_verify_config,
         &silent_reporter,
         &base_path,
     );

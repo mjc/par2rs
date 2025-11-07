@@ -130,10 +130,25 @@ pub unsafe fn process_slice_multiply_add_pshufb(
     let mut pos = 0;
     let avx_end = (len / 32) * 32;
 
+    // Check if both input and output are 32-byte aligned
+    let input_ptr = input.as_ptr();
+    let output_ptr = output.as_ptr();
+    let both_aligned =
+        (input_ptr as usize).is_multiple_of(32) && (output_ptr as usize).is_multiple_of(32);
+
     while pos < avx_end {
         // Load 32 bytes of input and output
-        let in_vec = _mm256_loadu_si256(input.as_ptr().add(pos) as *const __m256i);
-        let out_vec = _mm256_loadu_si256(output.as_ptr().add(pos) as *const __m256i);
+        // Use aligned loads if both pointers are aligned
+        let in_vec = if both_aligned {
+            _mm256_load_si256(input_ptr.add(pos) as *const __m256i)
+        } else {
+            _mm256_loadu_si256(input_ptr.add(pos) as *const __m256i)
+        };
+        let out_vec = if both_aligned {
+            _mm256_load_si256(output_ptr.add(pos) as *const __m256i)
+        } else {
+            _mm256_loadu_si256(output_ptr.add(pos) as *const __m256i)
+        };
 
         // Separate even bytes (low bytes of u16 words) and odd bytes (high bytes of u16 words)
         // Even bytes: indices 0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30
@@ -187,8 +202,12 @@ pub unsafe fn process_slice_multiply_add_pshufb(
         // XOR with output (multiply-add operation)
         let final_result = _mm256_xor_si256(out_vec, result);
 
-        // Store result
-        _mm256_storeu_si256(output.as_mut_ptr().add(pos) as *mut __m256i, final_result);
+        // Store result using aligned store if possible
+        if both_aligned {
+            _mm256_store_si256(output.as_mut_ptr().add(pos) as *mut __m256i, final_result);
+        } else {
+            _mm256_storeu_si256(output.as_mut_ptr().add(pos) as *mut __m256i, final_result);
+        }
 
         // Debug the final iteration to see if it's corrupting byte 512
 

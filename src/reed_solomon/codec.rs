@@ -27,6 +27,21 @@ use log::debug;
 use rustc_hash::FxHashMap as HashMap;
 use std::sync::OnceLock;
 
+/// Allocate a Vec<u8> with 32-byte alignment for optimal SIMD performance
+///
+/// AVX2 stores (`_mm256_store_si256`) require 32-byte alignment. Using aligned
+/// stores is faster than unaligned stores (`_mm256_storeu_si256`).
+fn alloc_aligned_vec(size: usize) -> Vec<u8> {
+    let layout = std::alloc::Layout::from_size_align(size, 32).expect("Invalid layout");
+    unsafe {
+        let ptr = std::alloc::alloc_zeroed(layout);
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        Vec::from_raw_parts(ptr, size, size)
+    }
+}
+
 // Global SIMD level detection (done once at first use)
 static SIMD_LEVEL: OnceLock<SimdLevel> = OnceLock::new();
 
@@ -957,7 +972,7 @@ impl ReconstructionEngine {
 
                         reconstructed_slices
                             .entry(missing_idx)
-                            .or_insert_with(|| vec![0u8; self.slice_size])
+                            .or_insert_with(|| alloc_aligned_vec(self.slice_size))
                             .splice(word_pos * 2..word_pos * 2 + 2, bytes.iter().cloned());
                     }
                 }
@@ -1526,6 +1541,14 @@ impl ReconstructionEngine {
             for (idx, &global_idx) in available_slices.iter().enumerate() {
                 if global_idx >= self.total_input_slices {
                     continue;
+                }
+
+                // Report progress periodically based on input slices processed
+                // This provides progress updates even with large chunk sizes
+                if num_chunks == 1 && idx % 100 == 0 {
+                    let percentage = (idx as f64 / available_slices.len() as f64) * 100.0;
+                    print!("\rRepairing: {:.1}%", percentage);
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
                 }
 
                 let input_chunk =

@@ -66,7 +66,11 @@ pub fn comprehensive_verify_files<R: VerificationReporter>(
     reporter.report_verification_start(config.parallel);
 
     // Create global verification engine
-    let engine = match GlobalVerificationEngine::from_packets(&packet_set.packets, &base_dir) {
+    let engine = match GlobalVerificationEngine::from_packets_with_config(
+        &packet_set.packets,
+        &base_dir,
+        config,
+    ) {
         Ok(engine) => engine,
         Err(err) => {
             // For empty packet lists or missing main packets, return empty results
