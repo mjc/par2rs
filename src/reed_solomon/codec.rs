@@ -19,6 +19,7 @@
 //! Uses James Plank's "Screaming Fast Galois Field Arithmetic" technique adapted
 //! for 16-bit fields (see `simd_pshufb.rs` for details).
 
+use crate::reed_solomon::alloc_aligned_vec;
 use crate::reed_solomon::galois::{gcd, Galois16};
 use crate::reed_solomon::simd::common::{process_slice_multiply_mode, WriteOp};
 use crate::reed_solomon::simd::{detect_simd_support, process_slice_multiply_add_simd, SimdLevel};
@@ -26,21 +27,6 @@ use crate::RecoverySlicePacket;
 use log::debug;
 use rustc_hash::FxHashMap as HashMap;
 use std::sync::OnceLock;
-
-/// Allocate a Vec<u8> with 32-byte alignment for optimal SIMD performance
-///
-/// AVX2 stores (`_mm256_store_si256`) require 32-byte alignment. Using aligned
-/// stores is faster than unaligned stores (`_mm256_storeu_si256`).
-fn alloc_aligned_vec(size: usize) -> Vec<u8> {
-    let layout = std::alloc::Layout::from_size_align(size, 32).expect("Invalid layout");
-    unsafe {
-        let ptr = std::alloc::alloc_zeroed(layout);
-        if ptr.is_null() {
-            std::alloc::handle_alloc_error(layout);
-        }
-        Vec::from_raw_parts(ptr, size, size)
-    }
-}
 
 // Global SIMD level detection (done once at first use)
 static SIMD_LEVEL: OnceLock<SimdLevel> = OnceLock::new();
@@ -972,7 +958,7 @@ impl ReconstructionEngine {
 
                         reconstructed_slices
                             .entry(missing_idx)
-                            .or_insert_with(|| alloc_aligned_vec(self.slice_size))
+                            .or_insert_with(|| vec![0u8; self.slice_size])
                             .splice(word_pos * 2..word_pos * 2 + 2, bytes.iter().cloned());
                     }
                 }
@@ -1479,8 +1465,11 @@ impl ReconstructionEngine {
                 debug!("Processing chunk {}/{}", chunk_idx, num_chunks);
             }
 
-            // Allocate output buffers for this chunk
-            let mut output_buffers: Vec<Vec<u8>> = vec![vec![0u8; current_chunk_size]; num_missing];
+            // Allocate output buffers for this chunk (32-byte aligned for SIMD)
+            // Using aligned allocation ensures fast SIMD loads/stores
+            let mut output_buffers: Vec<Vec<u8>> = (0..num_missing)
+                .map(|_| alloc_aligned_vec(current_chunk_size))
+                .collect();
             let mut first_writes: Vec<bool> = vec![true; num_missing];
 
             // Process recovery slices

@@ -130,7 +130,9 @@ pub unsafe fn process_slice_multiply_add_pshufb(
     let mut pos = 0;
     let avx_end = (len / 32) * 32;
 
-    // Check if both input and output are 32-byte aligned
+    // Check alignment of both input and output pointers
+    // Since we now allocate aligned buffers and process full buffers (not sub-slices),
+    // alignment should be maintained throughout the Reed-Solomon reconstruction path.
     let input_ptr = input.as_ptr();
     let output_ptr = output.as_ptr();
     let both_aligned =
@@ -138,7 +140,7 @@ pub unsafe fn process_slice_multiply_add_pshufb(
 
     while pos < avx_end {
         // Load 32 bytes of input and output
-        // Use aligned loads if both pointers are aligned
+        // Use aligned loads/stores when both pointers are 32-byte aligned (common case now)
         let in_vec = if both_aligned {
             _mm256_load_si256(input_ptr.add(pos) as *const __m256i)
         } else {
@@ -202,7 +204,7 @@ pub unsafe fn process_slice_multiply_add_pshufb(
         // XOR with output (multiply-add operation)
         let final_result = _mm256_xor_si256(out_vec, result);
 
-        // Store result using aligned store if possible
+        // Store result using aligned store when possible (fast path for reconstruction)
         if both_aligned {
             _mm256_store_si256(output.as_mut_ptr().add(pos) as *mut __m256i, final_result);
         } else {

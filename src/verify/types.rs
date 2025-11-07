@@ -519,6 +519,13 @@ impl FileScanMetadata {
             .map(|(offset, _, block_num)| (*offset, *block_num))
             .collect();
 
+        log::debug!(
+            "analyze_block_positions: file_id={:?}, found {} blocks, first 5: {:?}",
+            target_file_id,
+            target_blocks.len(),
+            &target_blocks[..target_blocks.len().min(5)]
+        );
+
         // Delegate to pure function for easier testing
         let (first_at_zero, in_sequence) = Self::analyze_sorted_blocks(&target_blocks);
         self.first_block_at_offset_zero = first_at_zero;
@@ -533,9 +540,11 @@ impl FileScanMetadata {
             return (true, true);
         }
 
-        // Sort by offset to get physical order
+        // Sort by offset to get physical order, then deduplicate
+        // (sliding window scanning can find the same block multiple times)
         let mut sorted = blocks.to_vec();
         sorted.sort_by_key(|(offset, _)| *offset);
+        sorted.dedup();
 
         // Check if BLOCK 0 is at offset 0
         let first_at_zero = sorted[0] == (0, 0);
