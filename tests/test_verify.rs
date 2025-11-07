@@ -601,6 +601,7 @@ mod file_status_tests {
             blocks_available: 10,
             total_blocks: 10,
             damaged_blocks: vec![],
+            block_positions: Default::default(),
         };
 
         let cloned = result.clone();
@@ -708,6 +709,7 @@ mod print_verification_results_tests {
             blocks_available: 75,
             total_blocks: 100,
             damaged_blocks,
+            block_positions: Default::default(),
         });
 
         let results = VerificationResults {
@@ -767,6 +769,7 @@ mod verification_result_calculations {
                 blocks_available: 100 - (i as usize * 10),
                 total_blocks: 100,
                 damaged_blocks: if i > 0 { vec![0u32, 1u32] } else { vec![] },
+                block_positions: Default::default(),
             });
         }
 
@@ -825,6 +828,7 @@ mod verification_result_calculations {
                 blocks_available: 10,
                 total_blocks: 10,
                 damaged_blocks: vec![],
+                block_positions: Default::default(),
             },
             FileVerificationResult {
                 file_name: "damaged.txt".to_string(),
@@ -833,6 +837,7 @@ mod verification_result_calculations {
                 blocks_available: 5,
                 total_blocks: 10,
                 damaged_blocks: vec![5, 6, 7, 8, 9],
+                block_positions: Default::default(),
             },
             FileVerificationResult {
                 file_name: "missing.txt".to_string(),
@@ -841,6 +846,7 @@ mod verification_result_calculations {
                 blocks_available: 0,
                 total_blocks: 10,
                 damaged_blocks: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                block_positions: Default::default(),
             },
         ];
 
@@ -998,6 +1004,7 @@ mod file_name_handling {
             blocks_available: 10,
             total_blocks: 10,
             damaged_blocks: vec![],
+            block_positions: Default::default(),
         };
 
         assert_eq!(result.file_name, "файл.txt");

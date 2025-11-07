@@ -104,6 +104,17 @@ impl TestEnv {
             .map(|f| f.file_name.clone())
             .collect()
     }
+
+    fn repair(&self) -> par2rs::repair::RepairResult {
+        // Run comprehensive verification first
+        let par2_files = par2_files::collect_par2_files(&self.par2_file);
+        let packet_set = par2_files::load_par2_packets(&par2_files, false, false);
+        let verification_results =
+            par2rs::verify::comprehensive_verify_files_in_dir(packet_set, self.temp_dir.path());
+
+        // Then repair with verification results
+        self.load_context().repair(verification_results).unwrap()
+    }
 }
 
 #[test]
@@ -119,8 +130,7 @@ fn test_par2_files_not_deleted_after_repair() {
     env.corrupt_at(5000, &vec![0xFFu8; 1000]);
 
     // Perform repair
-    let context = env.load_context();
-    let result = context.repair().unwrap();
+    let result = env.repair();
 
     assert!(result.is_success(), "Repair should succeed");
 
@@ -154,8 +164,7 @@ fn test_multiple_repairs_dont_delete_par2_files() {
         env.corrupt_at(offset, &vec![0xAAu8; 500]);
 
         // Repair
-        let context = env.load_context();
-        let result = context.repair().unwrap();
+        let result = env.repair();
         assert!(
             result.is_success(),
             "Repair should succeed in iteration {}",
@@ -181,8 +190,7 @@ fn test_temp_file_cleanup() {
 
     env.corrupt_at(1000, &[0xBBu8; 200]);
 
-    let context = env.load_context();
-    let _result = context.repair().unwrap();
+    let _result = env.repair();
 
     // Check for any leftover temp files
     let all_files = env.list_all_files();
@@ -271,7 +279,7 @@ fn test_repair_doesnt_write_to_par2_directory() {
         );
     }
 
-    let _result = context.repair().unwrap();
+    let _result = env.repair();
 
     // Verify the repair wrote to the correct file
     assert!(
@@ -301,22 +309,10 @@ fn test_large_file_simulation() {
         env.corrupt_at(10000, &vec![0xDDu8; 512]);
 
         // Repair
-        let context = env.load_context();
-        let result = context.repair();
+        let result = env.repair();
 
-        match result {
-            Ok(r) => {
-                println!("Iteration {}: Repair succeeded", i);
-                assert!(r.is_success());
-            }
-            Err(e) => {
-                println!("Iteration {}: Repair failed: {}", i, e);
-                println!("Files after failure: {:?}", env.list_all_files());
-                println!("PAR2 files exist: {}", env.par2_files_exist());
-                println!("PAR2 count: {}", env.count_par2_files());
-                panic!("Repair failed in iteration {}: {}", i, e);
-            }
-        }
+        assert!(result.is_success());
+        println!("Iteration {}: Repair succeeded", i);
 
         // Check files still exist
         let current_par2_count = env.count_par2_files();

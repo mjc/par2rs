@@ -169,10 +169,12 @@ impl GlobalVerificationEngine {
         // Note: report_verification_start and report_files_found should be called by the caller
 
         // Step 1: Scan all available files to build availability map
-        let (available_blocks, file_statuses) = self.scan_available_blocks(reporter, parallel);
+        let (available_blocks, file_statuses, scan_metadatas) =
+            self.scan_available_blocks(reporter, parallel);
 
         // Step 2: Create aggregate results (individual file reporting already done in scan_available_blocks)
-        let file_results = self.create_file_results(&available_blocks, &file_statuses);
+        let file_results =
+            self.create_file_results(&available_blocks, &file_statuses, &scan_metadatas);
         let block_results = self.create_block_verification_results(&available_blocks);
 
         // Count recovery blocks available from recovery packets
@@ -193,7 +195,11 @@ impl GlobalVerificationEngine {
         &self,
         reporter: &R,
         parallel: bool,
-    ) -> (AvailableBlocksMap, FileStatusMap) {
+    ) -> (
+        AvailableBlocksMap,
+        FileStatusMap,
+        HashMap<FileId, FileScanMetadata>,
+    ) {
         // Wrap reporter in Mutex for thread-safe output (like par2cmdline-turbo's output_lock)
         let reporter_lock = Mutex::new(reporter);
 
@@ -221,13 +227,17 @@ impl GlobalVerificationEngine {
                 .collect()
         };
 
-        // Merge all local maps into global map and collect statuses
+        // Merge all local maps into global map and collect statuses and metadata
         let mut global_block_map = HashMap::default();
         let mut file_statuses = HashMap::default();
+        let mut scan_metadatas = HashMap::default();
 
-        for (local_map, _file_size, file_id, status) in file_results {
+        for (local_map, _file_size, file_id, status, metadata) in file_results {
             // Store the computed status
             file_statuses.insert(file_id, status);
+
+            // Store the scan metadata
+            scan_metadatas.insert(file_id, metadata);
 
             // Merge local map into global
             for (key, entries) in local_map {
@@ -238,7 +248,7 @@ impl GlobalVerificationEngine {
             }
         }
 
-        (global_block_map, file_statuses)
+        (global_block_map, file_statuses, scan_metadatas)
     }
 
     /// Process a single file: scan blocks and report status
@@ -246,7 +256,13 @@ impl GlobalVerificationEngine {
         &self,
         file_description: &FileDescriptionPacket,
         reporter_lock: &Mutex<&R>,
-    ) -> (LocalBlockMap, FileSize, FileId, FileStatus) {
+    ) -> (
+        LocalBlockMap,
+        FileSize,
+        FileId,
+        FileStatus,
+        FileScanMetadata,
+    ) {
         use crate::verify::types::FileSize;
 
         let file_name = extract_file_name(file_description);
@@ -289,7 +305,13 @@ impl GlobalVerificationEngine {
             total_blocks,
         );
 
-        (local_block_map, file_size, file_description.file_id, status)
+        (
+            local_block_map,
+            file_size,
+            file_description.file_id,
+            status,
+            scan_metadata,
+        )
     }
 
     /// Scan a single file and return its local block map with progress reporting
@@ -828,6 +850,7 @@ impl GlobalVerificationEngine {
         &self,
         available_blocks: &AvailableBlocksMap,
         file_statuses: &FileStatusMap,
+        scan_metadatas: &HashMap<FileId, FileScanMetadata>,
     ) -> Vec<FileVerificationResult> {
         let mut file_results = Vec::new();
 
@@ -879,6 +902,19 @@ impl GlobalVerificationEngine {
                     }
                 });
 
+            // Extract block positions from scan metadata
+            let block_positions = scan_metadatas
+                .get(&file_description.file_id)
+                .map(|metadata| {
+                    metadata
+                        .found_blocks
+                        .iter()
+                        .filter(|(_, fid, _)| *fid == file_description.file_id)
+                        .map(|(offset, _, block_num)| (*block_num, *offset))
+                        .collect()
+                })
+                .unwrap_or_default();
+
             // Just create the result record (reporting already done inline)
 
             file_results.push(FileVerificationResult {
@@ -888,6 +924,7 @@ impl GlobalVerificationEngine {
                 blocks_available: blocks_available.as_usize(),
                 total_blocks: total_blocks.as_usize(),
                 damaged_blocks,
+                block_positions,
             });
         }
 

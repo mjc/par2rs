@@ -394,6 +394,9 @@ pub struct FileVerificationResult {
     pub blocks_available: usize,
     pub total_blocks: usize,
     pub damaged_blocks: Vec<u32>,
+    /// Positions where blocks were found during scanning
+    /// Maps block_number -> file_offset where that block was found
+    pub block_positions: rustc_hash::FxHashMap<u32, usize>,
 }
 
 /// Buffer for scanning file data

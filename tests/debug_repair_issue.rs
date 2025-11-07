@@ -1,5 +1,6 @@
 use par2rs::par2_files;
 use par2rs::repair::RepairContext;
+use par2rs::verify;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -127,7 +128,14 @@ fn debug_repair_issue() {
 
     // Attempt repair
     println!("\nAttempting repair...");
-    let result = context.repair();
+
+    // Run comprehensive verification first
+    let packet_set = par2_files::load_par2_packets(&par2_files, false, false);
+    let verification_results =
+        verify::comprehensive_verify_files_in_dir(packet_set, temp_dir.path());
+
+    #[allow(deprecated)]
+    let result = context.repair(verification_results);
     match result {
         Ok(repair_result) => {
             println!("Repair result: {:?}", repair_result);

@@ -9,7 +9,7 @@ cd "$SCRIPT_DIR"
 
 echo "Generating test files..."
 
-# Function to generate file content (just zeros for speed)
+# Function to generate file content with deterministic non-zero pattern
 generate_file() {
     local filename=$1
     local start_slice=$2
@@ -18,8 +18,26 @@ generate_file() {
     
     echo "  Creating $filename: $num_slices slices (global $start_slice-$((start_slice + num_slices - 1)))"
     
-    # Use dd to quickly create a file filled with zeros
-    dd if=/dev/zero of="$filename" bs=$slice_size count=$num_slices 2>/dev/null
+    # Generate deterministic non-zero data using Python
+    python3 << EOF
+import sys
+slice_size = $slice_size
+start_slice = $start_slice
+num_slices = $num_slices
+
+with open("$filename", "wb") as f:
+    for s in range(num_slices):
+        slice_idx = start_slice + s
+        # Per-slice seed to ensure different slices have different data
+        base = ((slice_idx * 0x9E3779B97F4A7C15 + 0xC3) & 0xFF)
+        
+        # Generate slice data
+        data = bytearray(slice_size)
+        for i in range(slice_size):
+            data[i] = (base + (i & 0xff)) & 0xFF
+        
+        f.write(data)
+EOF
 }
 
 # Clean up any existing files

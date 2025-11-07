@@ -2,6 +2,7 @@ use par2rs::par2_files;
 /// Tests for specific bugs found during repair implementation
 /// These tests document and prevent regression of critical bugs discovered during development
 use par2rs::repair::RepairContext;
+use par2rs::verify;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -82,7 +83,15 @@ impl TestEnv {
 
     fn repair(&self) -> par2rs::repair::RepairResult {
         let _ = env_logger::builder().is_test(true).try_init();
-        match self.load_context().repair() {
+
+        // Run comprehensive verification first
+        let par2_files = par2_files::collect_par2_files(&self.par2_file);
+        let packet_set = par2_files::load_par2_packets(&par2_files, false, false);
+        let verification_results =
+            verify::comprehensive_verify_files_in_dir(packet_set, self.temp_dir.path());
+
+        // Then repair with verification results
+        match self.load_context().repair(verification_results) {
             Ok(result) => {
                 if !result.is_success() {
                     eprintln!("Repair returned failure: {:?}", result);

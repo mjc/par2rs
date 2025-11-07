@@ -64,9 +64,31 @@ use tempfile::TempDir;
 const SLICE_SIZE: usize = 32768; // 32KB - PAR2 default
 const PAR2_DIR: &str = "tests/fixtures/multifile_bug";
 
-/// Generate deterministic test file content (just zeros for speed)
-fn generate_file_content(_start_slice: usize, num_slices: usize) -> Vec<u8> {
-    vec![0u8; num_slices * SLICE_SIZE]
+/// Generate deterministic test file content.
+///
+/// Use a simple deterministic per-slice pattern (non-zero) so that test
+/// slices are not identical across the whole test set. This avoids creating
+/// duplicate blocks (all-zero data) which makes the test fragile when
+/// verification/repair switches to global block-table scanning.
+fn generate_file_content(start_slice: usize, num_slices: usize) -> Vec<u8> {
+    let mut buf = vec![0u8; num_slices * SLICE_SIZE];
+
+    for s in 0..num_slices {
+        let slice_idx = start_slice + s;
+        // Per-slice seed-derived base byte — ensures different slices have
+        // different repeating patterns while remaining cheap to generate.
+        let base: u8 = ((slice_idx as u64)
+            .wrapping_mul(0x9E3779B97F4A7C15)
+            .wrapping_add(0xC3)) as u8;
+
+        let start = s * SLICE_SIZE;
+        for i in 0..SLICE_SIZE {
+            // Mix base with position to avoid long runs of identical bytes.
+            buf[start + i] = base.wrapping_add((i & 0xff) as u8);
+        }
+    }
+
+    buf
 }
 
 /// Setup test fixture: copy PAR2 files and generate data files
@@ -215,9 +237,16 @@ fn test_multifile_repair_with_two_damaged_files() {
     println!("  file_b.bin: {}", expected_file_b_md5);
     println!("  file_c.bin: {}", expected_file_c_md5);
 
-    // Perform repair
+    // Perform repair using the proper high-level API
     println!("\nPerforming repair...");
-    let result = repair_context.repair().expect("Repair should succeed");
+    let silent_reporter = Box::new(par2rs::repair::SilentReporter);
+    let verify_config = par2rs::verify::VerificationConfig::default();
+    let (_context, result) = par2rs::repair::repair_files_with_config(
+        par2_file.to_str().unwrap(),
+        silent_reporter,
+        &verify_config,
+    )
+    .expect("Repair operation should complete");
 
     match result {
         par2rs::repair::RepairResult::Success {

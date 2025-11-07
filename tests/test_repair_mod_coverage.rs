@@ -213,8 +213,17 @@ fn test_repair_with_slices_no_recovery() {
         Packet::FileDescription(create_file_desc(file_id, "test.txt", 100)),
     ];
 
-    let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
-    let result = context.repair_with_slices();
+    // Run verification first
+    let packet_set = par2rs::par2_files::PacketSet::new(packets, 0, dir.path().to_path_buf());
+    let verification_results =
+        par2rs::verify::comprehensive_verify_files_in_dir(packet_set, dir.path());
+
+    let packets2 = vec![
+        Packet::Main(create_main_packet(vec![file_id])),
+        Packet::FileDescription(create_file_desc(file_id, "test.txt", 100)),
+    ];
+    let context = RepairContext::new(packets2, dir.path().to_path_buf()).unwrap();
+    let result = context.repair(verification_results);
 
     // Should complete even without recovery data
     assert!(result.is_ok());
@@ -235,8 +244,16 @@ fn test_repair_no_recovery_data() {
         Packet::FileDescription(create_file_desc(file_id, "intact.txt", 9)),
     ];
 
-    let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
-    let result = context.repair();
+    let packet_set = par2rs::par2_files::PacketSet::new(packets, 0, dir.path().to_path_buf());
+    let verification_results =
+        par2rs::verify::comprehensive_verify_files_in_dir(packet_set, dir.path());
+
+    let packets2 = vec![
+        Packet::Main(create_main_packet(vec![file_id])),
+        Packet::FileDescription(create_file_desc(file_id, "intact.txt", 9)),
+    ];
+    let context = RepairContext::new(packets2, dir.path().to_path_buf()).unwrap();
+    let result = context.repair(verification_results);
 
     // Should complete even without recovery data
     assert!(result.is_ok());

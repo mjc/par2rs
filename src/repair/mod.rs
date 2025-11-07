@@ -110,88 +110,80 @@ impl RepairContext {
     }
 
     /// Perform repair operation
-    pub fn repair_with_slices(&self) -> Result<RepairResult> {
-        debug!("repair_with_slices");
-        let mut file_status = self.check_file_status();
-        debug!("  File statuses: {:?}", file_status);
+    ///
+    /// NOTE: This method requires verification results. Call
+    /// Perform repair using pre-computed verification results
+    ///
+    /// This method uses the comprehensive verification results (from byte-by-byte
+    /// sliding window scanning) to determine which blocks are available, instead of
+    /// using aligned CRC32 validation which fails for displaced blocks.
+    ///
+    /// # Arguments
+    /// * `verification_results` - Results from comprehensive_verify_files_with_config_and_reporter
+    pub fn repair(
+        &self,
+        verification_results: crate::verify::VerificationResults,
+    ) -> Result<RepairResult> {
+        debug!("repair");
 
-        // Build validation cache by validating all files once upfront
-        // PERFORMANCE: Use fast CRC32 slice validation instead of slow full-file MD5
-        // PERFORMANCE: Validate files in parallel for maximum I/O throughput
-        let validation_cache: ValidationCache = {
-            let map: HashMap<FileId, HashSet<usize>> = self
-                .recovery_set
-                .files
-                .par_iter()
-                .map(|file_info| {
-                    let status = file_status
-                        .get(&file_info.file_name)
-                        .unwrap_or(&FileStatus::Missing);
+        // Build validation cache from verification results
+        // Convert FileVerificationResult to ValidationCache
+        let mut validation_cache = ValidationCache::new();
+        let mut file_status = HashMap::default();
+        let mut block_positions_map: HashMap<FileId, HashMap<u32, usize>> = HashMap::default();
 
-                    let valid_slices = match status {
-                        FileStatus::Missing => {
-                            // Empty set for missing files
-                            HashSet::default()
-                        }
-                        FileStatus::Present => {
-                            // Already validated - all slices valid
-                            (0..file_info.slice_count).collect()
-                        }
-                        FileStatus::Corrupted => {
-                            // Show progress for large files
-                            if file_info.slice_count > 100 {
-                                self.reporter().report_scanning(&file_info.file_name);
-                            }
-
-                            let valid_slices =
-                                self.validate_file_slices(file_info).unwrap_or_default();
-
-                            // Clear progress line for large files
-                            if file_info.slice_count > 100 {
-                                self.reporter().clear_scanning(&file_info.file_name);
-                            }
-
-                            valid_slices
-                        }
-                    };
-
-                    (file_info.file_id, valid_slices)
-                })
+        for file_result in &verification_results.files {
+            // Build set of valid block indices
+            // damaged_blocks contains the indices of DAMAGED blocks, so we need to invert
+            let damaged_set: HashSet<usize> = file_result
+                .damaged_blocks
+                .iter()
+                .map(|&idx| idx as usize)
                 .collect();
 
-            let mut cache = ValidationCache::new();
-            for (file_id, valid_slices) in map {
-                cache.insert(file_id, valid_slices);
-            }
-            cache
-        };
+            let valid_slices: HashSet<usize> = (0..file_result.total_blocks)
+                .filter(|idx| !damaged_set.contains(idx))
+                .collect();
 
-        // Update file_status based on validation results
+            validation_cache.insert(file_result.file_id, valid_slices);
+
+            // Store block positions for this file (maps block_number -> file_offset)
+            block_positions_map.insert(file_result.file_id, file_result.block_positions.clone());
+
+            // Convert verify::FileStatus to repair::FileStatus
+            let status = match file_result.status {
+                crate::verify::FileStatus::Present => FileStatus::Present,
+                crate::verify::FileStatus::Renamed => FileStatus::Corrupted, // Treat renamed as corrupted for repair
+                crate::verify::FileStatus::Corrupted => FileStatus::Corrupted,
+                crate::verify::FileStatus::Missing => FileStatus::Missing,
+            };
+            file_status.insert(file_result.file_name.clone(), status);
+
+            debug!(
+                "  File {}: {} valid blocks out of {} (status: {:?})",
+                file_result.file_name,
+                file_result.blocks_available,
+                file_result.total_blocks,
+                status
+            );
+        }
+
+        // Recalculate total damaged blocks
         let mut total_damaged_blocks = 0;
         for file_info in &self.recovery_set.files {
             let valid_count = validation_cache.valid_count(&file_info.file_id);
-
-            if valid_count == file_info.slice_count {
-                // All slices are valid
-                file_status.insert(file_info.file_name.clone(), FileStatus::Present);
-                debug!(
-                    "  All {} slices valid for {} - marking as Present",
-                    valid_count, file_info.file_name
-                );
-            } else {
-                let damaged_slices = file_info.slice_count - valid_count;
-                total_damaged_blocks += damaged_slices;
-                debug!(
-                    "  {} damaged slices found in {}",
-                    damaged_slices, file_info.file_name
-                );
-            }
+            let damaged_count = file_info.slice_count - valid_count;
+            total_damaged_blocks += damaged_count;
         }
 
-        // Check if repair is needed (after validation)
-        let needs_repair = file_status.values().any(|s| *s != FileStatus::Present);
-        debug!("  needs_repair: {}", needs_repair);
-        if !needs_repair {
+        debug!(
+            "  total_damaged_blocks: {}, recovery_blocks: {}",
+            total_damaged_blocks,
+            self.recovery_set.recovery_slices_metadata.len()
+        );
+
+        // Check if repair is needed
+        if total_damaged_blocks == 0 {
             let verified_files: Vec<String> = file_status.keys().cloned().collect();
             let files_verified = verified_files.len();
             return Ok(RepairResult::NoRepairNeeded {
@@ -201,43 +193,29 @@ impl RepairContext {
             });
         }
 
-        debug!(
-            "  total_damaged_blocks: {}, recovery_blocks: {}",
+        // Report recovery block information
+        self.reporter().report_recovery_info(
+            self.recovery_set.recovery_slices_metadata.len(),
             total_damaged_blocks,
-            self.recovery_set.recovery_slices_metadata.len()
         );
 
-        // Report recovery block information
-        if total_damaged_blocks > 0 {
-            self.reporter().report_recovery_info(
-                self.recovery_set.recovery_slices_metadata.len(),
-                total_damaged_blocks,
-            );
-
-            if total_damaged_blocks > self.recovery_set.recovery_slices_metadata.len() {
-                return Ok(RepairResult::Failed {
-                    files_failed: file_status.keys().cloned().collect(),
-                    files_verified: 0,
-                    verified_files: Vec::new(),
-                    message: format!(
-                        "Insufficient recovery data: need {} blocks but only have {}",
-                        total_damaged_blocks,
-                        self.recovery_set.recovery_slices_metadata.len()
-                    ),
-                });
-            }
+        if total_damaged_blocks > self.recovery_set.recovery_slices_metadata.len() {
+            return Ok(RepairResult::Failed {
+                files_failed: file_status.keys().cloned().collect(),
+                files_verified: 0,
+                verified_files: Vec::new(),
+                message: format!(
+                    "Insufficient recovery data: need {} blocks but only have {}",
+                    total_damaged_blocks,
+                    self.recovery_set.recovery_slices_metadata.len()
+                ),
+            });
         }
 
-        // Perform the actual repair with validation cache
-        self.perform_reed_solomon_repair(&file_status, &validation_cache)
+        // Perform the actual repair with validation cache from comprehensive verification
+        self.perform_reed_solomon_repair(&file_status, &validation_cache, &block_positions_map)
     }
 
-    /// Perform repair operation
-    pub fn repair(&self) -> Result<RepairResult> {
-        self.repair_with_slices()
-    }
-
-    /// Perform Reed-Solomon repair
     /// Perform Reed-Solomon repair
     ///
     /// CRITICAL: This method uses a unified reconstruction approach for ALL files.
@@ -261,6 +239,7 @@ impl RepairContext {
         &self,
         file_status: &HashMap<String, FileStatus>,
         validation_cache: &ValidationCache,
+        block_positions_map: &HashMap<FileId, HashMap<u32, usize>>,
     ) -> Result<RepairResult> {
         debug!(
             "perform_reed_solomon_repair: processing {} files",
@@ -337,8 +316,11 @@ impl RepairContext {
         }
 
         // STEP 2: Reconstruct ALL missing slices across ALL files in ONE operation
-        let reconstructed_data: HashMap<usize, Vec<u8>> =
-            self.reconstruct_all_missing_slices(&files_to_repair, validation_cache)?;
+        let reconstructed_data: HashMap<usize, Vec<u8>> = self.reconstruct_all_missing_slices(
+            &files_to_repair,
+            validation_cache,
+            block_positions_map,
+        )?;
 
         // STEP 3: Write reconstructed data to each file
         let mut repaired_files = Vec::new();
@@ -360,12 +342,19 @@ impl RepairContext {
                 .get(&file_info.file_id)
                 .ok_or_else(|| RepairError::NoValidationCache(file_info.file_name.clone()))?;
 
+            // Get block positions for this file (maps block_number -> file_offset)
+            let block_positions = block_positions_map
+                .get(&file_info.file_id)
+                .cloned()
+                .unwrap_or_default();
+
             let file_path = self.base_path.join(&file_info.file_name);
             match self.write_repaired_file(
                 &file_path,
                 file_info,
                 valid_slice_indices,
                 &file_reconstructed,
+                &block_positions,
             ) {
                 Ok(()) => {
                     self.reporter()
@@ -517,6 +506,7 @@ impl RepairContext {
         &self,
         files_to_repair: &[(&FileInfo, Vec<usize>)],
         validation_cache: &ValidationCache,
+        block_positions_map: &HashMap<FileId, HashMap<u32, usize>>,
     ) -> Result<HashMap<usize, Vec<u8>>> {
         use self::slice_provider::{ChunkedSliceProvider, RecoverySliceProvider, SliceLocation};
         use std::io::Cursor;
@@ -574,14 +564,40 @@ impl RepairContext {
                 valid_slices.len()
             );
 
+            // CRITICAL FIX: Get actual file size to handle truncated files
+            // If the file is shorter than expected (e.g., truncated), we need to
+            // use the ACTUAL file size, not the expected size from PAR2 metadata.
+            // Otherwise we'll try to read past EOF when adding slices to the provider.
+            let actual_file_size = if file_path.exists() {
+                fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0)
+            } else {
+                0
+            };
+
+            // Get block positions for this file (maps block_number -> actual file_offset)
+            let file_block_positions = block_positions_map
+                .get(&file_info.file_id)
+                .cloned()
+                .unwrap_or_default();
+
             for slice_index in 0..file_info.slice_count {
                 if !valid_slices.contains(&slice_index) {
                     continue; // Skip invalid slices
                 }
 
                 let global_index = file_info.local_to_global(LocalSliceIndex::new(slice_index));
-                let offset = (slice_index * self.recovery_set.slice_size as usize) as u64;
-                let actual_size = if slice_index == file_info.slice_count - 1 {
+
+                // CRITICAL: Use actual block position from verification if available (handles displaced blocks)
+                // Otherwise fall back to expected position
+                let offset = file_block_positions
+                    .get(&(slice_index as u32))
+                    .map(|&pos| pos as u64)
+                    .unwrap_or_else(|| {
+                        (slice_index * self.recovery_set.slice_size as usize) as u64
+                    });
+
+                // Calculate expected slice size based on PAR2 metadata
+                let expected_slice_size = if slice_index == file_info.slice_count - 1 {
                     let remaining = file_info.file_length % self.recovery_set.slice_size;
                     if remaining == 0 {
                         self.recovery_set.slice_size as usize
@@ -590,6 +606,20 @@ impl RepairContext {
                     }
                 } else {
                     self.recovery_set.slice_size as usize
+                };
+
+                // CRITICAL FIX: Calculate ACTUAL available bytes in the file for this slice
+                // Handles truncated files where actual_file_size < expected file_length
+                let actual_size = if offset >= actual_file_size {
+                    // Slice is entirely beyond EOF (file severely truncated)
+                    debug!(
+                        "  Slice {} is beyond EOF (offset {} >= file size {}), skipping",
+                        slice_index, offset, actual_file_size
+                    );
+                    continue; // Skip this slice entirely
+                } else {
+                    let bytes_available = (actual_file_size - offset) as usize;
+                    bytes_available.min(expected_slice_size)
                 };
 
                 let expected_crc = self
@@ -743,6 +773,7 @@ impl RepairContext {
         file_info: &FileInfo,
         valid_slice_indices: &HashSet<usize>,
         reconstructed_slices: &ReconstructedSlices,
+        block_positions: &HashMap<u32, usize>,
     ) -> Result<()> {
         debug!("Writing repaired file with streaming I/O: {:?}", file_path);
 
@@ -829,7 +860,25 @@ impl RepairContext {
             } else if valid_slice_indices.contains(&slice_index) {
                 // Read from source file
                 if let Some(ref mut file) = source_file {
-                    let offset = (slice_index * slice_size) as u64;
+                    // CRITICAL: Use actual block position from verification if available.
+                    // Comprehensive verification finds blocks via byte-by-byte scanning,
+                    // so blocks may be at DISPLACED positions (not at expected aligned offsets).
+                    // block_positions maps block_number -> actual_file_offset where the block was found.
+                    let offset = block_positions
+                        .get(&(slice_index as u32))
+                        .map(|&pos| pos as u64)
+                        .unwrap_or_else(|| (slice_index * slice_size) as u64);
+
+                    debug!(
+                        "Reading slice {} from offset {} ({})",
+                        slice_index,
+                        offset,
+                        if block_positions.contains_key(&(slice_index as u32)) {
+                            "displaced position from verification"
+                        } else {
+                            "expected aligned position"
+                        }
+                    );
 
                     // Only seek if we're not already at the right position (optimize sequential reads)
                     if next_expected_offset != Some(offset) {
@@ -994,6 +1043,28 @@ pub fn repair_files_with_reporter(
     // Get the base directory for file resolution
     let base_path = par2_path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
+    // CRITICAL FIX: Run comprehensive verification to get accurate block availability
+    // Reference: par2cmdline-turbo uses byte-by-byte sliding window scanning (FileCheckSummer)
+    // to find blocks at ANY position (displaced blocks), not just aligned positions.
+    // The old aligned CRC32 validation only checked blocks at (0, block_size, 2*block_size...)
+    // which FAILS when blocks are displaced (e.g., prepended data, non-aligned corruption).
+    //
+    // This ensures repair uses the SAME verification logic as the verify command,
+    // preventing cases where verify says "487 blocks available" but repair only finds 121.
+    let verification_config = crate::verify::VerificationConfig::default();
+    let silent_reporter = crate::reporters::SilentVerificationReporter;
+    let verification_results =
+        crate::verify::comprehensive_verify_files_with_config_and_reporter_in_dir(
+            packet_set,
+            &verification_config,
+            &silent_reporter,
+            &base_path,
+        );
+
+    // Re-load packets for repair context (verification consumed them)
+    // This is acceptable since packet parsing is fast (no recovery slice data)
+    let packet_set = crate::par2_files::load_par2_packets(&par2_files, false, false);
+
     // Create repair context using builder
     let repair_context = RepairContextBuilder::new()
         .packets(packet_set.packets)
@@ -1007,7 +1078,7 @@ pub fn repair_files_with_reporter(
         .reporter()
         .report_statistics(&repair_context.recovery_set);
 
-    let result = repair_context.repair()?;
+    let result = repair_context.repair(verification_results)?;
 
     Ok((repair_context, result))
 }
