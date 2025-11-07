@@ -22,6 +22,8 @@ anyhow = "1.0"
 tempfile = "3"
 # Benchmarking framework
 criterion = { version = "0.7", features = ["html_reports"] }
+# Instruction-count benchmarking (deterministic, no timing noise)
+iai-callgrind = "0.16"
 # Property-based testing
 proptest = "1.5"
 # Random number generation for tests
@@ -41,6 +43,10 @@ harness = false
 
 [[bench]]
 name = "md5_optimized"
+harness = false
+
+[[bench]]
+name = "iai_simd"
 harness = false
 
 [profile.release]
