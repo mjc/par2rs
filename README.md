@@ -8,21 +8,23 @@ A Rust implementation of PAR2 (Parity Archive) for data recovery and verificatio
 
 ### Performance
 
-par2rs achieves **2-200x speedup** over par2cmdline through:
-- **Optimized I/O patterns** using full slice-size chunks instead of 64KB blocks (eliminates 32x redundant reads)
+par2rs achieves **1.1-2.9x speedup** over par2cmdline through:
+- **Optimized I/O patterns** using full slice-size chunks instead of 64KB blocks (eliminates redundant reads)
 - **Parallel Reed-Solomon reconstruction** using Rayon for multi-threaded chunk processing
 - **SIMD-accelerated operations** (PSHUFB on x86_64, NEON on ARM64, portable_simd cross-platform)
 - **Smart validation skipping** for files with matching MD5 checksums
 - **Memory-efficient lazy loading** with LRU caching
 
+**⚠️ Performance Regression Note:** These results show significantly lower speedups than previous benchmarks (which showed 2-200× improvements). This is considered a **regression** and is under investigation. The current implementation maintains correctness but has lost most of its performance advantages on Linux x86_64.
+
 **Latest benchmark results:**
 
 **Linux x86_64 (AMD Ryzen 9 5950X, 64GB RAM):**
-- 1MB: **211.96x speedup** (6.78s → 0.032s)
-- 10MB: **104.78x speedup** (8.28s → 0.079s)
-- 100MB: **14.43x speedup** (8.69s → 0.60s)
-- 1GB: **3.12x speedup** (17.82s → 5.70s)
-- 10GB: **2.04x speedup** (121.84s → 59.65s)
+- 1MB: **1.23x speedup** (0.032s → 0.026s)
+- 10MB: **1.54x speedup** (0.074s → 0.048s)
+- 100MB: **1.20x speedup** (0.386s → 0.321s)
+- 1GB: **1.11x speedup** (3.74s → 3.37s)
+- 10GB: **1.53x speedup** (58.80s → 38.32s)
 
 **macOS M1 (MacBook Air, 16GB RAM):**
 - 100MB: 2.77x speedup (2.26s → 0.81s)
@@ -30,7 +32,7 @@ par2rs achieves **2-200x speedup** over par2cmdline through:
 - 10GB: 2.46x speedup (104.8s → 42.6s)
 - 25GB: 2.36x speedup (349.6s → 147.8s)
 
-The majority of this speedup comes from I/O optimization. See [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md) for comprehensive end-to-end benchmarks and [docs/SIMD_OPTIMIZATION.md](docs/SIMD_OPTIMIZATION.md) for SIMD implementation details.
+The performance improvements come primarily from optimized I/O patterns and SIMD-accelerated Reed-Solomon operations. See [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md) for comprehensive end-to-end benchmarks and [docs/SIMD_OPTIMIZATION.md](docs/SIMD_OPTIMIZATION.md) for SIMD implementation details.
 
 ## Quick Start
 

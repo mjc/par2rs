@@ -2,21 +2,35 @@
 
 ## Overview
 
-This document describes the SIMD (Single Instruction, Multiple Data) optimizations implemented in par2rs for Reed-Solomon error correction operations. Combined with I/O optimizations, par2rs achieves **2.4-3x speedup** over par2cmdline for real-world repair workloads.
+This document describes the SIMD (Single Instruction, Multiple Data) optimizations implemented in par2rs for Reed-Solomon error correction operations.
 
-**Performance breakdown:**
+**⚠️ PERFORMANCE REGRESSION ALERT:** Recent benchmarks (November 2025) show **significant performance degradation** on Linux x86_64 (1.1-1.5× vs previous 2-200×). The SIMD optimizations described here remain intact, but end-to-end performance has regressed. This is under investigation.
+
+**Previous performance (October 2025):**
 - **I/O optimization** (primary factor): Full slice-size chunks eliminate 32x redundant reads
 - **SIMD acceleration**: 2.2-2.8x speedup for GF(2^16) multiply-add operations
-- **Parallel reconstruction**: Multi-threaded chunk processing with Rayon
-- **Smart caching**: LRU cache with dynamic sizing
+- **End-to-end speedups**: 2-212× across file sizes
 
-**Measured performance (M1 MacBook Air 16GB):**
+**Current performance (November 2025):**
+- **macOS M1** (still good): 2.36-2.99× speedup maintained
+- **Linux x86_64** (REGRESSED): 1.11-1.54× speedup - most gains lost
+- **SIMD-level benchmarks**: Still show 2.2-2.8× (no regression at this level)
+- **Conclusion**: Regression is in higher-level code, not SIMD operations
+
+**Measured end-to-end performance (M1 MacBook Air 16GB) - maintained:**
 - 100MB: 2.77x speedup (2.26s → 0.81s)
 - 1GB: 2.99x speedup (22.7s → 7.6s)
 - 10GB: 2.46x speedup (104.8s → 42.6s)
 - 25GB: 2.36x speedup (349.6s → 147.8s)
 
-For end-to-end benchmark results, see [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md).
+**Measured end-to-end performance (Linux x86_64 Ryzen 9) - REGRESSED:**
+- 1MB: 1.23x speedup (0.032s → 0.026s) - was 211× in Oct 2025
+- 10MB: 1.54x speedup (0.074s → 0.048s) - was 104× in Oct 2025
+- 100MB: 1.20x speedup (0.386s → 0.321s) - was 14× in Oct 2025
+- 1GB: 1.11x speedup (3.74s → 3.37s) - was 3.1× in Oct 2025
+- 10GB: 1.53x speedup (58.8s → 38.3s) - was 2.0× in Oct 2025
+
+For complete benchmark data, see [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md).
 
 ## SIMD Implementations
 
