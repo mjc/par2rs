@@ -112,21 +112,21 @@ fn test_report_file_status_all_variants() {
 fn test_report_damaged_blocks() {
     let reporter = ConsoleVerificationReporter::new();
 
-    // Empty list
-    reporter.report_damaged_blocks("file1.txt", &[]);
+    // Empty list - all blocks found
+    reporter.report_damaged_blocks("file1.txt", &[], 10, 10);
 
-    // Single block
-    reporter.report_damaged_blocks("file2.txt", &[42]);
+    // Single block damaged - 9 of 10 found
+    reporter.report_damaged_blocks("file2.txt", &[42], 9, 10);
 
-    // Few blocks
-    reporter.report_damaged_blocks("file3.txt", &[1, 5, 10]);
+    // Few blocks damaged - 7 of 10 found
+    reporter.report_damaged_blocks("file3.txt", &[1, 5, 10], 7, 10);
 
-    // Many blocks
-    reporter.report_damaged_blocks("file4.txt", &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    // Many blocks damaged - 0 of 10 found
+    reporter.report_damaged_blocks("file4.txt", &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 0, 10);
 
-    // Large list
+    // Large list - 0 of 100 found
     let large_list: Vec<u32> = (0..100).collect();
-    reporter.report_damaged_blocks("file5.txt", &large_list);
+    reporter.report_damaged_blocks("file5.txt", &large_list, 0, 100);
 }
 
 #[test]
@@ -147,6 +147,7 @@ fn test_report_verification_results_single_file() {
         blocks_available: 10,
         total_blocks: 10,
         damaged_blocks: vec![],
+        block_positions: Default::default(),
     };
     let results = create_test_results(vec![file], 1, 0, 0, 0);
     reporter.report_verification_results(&results);
@@ -164,6 +165,7 @@ fn test_report_verification_results_with_small_damaged_blocks() {
         blocks_available: 5,
         total_blocks: 10,
         damaged_blocks: vec![1, 3, 5, 7, 9], // 5 blocks ≤ 20
+        block_positions: Default::default(),
     };
     let results = create_test_results(vec![corrupted_file], 0, 0, 1, 0);
     reporter.report_verification_results(&results);
@@ -182,6 +184,7 @@ fn test_report_verification_results_with_large_damaged_blocks() {
         blocks_available: 0,
         total_blocks: 50,
         damaged_blocks: large_damaged_blocks,
+        block_positions: Default::default(),
     };
     let results = create_test_results(vec![corrupted_file], 0, 0, 1, 0);
     reporter.report_verification_results(&results);
@@ -200,6 +203,7 @@ fn test_report_verification_results_boundary_cases() {
         blocks_available: 0,
         total_blocks: 20,
         damaged_blocks: exactly_20_blocks,
+        block_positions: Default::default(),
     };
     let results_20 = create_test_results(vec![file_20], 0, 0, 1, 0);
     reporter.report_verification_results(&results_20);
@@ -213,6 +217,7 @@ fn test_report_verification_results_boundary_cases() {
         blocks_available: 0,
         total_blocks: 21,
         damaged_blocks: over_20_blocks,
+        block_positions: Default::default(),
     };
     let results_21 = create_test_results(vec![file_21], 0, 0, 1, 0);
     reporter.report_verification_results(&results_21);
@@ -230,6 +235,7 @@ fn test_report_verification_results_mixed_files() {
             blocks_available: 10,
             total_blocks: 10,
             damaged_blocks: vec![],
+            block_positions: Default::default(),
         },
         FileVerificationResult {
             file_name: "missing.txt".to_string(),
@@ -238,6 +244,7 @@ fn test_report_verification_results_mixed_files() {
             blocks_available: 0,
             total_blocks: 10,
             damaged_blocks: vec![],
+            block_positions: Default::default(),
         },
         FileVerificationResult {
             file_name: "corrupted.txt".to_string(),
@@ -246,6 +253,7 @@ fn test_report_verification_results_mixed_files() {
             blocks_available: 7,
             total_blocks: 10,
             damaged_blocks: vec![2, 4, 6],
+            block_positions: Default::default(),
         },
         FileVerificationResult {
             file_name: "renamed.txt".to_string(),
@@ -254,6 +262,7 @@ fn test_report_verification_results_mixed_files() {
             blocks_available: 10,
             total_blocks: 10,
             damaged_blocks: vec![],
+            block_positions: Default::default(),
         },
     ];
     let results = create_test_results(mixed_files, 1, 1, 1, 1);
@@ -273,6 +282,7 @@ fn test_print_block_list_head_tail_logic() {
         blocks_available: 0,
         total_blocks: 1000,
         damaged_blocks: very_large_blocks,
+        block_positions: Default::default(),
     };
     let results = create_test_results(vec![massive_file], 0, 0, 1, 0);
     reporter.report_verification_results(&results);

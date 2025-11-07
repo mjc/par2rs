@@ -14,15 +14,15 @@ fn test_slice_checksum_requires_padding() {
     assert_eq!(test_data.len(), 32); // "This is file 1 with some content" is actually 32 bytes
 
     // Compute MD5 without padding (incorrect)
-    use md_5::Digest;
-    let unpadded_md5: [u8; 16] = md_5::Md5::digest(test_data).into();
+    use md5::Digest;
+    let unpadded_md5: [u8; 16] = md5::Md5::digest(test_data).into();
     let unpadded_hex = hex::encode(unpadded_md5);
     println!("Unpadded MD5 (33 bytes): {}", unpadded_hex);
 
     // Compute MD5 with zero-padding to 512 bytes (correct for PAR2)
     let mut padded_data = vec![0u8; 512];
     padded_data[..32].copy_from_slice(test_data);
-    let padded_md5: [u8; 16] = md_5::Md5::digest(&padded_data).into();
+    let padded_md5: [u8; 16] = md5::Md5::digest(&padded_data).into();
     let padded_hex = hex::encode(padded_md5);
     println!("Padded MD5 (512 bytes):  {}", padded_hex);
 
@@ -70,14 +70,14 @@ fn test_actual_par2_slice_checksums() {
         println!("\nFile: {} ({} bytes)", file_path, file_size);
 
         // Compute unpadded MD5
-        use md_5::Digest;
-        let unpadded_md5: [u8; 16] = md_5::Md5::digest(&file_data).into();
+        use md5::Digest;
+        let unpadded_md5: [u8; 16] = md5::Md5::digest(&file_data).into();
         println!("  Unpadded MD5: {}", hex::encode(unpadded_md5));
 
         // Compute padded MD5 (PAR2 uses 512-byte slices for these files)
         let mut padded_data = vec![0u8; 512];
         padded_data[..file_size].copy_from_slice(&file_data);
-        let padded_md5: [u8; 16] = md_5::Md5::digest(&padded_data).into();
+        let padded_md5: [u8; 16] = md5::Md5::digest(&padded_data).into();
         let padded_hex = hex::encode(padded_md5);
         println!("  Padded MD5:   {}", padded_hex);
         println!("  Expected:     {}", expected_md5);
@@ -93,7 +93,8 @@ fn test_actual_par2_slice_checksums() {
 #[test]
 fn test_load_all_slices_with_padding_during_verify() {
     // Test that verification works correctly with padding
-    use par2rs::repair::repair_files;
+    use par2rs::repair::{repair_files, SilentReporter};
+    use par2rs::verify::VerificationConfig;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -117,7 +118,12 @@ fn test_load_all_slices_with_padding_during_verify() {
 
     // Verify files without any corruption
     let par2_file = temp_path.join("textfiles.par2");
-    let (_context, result) = repair_files(par2_file.to_str().unwrap()).unwrap();
+    let (_context, result) = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    )
+    .unwrap();
 
     // All files should verify successfully if we're computing slice checksums correctly
     match result {
@@ -136,7 +142,8 @@ fn test_load_all_slices_during_repair_needs_padding() {
     // This test will FAIL until we fix load_all_slices to pad slices properly
     // The issue is that load_all_slices is called during REPAIR to load existing slices,
     // and it needs to compute checksums to verify which slices are valid.
-    use par2rs::repair::repair_files;
+    use par2rs::repair::{repair_files, SilentReporter};
+    use par2rs::verify::VerificationConfig;
     use std::io::Write;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -170,7 +177,12 @@ fn test_load_all_slices_during_repair_needs_padding() {
 
     // Try to repair
     let par2_file = temp_path.join("textfiles.par2");
-    let (_context, result) = repair_files(par2_file.to_str().unwrap()).unwrap();
+    let (_context, result) = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    )
+    .unwrap();
 
     println!("\n=== Repair Result ===");
     println!("Files repaired: {:?}", result.repaired_files());

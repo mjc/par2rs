@@ -8,46 +8,109 @@ A Rust implementation of PAR2 (Parity Archive) for data recovery and verificatio
 
 ### Performance
 
-par2rs achieves **2-200x speedup** over par2cmdline through:
-- **Optimized I/O patterns** using full slice-size chunks instead of 64KB blocks (eliminates 32x redundant reads)
+par2rs achieves **1.1-2.9x speedup** over par2cmdline through:
+- **Optimized I/O patterns** using full slice-size chunks instead of 64KB blocks (eliminates redundant reads)
 - **Parallel Reed-Solomon reconstruction** using Rayon for multi-threaded chunk processing
 - **SIMD-accelerated operations** (PSHUFB on x86_64, NEON on ARM64, portable_simd cross-platform)
 - **Smart validation skipping** for files with matching MD5 checksums
 - **Memory-efficient lazy loading** with LRU caching
 
+**⚠️ Performance Regression Note:** These results show significantly lower speedups than previous benchmarks (which showed 2-200× improvements). This is considered a **regression** and is under investigation. The current implementation maintains correctness but has lost most of its performance advantages on Linux x86_64.
+
 **Latest benchmark results:**
 
 **Linux x86_64 (AMD Ryzen 9 5950X, 64GB RAM):**
-- 1MB: **211.96x speedup** (6.78s → 0.032s)
-- 10MB: **104.78x speedup** (8.28s → 0.079s)
-- 100MB: **14.43x speedup** (8.69s → 0.60s)
-- 1GB: **3.12x speedup** (17.82s → 5.70s)
-- 10GB: **2.04x speedup** (121.84s → 59.65s)
+- 1MB: **1.23x speedup** (0.032s → 0.026s)
+- 10MB: **1.54x speedup** (0.074s → 0.048s)
+- 100MB: **1.20x speedup** (0.386s → 0.321s)
+- 1GB: **1.11x speedup** (3.74s → 3.37s)
+- 10GB: **1.53x speedup** (58.80s → 38.32s)
 
-**macOS M1 (MacBook Air, 16GB RAM):**
+**macOS M1 (MacBook Air, 16GB RAM) - OUTDATED (October 2025):**
 - 100MB: 2.77x speedup (2.26s → 0.81s)
 - 1GB: **2.99x speedup** (22.7s → 7.6s)
 - 10GB: 2.46x speedup (104.8s → 42.6s)
 - 25GB: 2.36x speedup (349.6s → 147.8s)
+- ⚠️ These results need re-testing to confirm current performance
 
-The majority of this speedup comes from I/O optimization. See [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md) for comprehensive end-to-end benchmarks and [docs/SIMD_OPTIMIZATION.md](docs/SIMD_OPTIMIZATION.md) for SIMD implementation details.
+The performance improvements come primarily from optimized I/O patterns and SIMD-accelerated Reed-Solomon operations. See [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md) for comprehensive end-to-end benchmarks and [docs/SIMD_OPTIMIZATION.md](docs/SIMD_OPTIMIZATION.md) for SIMD implementation details.
 
 ## Quick Start
 
 ### Installation
 
+#### Using Nix Flakes (Recommended)
+
+```bash
+# Run directly without installing
+nix run github:mjc/par2rs -- verify myfile.par2
+
+# Install to your profile
+nix profile install github:mjc/par2rs
+
+# Use in a flake.nix
+{
+  inputs.par2rs.url = "github:mjc/par2rs";
+  
+  # Then use as: inputs.par2rs.packages.${system}.default
+}
+```
+
+#### From Source
+
 ```bash
 # Clone the repository
-git clone https://github.com/YOURUSERNAME/par2rs.git
+git clone https://github.com/mjc/par2rs.git
 cd par2rs
 
 # Build the project
 cargo build --release
+
+# Binaries will be in target/release/
+# - par2 (unified interface, par2cmdline compatible)
+# - par2verify, par2repair, par2create (individual tools)
 ```
 
 ### Basic Usage
 
+The `par2` binary provides a par2cmdline-compatible interface:
+
+```bash
+# Verify files
+par2 verify myfile.par2
+par2 v myfile.par2  # short form
+
+# Repair damaged files
+par2 repair myfile.par2
+par2 r myfile.par2  # short form
+
+# Create recovery files (coming soon)
+par2 create myfile.par2 file1 file2
+par2 c myfile.par2 file1 file2  # short form
+```
+
+#### Advanced Options
+
+```bash
+# Quiet mode (minimal output)
+par2 v -q myfile.par2
+
+# Repair and purge backup files on success
+par2 r -p myfile.par2
+
+# Use specific number of threads
+par2 v -t 8 myfile.par2
+
+# Disable parallel processing (single-threaded)
+par2 v --no-parallel myfile.par2
+```
+
+#### Legacy Binaries
+
+Individual binaries are also available:
+
 #### Verify PAR2 Files
+
 ```bash
 # Verify integrity of files protected by PAR2
 cargo run --bin par2verify tests/fixtures/testfile.par2
@@ -259,6 +322,23 @@ This implementation follows the PAR2 specification and supports:
 - **Multiple Recovery Volumes**: Support for volume files
 - **Variable Block Sizes**: Flexible slice size configuration
 - **Reed-Solomon Codes**: Error correction mathematics
+
+## Compatibility Notes
+
+### File Scanning Strategy
+
+`par2rs` uses a **block-aligned sequential scanning** approach that differs from `par2cmdline`'s sliding window scanner:
+
+- **par2cmdline**: Uses a byte-by-byte sliding window with rolling CRC32 that can find blocks at *any offset* in a file, even if displaced by inserted/deleted data. This is more thorough but slower.
+
+- **par2rs**: Only checks blocks at their expected aligned positions using sequential reads with large buffers (128MB). This is significantly faster for normal verification but cannot find displaced blocks.
+
+**Practical Impact:**
+- ✅ **par2rs is faster** for standard verification/repair scenarios (files are either intact or corrupted at known positions)
+- ⚠️ **par2cmdline is more robust** for edge cases like files with prepended data or non-aligned block corruption
+- 🎯 For typical use cases (bit rot, transmission errors, filesystem corruption), both tools will perform equivalently
+
+This design choice optimizes for the common case where files are either intact or have corruption at expected block boundaries, delivering substantial performance improvements while maintaining correctness for standard PAR2 operations.
 
 ## Known Issues
 

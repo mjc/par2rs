@@ -3,7 +3,7 @@
 use super::error::*;
 use super::types::*;
 use super::utils;
-use crate::domain::{Crc32Value, FileId, Md5Hash};
+use crate::domain::Md5Hash;
 use crate::packets::FileDescriptionPacket;
 use std::path::Path;
 
@@ -16,6 +16,7 @@ const DEFAULT_BUFFER_SIZE: usize = 1024;
 /// determination with the 16KB MD5 optimization.
 pub struct FileVerifier {
     base_path: std::path::PathBuf,
+    skip_full_md5: bool,
 }
 
 impl FileVerifier {
@@ -23,6 +24,15 @@ impl FileVerifier {
     pub fn new<P: AsRef<Path>>(base_path: P) -> Self {
         Self {
             base_path: base_path.as_ref().to_path_buf(),
+            skip_full_md5: false,
+        }
+    }
+
+    /// Create a new file verifier with config
+    pub fn with_config<P: AsRef<Path>>(base_path: P, config: &super::VerificationConfig) -> Self {
+        Self {
+            base_path: base_path.as_ref().to_path_buf(),
+            skip_full_md5: config.skip_full_file_md5,
         }
     }
 
@@ -57,7 +67,12 @@ impl FileVerifier {
             Err(status) => status,
             Ok(_) => Self::check_file_size(&file_path, expected_length)
                 .and_then(|_| {
-                    Self::verify_file_hashes(&file_path, expected_md5_16k, expected_md5_full)
+                    Self::verify_file_hashes(
+                        &file_path,
+                        expected_md5_16k,
+                        expected_md5_full,
+                        self.skip_full_md5,
+                    )
                 })
                 .unwrap_or(FileStatus::Corrupted),
         }
@@ -90,6 +105,7 @@ impl FileVerifier {
         file_path: &Path,
         expected_md5_16k: &Md5Hash,
         expected_md5_full: &Md5Hash,
+        skip_full_md5: bool,
     ) -> Result<FileStatus, FileStatus> {
         use crate::checksum::{calculate_file_md5, calculate_file_md5_16k};
 
@@ -98,16 +114,23 @@ impl FileVerifier {
             .map_err(|_| FileStatus::Corrupted)
             .and_then(|md5_16k| {
                 if md5_16k == *expected_md5_16k {
-                    // 16KB matches - verify full hash to be certain
-                    calculate_file_md5(file_path)
-                        .map_err(|_| FileStatus::Corrupted)
-                        .map(|file_md5| {
-                            if file_md5 == *expected_md5_full {
-                                FileStatus::Present
-                            } else {
-                                FileStatus::Corrupted
-                            }
-                        })
+                    // 16KB matches
+                    if skip_full_md5 {
+                        // For pre-repair verification: 16KB match is good enough
+                        // Block-level validation will catch any real corruption
+                        Ok(FileStatus::Present)
+                    } else {
+                        // For standalone verification: verify full hash to be certain
+                        calculate_file_md5(file_path)
+                            .map_err(|_| FileStatus::Corrupted)
+                            .map(|file_md5| {
+                                if file_md5 == *expected_md5_full {
+                                    FileStatus::Present
+                                } else {
+                                    FileStatus::Corrupted
+                                }
+                            })
+                    }
                 } else {
                     // 16KB doesn't match - file is definitely corrupted
                     Err(FileStatus::Corrupted)
@@ -186,71 +209,4 @@ impl FileVerifier {
 }
 
 /// Functional helpers for single file verification
-pub mod single_file_verification {
-    use super::*;
-
-    /// Generate block results for a given range and validity
-    pub fn generate_block_results(
-        file_id: FileId,
-        range: std::ops::Range<usize>,
-        is_valid: bool,
-        checksums: Option<&[(Md5Hash, Crc32Value)]>,
-    ) -> Vec<BlockVerificationResult> {
-        range
-            .map(|block_num| {
-                let (expected_hash, expected_crc) = if let Some(checksums) = checksums {
-                    checksums
-                        .get(block_num)
-                        .map(|(h, c)| (Some(*h), Some(*c)))
-                        .unwrap_or((None, None))
-                } else {
-                    (None, None)
-                };
-
-                BlockVerificationResult {
-                    block_number: block_num as u32,
-                    file_id,
-                    is_valid,
-                    expected_hash,
-                    expected_crc,
-                }
-            })
-            .collect()
-    }
-
-    /// Create block results based on validation results and checksums
-    pub fn create_corrupted_block_results(
-        file_id: FileId,
-        checksums: &[(Md5Hash, Crc32Value)],
-        damaged_blocks: &[u32],
-    ) -> Vec<BlockVerificationResult> {
-        checksums
-            .iter()
-            .enumerate()
-            .map(|(block_num, (expected_hash, expected_crc))| {
-                let is_valid = !damaged_blocks.contains(&(block_num as u32));
-                BlockVerificationResult {
-                    block_number: block_num as u32,
-                    file_id,
-                    is_valid,
-                    expected_hash: Some(*expected_hash),
-                    expected_crc: Some(*expected_crc),
-                }
-            })
-            .collect()
-    }
-
-    /// Determine file status using FileVerifier
-    pub fn determine_file_status<P: crate::checksum::ProgressReporter>(
-        file_desc: &FileDescriptionPacket,
-        progress: Option<&P>,
-    ) -> FileStatus {
-        let verifier = FileVerifier::new(".");
-        match progress {
-            Some(progress_reporter) => verifier
-                .verify_file_with_progress(file_desc, progress_reporter)
-                .unwrap_or(FileStatus::Corrupted),
-            None => verifier.verify_file_from_description(file_desc),
-        }
-    }
-}
+pub mod single_file_verification {}

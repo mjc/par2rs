@@ -65,14 +65,26 @@ impl VerificationReporter for ConsoleVerificationReporter {
         match status {
             FileStatus::Present => println!("Target: \"{}\" - found.", file_name),
             FileStatus::Missing => println!("Target: \"{}\" - missing.", file_name),
-            FileStatus::Corrupted => println!("Target: \"{}\" - corrupted.", file_name),
+            FileStatus::Corrupted => {
+                // Note: block counts will be reported separately via report_damaged_blocks
+                // This matches par2cmdline output style
+            }
             FileStatus::Renamed => println!("Target: \"{}\" - renamed.", file_name),
         }
     }
 
-    fn report_damaged_blocks(&self, _file_name: &str, damaged_blocks: &[u32]) {
+    fn report_damaged_blocks(
+        &self,
+        file_name: &str,
+        damaged_blocks: &[u32],
+        available_blocks: usize,
+        total_blocks: usize,
+    ) {
         if !damaged_blocks.is_empty() {
-            println!("  {} blocks are damaged", damaged_blocks.len());
+            println!(
+                "Target: \"{}\" - damaged. Found {} of {} data blocks.",
+                file_name, available_blocks, total_blocks
+            );
         }
     }
 
@@ -87,6 +99,15 @@ impl VerificationReporter for ConsoleVerificationReporter {
                 print_block_list(&file_result.damaged_blocks);
             }
         }
+    }
+
+    fn report_scanning_progress(&self, fraction: f64) {
+        // Match par2cmdline-turbo's format: "Scanning: X.X%\r"
+        // The \r returns to start of line so next update overwrites
+        use std::io::{self, Write};
+        let percent = (fraction * 1000.0) as u32;
+        print!("Scanning: {}.{}%\r", percent / 10, percent % 10);
+        let _ = io::stdout().flush();
     }
 }
 

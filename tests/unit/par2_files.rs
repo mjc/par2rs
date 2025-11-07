@@ -18,7 +18,7 @@ fn load_packets_with_recovery(par2_files: &[PathBuf]) -> (Vec<par2rs::Packet>, u
     for par2_file in par2_files {
         let file = fs::File::open(par2_file).expect("Failed to open PAR2 file");
         let mut reader = BufReader::new(file);
-        let packets = par2rs::parse_packets(&mut reader);
+        let (packets, _) = par2rs::parse_packets_with_options(&mut reader, true);
 
         // Deduplicate packets
         for packet in packets {
@@ -117,7 +117,7 @@ mod packet_parsing {
 
         // Test with progress enabled
         let (packets_with_progress, recovery_count) =
-            parse_par2_file_with_progress(main_file, &mut seen_hashes, true)
+            parse_par2_file_with_progress(main_file, &mut seen_hashes, true, true)
                 .expect("Failed to parse with progress");
 
         assert!(!packets_with_progress.is_empty());
@@ -126,7 +126,7 @@ mod packet_parsing {
         // Test with progress disabled
         seen_hashes.clear();
         let (packets_no_progress, _) =
-            parse_par2_file_with_progress(main_file, &mut seen_hashes, false)
+            parse_par2_file_with_progress(main_file, &mut seen_hashes, false, false)
                 .expect("Failed to parse without progress");
 
         assert_eq!(packets_with_progress.len(), packets_no_progress.len());
@@ -187,12 +187,18 @@ mod deduplication {
         let volume_packets =
             parse_par2_file(volume_file, &mut seen_hashes).expect("Failed to parse volume file");
 
-        // Should get packets from both files
+        // Should get packets from main file
         assert!(!main_packets.is_empty());
-        assert!(!volume_packets.is_empty());
 
-        // Seen hashes should include packets from both files
-        assert!(seen_hashes.len() >= main_packets.len() + volume_packets.len());
+        // Volume file packets (Creator, Main, FileDesc) are duplicates of main file
+        // Recovery slices are not included by default, so volume_packets will be empty
+        assert!(
+            volume_packets.is_empty(),
+            "Volume file should have no unique non-recovery packets after main file"
+        );
+
+        // Seen hashes should include packets from main file
+        assert!(seen_hashes.len() >= main_packets.len());
     }
 
     #[test]

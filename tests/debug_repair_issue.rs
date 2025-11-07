@@ -1,5 +1,6 @@
 use par2rs::par2_files;
 use par2rs::repair::RepairContext;
+use par2rs::verify;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -34,16 +35,20 @@ fn debug_repair_issue() {
         .unwrap();
     println!("Original file size: {} bytes", original_data.len());
 
-    use md_5::Digest;
-    let original_md5: [u8; 16] = md_5::Md5::digest(&original_data).into();
+    use md5::Digest;
+    let original_md5: [u8; 16] = md5::Md5::digest(&original_data).into();
     println!("Original MD5: {:02x?}", original_md5);
 
     // Create repair context
     let par2_files = par2_files::collect_par2_files(&par2_file);
     let metadata = par2_files::parse_recovery_slice_metadata(&par2_files, false);
-    let packets = par2_files::load_par2_packets(&par2_files, false);
-    let context =
-        RepairContext::new_with_metadata(packets, metadata, temp_dir.path().to_path_buf()).unwrap();
+    let packet_set = par2_files::load_par2_packets(&par2_files, false, false);
+    let context = RepairContext::new_with_metadata(
+        packet_set.packets,
+        metadata,
+        temp_dir.path().to_path_buf(),
+    )
+    .unwrap();
 
     println!("Recovery set info:");
     println!("  Slice size: {}", context.recovery_set.slice_size);
@@ -77,7 +82,7 @@ fn debug_repair_issue() {
         .unwrap()
         .read_to_end(&mut corrupted_data)
         .unwrap();
-    let corrupted_md5: [u8; 16] = md_5::Md5::digest(&corrupted_data).into();
+    let corrupted_md5: [u8; 16] = md5::Md5::digest(&corrupted_data).into();
     println!("Corrupted MD5: {:02x?}", corrupted_md5);
 
     // Check which specific slices are affected
@@ -123,7 +128,16 @@ fn debug_repair_issue() {
 
     // Attempt repair
     println!("\nAttempting repair...");
-    let result = context.repair();
+
+    // Run comprehensive verification first
+    let packet_set = par2_files::load_par2_packets(&par2_files, false, false);
+    let config = verify::VerificationConfig::default();
+    let reporter = par2rs::reporters::SilentVerificationReporter;
+    let verification_results =
+        verify::comprehensive_verify_files(packet_set, &config, &reporter, temp_dir.path());
+
+    #[allow(deprecated)]
+    let result = context.repair(verification_results);
     match result {
         Ok(repair_result) => {
             println!("Repair result: {:?}", repair_result);
@@ -134,7 +148,7 @@ fn debug_repair_issue() {
                 .unwrap()
                 .read_to_end(&mut repaired_data)
                 .unwrap();
-            let repaired_md5: [u8; 16] = md_5::Md5::digest(&repaired_data).into();
+            let repaired_md5: [u8; 16] = md5::Md5::digest(&repaired_data).into();
             println!("Repaired MD5: {:02x?}", repaired_md5);
 
             // Compare the repaired slices with original

@@ -25,15 +25,19 @@
 //! Implementation ported from par2cmdline to ensure compatibility with the PAR2 specification.
 //! The specific Vandermonde polynomial is mandated by the PAR2 spec and cannot be changed.
 
+pub mod aligned;
 pub mod codec;
 pub mod galois;
 #[doc(hidden)]
-pub mod simd; // Public for tests/benchmarks, but hidden from docs
+pub mod simd; // Public for tests/benchmarks, but hidden from docs // 32-byte aligned buffer allocation
 
 pub mod builder;
 pub mod matrix; // Type-safe matrices with const generic dimensions // Compile-time validated Reed-Solomon builder
 
 pub use galois::*;
+
+// Re-export aligned allocation function
+pub use aligned::alloc_aligned_vec;
 
 // Re-export type-safe matrix operations
 pub use matrix::{

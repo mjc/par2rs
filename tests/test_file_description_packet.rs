@@ -215,8 +215,8 @@ fn test_file_description_packet_verify_with_long_filename() {
     let set_id_start = 24;
     let packet_data = buffer.get_ref()[set_id_start..].to_vec();
 
-    use md_5::Digest;
-    let correct_md5: [u8; 16] = md_5::Md5::digest(&packet_data).into();
+    use md5::Digest;
+    let correct_md5: [u8; 16] = md5::Md5::digest(&packet_data).into();
     packet.md5 = Md5Hash::new(correct_md5);
 
     assert!(packet.verify());
@@ -243,8 +243,8 @@ fn test_file_description_packet_verify_minimal_valid() {
     let set_id_start = 24;
     let packet_data = buffer.get_ref()[set_id_start..].to_vec();
 
-    use md_5::Digest;
-    let correct_md5: [u8; 16] = md_5::Md5::digest(&packet_data).into();
+    use md5::Digest;
+    let correct_md5: [u8; 16] = md5::Md5::digest(&packet_data).into();
     packet.md5 = Md5Hash::new(correct_md5);
 
     assert!(packet.verify());
@@ -410,8 +410,8 @@ fn test_file_description_packet_with_real_file_integration() {
 
     // Calculate MD5 of file
     let file = File::open(file_path).unwrap();
-    use md_5::Digest;
-    let mut hasher = md_5::Md5::new();
+    use md5::Digest;
+    let mut hasher = md5::Md5::new();
     use std::io::Read;
     let mut reader = std::io::BufReader::new(file);
     let mut buffer = [0u8; 1024];

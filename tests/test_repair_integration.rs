@@ -3,7 +3,8 @@
 //! These tests verify that our par2repair implementation can correctly
 //! repair files in various corruption scenarios.
 
-use par2rs::repair::repair_files;
+use par2rs::repair::{repair_files, SilentReporter};
+use par2rs::verify::VerificationConfig;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -35,7 +36,9 @@ fn test_repair_corrupted_file() {
     .expect("Failed to create temporary corruption");
 
     // Attempt repair
-    let (_context, result) = repair_files(&par2_file.to_string_lossy()).unwrap();
+    let reporter = Box::new(SilentReporter);
+    let config = VerificationConfig::default();
+    let (_context, result) = repair_files(&par2_file.to_string_lossy(), reporter, &config).unwrap();
 
     println!("Repair result: {:?}", result);
 
@@ -75,7 +78,9 @@ fn test_repair_missing_file() {
     }
 
     // Attempt repair on missing file
-    let (_context, result) = repair_files(&par2_file.to_string_lossy()).unwrap();
+    let reporter = Box::new(SilentReporter);
+    let config = VerificationConfig::default();
+    let (_context, result) = repair_files(&par2_file.to_string_lossy(), reporter, &config).unwrap();
 
     println!("Missing file repair result: {:?}", result);
 
@@ -112,7 +117,9 @@ fn test_verify_intact_file() {
 
     let par2_file = temp_path.join("testfile.par2");
 
-    let (_context, result) = repair_files(&par2_file.to_string_lossy()).unwrap();
+    let reporter = Box::new(SilentReporter);
+    let config = VerificationConfig::default();
+    let (_context, result) = repair_files(&par2_file.to_string_lossy(), reporter, &config).unwrap();
 
     println!("Intact file verification result: {:?}", result);
 

@@ -7,6 +7,8 @@ pub struct VerificationConfig {
     pub threads: usize,
     /// Whether to use parallel verification (false = single-threaded everything)
     pub parallel: bool,
+    /// Skip full file MD5 computation (for pre-repair verification where only block-level validation is needed)
+    pub skip_full_file_md5: bool,
 }
 
 impl Default for VerificationConfig {
@@ -14,13 +16,27 @@ impl Default for VerificationConfig {
         Self {
             threads: 0, // Auto-detect CPU cores
             parallel: true,
+            skip_full_file_md5: false, // Default: compute full file MD5 for thorough verification
         }
     }
 }
 
 impl VerificationConfig {
     pub fn new(threads: usize, parallel: bool) -> Self {
-        Self { threads, parallel }
+        Self {
+            threads,
+            parallel,
+            skip_full_file_md5: false,
+        }
+    }
+
+    /// Create config optimized for pre-repair verification (skips full file MD5)
+    pub fn for_repair(threads: usize, parallel: bool) -> Self {
+        Self {
+            threads,
+            parallel,
+            skip_full_file_md5: true, // Skip expensive full-file MD5 before repair
+        }
     }
 
     pub fn from_args(matches: &clap::ArgMatches) -> Self {
@@ -43,5 +59,10 @@ impl VerificationConfig {
                 .unwrap_or(4), // Auto-detect CPU cores
             (true, n) => n,  // Use specified thread count
         }
+    }
+
+    /// Whether to actually use parallel processing (false if threads=1)
+    pub fn should_parallelize(&self) -> bool {
+        self.parallel && self.effective_threads() > 1
     }
 }

@@ -4,16 +4,21 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
   outputs = {
     self,
     nixpkgs,
     flake-utils,
+    rust-overlay,
   }:
     flake-utils.lib.eachDefaultSystem (
       system: let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [(import rust-overlay)];
+        };
         # Read the file relative to the flake's root
         overrides = builtins.fromTOML (builtins.readFile (self + "/rust-toolchain.toml"));
         libPath = with pkgs;
@@ -21,6 +26,58 @@
             # load external libraries that you need in your rust project here
           ];
       in {
+        # Package output - can be used as flake input and drop-in replacement for par2cmdline
+        packages = {
+          default = self.packages.${system}.par2rs;
+
+          par2rs = let
+            rustNightly = pkgs.rust-bin.nightly.latest.default.override {
+              extensions = ["rust-src"];
+            };
+          in
+            (pkgs.makeRustPlatform {
+              cargo = rustNightly;
+              rustc = rustNightly;
+            })
+            .buildRustPackage {
+              pname = "par2rs";
+              version = "0.1.0";
+
+              src = ./.;
+
+              cargoLock = {
+                lockFile = ./Cargo.lock;
+                outputHashes = {
+                  "md-5-0.11.0-rc.2" = "sha256-PJK3ydyvgIIYvyXRmtAk/8eovuGow3+a6BTyPidtWHI=";
+                };
+              };
+
+              # Skip integration tests - test_binaries requires binaries in target/debug/
+              # which doesn't exist in Nix's sandboxed build environment
+              buildFeatures = ["nix-build"];
+
+              # The main binary is 'par2' which provides par2cmdline-compatible interface
+              # Additional utilities: par2verify, par2repair, par2create, split_par2
+              meta = with pkgs.lib; {
+                description = "High-performance PAR2 file verification and repair utility written in Rust";
+                longDescription = ''
+                  par2rs is a Rust implementation of the PAR2 (Parity Archive) specification,
+                  providing fast file verification and repair capabilities. It can be used as
+                  a drop-in replacement for par2cmdline with improved performance.
+
+                  The main 'par2' binary provides a compatible command-line interface:
+                  - par2 create (or 'c') - Create PAR2 recovery files
+                  - par2 verify (or 'v') - Verify file integrity
+                  - par2 repair (or 'r') - Repair damaged files
+                '';
+                homepage = "https://github.com/mjc/par2rs";
+                license = licenses.mit;
+                maintainers = [];
+                mainProgram = "par2";
+              };
+            };
+        };
+
         devShells.default = pkgs.mkShell rec {
           nativeBuildInputs = [pkgs.pkg-config pkgs.direnv];
           buildInputs = with pkgs;
@@ -31,7 +88,7 @@
               openssl
               openssl.dev
               pkg-config
-              par2cmdline
+              par2cmdline-turbo
               xxd
               python3 # for copilot
               rust-analyzer
@@ -42,6 +99,7 @@
               cargo-flamegraph
               bc # for benchmark averaging calculations
               gnuplot # for criterion benchmark graphs
+              valgrind # for iai-callgrind benchmarks
               gh # GitHub CLI
               git-filter-repo # for rewriting git history
             ]

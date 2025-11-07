@@ -4,10 +4,9 @@
 
 use par2rs::domain::{FileId, Md5Hash, RecoverySetId};
 use par2rs::packets::{FileDescriptionPacket, MainPacket, Packet};
-use par2rs::verify::{
-    comprehensive_verify_files, comprehensive_verify_files_with_config, print_verification_results,
-    VerificationConfig,
-};
+use par2rs::par2_files::PacketSet;
+use par2rs::reporters::SilentVerificationReporter;
+use par2rs::verify::{comprehensive_verify_files, VerificationConfig};
 use std::fs;
 use tempfile::TempDir;
 
@@ -47,10 +46,17 @@ fn test_print_verification_results() {
         Packet::FileDescription(create_file_desc(file_id, "test.txt", 100)),
     ];
 
-    let results = comprehensive_verify_files(packets);
+    let packet_set = PacketSet::from_packets(packets);
+    let base_dir = packet_set.base_dir.clone();
+    let results = comprehensive_verify_files(
+        packet_set,
+        &VerificationConfig::default(),
+        &SilentVerificationReporter,
+        base_dir,
+    );
 
-    // Should print without panicking
-    print_verification_results(&results);
+    // Just verify the results exist - no print wrapper
+    let _ = results;
 }
 
 #[test]
@@ -66,8 +72,17 @@ fn test_print_verification_results_multiple_files() {
         )));
     }
 
-    let results = comprehensive_verify_files(packets);
-    print_verification_results(&results);
+    let packet_set = PacketSet::from_packets(packets);
+    let base_dir = packet_set.base_dir.clone();
+    let results = comprehensive_verify_files(
+        packet_set,
+        &VerificationConfig::default(),
+        &SilentVerificationReporter,
+        base_dir,
+    );
+
+    // Just verify the results exist - no print wrapper
+    let _ = results;
 }
 
 #[test]
@@ -83,7 +98,11 @@ fn test_comprehensive_verify_with_config_parallel() {
         ..Default::default()
     };
 
-    let results = comprehensive_verify_files_with_config(packets, &config);
+    let packet_set = par2rs::par2_files::PacketSet::from_packets(packets);
+    let base_dir = packet_set.base_dir.clone();
+    let results =
+        comprehensive_verify_files(packet_set, &config, &SilentVerificationReporter, base_dir);
+
     assert!(results.total_block_count > 0 || results.missing_file_count > 0);
 }
 
@@ -100,14 +119,25 @@ fn test_comprehensive_verify_with_config_sequential() {
         ..Default::default()
     };
 
-    let results = comprehensive_verify_files_with_config(packets, &config);
+    let packet_set = par2rs::par2_files::PacketSet::from_packets(packets);
+    let base_dir = packet_set.base_dir.clone();
+    let results =
+        comprehensive_verify_files(packet_set, &config, &SilentVerificationReporter, base_dir);
+
     assert!(results.total_block_count > 0 || results.missing_file_count > 0);
 }
 
 #[test]
 fn test_comprehensive_verify_empty_packets() {
     let packets = vec![];
-    let results = comprehensive_verify_files(packets);
+    let packet_set = PacketSet::from_packets(packets);
+    let base_dir = packet_set.base_dir.clone();
+    let results = comprehensive_verify_files(
+        packet_set,
+        &VerificationConfig::default(),
+        &SilentVerificationReporter,
+        base_dir,
+    );
 
     // Should handle empty input gracefully
     assert_eq!(results.total_block_count, 0);
@@ -127,7 +157,14 @@ fn test_comprehensive_verify_missing_files() {
         )));
     }
 
-    let results = comprehensive_verify_files(packets);
+    let packet_set = PacketSet::from_packets(packets);
+    let base_dir = packet_set.base_dir.clone();
+    let results = comprehensive_verify_files(
+        packet_set,
+        &VerificationConfig::default(),
+        &SilentVerificationReporter,
+        base_dir,
+    );
 
     // All files should be missing
     assert_eq!(results.missing_file_count, 5);
@@ -157,7 +194,14 @@ fn test_comprehensive_verify_corrupted_files() {
         )));
     }
 
-    let results = comprehensive_verify_files(packets);
+    let packet_set = PacketSet::from_packets(packets);
+    let base_dir = packet_set.base_dir.clone();
+    let results = comprehensive_verify_files(
+        packet_set,
+        &VerificationConfig::default(),
+        &SilentVerificationReporter,
+        base_dir,
+    );
 
     // Files exist but are corrupted (wrong size/hash)
     assert!(results.corrupted_file_count > 0 || results.missing_file_count > 0);
@@ -171,7 +215,14 @@ fn test_verification_with_recovery_blocks() {
         Packet::FileDescription(create_file_desc(file_id, "test.txt", 16384)), // One block
     ];
 
-    let results = comprehensive_verify_files(packets);
+    let packet_set = PacketSet::from_packets(packets);
+    let base_dir = packet_set.base_dir.clone();
+    let results = comprehensive_verify_files(
+        packet_set,
+        &VerificationConfig::default(),
+        &SilentVerificationReporter,
+        base_dir,
+    );
 
     // Should calculate if repair is possible
     assert!(!results.repair_possible || results.recovery_blocks_available > 0);
@@ -207,7 +258,14 @@ fn test_verification_results_aggregation() {
         200,
     )));
 
-    let results = comprehensive_verify_files(packets);
+    let packet_set = PacketSet::from_packets(packets);
+    let base_dir = packet_set.base_dir.clone();
+    let results = comprehensive_verify_files(
+        packet_set,
+        &VerificationConfig::default(),
+        &SilentVerificationReporter,
+        base_dir,
+    );
 
     // Should aggregate results correctly
     assert!(
@@ -223,13 +281,20 @@ fn test_print_verification_results_repair_possible() {
         Packet::FileDescription(create_file_desc(file_id, "test.txt", 16384)),
     ];
 
-    let mut results = comprehensive_verify_files(packets);
+    let packet_set = PacketSet::from_packets(packets);
+    let base_dir = packet_set.base_dir.clone();
+    let mut results = comprehensive_verify_files(
+        packet_set,
+        &VerificationConfig::default(),
+        &SilentVerificationReporter,
+        base_dir,
+    );
 
     // Simulate repair being possible
     results.repair_possible = true;
     results.recovery_blocks_available = 10;
 
-    print_verification_results(&results);
+    // Just verify the results exist - no print_verification_results wrapper
 }
 
 #[test]
@@ -240,14 +305,21 @@ fn test_print_verification_results_repair_not_possible() {
         Packet::FileDescription(create_file_desc(file_id, "test.txt", 16384)),
     ];
 
-    let mut results = comprehensive_verify_files(packets);
+    let packet_set = PacketSet::from_packets(packets);
+    let base_dir = packet_set.base_dir.clone();
+    let mut results = comprehensive_verify_files(
+        packet_set,
+        &VerificationConfig::default(),
+        &SilentVerificationReporter,
+        base_dir,
+    );
 
     // Simulate repair not being possible
     results.repair_possible = false;
     results.recovery_blocks_available = 0;
     results.blocks_needed_for_repair = 5;
 
-    print_verification_results(&results);
+    // Just verify the results exist - no print_verification_results wrapper
 }
 
 #[test]
@@ -272,7 +344,14 @@ fn test_comprehensive_verify_large_file_count() {
         )));
     }
 
-    let results = comprehensive_verify_files(packets);
+    let packet_set = PacketSet::from_packets(packets);
+    let base_dir = packet_set.base_dir.clone();
+    let results = comprehensive_verify_files(
+        packet_set,
+        &VerificationConfig::default(),
+        &SilentVerificationReporter,
+        base_dir,
+    );
 
     // Should process all files
     assert_eq!(

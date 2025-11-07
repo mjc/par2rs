@@ -1,5 +1,6 @@
 use par2rs::par2_files::load_all_par2_packets;
-use par2rs::verify::{comprehensive_verify_files_with_config, VerificationConfig};
+use par2rs::reporters::SilentVerificationReporter;
+use par2rs::verify::{comprehensive_verify_files, VerificationConfig};
 
 #[test]
 fn test_parallel_sequential_equivalence() {
@@ -24,7 +25,7 @@ fn test_parallel_sequential_equivalence() {
         let packets_parallel = load_all_par2_packets(std::slice::from_ref(test_file));
         let packets_sequential = load_all_par2_packets(std::slice::from_ref(test_file));
 
-        if packets_parallel.is_empty() {
+        if packets_parallel.packets.is_empty() {
             println!("No packets loaded from {}, skipping", test_file.display());
             continue;
         }
@@ -33,17 +34,29 @@ fn test_parallel_sequential_equivalence() {
         let parallel_config = VerificationConfig {
             threads: 2, // Use 2 threads for deterministic testing
             parallel: true,
+            skip_full_file_md5: false,
         };
-        let parallel_results =
-            comprehensive_verify_files_with_config(packets_parallel, &parallel_config);
+        let base_dir_parallel = packets_parallel.base_dir.clone();
+        let parallel_results = comprehensive_verify_files(
+            packets_parallel,
+            &parallel_config,
+            &SilentVerificationReporter,
+            base_dir_parallel,
+        );
 
         // Test with sequential mode
         let sequential_config = VerificationConfig {
             threads: 0, // Threads don't matter in sequential mode
             parallel: false,
+            skip_full_file_md5: false,
         };
-        let sequential_results =
-            comprehensive_verify_files_with_config(packets_sequential, &sequential_config);
+        let base_dir_sequential = packets_sequential.base_dir.clone();
+        let sequential_results = comprehensive_verify_files(
+            packets_sequential,
+            &sequential_config,
+            &SilentVerificationReporter,
+            base_dir_sequential,
+        );
 
         // Compare core verification results
         assert_eq!(
@@ -183,7 +196,7 @@ fn test_thread_count_consistency() {
     for threads in thread_counts.iter() {
         // Load packets fresh for each test since Packet doesn't implement Clone
         let packets = load_all_par2_packets(std::slice::from_ref(test_file));
-        if packets.is_empty() {
+        if packets.packets.is_empty() {
             println!("No packets loaded from {}, skipping", test_file.display());
             return;
         }
@@ -191,8 +204,11 @@ fn test_thread_count_consistency() {
         let config = VerificationConfig {
             threads: *threads,
             parallel: true,
+            skip_full_file_md5: false,
         };
-        let result = comprehensive_verify_files_with_config(packets, &config);
+        let base_dir = packets.base_dir.clone();
+        let result =
+            comprehensive_verify_files(packets, &config, &SilentVerificationReporter, base_dir);
         results.push(result);
     }
 

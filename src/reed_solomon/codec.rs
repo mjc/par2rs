@@ -19,6 +19,7 @@
 //! Uses James Plank's "Screaming Fast Galois Field Arithmetic" technique adapted
 //! for 16-bit fields (see `simd_pshufb.rs` for details).
 
+use crate::reed_solomon::alloc_aligned_vec;
 use crate::reed_solomon::galois::{gcd, Galois16};
 use crate::reed_solomon::simd::common::{process_slice_multiply_mode, WriteOp};
 use crate::reed_solomon::simd::{detect_simd_support, process_slice_multiply_add_simd, SimdLevel};
@@ -1439,16 +1440,36 @@ impl ReconstructionEngine {
             num_chunks, chunk_size
         );
 
+        // Print initial progress for sabnzbd
+        print!("\rRepairing: 0.0%");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
         for chunk_idx in 0..num_chunks {
             let chunk_offset = chunk_idx * chunk_size;
             let current_chunk_size = (self.slice_size - chunk_offset).min(chunk_size);
+
+            // Report progress for sabnzbd compatibility
+            // Print every ~1% or at minimum every chunk for small files
+            let report_interval = if num_chunks < 100 {
+                1
+            } else {
+                num_chunks / 100
+            };
+            if chunk_idx % report_interval == 0 || chunk_idx == num_chunks - 1 {
+                let percentage = (chunk_idx as f64 / num_chunks as f64) * 100.0;
+                print!("\rRepairing: {:.1}%", percentage);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+            }
 
             if chunk_idx % 100 == 0 && chunk_idx > 0 {
                 debug!("Processing chunk {}/{}", chunk_idx, num_chunks);
             }
 
-            // Allocate output buffers for this chunk
-            let mut output_buffers: Vec<Vec<u8>> = vec![vec![0u8; current_chunk_size]; num_missing];
+            // Allocate output buffers for this chunk (32-byte aligned for SIMD)
+            // Using aligned allocation ensures fast SIMD loads/stores
+            let mut output_buffers: Vec<Vec<u8>> = (0..num_missing)
+                .map(|_| alloc_aligned_vec(current_chunk_size))
+                .collect();
             let mut first_writes: Vec<bool> = vec![true; num_missing];
 
             // Process recovery slices
@@ -1509,6 +1530,14 @@ impl ReconstructionEngine {
             for (idx, &global_idx) in available_slices.iter().enumerate() {
                 if global_idx >= self.total_input_slices {
                     continue;
+                }
+
+                // Report progress periodically based on input slices processed
+                // This provides progress updates even with large chunk sizes
+                if num_chunks == 1 && idx % 100 == 0 {
+                    let percentage = (idx as f64 / available_slices.len() as f64) * 100.0;
+                    print!("\rRepairing: {:.1}%", percentage);
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
                 }
 
                 let input_chunk =
@@ -1600,6 +1629,11 @@ impl ReconstructionEngine {
                 }
             }
         }
+
+        // Print final 100% progress
+        print!("\rRepairing: 100.0%");
+        println!(); // Newline after completion
+        std::io::Write::flush(&mut std::io::stdout()).ok();
 
         debug!("Chunked reconstruction completed successfully");
 

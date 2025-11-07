@@ -3,11 +3,17 @@ name = "par2rs"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Feature flag to skip test_binaries.rs in Nix builds
+nix-build = []
+
 [dependencies]
 binrw = "*"
 clap = "4.5.39"
 rayon = "1.10.0"
-md-5 = { git = "https://github.com/mjc/hashes", package = "md-5"}
+# hand-rolled md5 asm originally from ParPar with some additional optimizations by mjc
+# aarch64 for Apple Silicon and x86-64 for AMD 5xxx are primary targets
+md-5 = { git = "https://github.com/mjc/hashes.git", branch = "mjc-asm", version = "0.11.0-rc.2", features = ["alloc", "oid"] }
 hex = "0.4.3"
 crc32fast = "1.4.0"
 log = "0.4"
@@ -16,12 +22,36 @@ bytemuck = "1.24"
 rustc-hash = "2.1"
 thiserror = "2.0.17"
 anyhow = "1.0"
+smallvec = { version = "1.15.1", features = ["const_generics"] }
+
+# Binaries
+[[bin]]
+name = "par2"
+path = "src/bin/par2.rs"
+
+[[bin]]
+name = "par2verify"
+path = "src/bin/par2verify.rs"
+
+[[bin]]
+name = "par2repair"
+path = "src/bin/par2repair.rs"
+
+[[bin]]
+name = "par2create"
+path = "src/bin/par2create.rs"
+
+[[bin]]
+name = "split_par2"
+path = "src/bin/split_par2.rs"
 
 [dev-dependencies]
 # Temporary directory management for tests
 tempfile = "3"
 # Benchmarking framework
 criterion = { version = "0.7", features = ["html_reports"] }
+# Instruction-count benchmarking (deterministic, no timing noise)
+iai-callgrind = "0.16"
 # Property-based testing
 proptest = "1.5"
 # Random number generation for tests
@@ -43,5 +73,13 @@ harness = false
 name = "md5_optimized"
 harness = false
 
+[[bench]]
+name = "iai_simd"
+harness = false
+
 [profile.release]
 debug = true
+strip = false
+lto = true            # Link-time optimization for better performance
+codegen-units = 1     # Single codegen unit for better optimization
+overflow-checks = true  # Keep overflow checks for safety with untrusted network data

@@ -42,7 +42,7 @@ fn test_file_status_eq() {
 #[test]
 fn test_file_status_clone() {
     let status1 = FileStatus::Corrupted;
-    let status2 = status1.clone();
+    let status2 = status1;
     assert_eq!(status1, status2);
 }
 
@@ -121,6 +121,7 @@ fn test_file_verification_result_creation() {
         blocks_available: 10,
         total_blocks: 10,
         damaged_blocks: vec![],
+        block_positions: Default::default(),
     };
 
     assert_eq!(result.file_name, "test.txt");
@@ -141,6 +142,7 @@ fn test_file_verification_result_damaged() {
         blocks_available: 8,
         total_blocks: 10,
         damaged_blocks: vec![3, 7],
+        block_positions: Default::default(),
     };
 
     assert_eq!(result.status, FileStatus::Corrupted);
@@ -159,6 +161,7 @@ fn test_file_verification_result_clone() {
         blocks_available: 0,
         total_blocks: 5,
         damaged_blocks: vec![0, 1, 2, 3, 4],
+        block_positions: Default::default(),
     };
 
     let result2 = result1.clone();
@@ -361,6 +364,7 @@ fn test_verification_results_with_file_data() {
         blocks_available: 5,
         total_blocks: 5,
         damaged_blocks: vec![],
+        block_positions: Default::default(),
     };
 
     let block_result = BlockVerificationResult {

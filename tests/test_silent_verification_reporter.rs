@@ -126,17 +126,17 @@ fn test_report_damaged_blocks_silent() {
     let reporter = SilentVerificationReporter::new();
 
     // All should be silent no-ops regardless of block list size
-    reporter.report_damaged_blocks("file1.txt", &[]);
-    reporter.report_damaged_blocks("file2.txt", &[42]);
-    reporter.report_damaged_blocks("file3.txt", &[1, 5, 10]);
-    reporter.report_damaged_blocks("file4.txt", &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    reporter.report_damaged_blocks("file1.txt", &[], 10, 10);
+    reporter.report_damaged_blocks("file2.txt", &[42], 9, 10);
+    reporter.report_damaged_blocks("file3.txt", &[1, 5, 10], 7, 10);
+    reporter.report_damaged_blocks("file4.txt", &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 0, 10);
 
     // Large list
     let large_list: Vec<u32> = (0..1000).collect();
-    reporter.report_damaged_blocks("file5.txt", &large_list);
+    reporter.report_damaged_blocks("file5.txt", &large_list, 0, 1000);
 
     // Test with empty filename
-    reporter.report_damaged_blocks("", &[1, 2, 3]);
+    reporter.report_damaged_blocks("", &[1, 2, 3], 0, 3);
 }
 
 #[test]
@@ -157,6 +157,7 @@ fn test_report_verification_results_single_file_silent() {
         blocks_available: 10,
         total_blocks: 10,
         damaged_blocks: vec![],
+        block_positions: Default::default(),
     };
     let results = create_test_results(vec![file], 1, 0, 0, 0);
     reporter.report_verification_results(&results);
@@ -174,6 +175,7 @@ fn test_report_verification_results_with_damaged_blocks_silent() {
         blocks_available: 5,
         total_blocks: 10,
         damaged_blocks: vec![1, 3, 5, 7, 9],
+        block_positions: Default::default(),
     };
     let results = create_test_results(vec![corrupted_file], 0, 0, 1, 0);
     reporter.report_verification_results(&results);
@@ -192,6 +194,7 @@ fn test_report_verification_results_large_damaged_blocks_silent() {
         blocks_available: 0,
         total_blocks: 1000,
         damaged_blocks: large_damaged_blocks,
+        block_positions: Default::default(),
     };
     let results = create_test_results(vec![corrupted_file], 0, 0, 1, 0);
     reporter.report_verification_results(&results);
@@ -209,6 +212,7 @@ fn test_report_verification_results_mixed_files_silent() {
             blocks_available: 10,
             total_blocks: 10,
             damaged_blocks: vec![],
+            block_positions: Default::default(),
         },
         FileVerificationResult {
             file_name: "missing.txt".to_string(),
@@ -217,6 +221,7 @@ fn test_report_verification_results_mixed_files_silent() {
             blocks_available: 0,
             total_blocks: 10,
             damaged_blocks: vec![],
+            block_positions: Default::default(),
         },
         FileVerificationResult {
             file_name: "corrupted.txt".to_string(),
@@ -225,6 +230,7 @@ fn test_report_verification_results_mixed_files_silent() {
             blocks_available: 7,
             total_blocks: 10,
             damaged_blocks: vec![2, 4, 6],
+            block_positions: Default::default(),
         },
         FileVerificationResult {
             file_name: "renamed.txt".to_string(),
@@ -233,6 +239,7 @@ fn test_report_verification_results_mixed_files_silent() {
             blocks_available: 10,
             total_blocks: 10,
             damaged_blocks: vec![],
+            block_positions: Default::default(),
         },
     ];
     let results = create_test_results(mixed_files, 1, 1, 1, 1);
@@ -250,7 +257,7 @@ fn test_comprehensive_verification_workflow_silent() {
     // File 1
     reporter.report_verifying_file("file1.txt");
     reporter.report_file_status("file1.txt", FileStatus::Present);
-    reporter.report_damaged_blocks("file1.txt", &[]);
+    reporter.report_damaged_blocks("file1.txt", &[], 10, 10);
 
     // File 2
     reporter.report_verifying_file("file2.txt");
@@ -259,7 +266,7 @@ fn test_comprehensive_verification_workflow_silent() {
     // File 3
     reporter.report_verifying_file("file3.txt");
     reporter.report_file_status("file3.txt", FileStatus::Corrupted);
-    reporter.report_damaged_blocks("file3.txt", &[1, 5, 9]);
+    reporter.report_damaged_blocks("file3.txt", &[1, 5, 9], 7, 10);
 
     // Final results
     let final_files = vec![
@@ -270,6 +277,7 @@ fn test_comprehensive_verification_workflow_silent() {
             blocks_available: 10,
             total_blocks: 10,
             damaged_blocks: vec![],
+            block_positions: Default::default(),
         },
         FileVerificationResult {
             file_name: "file2.txt".to_string(),
@@ -278,6 +286,7 @@ fn test_comprehensive_verification_workflow_silent() {
             blocks_available: 0,
             total_blocks: 10,
             damaged_blocks: vec![],
+            block_positions: Default::default(),
         },
         FileVerificationResult {
             file_name: "file3.txt".to_string(),
@@ -286,6 +295,7 @@ fn test_comprehensive_verification_workflow_silent() {
             blocks_available: 7,
             total_blocks: 10,
             damaged_blocks: vec![1, 5, 9],
+            block_positions: Default::default(),
         },
     ];
     let final_results = create_test_results(final_files, 1, 0, 1, 1);
@@ -323,5 +333,5 @@ fn test_extreme_values_silent() {
 
     // Very large damaged block list
     let huge_list: Vec<u32> = (0..100000).collect();
-    reporter.report_damaged_blocks("huge_file.txt", &huge_list);
+    reporter.report_damaged_blocks("huge_file.txt", &huge_list, 0, 100000);
 }

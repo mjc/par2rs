@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0  # Disable incremental compilation for CI (not reused)
+  CARGO_PROFILE_DEV_DEBUG: 0  # Disable debug info in dev builds (faster compile)
 
 jobs:
   test:
@@ -19,16 +21,11 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@nightly
     
-    - name: Cache Rust toolchain
-      uses: actions/cache@v4
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
       with:
-        path: |
-          ~/.rustup/toolchains
-          ~/.rustup/update-hashes
-          ~/.rustup/settings.toml
-        key: ${{ runner.os }}-rustup-${{ hashFiles('rust-toolchain.toml') }}
-        restore-keys: |
-          ${{ runner.os }}-rustup-
+        shared-key: "test"
+        cache-on-failure: true
 
     - name: Cache par2cmdline
       id: cache-par2
@@ -47,51 +44,25 @@ jobs:
     - name: Add par2 to PATH
       run: echo "$HOME/bin" >> $GITHUB_PATH
 
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-
-
-    - name: Cache cargo target
-      uses: actions/cache@v4
-      with:
-        path: target/
-        key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-
-          ${{ runner.os }}-cargo-target-
-
-    - name: Build
-      run: cargo build --verbose
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --all-features --workspace
 
   coverage:
     runs-on: ubuntu-latest
-    needs: test
-
+    
     steps:
     - uses: actions/checkout@v4
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@nightly
-    
-    - name: Cache Rust toolchain
-      uses: actions/cache@v4
       with:
-        path: |
-          ~/.rustup/toolchains
-          ~/.rustup/update-hashes
-          ~/.rustup/settings.toml
-        key: ${{ runner.os }}-rustup-${{ hashFiles('rust-toolchain.toml') }}
-        restore-keys: |
-          ${{ runner.os }}-rustup-
+        components: llvm-tools-preview
+    
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: "coverage"
+        cache-on-failure: true
 
     - name: Cache par2cmdline
       id: cache-par2-coverage
@@ -110,57 +81,33 @@ jobs:
     - name: Add par2 to PATH
       run: echo "$HOME/bin" >> $GITHUB_PATH
 
-    - name: Cache cargo registry
+    - name: Cache cargo-llvm-cov binary
       uses: actions/cache@v4
       with:
-        path: |
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-
+        path: ~/.cargo/bin/cargo-llvm-cov
+        key: ${{ runner.os }}-cargo-llvm-cov-0.6.14
 
-    - name: Cache cargo target
-      uses: actions/cache@v4
-      with:
-        path: target/
-        key: ${{ runner.os }}-cargo-target-coverage-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-target-coverage-${{ hashFiles('**/Cargo.lock') }}-
-          ${{ runner.os }}-cargo-target-coverage-
-          ${{ runner.os }}-cargo-target-
-
-    - name: Cache cargo-tarpaulin
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/bin/cargo-tarpaulin
-        key: ${{ runner.os }}-cargo-tarpaulin-${{ hashFiles('~/.cargo/bin/cargo-tarpaulin') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-tarpaulin-
-
-    - name: Install cargo-tarpaulin
+    - name: Install cargo-llvm-cov
       run: |
-        if ! command -v cargo-tarpaulin &> /dev/null; then
-          cargo install cargo-tarpaulin
+        if ! command -v cargo-llvm-cov &> /dev/null; then
+          cargo install cargo-llvm-cov --version 0.6.14 --locked
         fi
 
     - name: Generate coverage report
       run: |
-        cargo tarpaulin --verbose --all-features --workspace --timeout 120 \
-          --out Xml --out Html --out Lcov \
-          --output-dir target/coverage
+        cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
 
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v4
       with:
-        file: target/coverage/cobertura.xml
+        file: lcov.info
         flags: unittests
         name: codecov-umbrella
         fail_ci_if_error: false
         verbose: true
       env:
         CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    
     - name: Upload test results to Codecov
       if: ${{ !cancelled() }}
       uses: codecov/test-results-action@v1
@@ -171,4 +118,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: coverage-report
-        path: target/coverage/
+        path: lcov.info

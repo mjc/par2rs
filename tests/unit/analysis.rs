@@ -17,7 +17,7 @@ fn load_packets_with_recovery(par2_files: &[std::path::PathBuf]) -> (Vec<par2rs:
     for par2_file in par2_files {
         let file = fs::File::open(par2_file).expect("Failed to open PAR2 file");
         let mut reader = BufReader::new(file);
-        let packets = par2rs::parse_packets(&mut reader);
+        let (packets, _) = par2rs::parse_packets_with_options(&mut reader, true);
 
         // Deduplicate packets
         for packet in packets {

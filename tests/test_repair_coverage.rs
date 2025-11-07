@@ -5,6 +5,7 @@ use par2rs::domain::{
     Crc32Value, FileId, GlobalSliceIndex, LocalSliceIndex, Md5Hash, RecoverySetId,
 };
 use par2rs::repair::*;
+use par2rs::verify::VerificationConfig;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -119,6 +120,7 @@ fn test_type_wrapper_traits() {
 }
 
 #[test]
+#[ignore] // Requires par2cmdline to be installed
 fn test_recovery_set_methods() {
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("test.txt");
@@ -128,7 +130,12 @@ fn test_recovery_set_methods() {
     let par2_file = temp_dir.path().join("test.par2");
     create_minimal_par2(&par2_file, &test_file);
 
-    let (context, _) = repair_files(par2_file.to_str().unwrap()).unwrap();
+    let (context, _) = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    )
+    .unwrap();
 
     // Test total_blocks
     let total = context.recovery_set.total_blocks();
@@ -195,7 +202,11 @@ fn test_error_no_valid_packets() {
     fs::File::create(&par2_file).unwrap();
 
     // Empty PAR2 file should trigger NoValidPackets error
-    let result = repair_files(par2_file.to_str().unwrap());
+    let result = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    );
     assert!(result.is_err());
     if let Err(err) = result {
         assert!(matches!(err, RepairError::NoValidPackets));
@@ -218,7 +229,11 @@ fn test_size_mismatch_detection() {
     fs::write(&test_file, vec![0x33; 5000]).unwrap(); // Original is 10000 bytes
 
     // Should detect size mismatch and attempt repair
-    let result = repair_files(par2_file.to_str().unwrap());
+    let result = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    );
     assert!(result.is_ok());
 }
 
@@ -238,7 +253,11 @@ fn test_hash_mismatch_detection() {
     fs::write(&test_file, vec![0xBB; 10000]).unwrap(); // Original is 0x44 repeated
 
     // Repair should detect the hash mismatch
-    let result = repair_files(par2_file.to_str().unwrap());
+    let result = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    );
     assert!(result.is_ok());
 }
 
@@ -267,7 +286,11 @@ fn test_corrupted_file_repair() {
     fs::write(&test_file, &corrupted).unwrap();
 
     // Repair should succeed with enough recovery blocks
-    let result = repair_files(par2_file.to_str().unwrap());
+    let result = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    );
     assert!(result.is_ok());
 
     let (_, repair_result) = result.unwrap();
@@ -292,7 +315,11 @@ fn test_missing_file_repair() {
     assert!(!test_file.exists());
 
     // Try to repair - should recreate the file
-    let result = repair_files(par2_file.to_str().unwrap());
+    let result = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    );
     assert!(result.is_ok());
 
     let (_, repair_result) = result.unwrap();

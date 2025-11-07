@@ -17,13 +17,14 @@ fn test_file_deduplication_with_real_data() {
     println!("Testing file deduplication with: {}", test_file.display());
 
     let packets = load_all_par2_packets(std::slice::from_ref(test_file));
-    if packets.is_empty() {
+    if packets.packets.is_empty() {
         println!("No packets loaded from {}, skipping", test_file.display());
         return;
     }
 
     // Count FileDescription packets in the loaded data
     let file_description_count = packets
+        .packets
         .iter()
         .filter(|p| matches!(p, par2rs::Packet::FileDescription(_)))
         .count();
@@ -40,7 +41,13 @@ fn test_file_deduplication_with_real_data() {
 
     // Run verification which should deduplicate files
     let config = VerificationConfig::new(2, true);
-    let results = par2rs::verify::comprehensive_verify_files_with_config(packets, &config);
+    let base_dir = packets.base_dir.clone();
+    let results = par2rs::verify::comprehensive_verify_files(
+        packets,
+        &config,
+        &par2rs::reporters::SilentVerificationReporter,
+        base_dir,
+    );
 
     // In most cases, there should be fewer unique files than FileDescription packets
     // (unless it's a single-volume PAR2 set with no duplicates)

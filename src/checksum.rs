@@ -12,9 +12,12 @@
 //! - **Convenience**: Combined operations for common patterns (MD5+CRC32)
 
 use crate::domain::{Crc32Value, FileId, Md5Hash};
-use md_5::{Digest, Md5};
+use md5::{Digest, Md5};
 use std::io::Read;
 use std::sync::atomic::{AtomicU32, Ordering};
+
+// Export rolling CRC32 module for efficient sliding window operations
+pub mod rolling_crc;
 
 // ============================================================================
 // MD5 Hashing
@@ -120,7 +123,7 @@ pub fn compute_block_checksums_padded(data: &[u8], block_size: usize) -> (Md5Has
 #[inline]
 pub fn compute_md5_crc32_simultaneous(data: &[u8]) -> (Md5Hash, Crc32Value) {
     use crc32fast::Hasher as Crc32Hasher;
-    use md_5::Digest;
+    use md5::Digest;
 
     let mut md5_hasher = Md5::new();
     let mut crc_hasher = Crc32Hasher::new();
@@ -162,7 +165,7 @@ pub fn compute_md5_crc32_simultaneous_padded(
     target_size: usize,
 ) -> (Md5Hash, Crc32Value) {
     use crc32fast::Hasher as Crc32Hasher;
-    use md_5::Digest;
+    use md5::Digest;
 
     if data.len() >= target_size {
         // No padding needed, use direct simultaneous computation
@@ -184,6 +187,18 @@ pub fn compute_md5_crc32_simultaneous_padded(
         Md5Hash::new(md5_hasher.finalize().into()),
         Crc32Value::new(crc_hasher.finalize()),
     )
+}
+
+/// Compute only MD5 hash (when CRC32 is already known from rolling window)
+///
+/// This is used during scanning when we already have the CRC32 from the
+/// rolling window and only need to verify the MD5 hash.
+#[inline]
+pub fn compute_md5_only(data: &[u8]) -> Md5Hash {
+    use md5::Digest;
+    let mut hasher = Md5::new();
+    hasher.update(data);
+    Md5Hash::new(hasher.finalize().into())
 }
 
 // ============================================================================

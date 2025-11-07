@@ -2,6 +2,7 @@ use par2rs::par2_files;
 /// Tests for specific bugs found during repair implementation
 /// These tests document and prevent regression of critical bugs discovered during development
 use par2rs::repair::RepairContext;
+use par2rs::verify;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -9,7 +10,6 @@ use tempfile::TempDir;
 
 /// Test environment with PAR2 files
 struct TestEnv {
-    #[allow(dead_code)]
     temp_dir: TempDir,
     test_file: PathBuf,
     par2_file: PathBuf,
@@ -43,9 +43,13 @@ impl TestEnv {
     fn load_context(&self) -> RepairContext {
         let par2_files = par2_files::collect_par2_files(&self.par2_file);
         let metadata = par2_files::parse_recovery_slice_metadata(&par2_files, false);
-        let packets = par2_files::load_par2_packets(&par2_files, false);
-        RepairContext::new_with_metadata(packets, metadata, self.temp_dir.path().to_path_buf())
-            .unwrap()
+        let packet_set = par2_files::load_par2_packets(&par2_files, false, false);
+        RepairContext::new_with_metadata(
+            packet_set.packets,
+            metadata,
+            self.temp_dir.path().to_path_buf(),
+        )
+        .unwrap()
     }
 
     fn corrupt_at(&self, offset: u64, data: &[u8]) {
@@ -79,7 +83,18 @@ impl TestEnv {
 
     fn repair(&self) -> par2rs::repair::RepairResult {
         let _ = env_logger::builder().is_test(true).try_init();
-        match self.load_context().repair() {
+
+        // Run comprehensive verification first
+        let par2_files = par2_files::collect_par2_files(&self.par2_file);
+        let packet_set = par2_files::load_par2_packets(&par2_files, false, false);
+        let base_dir = self.temp_dir.path();
+        let config = verify::VerificationConfig::default();
+        let reporter = par2rs::reporters::SilentVerificationReporter;
+        let verification_results =
+            verify::comprehensive_verify_files(packet_set, &config, &reporter, base_dir);
+
+        // Then repair with verification results
+        match self.load_context().repair(verification_results) {
             Ok(result) => {
                 if !result.is_success() {
                     eprintln!("Repair returned failure: {:?}", result);
@@ -91,11 +106,11 @@ impl TestEnv {
     }
 
     fn verify_md5(&self) -> bool {
-        use md_5::Digest;
+        use md5::Digest;
         let context = self.load_context();
         let file_info = &context.recovery_set.files[0];
         let contents = self.read_file();
-        let computed: [u8; 16] = md_5::Md5::digest(&contents).into();
+        let computed: [u8; 16] = md5::Md5::digest(&contents).into();
         computed == file_info.md5_hash
     }
 }

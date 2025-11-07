@@ -70,8 +70,8 @@ impl RecoveryDataLoader for FileSystemLoader {
         let absolute_offset = self.data_offset + chunk_offset as u64;
         file.seek(SeekFrom::Start(absolute_offset))?;
 
-        // Read only the requested chunk
-        let mut chunk = vec![0u8; bytes_to_read];
+        // Read only the requested chunk using 32-byte aligned allocation for optimal SIMD
+        let mut chunk = crate::reed_solomon::alloc_aligned_vec(bytes_to_read);
         file.read_exact(&mut chunk)?;
 
         Ok(chunk)

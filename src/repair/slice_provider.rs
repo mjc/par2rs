@@ -302,7 +302,9 @@ impl ChunkedSliceProvider {
         actual_data_end: usize,
     ) -> Result<Vec<u8>> {
         let bytes_to_read = (actual_data_end - chunk_offset).min(chunk_size);
-        let mut buffer = vec![0u8; bytes_to_read];
+
+        // Use 32-byte aligned allocation for optimal SIMD performance
+        let mut buffer = crate::reed_solomon::alloc_aligned_vec(bytes_to_read);
 
         let reader = self.get_or_create_reader(&location.file_path)?;
         reader
