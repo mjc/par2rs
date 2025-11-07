@@ -18,7 +18,7 @@
 //! use par2rs::create::{CreateContextBuilder, RecoveryFileScheme};
 //! use std::path::PathBuf;
 //!
-//! let context = CreateContextBuilder::new()
+//! let mut context = CreateContextBuilder::new()
 //!     .output_name("mydata.par2")
 //!     .source_files(vec![PathBuf::from("file1.txt"), PathBuf::from("file2.dat")])
 //!     .redundancy_percentage(10)
@@ -31,6 +31,7 @@
 pub mod builder;
 pub mod context;
 pub mod error;
+pub mod hashing;
 pub mod progress;
 pub mod source_file;
 pub mod types;

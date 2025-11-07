@@ -3,6 +3,7 @@
 //! Reference: par2cmdline-turbo/src/par2creator.h Par2Creator class
 
 use super::error::{CreateError, CreateResult};
+use super::hashing::hash_all_source_files;
 use super::progress::CreateReporter;
 use super::source_file::SourceFileInfo;
 use super::types::CreateConfig;
@@ -198,17 +199,8 @@ impl CreateContext {
     /// Reference: par2cmdline-turbo/src/par2creator.cpp OpenSourceFiles() and
     /// FinishFileHashComputation()
     fn hash_source_files(&mut self) -> CreateResult<()> {
-        // TODO: Implement parallel file hashing using existing checksum infrastructure
-        // - Compute full file MD5 hash
-        // - Compute per-block MD5 + CRC32 checksums
-        // - Update SourceFileInfo with checksums
-        // - Generate FileId from [Hash16k, Length, Name]
-
-        self.reporter
-            .report_error("File hashing not yet implemented");
-        Err(CreateError::Other(
-            "File hashing not yet implemented".to_string(),
-        ))
+        hash_all_source_files(&mut self.source_files, self.block_size, &*self.reporter)?;
+        Ok(())
     }
 
     /// Generate recovery set ID
