@@ -4,6 +4,7 @@
 
 use super::error::{CreateError, CreateResult};
 use super::hashing::hash_all_source_files;
+use super::packet_generator::generate_recovery_set_id;
 use super::progress::CreateReporter;
 use super::source_file::SourceFileInfo;
 use super::types::CreateConfig;
@@ -205,9 +206,8 @@ impl CreateContext {
 
     /// Generate recovery set ID
     fn generate_recovery_set_id(&mut self) -> CreateResult<()> {
-        // TODO: Generate RecoverySetId from main packet data
-        // Reference: par2cmdline-turbo MainPacket
-
+        let set_id = generate_recovery_set_id(self.block_size, &self.source_files)?;
+        self.recovery_set_id = Some(set_id);
         Ok(())
     }
 

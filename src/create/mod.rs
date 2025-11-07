@@ -32,6 +32,7 @@ pub mod builder;
 pub mod context;
 pub mod error;
 pub mod hashing;
+pub mod packet_generator;
 pub mod progress;
 pub mod source_file;
 pub mod types;
