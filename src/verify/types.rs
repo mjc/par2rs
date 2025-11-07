@@ -540,11 +540,12 @@ impl FileScanMetadata {
             return (true, true);
         }
 
-        // Sort by offset to get physical order, then deduplicate
-        // (sliding window scanning can find the same block multiple times)
-        let mut sorted = blocks.to_vec();
+        // Deduplicate using FxHashSet (sliding window scanning can find the same block multiple times)
+        // Then sort by offset to get physical order
+        use rustc_hash::FxHashSet;
+        let unique: FxHashSet<_> = blocks.iter().copied().collect();
+        let mut sorted: Vec<_> = unique.into_iter().collect();
         sorted.sort_by_key(|(offset, _)| *offset);
-        sorted.dedup();
 
         // Check if BLOCK 0 is at offset 0
         let first_at_zero = sorted[0] == (0, 0);
@@ -606,10 +607,11 @@ mod tests {
 
     #[test]
     fn test_analyze_sorted_blocks_duplicate() {
+        // Duplicates are deduplicated - same block found multiple times is still valid
         let blocks = [(0, 0), (0, 0)];
         let (first_at_zero, in_sequence) = FileScanMetadata::analyze_sorted_blocks(&blocks);
         assert!(first_at_zero);
-        assert!(!in_sequence); // Duplicate breaks sequence
+        assert!(in_sequence); // Deduped to just [(0, 0)]
     }
 
     #[test]

@@ -1,8 +1,12 @@
 use par2rs::domain::FileId;
 use par2rs::verify::FileScanMetadata;
 
+// Reference: par2cmdline-turbo/src/par2repairer.cpp:1530-1863 (SetCompleteFile and eFullMatch)
+// These tests verify the logic for determining when a file is a "perfect match" (complete)
+
 #[test]
 fn test_empty_file_is_perfect_match() {
+    // Reference: par2cmdline-turbo treats empty files as valid
     let mut metadata = FileScanMetadata::new();
     let file_id = FileId::new([1; 16]);
 
@@ -15,6 +19,7 @@ fn test_empty_file_is_perfect_match() {
 
 #[test]
 fn test_single_block_at_offset_zero() {
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1748-1755 (block match and recording)
     let mut metadata = FileScanMetadata::new();
     let file_id = FileId::new([1; 16]);
 
@@ -28,6 +33,7 @@ fn test_single_block_at_offset_zero() {
 
 #[test]
 fn test_single_block_not_at_offset_zero() {
+    // Reference: par2cmdline-turbo requires first block at offset 0 for eFullMatch
     let mut metadata = FileScanMetadata::new();
     let file_id = FileId::new([1; 16]);
 
@@ -40,6 +46,7 @@ fn test_single_block_not_at_offset_zero() {
 
 #[test]
 fn test_multiple_blocks_in_perfect_sequence() {
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1748-1755 (sequential block matching)
     let mut metadata = FileScanMetadata::new();
     let file_id = FileId::new([1; 16]);
 
@@ -55,7 +62,8 @@ fn test_multiple_blocks_in_perfect_sequence() {
 
 #[test]
 fn test_blocks_out_of_order_still_detected_as_sequence() {
-    // Blocks recorded out of order but at correct offsets
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1676-1795 (byte-by-byte scan)
+    // Blocks can be found in any order during scanning but still form a valid sequence
     let mut metadata = FileScanMetadata::new();
     let file_id = FileId::new([1; 16]);
 
@@ -71,6 +79,7 @@ fn test_blocks_out_of_order_still_detected_as_sequence() {
 
 #[test]
 fn test_missing_block_in_sequence() {
+    // Reference: par2cmdline-turbo requires all blocks 0..N-1 for eFullMatch
     let mut metadata = FileScanMetadata::new();
     let file_id = FileId::new([1; 16]);
 
@@ -85,6 +94,7 @@ fn test_missing_block_in_sequence() {
 
 #[test]
 fn test_first_block_not_block_zero() {
+    // Reference: par2cmdline-turbo requires block 0 at offset 0 for eFullMatch
     let mut metadata = FileScanMetadata::new();
     let file_id = FileId::new([1; 16]);
 
@@ -100,6 +110,8 @@ fn test_first_block_not_block_zero() {
 
 #[test]
 fn test_block_zero_not_at_offset_zero() {
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1748-1755
+    // Displaced blocks can be found but file is not "complete"
     let mut metadata = FileScanMetadata::new();
     let file_id = FileId::new([1; 16]);
 
@@ -114,20 +126,24 @@ fn test_block_zero_not_at_offset_zero() {
 
 #[test]
 fn test_duplicate_blocks_break_sequence() {
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1778 (if (duplicate && false) // ignore duplicates)
+    // par2cmdline explicitly ignores duplicate block detections during scanning
     let mut metadata = FileScanMetadata::new();
     let file_id = FileId::new([1; 16]);
 
-    // This simulates the bug we fixed - same block detected twice
+    // Duplicates are now deduplicated - same block found twice is still valid
     metadata.record_block_found(0, file_id, 0);
-    metadata.record_block_found(0, file_id, 0); // Duplicate
+    metadata.record_block_found(0, file_id, 0); // Duplicate (from sliding window overlap)
     metadata.analyze_block_positions(file_id);
 
     assert!(metadata.first_block_at_offset_zero);
-    assert!(!metadata.blocks_in_sequence); // w[1].1 == w[0].1 + 1 fails when both are 0
+    assert!(metadata.blocks_in_sequence); // Deduped to just [(0, 0)] - valid sequence
 }
 
 #[test]
 fn test_blocks_from_different_files_ignored() {
+    // Reference: par2cmdline-turbo/src/verificationhashtable.h:303-443 (FindMatch per file)
+    // Global block table tracks all files, but analysis is per-file
     let mut metadata = FileScanMetadata::new();
     let file_id_1 = FileId::new([1; 16]);
     let file_id_2 = FileId::new([2; 16]);
@@ -144,6 +160,8 @@ fn test_blocks_from_different_files_ignored() {
 
 #[test]
 fn test_blocks_with_gaps_in_offsets_but_sequential_numbers() {
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1748-1755
+    // Only block sequence matters, not offset alignment (blocks can be variable size)
     let mut metadata = FileScanMetadata::new();
     let file_id = FileId::new([1; 16]);
 
@@ -161,6 +179,7 @@ fn test_blocks_with_gaps_in_offsets_but_sequential_numbers() {
 
 #[test]
 fn test_large_block_numbers() {
+    // Reference: par2cmdline-turbo handles large files with many blocks
     let mut metadata = FileScanMetadata::new();
     let file_id = FileId::new([1; 16]);
 
@@ -177,6 +196,8 @@ fn test_large_block_numbers() {
 
 #[test]
 fn test_blocks_in_reverse_offset_order() {
+    // Reference: par2cmdline-turbo/src/par2repairer.cpp:1676-1795 (byte-by-byte scan)
+    // Blocks can be discovered in any order, sorting handles this
     let mut metadata = FileScanMetadata::new();
     let file_id = FileId::new([1; 16]);
 
