@@ -1,6 +1,6 @@
 # Benchmark Results Summary
 
-**⚠️ PERFORMANCE REGRESSION ALERT:** These results (November 2025) show **significantly degraded performance** compared to previous benchmarks (October 2025) which demonstrated 2-200× speedups. The current implementation maintains correctness and par2cmdline compatibility but has lost most of its performance advantages on Linux x86_64. This regression is **under active investigation**.
+⚠️ **Performance Regression Note:** These results (November 2025) show degraded performance compared to previous benchmarks (October 2025) which demonstrated 2-200× speedups. The current implementation maintains correctness and par2cmdline compatibility but has lost most of its performance advantages on Linux x86_64. This regression is under investigation.
 
 Comprehensive end-to-end benchmarking results showing par2rs performance compared to par2cmdline across different platforms.
 
@@ -132,6 +132,8 @@ Speedup: 1.53x
 ```
 
 ## macOS Apple Silicon Performance Results
+
+**⚠️ OUTDATED DATA:** These results are from October 2025 and have not been re-tested with the current codebase. New benchmarks needed to confirm whether the Linux regression affects macOS as well.
 
 ### Test Configuration
 - **Corruption**: Similar corruption patterns as Linux tests
@@ -284,7 +286,9 @@ Iteration | par2cmdline   | par2rs
 
 ## Cross-Platform Comparison
 
-| Metric | Linux x86_64 (Ryzen 9) | macOS M1 |
+**⚠️ Note:** macOS M1 data is from October 2025 and may not reflect current performance.
+
+| Metric | Linux x86_64 (Ryzen 9) | macOS M1 (OUTDATED) |
 |--------|------------------------|----------|
 | **Best Speedup** | 1.54x (10MB) | 2.99x (1GB) |
 | **1MB Speedup** | 1.23x | N/A |
@@ -297,8 +301,9 @@ Iteration | par2cmdline   | par2rs
 | **SIMD Speedup** | 2.76x | 2.2-2.4x |
 | **Primary Factor** | I/O + Reed-Solomon | I/O + Reed-Solomon |
 | **Variance** | Very Low (<5%) | Very Low (<2%) |
+| **Benchmark Date** | November 2025 | October 2025 |
 
-**Note**: Both platforms benefit from optimized Reed-Solomon/GF(2^16) implementation and I/O patterns. The more modest Linux speedups (1.1-1.5x) compared to macOS (2.3-3.0x) suggest par2cmdline may have better optimization on Linux x86_64, making the performance gap smaller.
+**Note:** The more modest Linux speedups (1.1-1.5x) compared to macOS (2.3-3.0x) may indicate the Linux regression hasn't affected macOS, or macOS data is outdated and needs re-testing.
 
 ## Performance Factors
 

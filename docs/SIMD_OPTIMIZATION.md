@@ -17,11 +17,12 @@ This document describes the SIMD (Single Instruction, Multiple Data) optimizatio
 - **SIMD-level benchmarks**: Still show 2.2-2.8× (no regression at this level)
 - **Conclusion**: Regression is in higher-level code, not SIMD operations
 
-**Measured end-to-end performance (M1 MacBook Air 16GB) - maintained:**
+**Measured end-to-end performance (M1 MacBook Air 16GB) - OUTDATED (October 2025):**
 - 100MB: 2.77x speedup (2.26s → 0.81s)
 - 1GB: 2.99x speedup (22.7s → 7.6s)
 - 10GB: 2.46x speedup (104.8s → 42.6s)
 - 25GB: 2.36x speedup (349.6s → 147.8s)
+- ⚠️ **Needs re-testing** - unclear if Linux regression affects macOS
 
 **Measured end-to-end performance (Linux x86_64 Ryzen 9) - REGRESSED:**
 - 1MB: 1.23x speedup (0.032s → 0.026s) - was 211× in Oct 2025

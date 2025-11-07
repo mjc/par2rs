@@ -26,11 +26,12 @@ par2rs achieves **1.1-2.9x speedup** over par2cmdline through:
 - 1GB: **1.11x speedup** (3.74s → 3.37s)
 - 10GB: **1.53x speedup** (58.80s → 38.32s)
 
-**macOS M1 (MacBook Air, 16GB RAM):**
+**macOS M1 (MacBook Air, 16GB RAM) - OUTDATED (October 2025):**
 - 100MB: 2.77x speedup (2.26s → 0.81s)
 - 1GB: **2.99x speedup** (22.7s → 7.6s)
 - 10GB: 2.46x speedup (104.8s → 42.6s)
 - 25GB: 2.36x speedup (349.6s → 147.8s)
+- ⚠️ These results need re-testing to confirm current performance
 
 The performance improvements come primarily from optimized I/O patterns and SIMD-accelerated Reed-Solomon operations. See [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md) for comprehensive end-to-end benchmarks and [docs/SIMD_OPTIMIZATION.md](docs/SIMD_OPTIMIZATION.md) for SIMD implementation details.
 
