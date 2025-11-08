@@ -31,6 +31,7 @@
 pub mod builder;
 pub mod context;
 pub mod error;
+pub mod file_naming;
 pub mod hashing;
 pub mod packet_generator;
 pub mod progress;
@@ -40,8 +41,12 @@ pub mod types;
 pub use builder::CreateContextBuilder;
 pub use context::CreateContext;
 pub use error::{CreateError, CreateResult};
+pub use file_naming::{generate_recovery_filenames, RecoveryScheme};
 pub use progress::{ConsoleCreateReporter, CreateReporter, SilentCreateReporter};
 pub use types::{CreateConfig, RecoveryFileScheme};
+
+// Re-export from reed_solomon for convenience
+pub use crate::reed_solomon::RecoveryBlockEncoder;
 
 /// High-level function to create PAR2 files from source files
 ///
