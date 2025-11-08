@@ -62,7 +62,6 @@ fn test_par2cmdline_available() {
 }
 
 #[test]
-#[ignore] // Ignored until create is implemented
 fn test_create_single_small_file_verify_with_par2cmdline() {
     if !par2_available() {
         eprintln!("Skipping test: par2cmdline-turbo not available");
@@ -77,11 +76,12 @@ fn test_create_single_small_file_verify_with_par2cmdline() {
     create_test_file(&test_file, 1024, 0xAA).unwrap();
 
     // Create PAR2 files using our implementation
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true)); // quiet mode
     let mut context = par2rs::create::CreateContextBuilder::new()
         .output_name(par2_file.to_str().unwrap())
-        .add_source_file(test_file.clone())
+        .source_files(vec![test_file.clone()])
         .redundancy_percentage(5)
-        .quiet(true)
+        .reporter(reporter)
         .build()
         .unwrap();
 
@@ -95,7 +95,6 @@ fn test_create_single_small_file_verify_with_par2cmdline() {
 }
 
 #[test]
-#[ignore] // Ignored until create is implemented
 fn test_create_multiple_files_verify_with_par2cmdline() {
     if !par2_available() {
         eprintln!("Skipping test: par2cmdline-turbo not available");
@@ -114,11 +113,12 @@ fn test_create_multiple_files_verify_with_par2cmdline() {
     create_test_file(&file3, 1024, 0x33).unwrap();
 
     // Create PAR2 files using our implementation
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true)); // quiet mode
     let mut context = par2rs::create::CreateContextBuilder::new()
         .output_name(par2_file.to_str().unwrap())
         .source_files(vec![file1.clone(), file2.clone(), file3.clone()])
         .redundancy_percentage(10)
-        .quiet(true)
+        .reporter(reporter)
         .build()
         .unwrap();
 
@@ -132,7 +132,6 @@ fn test_create_multiple_files_verify_with_par2cmdline() {
 }
 
 #[test]
-#[ignore] // Ignored until create is implemented
 fn test_create_large_file_verify_with_par2cmdline() {
     if !par2_available() {
         eprintln!("Skipping test: par2cmdline-turbo not available");
@@ -147,11 +146,12 @@ fn test_create_large_file_verify_with_par2cmdline() {
     create_test_file(&test_file, 1024 * 1024, 0xBB).unwrap();
 
     // Create PAR2 files using our implementation
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true)); // quiet mode
     let mut context = par2rs::create::CreateContextBuilder::new()
         .output_name(par2_file.to_str().unwrap())
-        .add_source_file(test_file.clone())
+        .source_files(vec![test_file.clone()])
         .redundancy_percentage(5)
-        .quiet(true)
+        .reporter(reporter)
         .build()
         .unwrap();
 
@@ -165,7 +165,6 @@ fn test_create_large_file_verify_with_par2cmdline() {
 }
 
 #[test]
-#[ignore] // Ignored until create is implemented
 fn test_create_with_explicit_block_size() {
     if !par2_available() {
         eprintln!("Skipping test: par2cmdline-turbo not available");
@@ -180,12 +179,13 @@ fn test_create_with_explicit_block_size() {
     create_test_file(&test_file, 8192, 0xCC).unwrap();
 
     // Create PAR2 files with explicit block size
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true)); // quiet mode
     let mut context = par2rs::create::CreateContextBuilder::new()
         .output_name(par2_file.to_str().unwrap())
-        .add_source_file(test_file.clone())
+        .source_files(vec![test_file.clone()])
         .block_size(2048) // 2KB blocks
         .recovery_block_count(2)
-        .quiet(true)
+        .reporter(reporter)
         .build()
         .unwrap();
 
@@ -199,7 +199,6 @@ fn test_create_with_explicit_block_size() {
 }
 
 #[test]
-#[ignore] // Ignored until create is implemented
 fn test_create_then_corrupt_and_repair_with_par2cmdline() {
     if !par2_available() {
         eprintln!("Skipping test: par2cmdline-turbo not available");
@@ -214,11 +213,12 @@ fn test_create_then_corrupt_and_repair_with_par2cmdline() {
     create_test_file(&test_file, 4096, 0xDD).unwrap();
 
     // Create PAR2 files using our implementation
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true)); // quiet mode
     let mut context = par2rs::create::CreateContextBuilder::new()
         .output_name(par2_file.to_str().unwrap())
-        .add_source_file(test_file.clone())
+        .source_files(vec![test_file.clone()])
         .redundancy_percentage(20) // Higher redundancy for repair test
-        .quiet(true)
+        .reporter(reporter)
         .build()
         .unwrap();
 
@@ -252,7 +252,6 @@ fn test_create_then_corrupt_and_repair_with_par2cmdline() {
 /// Test that verifies compatibility by comparing our output structure
 /// with par2cmdline-turbo's output structure
 #[test]
-#[ignore] // Ignored until create is implemented
 fn test_output_file_structure_matches_par2cmdline() {
     if !par2_available() {
         eprintln!("Skipping test: par2cmdline-turbo not available");
@@ -287,11 +286,12 @@ fn test_output_file_structure_matches_par2cmdline() {
     create_test_file(&test_file2, 2048, 0xEE).unwrap(); // Same content
 
     let our_par2 = temp.path().join("ours.par2");
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true)); // quiet mode
     let mut context = par2rs::create::CreateContextBuilder::new()
         .output_name(our_par2.to_str().unwrap())
-        .add_source_file(test_file2)
+        .source_files(vec![test_file2])
         .redundancy_percentage(10)
-        .quiet(true)
+        .reporter(reporter)
         .build()
         .unwrap();
 
@@ -335,21 +335,21 @@ fn test_create_builder_validation() {
 
     // Test no output name
     let result = par2rs::create::CreateContextBuilder::new()
-        .add_source_file(PathBuf::from("test.txt"))
+        .source_files(vec![PathBuf::from("test.txt")])
         .build();
     assert!(result.is_err(), "Should fail with no output name");
 
     // Test invalid redundancy
     let result = par2rs::create::CreateContextBuilder::new()
         .output_name("test.par2")
-        .add_source_file(PathBuf::from("test.txt"))
+        .source_files(vec![PathBuf::from("test.txt")])
         .redundancy_percentage(0)
         .build();
     assert!(result.is_err(), "Should fail with 0% redundancy");
 
     let result = par2rs::create::CreateContextBuilder::new()
         .output_name("test.par2")
-        .add_source_file(PathBuf::from("test.txt"))
+        .source_files(vec![PathBuf::from("test.txt")])
         .redundancy_percentage(101)
         .build();
     assert!(result.is_err(), "Should fail with >100% redundancy");
@@ -369,10 +369,12 @@ fn test_block_size_calculation() {
     create_test_file(&large_file, 10 * 1024 * 1024, 0x33).unwrap(); // 10MB
 
     // Test auto block size calculation for small file
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
     let context = par2rs::create::CreateContextBuilder::new()
         .output_name("small.par2")
-        .add_source_file(small_file)
+        .source_files(vec![small_file])
         .redundancy_percentage(5)
+        .reporter(reporter)
         .build()
         .unwrap();
 
@@ -384,10 +386,12 @@ fn test_block_size_calculation() {
     );
 
     // Test auto block size calculation for medium file
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
     let context = par2rs::create::CreateContextBuilder::new()
         .output_name("medium.par2")
-        .add_source_file(medium_file)
+        .source_files(vec![medium_file])
         .redundancy_percentage(5)
+        .reporter(reporter)
         .build()
         .unwrap();
 
@@ -397,10 +401,12 @@ fn test_block_size_calculation() {
     );
 
     // Test auto block size calculation for large file
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
     let context = par2rs::create::CreateContextBuilder::new()
         .output_name("large.par2")
-        .add_source_file(large_file)
+        .source_files(vec![large_file])
         .redundancy_percentage(5)
+        .reporter(reporter)
         .build()
         .unwrap();
 
@@ -419,10 +425,12 @@ fn test_recovery_block_count_calculation() {
     create_test_file(&test_file, 10240, 0x55).unwrap(); // 10KB
 
     // Test with percentage
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
     let context = par2rs::create::CreateContextBuilder::new()
         .output_name("test.par2")
-        .add_source_file(test_file.clone())
+        .source_files(vec![test_file.clone()])
         .redundancy_percentage(10)
+        .reporter(reporter)
         .build()
         .unwrap();
 
@@ -437,10 +445,12 @@ fn test_recovery_block_count_calculation() {
     );
 
     // Test with explicit count
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
     let context = par2rs::create::CreateContextBuilder::new()
         .output_name("test2.par2")
-        .add_source_file(test_file)
+        .source_files(vec![test_file])
         .recovery_block_count(5)
+        .reporter(reporter)
         .build()
         .unwrap();
 
