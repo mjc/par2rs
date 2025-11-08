@@ -173,10 +173,86 @@ fn main() -> Result<()> {
     }
 }
 
-fn handle_create(_matches: &clap::ArgMatches) -> Result<()> {
-    eprintln!("PAR2 create functionality not yet implemented");
-    eprintln!("Use 'par2create' binary directly for now");
-    std::process::exit(1);
+fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
+    use std::path::PathBuf;
+
+    let par2_file = matches
+        .get_one::<String>("par2_file")
+        .expect("par2_file is required");
+
+    let source_files: Vec<PathBuf> = matches
+        .get_many::<String>("files")
+        .expect("files are required")
+        .map(PathBuf::from)
+        .collect();
+
+    let redundancy: u32 = matches
+        .get_one::<String>("redundancy")
+        .unwrap_or(&"5".to_string())
+        .parse()
+        .context("Invalid redundancy percentage")?;
+
+    // Parse optional arguments
+    let block_size: Option<u64> = matches
+        .get_one::<String>("block_size")
+        .map(|s| s.parse())
+        .transpose()
+        .context("Invalid block size")?;
+
+    let recovery_block_count: Option<u32> = matches
+        .get_one::<String>("block_count")
+        .map(|s| s.parse())
+        .transpose()
+        .context("Invalid recovery block count")?;
+
+    let recovery_file_count: Option<u32> = matches
+        .get_one::<String>("recovery_count")
+        .map(|s| s.parse())
+        .transpose()
+        .context("Invalid recovery file count")?;
+
+    println!(
+        "Creating PAR2 files for {} source files...",
+        source_files.len()
+    );
+    println!("Output: {}", par2_file);
+    println!("Redundancy: {}%", redundancy);
+
+    // Create PAR2 files using our implementation
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(false));
+
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(par2_file)
+        .source_files(source_files)
+        .redundancy_percentage(redundancy)
+        .reporter(reporter);
+
+    // Apply optional parameters
+    if let Some(size) = block_size {
+        context = context.block_size(size);
+    }
+    if let Some(count) = recovery_block_count {
+        context = context.recovery_block_count(count);
+    }
+    if let Some(count) = recovery_file_count {
+        context = context.recovery_file_count(count);
+    }
+
+    let mut create_context = context
+        .build()
+        .context("Failed to initialize PAR2 creation context")?;
+
+    create_context
+        .create()
+        .context("Failed to create PAR2 files")?;
+
+    println!("\nCreated PAR2 files:");
+    for file in create_context.output_files() {
+        println!("  {}", file);
+    }
+
+    println!("\nDone.");
+    Ok(())
 }
 
 fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {

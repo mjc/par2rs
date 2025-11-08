@@ -80,6 +80,6 @@ harness = false
 [profile.release]
 debug = true
 strip = false
-lto = true            # Link-time optimization for better performance
-codegen-units = 1     # Single codegen unit for better optimization
+#lto = true            # Link-time optimization for better performance
+# codegen-units = 1     # Single codegen unit for better optimization
 overflow-checks = true  # Keep overflow checks for safety with untrusted network data
