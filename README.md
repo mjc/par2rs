@@ -8,7 +8,9 @@ A Rust implementation of PAR2 (Parity Archive) for data recovery and verificatio
 
 ### Performance
 
-par2rs achieves **1.1-2.9x speedup** over par2cmdline through:
+#### Verification/Repair
+
+par2rs achieves **1.1-2.9x speedup** over par2cmdline for verification and repair through:
 - **Optimized I/O patterns** using full slice-size chunks instead of 64KB blocks (eliminates redundant reads)
 - **Parallel Reed-Solomon reconstruction** using Rayon for multi-threaded chunk processing
 - **SIMD-accelerated operations** (PSHUFB on x86_64, NEON on ARM64, portable_simd cross-platform)
@@ -17,7 +19,7 @@ par2rs achieves **1.1-2.9x speedup** over par2cmdline through:
 
 **⚠️ Performance Regression Note:** These results show significantly lower speedups than previous benchmarks (which showed 2-200× improvements). This is considered a **regression** and is under investigation. The current implementation maintains correctness but has lost most of its performance advantages on Linux x86_64.
 
-**Latest benchmark results:**
+**Latest verification/repair benchmark results:**
 
 **Linux x86_64 (AMD Ryzen 9 5950X, 64GB RAM):**
 - 1MB: **1.23x speedup** (0.032s → 0.026s)
@@ -32,6 +34,22 @@ par2rs achieves **1.1-2.9x speedup** over par2cmdline through:
 - 10GB: 2.46x speedup (104.8s → 42.6s)
 - 25GB: 2.36x speedup (349.6s → 147.8s)
 - ⚠️ These results need re-testing to confirm current performance
+
+#### PAR2 Creation
+
+**Linux x86_64 (AMD Ryzen 9 5950X, 64GB RAM) - November 2025:**
+- 10GB: **0.58x speedup** (28s → 48s) - **1.7x slower** with auto-threading
+
+**Current Status:**
+- **Memory-efficient**: Uses chunked streaming processing (~1.3GB for 10GB file vs 10GB previously)
+- **Parallel recovery generation**: Processes multiple recovery blocks simultaneously
+- **Known bottleneck**: Still reads source files twice (once for hashing, once for recovery generation)
+
+The remaining 1.7x performance gap vs par2cmdline is primarily due to reading the file twice:
+1. First pass: compute MD5 hashes and block checksums
+2. Second pass: generate Reed-Solomon recovery blocks
+
+Future optimization will merge these into a single pass to match par2cmdline's performance.
 
 The performance improvements come primarily from optimized I/O patterns and SIMD-accelerated Reed-Solomon operations. See [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md) for comprehensive end-to-end benchmarks and [docs/SIMD_OPTIMIZATION.md](docs/SIMD_OPTIMIZATION.md) for SIMD implementation details.
 

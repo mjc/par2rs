@@ -204,7 +204,14 @@ impl CreateContext {
     /// Reference: par2cmdline-turbo/src/par2creator.cpp OpenSourceFiles() and
     /// FinishFileHashComputation()
     fn hash_source_files(&mut self) -> CreateResult<()> {
-        hash_all_source_files(&mut self.source_files, self.block_size, &*self.reporter)?;
+        let use_parallel = self.config.thread_count != 1;
+        hash_all_source_files(
+            &mut self.source_files,
+            self.block_size,
+            &*self.reporter,
+            use_parallel,
+        )?;
+        println!(); // Newline after progress line
         Ok(())
     }
 
@@ -236,57 +243,200 @@ impl CreateContext {
         let encoder =
             RecoveryBlockEncoder::new(self.block_size as usize, self.source_block_count as usize);
 
-        // Read all source blocks into memory
-        // TODO: Implement chunked processing for very large files
-        let mut source_blocks: Vec<Vec<u8>> = Vec::with_capacity(self.source_block_count as usize);
-
-        for file in &self.source_files {
-            let mut f = File::open(&file.path).map_err(|e| CreateError::FileReadError {
-                file: file.path.to_string_lossy().to_string(),
-                source: e,
-            })?;
-
-            let block_count = file.calculate_block_count(self.block_size);
-
-            for block_idx in 0..block_count {
-                let offset = block_idx as u64 * self.block_size;
-                f.seek(SeekFrom::Start(offset))
-                    .map_err(|e| CreateError::FileReadError {
-                        file: file.path.to_string_lossy().to_string(),
-                        source: e,
-                    })?;
-
-                let is_last_block = block_idx == block_count - 1;
-                let block_len = if is_last_block && file.size % self.block_size != 0 {
-                    (file.size % self.block_size) as usize
-                } else {
-                    self.block_size as usize
-                };
-
-                let mut block = vec![0u8; self.block_size as usize];
-                f.read_exact(&mut block[..block_len])
-                    .map_err(|e| CreateError::FileReadError {
-                        file: file.path.to_string_lossy().to_string(),
-                        source: e,
-                    })?;
-
-                source_blocks.push(block);
-            }
-        }
-
-        // Generate recovery blocks
-        let exponents: Vec<u16> = (0..self.recovery_block_count as u16).collect();
-        let source_refs: Vec<&[u8]> = source_blocks.iter().map(|b| b.as_slice()).collect();
+        // Determine chunk size based on memory constraints
+        // Reference: par2cmdline-turbo CalculateProcessBlockSize()
+        let chunk_size = self.calculate_chunk_size();
 
         self.reporter.report_scanning_files(
             0,
             self.recovery_block_count as usize,
-            "Generating recovery blocks...",
+            &format!(
+                "Generating recovery blocks (chunk size: {} bytes)...",
+                chunk_size
+            ),
         );
 
-        let recovery_blocks = encoder
-            .encode_recovery_blocks_parallel(&exponents, &source_refs)
-            .map_err(|e| CreateError::Other(format!("Reed-Solomon encoding failed: {}", e)))?;
+        // Preallocate recovery blocks
+        let exponents: Vec<u16> = (0..self.recovery_block_count as u16).collect();
+        let mut recovery_blocks: Vec<(u16, Vec<u8>)> = exponents
+            .iter()
+            .map(|&exp| (exp, Vec::with_capacity(self.block_size as usize)))
+            .collect();
+
+        // Process data in chunks (like par2cmdline-turbo ProcessData loop)
+        let mut block_offset = 0u64;
+        while block_offset < self.block_size {
+            let chunk_len = ((self.block_size - block_offset) as usize).min(chunk_size);
+
+            // Allocate buffers for input chunks (reused for each source block)
+            let mut input_buffers: Vec<Vec<u8>> =
+                Vec::with_capacity(self.source_block_count as usize);
+
+            // Read chunks from all source blocks into input buffers
+            for file in &self.source_files {
+                let mut f = File::open(&file.path).map_err(|e| CreateError::FileReadError {
+                    file: file.path.to_string_lossy().to_string(),
+                    source: e,
+                })?;
+
+                let block_count = file.calculate_block_count(self.block_size);
+
+                for block_idx in 0..block_count {
+                    let block_start = block_idx as u64 * self.block_size;
+                    let read_offset = block_start + block_offset;
+
+                    f.seek(SeekFrom::Start(read_offset)).map_err(|e| {
+                        CreateError::FileReadError {
+                            file: file.path.to_string_lossy().to_string(),
+                            source: e,
+                        }
+                    })?;
+
+                    let is_last_block = block_idx == block_count - 1;
+                    let block_size_actual = if is_last_block && file.size % self.block_size != 0 {
+                        (file.size % self.block_size) as usize
+                    } else {
+                        self.block_size as usize
+                    };
+
+                    let bytes_available = if block_offset >= block_size_actual as u64 {
+                        0
+                    } else {
+                        block_size_actual - block_offset as usize
+                    };
+
+                    let bytes_to_read = bytes_available.min(chunk_len);
+
+                    let mut chunk = vec![0u8; chunk_len];
+                    if bytes_to_read > 0 {
+                        f.read_exact(&mut chunk[..bytes_to_read]).map_err(|e| {
+                            CreateError::FileReadError {
+                                file: file.path.to_string_lossy().to_string(),
+                                source: e,
+                            }
+                        })?;
+                    }
+
+                    input_buffers.push(chunk);
+                }
+            }
+
+            // Process this chunk through Reed-Solomon manually
+            // Reference: RecoveryBlockEncoder::encode_recovery_block internals
+            use crate::reed_solomon::codec::{
+                build_split_mul_table, process_slice_multiply_add, process_slice_multiply_direct,
+            };
+            use crate::reed_solomon::galois::Galois16;
+
+            // Process recovery blocks - parallelize if thread_count > 1
+            if self.config.thread_count == 1 {
+                // Sequential processing
+                for (rec_idx, &exp) in exponents.iter().enumerate() {
+                    // Process each input block chunk
+                    for (src_idx, input_chunk) in input_buffers.iter().enumerate() {
+                        let base = Galois16::new(encoder.base_values()[src_idx]);
+                        let coefficient = base.pow(exp);
+                        let mul_table = build_split_mul_table(coefficient);
+
+                        // Get or initialize the recovery block buffer for this chunk
+                        if block_offset == 0 {
+                            // First chunk: use direct write
+                            if src_idx == 0 {
+                                let mut temp = vec![0u8; chunk_len];
+                                process_slice_multiply_direct(input_chunk, &mut temp, &mul_table);
+                                recovery_blocks[rec_idx].1.extend_from_slice(&temp);
+                            } else {
+                                // Need to XOR with existing data
+                                let start = recovery_blocks[rec_idx].1.len() - chunk_len;
+                                process_slice_multiply_add(
+                                    input_chunk,
+                                    &mut recovery_blocks[rec_idx].1[start..],
+                                    &mul_table,
+                                );
+                            }
+                        } else {
+                            // Subsequent chunks: append new data
+                            if src_idx == 0 {
+                                let mut temp = vec![0u8; chunk_len];
+                                process_slice_multiply_direct(input_chunk, &mut temp, &mul_table);
+                                recovery_blocks[rec_idx].1.extend_from_slice(&temp);
+                            } else {
+                                let start = recovery_blocks[rec_idx].1.len() - chunk_len;
+                                process_slice_multiply_add(
+                                    input_chunk,
+                                    &mut recovery_blocks[rec_idx].1[start..],
+                                    &mul_table,
+                                );
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Parallel processing of recovery blocks
+                use rayon::prelude::*;
+
+                recovery_blocks
+                    .par_iter_mut()
+                    .enumerate()
+                    .for_each(|(_, (exp, recovery_data))| {
+                        for (src_idx, input_chunk) in input_buffers.iter().enumerate() {
+                            let base = Galois16::new(encoder.base_values()[src_idx]);
+                            let coefficient = base.pow(*exp);
+                            let mul_table = build_split_mul_table(coefficient);
+
+                            // Get or initialize the recovery block buffer for this chunk
+                            if block_offset == 0 {
+                                // First chunk: use direct write
+                                if src_idx == 0 {
+                                    let mut temp = vec![0u8; chunk_len];
+                                    process_slice_multiply_direct(
+                                        input_chunk,
+                                        &mut temp,
+                                        &mul_table,
+                                    );
+                                    recovery_data.extend_from_slice(&temp);
+                                } else {
+                                    // Need to XOR with existing data
+                                    let start = recovery_data.len() - chunk_len;
+                                    process_slice_multiply_add(
+                                        input_chunk,
+                                        &mut recovery_data[start..],
+                                        &mul_table,
+                                    );
+                                }
+                            } else {
+                                // Subsequent chunks: append new data
+                                if src_idx == 0 {
+                                    let mut temp = vec![0u8; chunk_len];
+                                    process_slice_multiply_direct(
+                                        input_chunk,
+                                        &mut temp,
+                                        &mul_table,
+                                    );
+                                    recovery_data.extend_from_slice(&temp);
+                                } else {
+                                    let start = recovery_data.len() - chunk_len;
+                                    process_slice_multiply_add(
+                                        input_chunk,
+                                        &mut recovery_data[start..],
+                                        &mul_table,
+                                    );
+                                }
+                            }
+                        }
+                    });
+            }
+
+            block_offset += chunk_len as u64;
+
+            // Report progress
+            let progress = ((block_offset as f64 / self.block_size as f64)
+                * self.recovery_block_count as f64) as u32;
+            self.reporter.report_recovery_generation(
+                progress.min(self.recovery_block_count),
+                self.recovery_block_count,
+            );
+        }
 
         self.reporter.report_scanning_files(
             self.recovery_block_count as usize,
@@ -294,10 +444,33 @@ impl CreateContext {
             "Recovery blocks generated",
         );
 
+        println!(); // Newline after progress line
+
         // Store recovery blocks for writing
         self.recovery_blocks = recovery_blocks;
 
         Ok(())
+    }
+
+    /// Calculate optimal chunk size for processing
+    /// Reference: par2cmdline-turbo CalculateProcessBlockSize()
+    fn calculate_chunk_size(&self) -> usize {
+        // Memory limit: 1GB (conservative, since we load ALL source block chunks at once)
+        const DEFAULT_MEMORY_LIMIT: usize = 1024 * 1024 * 1024; // 1GB
+
+        // We need memory for:
+        // 1. Input chunks: source_block_count × chunk_size
+        // 2. Output recovery buffers: recovery_block_count × chunk_size
+        // Total = (source_block_count + recovery_block_count) × chunk_size
+
+        let total_blocks = self.source_block_count as usize + self.recovery_block_count as usize;
+        let chunk_size = DEFAULT_MEMORY_LIMIT / total_blocks;
+
+        // Align to 4-byte boundary (like par2cmdline: ~3 &)
+        let aligned_chunk = chunk_size & !3;
+
+        // But don't exceed block size
+        aligned_chunk.min(self.block_size as usize)
     }
 
     /// Write PAR2 files (index + volume files)

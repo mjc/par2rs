@@ -18,7 +18,60 @@ Comprehensive end-to-end benchmarking results showing par2rs performance compare
 - **OS**: macOS (aarch64-darwin)
 - **SIMD**: ARM NEON + portable_simd
 
-## Linux x86_64 Performance Results
+## PAR2 Creation Performance
+
+### Test Configuration
+- **Redundancy**: 10% (par2cmdline standard for testing)
+- **System**: AMD Ryzen 9 5950X, 64GB RAM, Linux x86_64
+- **Date**: November 9, 2025
+
+### Creation Performance Results
+
+| File Size | par2cmdline (time) | par2rs (time) | Speedup | Status |
+|-----------|-------------------|---------------|---------|--------|
+| 10GB      | 28s               | 48s (auto-threading) | **0.58x** | ⚠️ **1.7x slower** |
+
+### Implementation Details
+
+**Current Optimizations:**
+- ✅ **Memory-efficient chunked streaming**: ~1.3GB peak memory (2% of 64GB) vs 10GB previously
+- ✅ **Parallel recovery block generation**: Processes multiple recovery blocks concurrently
+- ✅ **Streaming MD5 computation**: Computes file-level MD5 during block reading (eliminates one MD5 pass)
+- ✅ **Conditional parallelism**: Automatically uses sequential iteration with `-t1`, parallel with auto-detect
+
+**Known Bottleneck:**
+- ⚠️ **Dual file passes**: Still reads source files twice:
+  1. **First pass**: Compute MD5 hashes and per-block checksums
+  2. **Second pass**: Generate Reed-Solomon recovery blocks in chunks
+
+**Performance Analysis (10GB file):**
+```
+par2cmdline:
+  Time: 28s
+  Passes: 1 (simultaneous hashing + recovery generation)
+  
+par2rs (auto-threading):
+  Time: 48s (1.7x slower)
+  Passes: 2 (separate hashing and recovery generation)
+  Peak Memory: 1.3GB (2% of RAM)
+  
+par2rs (-t1 sequential):
+  Time: 3m43s (7.9x slower)
+  Demonstrates benefit of parallel recovery generation
+```
+
+### Next Optimization: Single-Pass Processing
+
+The remaining 1.7x performance gap will be closed by merging hashing and recovery generation into a single pass, matching par2cmdline's approach:
+- Read file once in chunks
+- Simultaneously:
+  - Compute per-block MD5+CRC32 checksums
+  - Accumulate streaming file-level MD5 hash
+  - Process chunks through Reed-Solomon for recovery generation
+
+This will eliminate ~14s of redundant I/O overhead (50% of par2rs time).
+
+## Verification/Repair Performance (Linux x86_64)
 
 ### Test Configuration
 - **Corruption**: 512 bytes at file midpoint

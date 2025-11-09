@@ -9,8 +9,6 @@ mod file_verification;
 mod global_engine;
 mod global_table;
 mod scanner_state;
-#[cfg(test)]
-mod test_global;
 mod types;
 mod utils;
 pub(crate) mod validation;

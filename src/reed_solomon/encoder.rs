@@ -62,6 +62,11 @@ impl RecoveryBlockEncoder {
         }
     }
 
+    /// Get reference to base values for manual chunked encoding
+    pub fn base_values(&self) -> &[u16] {
+        &self.base_values
+    }
+
     /// Encode a single recovery block from input blocks
     ///
     /// Computes: recovery = sum of (input[i] * base[i]^exponent) for all i

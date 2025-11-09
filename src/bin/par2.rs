@@ -66,6 +66,12 @@ fn main() -> Result<()> {
                         .value_name("N"),
                 )
                 .arg(
+                    Arg::new("force_scalar")
+                        .long("force-scalar")
+                        .help("Force scalar code paths (disable SIMD optimizations)")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
                     Arg::new("file_threads")
                         .short('T')
                         .help("Number of files hashed in parallel")
@@ -299,6 +305,12 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
         .transpose()
         .context("Invalid first recovery block number")?;
 
+    let threads: Option<u32> = matches
+        .get_one::<String>("threads")
+        .map(|s| s.parse())
+        .transpose()
+        .context("Invalid thread count")?;
+
     let uniform = matches.get_flag("uniform");
     let limit_size = matches.get_flag("limit_size");
     let recurse = matches.get_flag("recurse");
@@ -348,6 +360,13 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     if let Some(count) = recovery_file_count {
         context = context.recovery_file_count(count);
     }
+    if let Some(thread_count) = threads {
+        context = context.thread_count(thread_count);
+    }
+
+    // Initialize SIMD policy from CLI flag (disable SIMD if requested)
+    let force_scalar = matches.get_flag("force_scalar");
+    par2rs::reed_solomon::codec::init_simd_level(force_scalar);
 
     // TODO: Handle these par2cmdline-specific options:
     // - first_recovery_block (-f): Set starting recovery block number

@@ -47,7 +47,9 @@ impl CreateReporter for ConsoleCreateReporter {
     fn report_file_hashing(&self, filename: &str, bytes_processed: u64, total_bytes: u64) {
         if !self.quiet {
             let percent = (bytes_processed as f64 / total_bytes as f64 * 100.0) as u32;
-            println!("Hashing {}: {}%", filename, percent);
+            print!("\rHashing {}: {}%", filename, percent);
+            use std::io::Write;
+            std::io::stdout().flush().unwrap();
         }
     }
 
@@ -63,10 +65,12 @@ impl CreateReporter for ConsoleCreateReporter {
     fn report_recovery_generation(&self, blocks_generated: u32, total_blocks: u32) {
         if !self.quiet {
             let percent = (blocks_generated as f64 / total_blocks as f64 * 100.0) as u32;
-            println!(
-                "Generating recovery blocks: {}/{} ({}%)",
+            print!(
+                "\rGenerating recovery blocks: {}/{} ({}%)",
                 blocks_generated, total_blocks, percent
             );
+            use std::io::Write;
+            std::io::stdout().flush().unwrap();
         }
     }
 

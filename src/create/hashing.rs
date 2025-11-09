@@ -6,10 +6,9 @@
 //! Reference: par2cmdline-turbo/src/par2creator.cpp OpenSourceFiles() and
 //! FinishFileHashComputation()
 
-use crate::checksum::{calculate_file_md5, calculate_file_md5_16k, compute_block_checksums_padded};
-use rayon::prelude::*;
+use crate::checksum::{calculate_file_md5_16k, compute_block_checksums_padded, Md5Reader};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 
 use super::error::{CreateError, CreateResult};
 use super::progress::CreateReporter;
@@ -18,7 +17,7 @@ use super::source_file::{BlockChecksum, SourceFileInfo};
 /// Hash a single source file and compute block checksums
 ///
 /// This computes:
-/// - Full file MD5 hash
+/// - Full file MD5 hash (streamed during block checksum computation)
 /// - First 16KB MD5 hash (for FileId generation)
 /// - Per-block MD5 + CRC32 checksums
 ///
@@ -31,13 +30,8 @@ pub fn hash_source_file(
 ) -> CreateResult<()> {
     let path = &source_file.path;
 
-    // Compute file hashes
+    // Compute 16KB hash for FileId
     let hash_16k = calculate_file_md5_16k(path).map_err(|e| CreateError::FileReadError {
-        file: path.to_string_lossy().to_string(),
-        source: e,
-    })?;
-
-    let hash_full = calculate_file_md5(path).map_err(|e| CreateError::FileReadError {
         file: path.to_string_lossy().to_string(),
         source: e,
     })?;
@@ -50,32 +44,33 @@ pub fn hash_source_file(
         .as_bytes();
     let file_id = crate::checksum::compute_file_id(&hash_16k, source_file.size, filename);
 
-    // Compute block checksums
+    // Compute block checksums AND full file MD5 in single pass
     let block_count = source_file.calculate_block_count(block_size);
     let mut block_checksums = Vec::with_capacity(block_count as usize);
 
-    if source_file.size > 0 {
-        let mut file = File::open(path).map_err(|e| CreateError::FileReadError {
+    let hash_full = if source_file.size > 0 {
+        let file = File::open(path).map_err(|e| CreateError::FileReadError {
             file: path.to_string_lossy().to_string(),
             source: e,
         })?;
 
+        // Wrap file in Md5Reader to compute hash while reading blocks
+        let mut md5_reader = Md5Reader::new(file);
         let mut buffer = vec![0u8; block_size as usize];
 
         for block_idx in 0..block_count {
             // Read block data
-            file.seek(SeekFrom::Start(block_idx as u64 * block_size))
-                .map_err(|e| CreateError::FileReadError {
-                    file: path.to_string_lossy().to_string(),
-                    source: e,
-                })?;
+            let bytes_read =
+                md5_reader
+                    .read(&mut buffer)
+                    .map_err(|e| CreateError::FileReadError {
+                        file: path.to_string_lossy().to_string(),
+                        source: e,
+                    })?;
 
-            let bytes_read = file
-                .read(&mut buffer)
-                .map_err(|e| CreateError::FileReadError {
-                    file: path.to_string_lossy().to_string(),
-                    source: e,
-                })?;
+            if bytes_read == 0 {
+                break;
+            }
 
             // Compute checksums (with padding for last block if needed)
             let (md5, crc32) = if bytes_read < block_size as usize {
@@ -99,7 +94,14 @@ pub fn hash_source_file(
                 source_file.size,
             );
         }
-    }
+
+        // Finalize to get full file MD5 hash
+        let (_, hash) = md5_reader.finalize();
+        crate::domain::Md5Hash::new(hash)
+    } else {
+        // Empty file - compute MD5 of empty data
+        crate::checksum::compute_md5(&[])
+    };
 
     // Update source file info
     source_file.file_id = file_id;
@@ -114,33 +116,47 @@ pub fn hash_source_file(
 
 /// Hash all source files in parallel
 ///
-/// This is the main entry point for computing all file hashes and block checksums.
+/// Computes MD5 hashes, CRC32 checksums, and FileIDs for all source files.
 /// Uses Rayon for parallel processing of independent files.
 ///
-/// Reference: par2cmdline-turbo/src/par2creator.cpp FinishFileHashComputation()
+/// Reference: par2cmdline-turbo/src/par2creator.cpp ComputeFileIds()
 pub fn hash_all_source_files(
     source_files: &mut [SourceFileInfo],
     block_size: u64,
     reporter: &dyn CreateReporter,
+    use_parallel: bool,
 ) -> CreateResult<()> {
-    // Calculate global block offsets for each file
-    let mut global_offset = 0u32;
-    let mut file_offsets = Vec::with_capacity(source_files.len());
+    if source_files.is_empty() {
+        return Ok(());
+    }
 
+    // Calculate global block offsets for each file
+    let mut file_offsets = Vec::with_capacity(source_files.len());
+    let mut global_offset = 0u32;
     for source_file in source_files.iter() {
         file_offsets.push(global_offset);
         global_offset += source_file.calculate_block_count(block_size);
     }
 
-    // Hash files in parallel using Rayon
-    // Note: We use indexed parallel iteration to maintain file order
-    let results: Vec<CreateResult<()>> = source_files
-        .par_iter_mut()
-        .enumerate()
-        .map(|(idx, source_file)| {
-            hash_source_file(source_file, block_size, file_offsets[idx], reporter)
-        })
-        .collect();
+    // Hash files - use parallel or sequential based on thread count
+    let results: Vec<CreateResult<()>> = if use_parallel {
+        use rayon::prelude::*;
+        source_files
+            .par_iter_mut()
+            .enumerate()
+            .map(|(idx, source_file)| {
+                hash_source_file(source_file, block_size, file_offsets[idx], reporter)
+            })
+            .collect()
+    } else {
+        source_files
+            .iter_mut()
+            .enumerate()
+            .map(|(idx, source_file)| {
+                hash_source_file(source_file, block_size, file_offsets[idx], reporter)
+            })
+            .collect()
+    };
 
     // Check for errors
     for (idx, result) in results.into_iter().enumerate() {
@@ -255,7 +271,7 @@ mod tests {
         ];
 
         let reporter = SilentCreateReporter;
-        hash_all_source_files(&mut source_files, 1024, &reporter).unwrap();
+        hash_all_source_files(&mut source_files, 1024, &reporter, true).unwrap();
 
         // File 1: 2048 / 1024 = 2 blocks, offset 0
         assert_eq!(source_files[0].block_count, 2);
