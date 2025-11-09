@@ -43,6 +43,9 @@ pub struct CreateContext {
     /// Number of recovery blocks to generate
     recovery_block_count: u32,
 
+    /// Generated recovery blocks (exponent, data)
+    recovery_blocks: Vec<(u16, Vec<u8>)>,
+
     /// Output PAR2 files created
     output_files: Vec<String>,
 }
@@ -64,6 +67,7 @@ impl CreateContext {
             block_size: 0,
             source_block_count: 0,
             recovery_block_count: 0,
+            recovery_blocks: Vec::new(),
             output_files: Vec::new(),
         };
 
@@ -215,19 +219,83 @@ impl CreateContext {
     ///
     /// Reference: par2cmdline-turbo/src/par2creator.cpp ProcessData()
     fn generate_recovery_blocks(&mut self) -> CreateResult<()> {
-        // TODO: Implement Reed-Solomon encoding
-        // - Read source blocks in chunks
-        // - Apply RS encoding using existing reed_solomon module
-        // - Generate recovery blocks
-        // - Compute recovery block checksums
+        use crate::reed_solomon::RecoveryBlockEncoder;
+        use std::fs::File;
+        use std::io::{Read, Seek, SeekFrom};
 
-        // For now, skip recovery block generation - just write critical packets
-        // This allows testing of basic PAR2 file structure without recovery
+        if self.recovery_block_count == 0 {
+            self.reporter.report_scanning_files(
+                0,
+                0,
+                "No recovery blocks to generate (redundancy = 0%)",
+            );
+            return Ok(());
+        }
+
+        // Create encoder
+        let encoder =
+            RecoveryBlockEncoder::new(self.block_size as usize, self.source_block_count as usize);
+
+        // Read all source blocks into memory
+        // TODO: Implement chunked processing for very large files
+        let mut source_blocks: Vec<Vec<u8>> = Vec::with_capacity(self.source_block_count as usize);
+
+        for file in &self.source_files {
+            let mut f = File::open(&file.path).map_err(|e| CreateError::FileReadError {
+                file: file.path.to_string_lossy().to_string(),
+                source: e,
+            })?;
+
+            let block_count = file.calculate_block_count(self.block_size);
+
+            for block_idx in 0..block_count {
+                let offset = block_idx as u64 * self.block_size;
+                f.seek(SeekFrom::Start(offset))
+                    .map_err(|e| CreateError::FileReadError {
+                        file: file.path.to_string_lossy().to_string(),
+                        source: e,
+                    })?;
+
+                let is_last_block = block_idx == block_count - 1;
+                let block_len = if is_last_block && file.size % self.block_size != 0 {
+                    (file.size % self.block_size) as usize
+                } else {
+                    self.block_size as usize
+                };
+
+                let mut block = vec![0u8; self.block_size as usize];
+                f.read_exact(&mut block[..block_len])
+                    .map_err(|e| CreateError::FileReadError {
+                        file: file.path.to_string_lossy().to_string(),
+                        source: e,
+                    })?;
+
+                source_blocks.push(block);
+            }
+        }
+
+        // Generate recovery blocks
+        let exponents: Vec<u16> = (0..self.recovery_block_count as u16).collect();
+        let source_refs: Vec<&[u8]> = source_blocks.iter().map(|b| b.as_slice()).collect();
+
         self.reporter.report_scanning_files(
             0,
-            0,
-            "Skipping recovery block generation (not yet implemented)",
+            self.recovery_block_count as usize,
+            "Generating recovery blocks...",
         );
+
+        let recovery_blocks = encoder
+            .encode_recovery_blocks_parallel(&exponents, &source_refs)
+            .map_err(|e| CreateError::Other(format!("Reed-Solomon encoding failed: {}", e)))?;
+
+        self.reporter.report_scanning_files(
+            self.recovery_block_count as usize,
+            self.recovery_block_count as usize,
+            "Recovery blocks generated",
+        );
+
+        // Store recovery blocks for writing
+        self.recovery_blocks = recovery_blocks;
 
         Ok(())
     }
@@ -305,6 +373,45 @@ impl CreateContext {
         for packet in &file_verif_packets {
             write_file_verification_packet(&mut index_file, packet).map_err(|e| {
                 CreateError::Other(format!("Failed to write file verification packet: {}", e))
+            })?;
+        }
+
+        // Write recovery slice packets
+        // Reference: par2cmdline-turbo/src/par2creator.cpp WriteRecoveryPackets()
+        for (exponent, recovery_data) in &self.recovery_blocks {
+            use crate::packets::RecoverySlicePacket;
+            use binrw::BinWrite;
+
+            // Calculate packet length
+            let packet_length = 8 + 8 + 16 + 16 + 16 + 4 + recovery_data.len() as u64;
+
+            // Build packet
+            let packet = RecoverySlicePacket {
+                length: packet_length,
+                md5: crate::domain::Md5Hash::new([0u8; 16]), // Will be computed
+                set_id: recovery_set_id,
+                type_of_packet: *b"PAR 2.0\0RecvSlic",
+                exponent: *exponent as u32,
+                recovery_data: recovery_data.clone(),
+            };
+
+            // Compute MD5 of packet body
+            let mut md5_data = Vec::new();
+            md5_data.extend_from_slice(recovery_set_id.as_bytes());
+            md5_data.extend_from_slice(b"PAR 2.0\0RecvSlic");
+            md5_data.extend_from_slice(&(*exponent as u32).to_le_bytes());
+            md5_data.extend_from_slice(recovery_data);
+
+            let computed_md5 = crate::checksum::compute_md5_bytes(&md5_data);
+
+            let packet_with_md5 = RecoverySlicePacket {
+                md5: crate::domain::Md5Hash::new(computed_md5),
+                ..packet
+            };
+
+            // Write packet
+            packet_with_md5.write_le(&mut index_file).map_err(|e| {
+                CreateError::Other(format!("Failed to write recovery packet: {}", e))
             })?;
         }
 

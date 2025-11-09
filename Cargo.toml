@@ -66,6 +66,10 @@ name = "verify_performance"
 harness = false
 
 [[bench]]
+name = "create_benchmark"
+harness = false
+
+[[bench]]
 name = "md5_throughput"
 harness = false
 

@@ -104,6 +104,7 @@ pub fn hash_source_file(
     // Update source file info
     source_file.file_id = file_id;
     source_file.hash = hash_full;
+    source_file.hash_16k = hash_16k;
     source_file.block_checksums = block_checksums;
     source_file.block_count = block_count;
     source_file.global_block_offset = global_block_offset;

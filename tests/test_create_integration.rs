@@ -39,14 +39,24 @@ fn run_par2_create(
     source_files: &[&Path],
     redundancy: u32,
 ) -> std::io::Result<bool> {
+    // Change to the directory containing the output file
+    let output_dir = output_name.parent().unwrap();
+    let output_filename = output_name.file_name().unwrap();
+
     let mut cmd = Command::new("par2");
-    cmd.arg("create")
-        .arg("-r")
-        .arg(redundancy.to_string())
-        .arg(output_name);
+    cmd.current_dir(output_dir)
+        .arg("create")
+        .arg(format!("-r{}", redundancy))
+        .arg(output_filename);
 
     for file in source_files {
-        cmd.arg(file);
+        // Use just the filename if the file is in the same directory
+        let file_arg = if file.parent() == Some(output_dir) {
+            file.file_name().unwrap().to_str().unwrap()
+        } else {
+            file.to_str().unwrap()
+        };
+        cmd.arg(file_arg);
     }
 
     let output = cmd.output()?;

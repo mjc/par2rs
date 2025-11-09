@@ -211,7 +211,7 @@ impl ChunkedSliceProvider {
     fn find_lru_cache_entry(&self) -> Option<(usize, usize)> {
         self.cache_access_times
             .iter()
-            .min_by_key(|(_, access_time)| *access_time)
+            .min_by_key(|(_, &access_time)| access_time)
             .map(|(&key, _)| key)
     }
 

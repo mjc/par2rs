@@ -34,34 +34,103 @@ fn main() -> Result<()> {
                         .num_args(1..)
                         .index(2),
                 )
+                // Global options (match par2cmdline)
                 .arg(
-                    Arg::new("redundancy")
-                        .short('r')
-                        .long("redundancy")
-                        .help("Redundancy percentage (default: 5)")
-                        .value_name("PERCENT")
-                        .default_value("5"),
+                    Arg::new("basepath")
+                        .short('B')
+                        .help("Set the basepath to use as reference for the datafiles")
+                        .value_name("PATH"),
                 )
                 .arg(
-                    Arg::new("block_size")
-                        .short('s')
-                        .long("block-size")
-                        .help("Block size in bytes")
-                        .value_name("BYTES"),
+                    Arg::new("verbose")
+                        .short('v')
+                        .help("Be more verbose")
+                        .action(ArgAction::Count),
+                )
+                .arg(
+                    Arg::new("quiet")
+                        .short('q')
+                        .help("Be more quiet (-q -q gives silence)")
+                        .action(ArgAction::Count),
+                )
+                .arg(
+                    Arg::new("memory")
+                        .short('m')
+                        .help("Memory (in MB) to use")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("threads")
+                        .short('t')
+                        .help("Number of threads used for main processing")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("file_threads")
+                        .short('T')
+                        .help("Number of files hashed in parallel")
+                        .value_name("N"),
+                )
+                // Create-specific options (match par2cmdline exactly)
+                .arg(
+                    Arg::new("archive_name")
+                        .short('a')
+                        .help("Set the main PAR2 archive name")
+                        .value_name("FILE"),
                 )
                 .arg(
                     Arg::new("block_count")
                         .short('b')
-                        .long("block-count")
-                        .help("Number of recovery blocks")
-                        .value_name("COUNT"),
+                        .help("Set the Block-Count")
+                        .value_name("N"),
                 )
                 .arg(
-                    Arg::new("recovery_count")
+                    Arg::new("block_size")
+                        .short('s')
+                        .help("Set the Block-Size (don't use both -b and -s)")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("redundancy")
+                        .short('r')
+                        .help("Level of redundancy (%) or target size with g/m/k suffix")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("recovery_block_count")
+                        .short('c')
+                        .help("Recovery Block-Count (don't use both -r and -c)")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("first_recovery_block")
+                        .short('f')
+                        .help("First Recovery-Block-Number")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("uniform")
+                        .short('u')
+                        .help("Uniform recovery file sizes")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("limit_size")
+                        .short('l')
+                        .help("Limit size of recovery files (don't use both -u and -l)")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("recovery_file_count")
                         .short('n')
-                        .long("recovery-count")
-                        .help("Number of recovery files")
-                        .value_name("COUNT"),
+                        .help("Number of recovery files (max 31) (don't use both -n and -l)")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("recurse")
+                        .short('R')
+                        .help("Recurse into subdirectories")
+                        .action(ArgAction::SetTrue),
                 ),
         )
         .subcommand(
@@ -186,56 +255,118 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
         .map(PathBuf::from)
         .collect();
 
-    let redundancy: u32 = matches
-        .get_one::<String>("redundancy")
-        .unwrap_or(&"5".to_string())
-        .parse()
-        .context("Invalid redundancy percentage")?;
+    // Handle verbosity/quiet flags (par2cmdline style)
+    let _verbose_count = matches.get_count("verbose"); // TODO: Use for logging level
+    let quiet_count = matches.get_count("quiet");
+    let quiet_mode = quiet_count > 0;
 
-    // Parse optional arguments
+    // Parse redundancy - handle percentage or size suffix (g/m/k)
+    let redundancy_percentage =
+        if let Some(redundancy_str) = matches.get_one::<String>("redundancy") {
+            parse_redundancy_option(redundancy_str)?
+        } else {
+            Some(5) // Default 5% like par2cmdline
+        };
+
+    // Parse optional arguments (matching par2cmdline exactly)
     let block_size: Option<u64> = matches
         .get_one::<String>("block_size")
         .map(|s| s.parse())
         .transpose()
         .context("Invalid block size")?;
 
-    let recovery_block_count: Option<u32> = matches
+    let block_count: Option<u32> = matches
         .get_one::<String>("block_count")
+        .map(|s| s.parse())
+        .transpose()
+        .context("Invalid block count")?;
+
+    let recovery_block_count: Option<u32> = matches
+        .get_one::<String>("recovery_block_count")
         .map(|s| s.parse())
         .transpose()
         .context("Invalid recovery block count")?;
 
     let recovery_file_count: Option<u32> = matches
-        .get_one::<String>("recovery_count")
+        .get_one::<String>("recovery_file_count")
         .map(|s| s.parse())
         .transpose()
         .context("Invalid recovery file count")?;
 
-    println!(
-        "Creating PAR2 files for {} source files...",
-        source_files.len()
-    );
-    println!("Output: {}", par2_file);
-    println!("Redundancy: {}%", redundancy);
+    let _first_recovery_block: Option<u32> = matches
+        .get_one::<String>("first_recovery_block")
+        .map(|s| s.parse())
+        .transpose()
+        .context("Invalid first recovery block number")?;
+
+    let uniform = matches.get_flag("uniform");
+    let limit_size = matches.get_flag("limit_size");
+    let recurse = matches.get_flag("recurse");
+
+    // Use archive name if specified, otherwise use par2_file
+    let output_name = matches
+        .get_one::<String>("archive_name")
+        .unwrap_or(par2_file);
+
+    if !quiet_mode {
+        println!(
+            "Creating PAR2 files for {} source files...",
+            source_files.len()
+        );
+        println!("Output: {}", output_name);
+        if let Some(redundancy) = redundancy_percentage {
+            println!("Redundancy: {}%", redundancy);
+        }
+    }
 
     // Create PAR2 files using our implementation
-    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(false));
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(quiet_mode));
 
     let mut context = par2rs::create::CreateContextBuilder::new()
-        .output_name(par2_file)
+        .output_name(output_name)
         .source_files(source_files)
-        .redundancy_percentage(redundancy)
         .reporter(reporter);
+
+    // Apply redundancy if specified
+    if let Some(redundancy) = redundancy_percentage {
+        context = context.redundancy_percentage(redundancy);
+    }
 
     // Apply optional parameters
     if let Some(size) = block_size {
         context = context.block_size(size);
+    }
+    if let Some(count) = block_count {
+        // Par2cmdline uses -b for block count, which sets recovery blocks based on data size
+        // This is different from recovery_block_count (-c)
+        // For now, treat as recovery_block_count
+        context = context.recovery_block_count(count);
     }
     if let Some(count) = recovery_block_count {
         context = context.recovery_block_count(count);
     }
     if let Some(count) = recovery_file_count {
         context = context.recovery_file_count(count);
+    }
+
+    // TODO: Handle these par2cmdline-specific options:
+    // - first_recovery_block (-f): Set starting recovery block number
+    // - uniform (-u): Use uniform recovery file sizes
+    // - limit_size (-l): Limit size of recovery files
+    // - recurse (-R): Recurse into subdirectories
+    // - basepath (-B): Set basepath for datafiles
+    // - memory (-m): Memory limit
+    // - threads (-t): Number of threads
+    // - file_threads (-T): Number of file hashing threads
+
+    if recurse {
+        eprintln!("Warning: -R (recurse) option not yet implemented");
+    }
+    if uniform {
+        eprintln!("Warning: -u (uniform) option not yet implemented");
+    }
+    if limit_size {
+        eprintln!("Warning: -l (limit size) option not yet implemented");
     }
 
     let mut create_context = context
@@ -246,13 +377,52 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
         .create()
         .context("Failed to create PAR2 files")?;
 
-    println!("\nCreated PAR2 files:");
-    for file in create_context.output_files() {
-        println!("  {}", file);
+    if !quiet_mode {
+        println!("\nCreated PAR2 files:");
+        for file in create_context.output_files() {
+            println!("  {}", file);
+        }
+        println!("\nDone.");
     }
 
-    println!("\nDone.");
     Ok(())
+}
+
+/// Parse redundancy option that can be percentage or size with suffix
+/// Examples: "5" -> 5%, "10m" -> calculate % for 10MB target
+fn parse_redundancy_option(redundancy_str: &str) -> Result<Option<u32>> {
+    if redundancy_str.is_empty() {
+        return Ok(None);
+    }
+
+    // Check for size suffix (g/m/k)
+    let last_char = redundancy_str
+        .chars()
+        .last()
+        .unwrap()
+        .to_lowercase()
+        .next()
+        .unwrap();
+
+    if matches!(last_char, 'g' | 'm' | 'k') {
+        // TODO: Implement size-based redundancy calculation
+        // For now, just treat as percentage without suffix
+        eprintln!(
+            "Warning: Size-based redundancy ({}g/m/k) not yet implemented, treating as percentage",
+            last_char
+        );
+        let numeric_part = &redundancy_str[..redundancy_str.len() - 1];
+        let percentage: u32 = numeric_part
+            .parse()
+            .context("Invalid redundancy size value")?;
+        Ok(Some(percentage))
+    } else {
+        // Simple percentage
+        let percentage: u32 = redundancy_str
+            .parse()
+            .context("Invalid redundancy percentage")?;
+        Ok(Some(percentage))
+    }
 }
 
 fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {

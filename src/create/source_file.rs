@@ -20,6 +20,9 @@ pub struct SourceFileInfo {
     /// MD5 hash of entire file
     pub hash: Md5Hash,
 
+    /// MD5 hash of first 16KB of file (for quick matching)
+    pub hash_16k: Md5Hash,
+
     /// Index of this file in the recovery set
     pub index: usize,
 
@@ -54,6 +57,7 @@ impl SourceFileInfo {
             path,
             size,
             hash: Md5Hash::new([0u8; 16]), // Will be computed during hashing
+            hash_16k: Md5Hash::new([0u8; 16]), // Will be computed during hashing
             index,
             block_checksums: Vec::new(),
             global_block_offset: 0,
