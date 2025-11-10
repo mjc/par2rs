@@ -210,7 +210,11 @@ fn parse_single_file(
     };
 
     if show_progress {
-        print_packet_load_result(result.packets.len(), result.recovery_block_count, output_lock);
+        print_packet_load_result(
+            result.packets.len(),
+            result.recovery_block_count,
+            output_lock,
+        );
     }
 
     Ok(result)
@@ -224,7 +228,12 @@ pub fn parse_par2_file_with_progress(
     show_progress: bool,
 ) -> IoResult<(Vec<Packet>, usize)> {
     let output_lock = Mutex::new(());
-    let result = parse_single_file(par2_file, include_recovery_slices, show_progress, &output_lock)?;
+    let result = parse_single_file(
+        par2_file,
+        include_recovery_slices,
+        show_progress,
+        &output_lock,
+    )?;
 
     // Apply deduplication using the provided set
     let new_packets: Vec<Packet> = result
@@ -283,22 +292,27 @@ pub fn load_par2_packets(
     let all_packets: Vec<Vec<Packet>> = par2_files
         .par_iter()
         .filter_map(|par2_file| {
-            parse_single_file(par2_file, include_recovery_slices, show_progress, &output_lock)
-                .map(|result| {
-                    // Accumulate recovery block count atomically
-                    total_recovery_blocks.fetch_add(result.recovery_block_count, Ordering::Relaxed);
-                    result.packets
-                })
-                .map_err(|e| {
-                    let _guard = output_lock.lock().unwrap();
-                    eprintln!(
-                        "Warning: Failed to parse PAR2 file {}: {}",
-                        par2_file.display(),
-                        e
-                    );
+            parse_single_file(
+                par2_file,
+                include_recovery_slices,
+                show_progress,
+                &output_lock,
+            )
+            .map(|result| {
+                // Accumulate recovery block count atomically
+                total_recovery_blocks.fetch_add(result.recovery_block_count, Ordering::Relaxed);
+                result.packets
+            })
+            .map_err(|e| {
+                let _guard = output_lock.lock().unwrap();
+                eprintln!(
+                    "Warning: Failed to parse PAR2 file {}: {}",
+                    par2_file.display(),
                     e
-                })
-                .ok()
+                );
+                e
+            })
+            .ok()
         })
         .collect();
 

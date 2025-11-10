@@ -7,10 +7,6 @@ use super::{RepairReporter, Reporter, VerificationReporter};
 use crate::verify::{FileStatus, VerificationResults};
 use std::sync::Mutex;
 
-/// Constants for output formatting
-const MIN_BLOCKS_FOR_SUMMARY: usize = 20; // Show detailed block list if <= this many blocks
-const BLOCK_SUMMARY_HEAD_TAIL: usize = 10; // Show first/last N blocks for large damaged lists
-
 /// Console implementation for verification operations
 /// Uses internal mutex for thread-safe output from parallel operations
 pub struct ConsoleVerificationReporter {
@@ -187,28 +183,6 @@ impl RepairReporter for ConsoleRepairReporter {
     }
 }
 
-/// Print a list of block numbers, with summary for large lists
-fn print_block_list(damaged_blocks: &[u32]) {
-    if damaged_blocks.len() <= MIN_BLOCKS_FOR_SUMMARY {
-        // Show all blocks if there are few enough
-        for &block_num in damaged_blocks {
-            println!("  Block {}: damaged", block_num);
-        }
-    } else {
-        // Show first and last N blocks if there are many
-        for &block_num in &damaged_blocks[..BLOCK_SUMMARY_HEAD_TAIL] {
-            println!("  Block {}: damaged", block_num);
-        }
-        println!(
-            "  ... {} more damaged blocks ...",
-            damaged_blocks.len() - (2 * BLOCK_SUMMARY_HEAD_TAIL)
-        );
-        for &block_num in &damaged_blocks[damaged_blocks.len() - BLOCK_SUMMARY_HEAD_TAIL..] {
-            println!("  Block {}: damaged", block_num);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,7 +233,7 @@ mod tests {
     fn test_reporter_multiple_operations() {
         // Test various operations work correctly
         let reporter = ConsoleVerificationReporter::new();
-        
+
         reporter.report_progress("Testing progress", 0.25);
         reporter.report_file_status("test.txt", FileStatus::Present);
         reporter.report_file_status("missing.txt", FileStatus::Missing);
@@ -273,7 +247,7 @@ mod tests {
     #[test]
     fn test_repair_reporter_operations() {
         let reporter = ConsoleRepairReporter::new();
-        
+
         reporter.report_repair_start(5);
         reporter.report_repair_progress("file1.txt", 0.5);
         reporter.report_file_repaired("file1.txt");
@@ -287,7 +261,7 @@ mod tests {
         // We can't easily test the actual output, but we can verify
         // that the lock is acquired and released properly
         let reporter = Arc::new(ConsoleVerificationReporter::new());
-        
+
         // Spawn multiple threads that all try to report at once
         let handles: Vec<_> = (0..50)
             .map(|i| {
@@ -308,14 +282,14 @@ mod tests {
     #[test]
     fn test_damaged_blocks_reporting() {
         let reporter = ConsoleVerificationReporter::new();
-        
+
         // Test with few blocks
         reporter.report_damaged_blocks("test1.txt", &[1, 2, 3], 97, 100);
-        
+
         // Test with many blocks (should use summary format)
         let many_blocks: Vec<u32> = (0..50).collect();
         reporter.report_damaged_blocks("test2.txt", &many_blocks, 50, 100);
-        
+
         // Test with empty blocks
         reporter.report_damaged_blocks("test3.txt", &[], 100, 100);
     }
@@ -323,7 +297,7 @@ mod tests {
     #[test]
     fn test_scanning_progress() {
         let reporter = ConsoleVerificationReporter::new();
-        
+
         // Test various progress values
         for i in 0..=10 {
             reporter.report_scanning_progress(i as f64 / 10.0);
