@@ -1,0 +1,520 @@
+//! Error handling helpers to reduce boilerplate in PAR2 repair operations
+//!
+//! This module provides type-safe helper functions for common error patterns,
+//! eliminating repetitive `.map_err()` calls throughout the repair codebase.
+
+use super::error::{RepairError, Result as RepairResult};
+use super::slice_provider::error::{Result as SliceProviderResult, SliceProviderError};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::Path;
+
+/// Open a file for reading, wrapping I/O errors with file context
+///
+/// # Example
+/// ```no_run
+/// use par2rs::repair::error_helpers::open_for_reading;
+/// use std::path::Path;
+///
+/// let file = open_for_reading(Path::new("test.dat"))?;
+/// # Ok::<(), par2rs::repair::RepairError>(())
+/// ```
+pub fn open_for_reading(path: impl AsRef<Path>) -> RepairResult<File> {
+    let path = path.as_ref();
+    File::open(path).map_err(|source| RepairError::FileOpenError {
+        file: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Create a file for writing, wrapping I/O errors with file context
+///
+/// # Example
+/// ```no_run
+/// use par2rs::repair::error_helpers::create_file;
+/// use std::path::Path;
+///
+/// let file = create_file(Path::new("output.dat"))?;
+/// # Ok::<(), par2rs::repair::RepairError>(())
+/// ```
+pub fn create_file(path: impl AsRef<Path>) -> RepairResult<File> {
+    let path = path.as_ref();
+    File::create(path).map_err(|source| RepairError::FileCreateError {
+        file: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Rename a file, wrapping I/O errors with file context
+///
+/// # Example
+/// ```no_run
+/// use par2rs::repair::error_helpers::rename_file;
+/// use std::path::Path;
+///
+/// rename_file(Path::new("temp.dat"), Path::new("final.dat"))?;
+/// # Ok::<(), par2rs::repair::RepairError>(())
+/// ```
+pub fn rename_file(temp_path: impl AsRef<Path>, final_path: impl AsRef<Path>) -> RepairResult<()> {
+    let temp_path = temp_path.as_ref();
+    let final_path = final_path.as_ref();
+    std::fs::rename(temp_path, final_path).map_err(|source| RepairError::FileRenameError {
+        temp_path: temp_path.to_path_buf(),
+        final_path: final_path.to_path_buf(),
+        source,
+    })
+}
+
+/// Delete a file, wrapping I/O errors with file context
+///
+/// # Example
+/// ```no_run
+/// use par2rs::repair::error_helpers::delete_file;
+/// use std::path::Path;
+///
+/// delete_file(Path::new("temp.dat"))?;
+/// # Ok::<(), par2rs::repair::RepairError>(())
+/// ```
+pub fn delete_file(path: impl AsRef<Path>) -> RepairResult<()> {
+    let path = path.as_ref();
+    std::fs::remove_file(path).map_err(|source| RepairError::FileDeleteError {
+        file: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Flush a writer, wrapping I/O errors with file context
+///
+/// # Example
+/// ```no_run
+/// use par2rs::repair::error_helpers::flush_writer;
+/// use std::fs::File;
+/// use std::io::BufWriter;
+/// use std::path::Path;
+///
+/// let file = File::create("output.dat")?;
+/// let mut writer = BufWriter::new(file);
+/// // ... write data ...
+/// flush_writer(&mut writer, Path::new("output.dat"))?;
+/// # Ok::<(), par2rs::repair::RepairError>(())
+/// ```
+pub fn flush_writer<W: Write>(writer: &mut W, path: impl AsRef<Path>) -> RepairResult<()> {
+    let path = path.as_ref();
+    writer
+        .flush()
+        .map_err(|source| RepairError::FileFlushError {
+            file: path.to_path_buf(),
+            source,
+        })
+}
+
+/// Seek to a position in a file, wrapping I/O errors with file context
+///
+/// # Example
+/// ```no_run
+/// use par2rs::repair::error_helpers::seek_file;
+/// use std::fs::File;
+/// use std::io::SeekFrom;
+/// use std::path::Path;
+///
+/// let mut file = File::open("test.dat")?;
+/// seek_file(&mut file, SeekFrom::Start(1024), Path::new("test.dat"))?;
+/// # Ok::<(), par2rs::repair::RepairError>(())
+/// ```
+pub fn seek_file<F: Seek>(
+    file: &mut F,
+    pos: SeekFrom,
+    path: impl AsRef<Path>,
+) -> RepairResult<u64> {
+    let path = path.as_ref();
+    let offset = match pos {
+        SeekFrom::Start(n) => n,
+        SeekFrom::Current(n) => n as u64,
+        SeekFrom::End(n) => n as u64,
+    };
+    file.seek(pos).map_err(|source| RepairError::FileSeekError {
+        file: path.to_path_buf(),
+        offset,
+        source,
+    })
+}
+
+/// Read exact number of bytes from a file, wrapping I/O errors with slice context
+///
+/// # Example
+/// ```no_run
+/// use par2rs::repair::error_helpers::read_slice_exact;
+/// use std::fs::File;
+/// use std::path::Path;
+///
+/// let mut file = File::open("test.dat")?;
+/// let mut buffer = vec![0u8; 1024];
+/// read_slice_exact(&mut file, &mut buffer, Path::new("test.dat"), 0)?;
+/// # Ok::<(), par2rs::repair::RepairError>(())
+/// ```
+pub fn read_slice_exact<R: Read>(
+    reader: &mut R,
+    buf: &mut [u8],
+    path: impl AsRef<Path>,
+    slice_index: usize,
+) -> RepairResult<()> {
+    let path = path.as_ref();
+    reader
+        .read_exact(buf)
+        .map_err(|source| RepairError::SliceReadError {
+            file: path.to_path_buf(),
+            slice_index,
+            source,
+        })
+}
+
+/// Write entire buffer to a file, wrapping I/O errors with slice context
+///
+/// # Example
+/// ```no_run
+/// use par2rs::repair::error_helpers::write_slice_all;
+/// use std::fs::File;
+/// use std::path::Path;
+///
+/// let mut file = File::create("output.dat")?;
+/// let buffer = vec![0u8; 1024];
+/// write_slice_all(&mut file, &buffer, Path::new("output.dat"), 0)?;
+/// # Ok::<(), par2rs::repair::RepairError>(())
+/// ```
+pub fn write_slice_all<W: Write>(
+    writer: &mut W,
+    buf: &[u8],
+    path: impl AsRef<Path>,
+    slice_index: usize,
+) -> RepairResult<()> {
+    let path = path.as_ref();
+    writer
+        .write_all(buf)
+        .map_err(|source| RepairError::SliceWriteError {
+            file: path.to_path_buf(),
+            slice_index,
+            source,
+        })
+}
+
+// SliceProvider-specific helpers
+
+/// Open a file for reading in slice provider context
+///
+/// # Example
+/// ```ignore
+/// use par2rs::repair::error_helpers::slice_provider_open;
+/// let file = slice_provider_open("test.dat")?;
+/// ```
+pub fn slice_provider_open(path: impl AsRef<Path>) -> SliceProviderResult<File> {
+    let path = path.as_ref();
+    File::open(path).map_err(|source| SliceProviderError::FileOpenError {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Seek in slice provider file context
+///
+/// # Example
+/// ```ignore
+/// use par2rs::repair::error_helpers::slice_provider_seek;
+/// let mut file = File::open("test.dat")?;
+/// slice_provider_seek(&mut file, SeekFrom::Start(1024), "test.dat")?;
+/// ```
+pub fn slice_provider_seek<F: Seek>(
+    file: &mut F,
+    pos: SeekFrom,
+    path: impl AsRef<Path>,
+) -> SliceProviderResult<u64> {
+    let path = path.as_ref();
+    let offset = match pos {
+        SeekFrom::Start(n) => n,
+        SeekFrom::Current(n) => n as u64,
+        SeekFrom::End(n) => n as u64,
+    };
+    file.seek(pos)
+        .map_err(|source| SliceProviderError::FileSeekError {
+            path: path.to_path_buf(),
+            offset,
+            source,
+        })
+}
+
+/// Read exact bytes in slice provider context
+///
+/// # Example
+/// ```ignore
+/// use par2rs::repair::error_helpers::slice_provider_read_exact;
+/// let mut file = File::open("test.dat")?;
+/// let mut buffer = vec![0u8; 1024];
+/// slice_provider_read_exact(&mut file, &mut buffer, "test.dat")?;
+/// ```
+pub fn slice_provider_read_exact<R: Read>(
+    reader: &mut R,
+    buf: &mut [u8],
+    path: impl AsRef<Path>,
+) -> SliceProviderResult<()> {
+    let path = path.as_ref();
+    reader
+        .read_exact(buf)
+        .map_err(|source| SliceProviderError::FileReadError {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_open_for_reading_success() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.dat");
+        std::fs::write(&file_path, b"test data").unwrap();
+
+        let result = open_for_reading(&file_path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_open_for_reading_not_found() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("nonexistent.dat");
+
+        let result = open_for_reading(&file_path);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RepairError::FileOpenError { file, .. } => {
+                assert_eq!(file, file_path);
+            }
+            _ => panic!("Expected FileOpenError"),
+        }
+    }
+
+    #[test]
+    fn test_create_file_success() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("new.dat");
+
+        let result = create_file(&file_path);
+        assert!(result.is_ok());
+        assert!(file_path.exists());
+    }
+
+    #[test]
+    fn test_create_file_invalid_path() {
+        let result = create_file("/nonexistent/directory/file.dat");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RepairError::FileCreateError { file, .. } => {
+                assert_eq!(file, PathBuf::from("/nonexistent/directory/file.dat"));
+            }
+            _ => panic!("Expected FileCreateError"),
+        }
+    }
+
+    #[test]
+    fn test_rename_file_success() {
+        let temp_dir = tempdir().unwrap();
+        let temp_path = temp_dir.path().join("temp.dat");
+        let final_path = temp_dir.path().join("final.dat");
+        std::fs::write(&temp_path, b"test").unwrap();
+
+        let result = rename_file(&temp_path, &final_path);
+        assert!(result.is_ok());
+        assert!(!temp_path.exists());
+        assert!(final_path.exists());
+    }
+
+    #[test]
+    fn test_rename_file_source_not_found() {
+        let temp_dir = tempdir().unwrap();
+        let temp_path = temp_dir.path().join("nonexistent.dat");
+        let final_path = temp_dir.path().join("final.dat");
+
+        let result = rename_file(&temp_path, &final_path);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RepairError::FileRenameError {
+                temp_path: tp,
+                final_path: fp,
+                ..
+            } => {
+                assert_eq!(tp, temp_path);
+                assert_eq!(fp, final_path);
+            }
+            _ => panic!("Expected FileRenameError"),
+        }
+    }
+
+    #[test]
+    fn test_delete_file_success() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("delete_me.dat");
+        std::fs::write(&file_path, b"test").unwrap();
+
+        let result = delete_file(&file_path);
+        assert!(result.is_ok());
+        assert!(!file_path.exists());
+    }
+
+    #[test]
+    fn test_delete_file_not_found() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("nonexistent.dat");
+
+        let result = delete_file(&file_path);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RepairError::FileDeleteError { file, .. } => {
+                assert_eq!(file, file_path);
+            }
+            _ => panic!("Expected FileDeleteError"),
+        }
+    }
+
+    #[test]
+    fn test_flush_writer_success() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("flush.dat");
+        let file = File::create(&file_path).unwrap();
+        let mut writer = std::io::BufWriter::new(file);
+        writer.write_all(b"test data").unwrap();
+
+        let result = flush_writer(&mut writer, &file_path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_seek_file_success() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("seek.dat");
+        std::fs::write(&file_path, b"0123456789").unwrap();
+        let mut file = File::open(&file_path).unwrap();
+
+        let result = seek_file(&mut file, SeekFrom::Start(5), &file_path);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 5);
+    }
+
+    #[test]
+    fn test_read_slice_exact_success() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("read.dat");
+        std::fs::write(&file_path, b"test data").unwrap();
+        let mut file = File::open(&file_path).unwrap();
+        let mut buffer = vec![0u8; 4];
+
+        let result = read_slice_exact(&mut file, &mut buffer, &file_path, 0);
+        assert!(result.is_ok());
+        assert_eq!(&buffer, b"test");
+    }
+
+    #[test]
+    fn test_read_slice_exact_eof() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("read.dat");
+        std::fs::write(&file_path, b"short").unwrap();
+        let mut file = File::open(&file_path).unwrap();
+        let mut buffer = vec![0u8; 100];
+
+        let result = read_slice_exact(&mut file, &mut buffer, &file_path, 0);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RepairError::SliceReadError {
+                file, slice_index, ..
+            } => {
+                assert_eq!(file, file_path);
+                assert_eq!(slice_index, 0);
+            }
+            _ => panic!("Expected SliceReadError"),
+        }
+    }
+
+    #[test]
+    fn test_write_slice_all_success() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("write.dat");
+        let mut file = File::create(&file_path).unwrap();
+        let buffer = b"test data";
+
+        let result = write_slice_all(&mut file, buffer, &file_path, 0);
+        assert!(result.is_ok());
+
+        let content = std::fs::read(&file_path).unwrap();
+        assert_eq!(content, b"test data");
+    }
+
+    #[test]
+    fn test_slice_provider_open_success() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.dat");
+        std::fs::write(&file_path, b"test data").unwrap();
+
+        let result = slice_provider_open(&file_path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_slice_provider_open_not_found() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("nonexistent.dat");
+
+        let result = slice_provider_open(&file_path);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SliceProviderError::FileOpenError { path, .. } => {
+                assert_eq!(path, file_path);
+            }
+            _ => panic!("Expected FileOpenError"),
+        }
+    }
+
+    #[test]
+    fn test_slice_provider_seek_success() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("seek.dat");
+        std::fs::write(&file_path, b"0123456789").unwrap();
+        let mut file = File::open(&file_path).unwrap();
+
+        let result = slice_provider_seek(&mut file, SeekFrom::Start(5), &file_path);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 5);
+    }
+
+    #[test]
+    fn test_slice_provider_read_exact_success() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("read.dat");
+        std::fs::write(&file_path, b"test data").unwrap();
+        let mut file = File::open(&file_path).unwrap();
+        let mut buffer = vec![0u8; 4];
+
+        let result = slice_provider_read_exact(&mut file, &mut buffer, &file_path);
+        assert!(result.is_ok());
+        assert_eq!(&buffer, b"test");
+    }
+
+    #[test]
+    fn test_slice_provider_read_exact_eof() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("read.dat");
+        std::fs::write(&file_path, b"short").unwrap();
+        let mut file = File::open(&file_path).unwrap();
+        let mut buffer = vec![0u8; 100];
+
+        let result = slice_provider_read_exact(&mut file, &mut buffer, &file_path);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SliceProviderError::FileReadError { path, .. } => {
+                assert_eq!(path, file_path);
+            }
+            _ => panic!("Expected FileReadError"),
+        }
+    }
+}

@@ -14,6 +14,7 @@
 mod builder;
 mod context;
 mod error;
+pub mod error_helpers;
 mod md5_writer;
 mod progress;
 mod recovery_loader;
@@ -43,11 +44,12 @@ pub use validate::validate_blocks_md5_crc32;
 
 use crate::domain::{FileId, LocalSliceIndex, Md5Hash};
 use crate::RecoverySlicePacket;
+use error_helpers::*;
 use log::debug;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
-use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::fs;
+use std::io::SeekFrom;
 use std::path::Path;
 
 impl RepairContext {
@@ -746,21 +748,13 @@ impl RepairContext {
         // Open source file for reading valid slices
         let source_path = self.base_path.join(&file_info.file_name);
         let mut source_file = if source_path.exists() {
-            Some(
-                File::open(&source_path).map_err(|source| RepairError::FileOpenError {
-                    file: source_path.clone(),
-                    source,
-                })?,
-            )
+            Some(open_for_reading(&source_path)?)
         } else {
             None
         };
 
         // Create temp output file
-        let file = File::create(&temp_path).map_err(|source| RepairError::FileCreateError {
-            file: temp_path.clone(),
-            source,
-        })?;
+        let file = create_file(&temp_path)?;
         let buffered = std::io::BufWriter::with_capacity(1024 * 1024, file);
         let mut writer = md5_writer::Md5Writer::new(buffered);
 
@@ -790,13 +784,12 @@ impl RepairContext {
                     actual_size,
                     &reconstructed_data[..8.min(reconstructed_data.len())]
                 );
-                writer
-                    .write_all(&reconstructed_data[..actual_size])
-                    .map_err(|e| RepairError::SliceWriteError {
-                        file: temp_path.clone(),
-                        slice_index,
-                        source: e,
-                    })?;
+                write_slice_all(
+                    &mut writer,
+                    &reconstructed_data[..actual_size],
+                    &temp_path,
+                    slice_index,
+                )?;
                 bytes_written += actual_size as u64;
                 // Mark that we've broken the sequential read pattern
                 next_expected_offset = None;
@@ -825,28 +818,21 @@ impl RepairContext {
 
                     // Only seek if we're not already at the right position (optimize sequential reads)
                     if next_expected_offset != Some(offset) {
-                        file.seek(SeekFrom::Start(offset)).map_err(|e| {
-                            RepairError::FileSeekError {
-                                file: file_path.to_path_buf(),
-                                offset,
-                                source: e,
-                            }
-                        })?;
+                        seek_file(file, SeekFrom::Start(offset), file_path)?;
                     }
 
-                    file.read_exact(&mut slice_buffer[..actual_size])
-                        .map_err(|e| RepairError::SliceReadError {
-                            file: file_path.to_path_buf(),
-                            slice_index,
-                            source: e,
-                        })?;
-                    writer
-                        .write_all(&slice_buffer[..actual_size])
-                        .map_err(|e| RepairError::SliceWriteError {
-                            file: temp_path.clone(),
-                            slice_index,
-                            source: e,
-                        })?;
+                    read_slice_exact(
+                        file,
+                        &mut slice_buffer[..actual_size],
+                        file_path,
+                        slice_index,
+                    )?;
+                    write_slice_all(
+                        &mut writer,
+                        &slice_buffer[..actual_size],
+                        &temp_path,
+                        slice_index,
+                    )?;
                     bytes_written += actual_size as u64;
                     next_expected_offset = Some(offset + actual_size as u64);
                 } else {
@@ -857,19 +843,11 @@ impl RepairContext {
             }
         }
 
-        writer.flush().map_err(|e| RepairError::FileFlushError {
-            file: temp_path.clone(),
-            source: e,
-        })?;
+        flush_writer(&mut writer, &temp_path)?;
 
         // Finalize MD5 computation and get the hash
         let (mut buffered_writer, computed_md5) = writer.finalize();
-        buffered_writer
-            .flush()
-            .map_err(|e| RepairError::FileFlushError {
-                file: temp_path.clone(),
-                source: e,
-            })?;
+        flush_writer(&mut buffered_writer, &temp_path)?;
         drop(buffered_writer); // Close the file before rename
         drop(source_file); // Close source file before rename
 
@@ -881,11 +859,7 @@ impl RepairContext {
         }
 
         // Rename temp file to final destination
-        fs::rename(&temp_path, file_path).map_err(|e| RepairError::FileRenameError {
-            temp_path: temp_path.clone(),
-            final_path: file_path.to_path_buf(),
-            source: e,
-        })?;
+        rename_file(&temp_path, file_path)?;
 
         // Mark temp file as successfully renamed (no cleanup needed)
         temp_guard.keep = true;

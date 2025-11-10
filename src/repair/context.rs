@@ -1,6 +1,7 @@
 //! Repair context management
 
 use super::error::{RepairError, Result};
+use super::error_helpers::delete_file;
 use super::progress::{ConsoleReporter, ProgressReporter};
 use super::types::{FileInfo, RecoverySetInfo};
 use crate::domain::{FileId, GlobalSliceIndex};
@@ -181,10 +182,7 @@ impl RepairContext {
             for ext in &["1", "bak"] {
                 let backup_path = file_path.with_extension(ext);
                 if backup_path.exists() {
-                    fs::remove_file(&backup_path).map_err(|e| RepairError::FileDeleteError {
-                        file: backup_path.clone(),
-                        source: e,
-                    })?;
+                    delete_file(&backup_path)?;
 
                     println!(
                         "Remove \"{}\".",
