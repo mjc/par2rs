@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
-# Benchmark par2rs creation performance against par2cmdline
-# Tests PAR2 file creation with various redundancy levels and file sizes
+# Benchmark par2rs creation performance against par2cmdline with averaging
+# Runs multiple iterations and computes averages
+#
+# Usage: ./benchmark_create.sh [file_size_mb] [block_size_kb] [redundancy_pct] [iterations]
+#
+# Parameters:
+#   file_size_mb   - Size of test file in MB (default: 1024, i.e., 1GB)
+#   block_size_kb  - Block size in KB (default: 1024, i.e., 1MB)
+#   redundancy_pct - Redundancy percentage (default: 5)
+#   iterations     - Number of iterations to run (default: 3)
+#
+# Examples:
+#   ./benchmark_create.sh                    # 1GB file, 1MB blocks, 5% redundancy, 3 iterations
+#   ./benchmark_create.sh 100 2048 10 5      # 100MB file, 2MB blocks, 10% redundancy, 5 iterations
+#   ./benchmark_create.sh 2048 512 15 10     # 2GB file, 512KB blocks, 15% redundancy, 10 iterations
 
 set -e
 
@@ -8,6 +21,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PAR2RS="$PROJECT_ROOT/target/release/par2"
 PAR2CMDLINE="par2"
+
+# Parse parameters with defaults
+FILE_SIZE_MB="${1:-1024}"
+BLOCK_SIZE_KB="${2:-1024}"
+REDUNDANCY_PCT="${3:-5}"
+ITERATIONS="${4:-3}"
 
 # Temporary directories to clean up
 TEMP=""
@@ -31,57 +50,76 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${BLUE}================================${NC}"
-echo -e "${BLUE}PAR2 Creation Benchmark${NC}"
-echo -e "${BLUE}Testing creation with various redundancy levels${NC}"
+echo -e "${BLUE}PAR2 Creation Benchmark (Averaged)${NC}"
+echo -e "${BLUE}File Size: ${FILE_SIZE_MB}MB${NC}"
+echo -e "${BLUE}Block Size: ${BLOCK_SIZE_KB}KB${NC}"
+echo -e "${BLUE}Redundancy: ${REDUNDANCY_PCT}%${NC}"
+echo -e "${BLUE}Iterations: $ITERATIONS${NC}"
 echo -e "${BLUE}================================${NC}"
 echo ""
 
 # Build par2rs first
 echo -e "${YELLOW}Building par2rs...${NC}"
-cd "$PROJECT_ROOT"
 cargo build --release 2>&1 | grep -E "(Compiling par2rs|Finished|error)" || true
 echo ""
 
 # Create test directory
 TEMP=$(mktemp -d)
-echo -e "${YELLOW}Creating test files in $TEMP...${NC}"
+echo -e "${YELLOW}Creating test file in $TEMP...${NC}"
 
-# Test 1: Single 10MB file
-echo -e "${YELLOW}Test 1: 10MB file with 5% redundancy${NC}"
-dd if=/dev/urandom of="$TEMP/test_10mb.dat" bs=1M count=10 2>&1 | tail -2
+# Generate test file once (reused across all iterations)
+dd if=/dev/urandom of="$TEMP/testfile.dat" bs=1M count=$FILE_SIZE_MB 2>&1 | tail -2
 echo ""
 
-echo -e "${GREEN}=== par2cmdline creation ===${NC}"
-(time $PAR2CMDLINE c -r5 "$TEMP/test_10mb_par2cmd.par2" "$TEMP/test_10mb.dat" 2>&1) 2>&1 | tail -10
-echo ""
+# Calculate block size parameter (par2cmdline uses -s for block size in bytes)
+BLOCK_SIZE_BYTES=$((BLOCK_SIZE_KB * 1024))
 
-echo -e "${GREEN}=== par2rs creation ===${NC}"
-(time $PAR2RS c -r5 "$TEMP/test_10mb_par2rs.par2" "$TEMP/test_10mb.dat" 2>&1) 2>&1 | tail -10
-echo ""
+# Main benchmark
+echo -e "${YELLOW}Benchmarking PAR2 creation...${NC}"
+declare -a PAR2CMD_TIMES
+declare -a PAR2RS_TIMES
 
-# Test 2: Single 10MB file with 10% redundancy
-echo -e "${YELLOW}Test 2: 10MB file with 10% redundancy${NC}"
-echo -e "${GREEN}=== par2cmdline creation ===${NC}"
-(time $PAR2CMDLINE c -r10 "$TEMP/test_10mb_r10_par2cmd.par2" "$TEMP/test_10mb.dat" 2>&1) 2>&1 | tail -10
-echo ""
-
-echo -e "${GREEN}=== par2rs creation ===${NC}"
-(time $PAR2RS c -r10 "$TEMP/test_10mb_r10_par2rs.par2" "$TEMP/test_10mb.dat" 2>&1) 2>&1 | tail -10
-echo ""
-
-# Test 3: Multiple files
-echo -e "${YELLOW}Test 3: Multiple files (5 x 2MB) with 5% redundancy${NC}"
-for i in {1..5}; do
-    dd if=/dev/urandom of="$TEMP/multi_$i.dat" bs=1M count=2 2>&1 | tail -1
+for iter in $(seq 1 $ITERATIONS); do
+    echo -e "${GREEN}  Iteration $iter/$ITERATIONS${NC}"
+    
+    # par2cmdline
+    rm -f "$TEMP/testfile_par2cmd"*.par2
+    START=$(date +%s.%N)
+    $PAR2CMDLINE c -s$BLOCK_SIZE_BYTES -r$REDUNDANCY_PCT -q -q "$TEMP/testfile_par2cmd.par2" "$TEMP/testfile.dat" 2>&1 > /dev/null
+    END=$(date +%s.%N)
+    TIME=$(echo "$END - $START" | bc)
+    PAR2CMD_TIMES+=($TIME)
+    echo "    par2cmdline: ${TIME}s"
+    
+    # par2rs
+    rm -f "$TEMP/testfile_par2rs"*.par2
+    START=$(date +%s.%N)
+    $PAR2RS c -s$BLOCK_SIZE_BYTES -r$REDUNDANCY_PCT -q -q "$TEMP/testfile_par2rs.par2" "$TEMP/testfile.dat" 2>&1 > /dev/null
+    END=$(date +%s.%N)
+    TIME=$(echo "$END - $START" | bc)
+    PAR2RS_TIMES+=($TIME)
+    echo "    par2rs:      ${TIME}s"
 done
-echo ""
 
-echo -e "${GREEN}=== par2cmdline creation (multifile) ===${NC}"
-(time $PAR2CMDLINE c -r5 "$TEMP/multi_par2cmd.par2" "$TEMP/multi_"*.dat 2>&1) 2>&1 | tail -10
-echo ""
+# Calculate averages
+PAR2CMD_SUM=0
+PAR2RS_SUM=0
+for time in "${PAR2CMD_TIMES[@]}"; do
+    PAR2CMD_SUM=$(echo "$PAR2CMD_SUM + $time" | bc)
+done
+for time in "${PAR2RS_TIMES[@]}"; do
+    PAR2RS_SUM=$(echo "$PAR2RS_SUM + $time" | bc)
+done
 
-echo -e "${GREEN}=== par2rs creation (multifile) ===${NC}"
-(time $PAR2RS c -r5 "$TEMP/multi_par2rs.par2" "$TEMP/multi_"*.dat 2>&1) 2>&1 | tail -10
+PAR2CMD_AVG=$(echo "scale=3; $PAR2CMD_SUM / $ITERATIONS" | bc)
+PAR2RS_AVG=$(echo "scale=3; $PAR2RS_SUM / $ITERATIONS" | bc)
+SPEEDUP=$(echo "scale=2; $PAR2CMD_AVG / $PAR2RS_AVG" | bc)
+
+echo ""
+echo -e "${BLUE}Results:${NC}"
+echo "  par2cmdline average: ${PAR2CMD_AVG}s"
+echo "  par2rs average:      ${PAR2RS_AVG}s"
+echo -e "${GREEN}  Speedup: ${SPEEDUP}x${NC}"
 echo ""
 
 echo -e "${BLUE}================================${NC}"
