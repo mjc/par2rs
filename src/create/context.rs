@@ -348,55 +348,59 @@ impl CreateContext {
                 }
             }
 
-            // Process this chunk through Reed-Solomon manually
+            // Process this chunk through Reed-Solomon
             // Reference: RecoveryBlockEncoder::encode_recovery_block internals
             use crate::reed_solomon::codec::{
                 build_split_mul_table, process_slice_multiply_add, process_slice_multiply_direct,
             };
             use crate::reed_solomon::galois::Galois16;
 
+            // Helper closure to process a single recovery block with all input chunks
+            let process_recovery_block = |exp: u16, recovery_data: &mut Vec<u8>| {
+                for (src_idx, input_chunk) in input_buffers.iter().enumerate() {
+                    let base = Galois16::new(encoder.base_values()[src_idx]);
+                    let coefficient = base.pow(exp);
+                    let mul_table = build_split_mul_table(coefficient);
+
+                    // Get or initialize the recovery block buffer for this chunk
+                    if block_offset == 0 {
+                        // First chunk: use direct write
+                        if src_idx == 0 {
+                            let mut temp = vec![0u8; chunk_len];
+                            process_slice_multiply_direct(input_chunk, &mut temp, &mul_table);
+                            recovery_data.extend_from_slice(&temp);
+                        } else {
+                            // Need to XOR with existing data
+                            let start = recovery_data.len() - chunk_len;
+                            process_slice_multiply_add(
+                                input_chunk,
+                                &mut recovery_data[start..],
+                                &mul_table,
+                            );
+                        }
+                    } else {
+                        // Subsequent chunks: append new data
+                        if src_idx == 0 {
+                            let mut temp = vec![0u8; chunk_len];
+                            process_slice_multiply_direct(input_chunk, &mut temp, &mul_table);
+                            recovery_data.extend_from_slice(&temp);
+                        } else {
+                            let start = recovery_data.len() - chunk_len;
+                            process_slice_multiply_add(
+                                input_chunk,
+                                &mut recovery_data[start..],
+                                &mul_table,
+                            );
+                        }
+                    }
+                }
+            };
+
             // Process recovery blocks - parallelize if thread_count > 1
             if self.config.thread_count == 1 {
                 // Sequential processing
-                for (rec_idx, &exp) in exponents.iter().enumerate() {
-                    // Process each input block chunk
-                    for (src_idx, input_chunk) in input_buffers.iter().enumerate() {
-                        let base = Galois16::new(encoder.base_values()[src_idx]);
-                        let coefficient = base.pow(exp);
-                        let mul_table = build_split_mul_table(coefficient);
-
-                        // Get or initialize the recovery block buffer for this chunk
-                        if block_offset == 0 {
-                            // First chunk: use direct write
-                            if src_idx == 0 {
-                                let mut temp = vec![0u8; chunk_len];
-                                process_slice_multiply_direct(input_chunk, &mut temp, &mul_table);
-                                recovery_blocks[rec_idx].1.extend_from_slice(&temp);
-                            } else {
-                                // Need to XOR with existing data
-                                let start = recovery_blocks[rec_idx].1.len() - chunk_len;
-                                process_slice_multiply_add(
-                                    input_chunk,
-                                    &mut recovery_blocks[rec_idx].1[start..],
-                                    &mul_table,
-                                );
-                            }
-                        } else {
-                            // Subsequent chunks: append new data
-                            if src_idx == 0 {
-                                let mut temp = vec![0u8; chunk_len];
-                                process_slice_multiply_direct(input_chunk, &mut temp, &mul_table);
-                                recovery_blocks[rec_idx].1.extend_from_slice(&temp);
-                            } else {
-                                let start = recovery_blocks[rec_idx].1.len() - chunk_len;
-                                process_slice_multiply_add(
-                                    input_chunk,
-                                    &mut recovery_blocks[rec_idx].1[start..],
-                                    &mul_table,
-                                );
-                            }
-                        }
-                    }
+                for (exp, recovery_data) in recovery_blocks.iter_mut() {
+                    process_recovery_block(*exp, recovery_data);
                 }
             } else {
                 // Parallel processing of recovery blocks
@@ -404,53 +408,8 @@ impl CreateContext {
 
                 recovery_blocks
                     .par_iter_mut()
-                    .enumerate()
-                    .for_each(|(_, (exp, recovery_data))| {
-                        for (src_idx, input_chunk) in input_buffers.iter().enumerate() {
-                            let base = Galois16::new(encoder.base_values()[src_idx]);
-                            let coefficient = base.pow(*exp);
-                            let mul_table = build_split_mul_table(coefficient);
-
-                            // Get or initialize the recovery block buffer for this chunk
-                            if block_offset == 0 {
-                                // First chunk: use direct write
-                                if src_idx == 0 {
-                                    let mut temp = vec![0u8; chunk_len];
-                                    process_slice_multiply_direct(
-                                        input_chunk,
-                                        &mut temp,
-                                        &mul_table,
-                                    );
-                                    recovery_data.extend_from_slice(&temp);
-                                } else {
-                                    // Need to XOR with existing data
-                                    let start = recovery_data.len() - chunk_len;
-                                    process_slice_multiply_add(
-                                        input_chunk,
-                                        &mut recovery_data[start..],
-                                        &mul_table,
-                                    );
-                                }
-                            } else {
-                                // Subsequent chunks: append new data
-                                if src_idx == 0 {
-                                    let mut temp = vec![0u8; chunk_len];
-                                    process_slice_multiply_direct(
-                                        input_chunk,
-                                        &mut temp,
-                                        &mul_table,
-                                    );
-                                    recovery_data.extend_from_slice(&temp);
-                                } else {
-                                    let start = recovery_data.len() - chunk_len;
-                                    process_slice_multiply_add(
-                                        input_chunk,
-                                        &mut recovery_data[start..],
-                                        &mul_table,
-                                    );
-                                }
-                            }
-                        }
+                    .for_each(|(exp, recovery_data)| {
+                        process_recovery_block(*exp, recovery_data);
                     });
             }
 
