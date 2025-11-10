@@ -3,7 +3,6 @@
 //! Reference: par2cmdline-turbo/src/par2creator.h Par2Creator class
 
 use super::error::{CreateError, CreateResult};
-use super::hashing::hash_all_source_files;
 use super::packet_generator::generate_recovery_set_id;
 use super::progress::CreateReporter;
 use super::source_file::SourceFileInfo;
@@ -86,16 +85,15 @@ impl CreateContext {
     ///
     /// Reference: par2cmdline-turbo/src/par2creator.cpp Par2Creator::Process()
     pub fn create(&mut self) -> CreateResult<()> {
-        // Step 1: Compute file hashes and block checksums
-        self.hash_source_files()?;
-
-        // Step 2: Generate recovery set ID
-        self.generate_recovery_set_id()?;
-
-        // Step 3: Generate recovery blocks
+        // Step 1: Generate recovery blocks AND compute file hashes in single pass
+        // This is the performance-critical optimization that eliminates dual file reads
+        // Hashes and block checksums are computed during recovery generation
         self.generate_recovery_blocks()?;
 
-        // Step 4: Write PAR2 files
+        // Step 2: Generate recovery set ID (needs file IDs from hashes computed in step 1)
+        self.generate_recovery_set_id()?;
+
+        // Step 3: Write PAR2 files
         self.write_par2_files()?;
 
         // Report completion
@@ -203,18 +201,6 @@ impl CreateContext {
     ///
     /// Reference: par2cmdline-turbo/src/par2creator.cpp OpenSourceFiles() and
     /// FinishFileHashComputation()
-    fn hash_source_files(&mut self) -> CreateResult<()> {
-        let use_parallel = self.config.thread_count != 1;
-        hash_all_source_files(
-            &mut self.source_files,
-            self.block_size,
-            &*self.reporter,
-            use_parallel,
-        )?;
-        println!(); // Newline after progress line
-        Ok(())
-    }
-
     /// Generate recovery set ID
     fn generate_recovery_set_id(&mut self) -> CreateResult<()> {
         let set_id = generate_recovery_set_id(self.block_size, &self.source_files)?;
@@ -222,13 +208,20 @@ impl CreateContext {
         Ok(())
     }
 
-    /// Generate Reed-Solomon recovery blocks
+    /// Generate Reed-Solomon recovery blocks AND compute file hashes in single pass
+    ///
+    /// This eliminates the dual-pass bottleneck by computing:
+    /// - Full file MD5 hashes (via Md5Reader wrapper)
+    /// - Block MD5 + CRC32 checksums (after each complete block is read)
+    /// - Reed-Solomon recovery blocks (existing chunked processing)
     ///
     /// Reference: par2cmdline-turbo/src/par2creator.cpp ProcessData()
     fn generate_recovery_blocks(&mut self) -> CreateResult<()> {
+        use crate::checksum::{calculate_file_md5_16k, compute_file_id, Md5Reader};
+        use crate::create::source_file::BlockChecksum;
         use crate::reed_solomon::RecoveryBlockEncoder;
         use std::fs::File;
-        use std::io::{Read, Seek, SeekFrom};
+        use std::io::Read;
 
         if self.recovery_block_count == 0 {
             self.reporter.report_scanning_files(
@@ -250,20 +243,61 @@ impl CreateContext {
         self.reporter.report_scanning_files(
             0,
             self.recovery_block_count as usize,
-            &format!(
-                "Generating recovery blocks (chunk size: {} bytes)...",
-                chunk_size
-            ),
+            &format!("Processing files (chunk size: {} bytes)...", chunk_size),
         );
 
-        // Preallocate recovery blocks
+        // Initialize recovery blocks (without pre-allocating capacity to save memory)
+        // They will grow as we append chunks during processing
         let exponents: Vec<u16> = (0..self.recovery_block_count as u16).collect();
-        let mut recovery_blocks: Vec<(u16, Vec<u8>)> = exponents
-            .iter()
-            .map(|&exp| (exp, Vec::with_capacity(self.block_size as usize)))
-            .collect();
+        let mut recovery_blocks: Vec<(u16, Vec<u8>)> =
+            exponents.iter().map(|&exp| (exp, Vec::new())).collect();
+
+        // Track MD5 readers and incremental block checksum state for each file
+        // We'll open files once and keep them open for the entire chunked loop
+        let mut file_readers: Vec<Md5Reader<File>> = Vec::new();
+
+        // Track incremental MD5 and CRC32 state for each block (not full data!)
+        // This is memory-efficient: only state objects, not 10GB of block data
+        use crc32fast::Hasher as Crc32Hasher;
+        use md5::{Digest, Md5};
+
+        let mut block_md5_states: Vec<Md5> = Vec::new();
+        let mut block_crc32_states: Vec<Crc32Hasher> = Vec::new();
+
+        // Calculate global block offsets and open files
+        let mut global_block_offset = 0u32;
+        for file in &mut self.source_files {
+            // Compute 16KB hash for FileId (need to read first 16KB)
+            let hash_16k =
+                calculate_file_md5_16k(&file.path).map_err(|e| CreateError::FileReadError {
+                    file: file.path.to_string_lossy().to_string(),
+                    source: e,
+                })?;
+            file.hash_16k = hash_16k;
+
+            // Open file for processing with MD5 tracking
+            let f = File::open(&file.path).map_err(|e| CreateError::FileReadError {
+                file: file.path.to_string_lossy().to_string(),
+                source: e,
+            })?;
+
+            file_readers.push(Md5Reader::new(f));
+
+            let block_count = file.calculate_block_count(self.block_size);
+            file.block_count = block_count;
+            file.global_block_offset = global_block_offset;
+
+            // Initialize incremental checksum state for each block
+            for _ in 0..block_count {
+                block_md5_states.push(Md5::new());
+                block_crc32_states.push(Crc32Hasher::new());
+            }
+
+            global_block_offset += block_count;
+        }
 
         // Process data in chunks (like par2cmdline-turbo ProcessData loop)
+        // OPTIMIZATION: Compute hashes during this pass instead of separate hash pass
         let mut block_offset = 0u64;
         while block_offset < self.block_size {
             let chunk_len = ((self.block_size - block_offset) as usize).min(chunk_size);
@@ -273,25 +307,13 @@ impl CreateContext {
                 Vec::with_capacity(self.source_block_count as usize);
 
             // Read chunks from all source blocks into input buffers
-            for file in &self.source_files {
-                let mut f = File::open(&file.path).map_err(|e| CreateError::FileReadError {
-                    file: file.path.to_string_lossy().to_string(),
-                    source: e,
-                })?;
+            // Use Md5Reader to accumulate hash during reads
+            let mut file_block_idx = 0usize; // Global index across all files' blocks
 
-                let block_count = file.calculate_block_count(self.block_size);
+            for (file_idx, file) in self.source_files.iter().enumerate() {
+                let block_count = file.block_count;
 
                 for block_idx in 0..block_count {
-                    let block_start = block_idx as u64 * self.block_size;
-                    let read_offset = block_start + block_offset;
-
-                    f.seek(SeekFrom::Start(read_offset)).map_err(|e| {
-                        CreateError::FileReadError {
-                            file: file.path.to_string_lossy().to_string(),
-                            source: e,
-                        }
-                    })?;
-
                     let is_last_block = block_idx == block_count - 1;
                     let block_size_actual = if is_last_block && file.size % self.block_size != 0 {
                         (file.size % self.block_size) as usize
@@ -309,15 +331,20 @@ impl CreateContext {
 
                     let mut chunk = vec![0u8; chunk_len];
                     if bytes_to_read > 0 {
-                        f.read_exact(&mut chunk[..bytes_to_read]).map_err(|e| {
-                            CreateError::FileReadError {
+                        file_readers[file_idx]
+                            .read_exact(&mut chunk[..bytes_to_read])
+                            .map_err(|e| CreateError::FileReadError {
                                 file: file.path.to_string_lossy().to_string(),
                                 source: e,
-                            }
-                        })?;
+                            })?;
                     }
 
+                    // Update incremental checksums for this block
+                    block_md5_states[file_block_idx].update(&chunk[..bytes_to_read]);
+                    block_crc32_states[file_block_idx].update(&chunk[..bytes_to_read]);
+
                     input_buffers.push(chunk);
+                    file_block_idx += 1;
                 }
             }
 
@@ -438,10 +465,70 @@ impl CreateContext {
             );
         }
 
+        // Finalize file hashes and compute block checksums
+        // Now that we've read all the data through Md5Readers, finalize to get MD5 hashes
+        let mut file_block_idx = 0usize;
+
+        // Take ownership of file_readers to consume them
+        let finalized_hashes: Vec<[u8; 16]> = file_readers
+            .into_iter()
+            .map(|reader| reader.finalize().1)
+            .collect();
+
+        for (file_idx, file) in self.source_files.iter_mut().enumerate() {
+            // Get finalized MD5 hash for this file
+            file.hash = crate::domain::Md5Hash::new(finalized_hashes[file_idx]);
+
+            // Compute FileId from [Hash16k, Length, Name]
+            let filename = file
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .as_bytes();
+            file.file_id = compute_file_id(&file.hash_16k, file.size, filename);
+
+            // Finalize block checksums from incremental state
+            for block_idx in 0..file.block_count {
+                let is_last_block = block_idx == file.block_count - 1;
+                let needs_padding = is_last_block && file.size % self.block_size != 0;
+
+                if needs_padding {
+                    // For padded blocks, we need to add the padding zeros to the hash
+                    let actual_size = (file.size % self.block_size) as usize;
+                    let padding_size = self.block_size as usize - actual_size;
+                    let padding = vec![0u8; padding_size];
+
+                    block_md5_states[file_block_idx].update(&padding);
+                    block_crc32_states[file_block_idx].update(&padding);
+                }
+
+                // Finalize MD5
+                let md5_hash = block_md5_states[file_block_idx].clone().finalize();
+                let mut md5_bytes = [0u8; 16];
+                md5_bytes.copy_from_slice(&md5_hash);
+
+                // Finalize CRC32
+                let crc32_value = block_crc32_states[file_block_idx].clone().finalize();
+
+                file.block_checksums.push(BlockChecksum {
+                    crc32: crc32_value,
+                    hash: crate::domain::Md5Hash::new(md5_bytes),
+                    global_index: file.global_block_offset + block_idx,
+                });
+
+                file_block_idx += 1;
+            }
+
+            // Report file completion
+            self.reporter
+                .report_file_hashing(&file.filename(), file.size, file.size);
+        }
+
         self.reporter.report_scanning_files(
             self.recovery_block_count as usize,
             self.recovery_block_count as usize,
-            "Recovery blocks generated",
+            "Processing complete (hashes + recovery blocks)",
         );
 
         println!(); // Newline after progress line
@@ -453,18 +540,31 @@ impl CreateContext {
     }
 
     /// Calculate optimal chunk size for processing
-    /// Reference: par2cmdline-turbo CalculateProcessBlockSize()
+    /// Reference: par2cmdline-turbo/src/par2creator.cpp:329-360 CalculateProcessBlockSize()
     fn calculate_chunk_size(&self) -> usize {
-        // Memory limit: 1GB (conservative, since we load ALL source block chunks at once)
+        // Memory limit: 1GB
         const DEFAULT_MEMORY_LIMIT: usize = 1024 * 1024 * 1024; // 1GB
 
-        // We need memory for:
-        // 1. Input chunks: source_block_count × chunk_size
-        // 2. Output recovery buffers: recovery_block_count × chunk_size
-        // Total = (source_block_count + recovery_block_count) × chunk_size
+        // Transfer buffer overhead (par2cmdline uses NUM_TRANSFER_BUFFERS + sourceblockcount)
+        // We need overhead for: input_buffers (sourceblockcount)
+        let block_overhead = self.source_block_count as usize;
 
-        let total_blocks = self.source_block_count as usize + self.recovery_block_count as usize;
-        let chunk_size = DEFAULT_MEMORY_LIMIT / total_blocks;
+        // Total memory needed if we process full blocks at once:
+        // recovery_block_count * block_size (output recovery blocks)
+        // + block_overhead * block_size (input transfer buffers)
+        let full_block_memory =
+            self.block_size as usize * (self.recovery_block_count as usize + block_overhead);
+
+        // Check if we can process full blocks at once (like par2cmdline)
+        if full_block_memory <= DEFAULT_MEMORY_LIMIT {
+            // Process entire blocks at once - no chunking needed
+            return self.block_size as usize;
+        }
+
+        // Need to use chunking - calculate chunk size
+        // Memory formula: (recovery_block_count + block_overhead) * chunk_size <= memory_limit
+        let chunk_size =
+            DEFAULT_MEMORY_LIMIT / (self.recovery_block_count as usize + block_overhead);
 
         // Align to 4-byte boundary (like par2cmdline: ~3 &)
         let aligned_chunk = chunk_size & !3;

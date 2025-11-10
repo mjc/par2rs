@@ -294,8 +294,10 @@ pub fn load_par2_packets(
         })
         .collect();
 
-    // Deduplicate packets in a single pass
+    // Deduplicate packets in a single pass and check for mixed recovery sets
     let mut seen_hashes = HashSet::default();
+    let mut recovery_set_ids: HashSet<crate::domain::RecoverySetId> = HashSet::default();
+
     let packets: Vec<Packet> = all_packets
         .into_iter()
         .flatten()
@@ -304,11 +306,40 @@ pub fn load_par2_packets(
             if !include_recovery_slices && matches!(packet, Packet::RecoverySlice(_)) {
                 return false;
             }
+
+            // Track recovery set IDs to detect mixed PAR2 files
+            let set_id = match packet {
+                Packet::Main(p) => p.set_id,
+                Packet::PackedMain(p) => p.set_id,
+                Packet::FileDescription(p) => p.set_id,
+                Packet::InputFileSliceChecksum(p) => p.set_id,
+                Packet::RecoverySlice(p) => p.set_id,
+                Packet::Creator(p) => p.set_id,
+            };
+            recovery_set_ids.insert(set_id);
+
             // Deduplicate based on packet hash
             let packet_hash = get_packet_hash(packet);
             seen_hashes.insert(packet_hash)
         })
         .collect();
+
+    // Check for mixed recovery sets (common user error)
+    if recovery_set_ids.len() > 1 {
+        eprintln!("\n⚠️  WARNING: Multiple recovery sets detected!");
+        eprintln!(
+            "Found {} different recovery set IDs in the PAR2 files.",
+            recovery_set_ids.len()
+        );
+        eprintln!(
+            "This usually means you're trying to verify/repair files from different PAR2 sets."
+        );
+        eprintln!("Please specify only PAR2 files that belong to the same recovery set.\n");
+        eprintln!("Hint: Each PAR2 set has a unique base filename (e.g., 'myfile.par2', 'myfile.vol*.par2')");
+        eprintln!(
+            "      Don't mix files like 'file1.par2' and 'file2.par2' in the same operation.\n"
+        );
+    }
 
     // Determine base directory from the first PAR2 file
     let base_dir = par2_files
