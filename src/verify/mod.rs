@@ -97,13 +97,6 @@ pub fn comprehensive_verify_files<R: VerificationReporter>(
     let stats = engine.block_table().stats();
     reporter.report_files_found(stats.file_count);
 
-    if config.parallel {
-        eprintln!(
-            "Global block table: {} total blocks, {} unique, {} duplicates",
-            stats.total_blocks, stats.unique_checksums, stats.duplicate_blocks
-        );
-    }
-
     // Perform verification using global table
     // Use should_parallelize() to avoid Rayon overhead when threads=1
     let mut results = engine.verify_recovery_set(reporter, config.should_parallelize());

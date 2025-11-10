@@ -480,10 +480,6 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         .unwrap_or(&file_path);
     let par2_files = par2rs::par2_files::collect_par2_files(file_name);
 
-    if !quiet {
-        println!("Loading PAR2 files...\n");
-    }
-
     // Parse packets excluding recovery slices but validate and count them
     // Recovery slice data is NOT loaded into memory (saves gigabytes for large PAR2 sets)
     // but they are validated and counted for repair possibility checking
