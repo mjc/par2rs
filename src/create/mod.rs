@@ -31,6 +31,7 @@
 pub mod builder;
 pub mod context;
 pub mod error;
+pub mod error_helpers;
 pub mod file_naming;
 pub mod hashing;
 pub mod packet_generator;

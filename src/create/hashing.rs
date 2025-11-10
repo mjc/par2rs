@@ -7,10 +7,10 @@
 //! FinishFileHashComputation()
 
 use crate::checksum::{calculate_file_md5_16k, compute_block_checksums_padded, Md5Reader};
-use std::fs::File;
 use std::io::Read;
 
 use super::error::{CreateError, CreateResult};
+use super::error_helpers::open_for_reading;
 use super::progress::CreateReporter;
 use super::source_file::{BlockChecksum, SourceFileInfo};
 
@@ -49,10 +49,7 @@ pub fn hash_source_file(
     let mut block_checksums = Vec::with_capacity(block_count as usize);
 
     let hash_full = if source_file.size > 0 {
-        let file = File::open(path).map_err(|e| CreateError::FileReadError {
-            file: path.to_string_lossy().to_string(),
-            source: e,
-        })?;
+        let file = open_for_reading(path)?;
 
         // Wrap file in Md5Reader to compute hash while reading blocks
         let mut md5_reader = Md5Reader::new(file);
@@ -177,6 +174,7 @@ mod tests {
     use super::*;
     use crate::create::progress::SilentCreateReporter;
     use crate::domain::{FileId, Md5Hash};
+    use std::fs::File;
     use tempfile::tempdir;
 
     #[test]

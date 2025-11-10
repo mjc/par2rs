@@ -3,6 +3,7 @@
 //! Reference: par2cmdline-turbo/src/par2creator.h Par2Creator class
 
 use super::error::{CreateError, CreateResult};
+use super::error_helpers::{create_file, get_metadata, open_for_reading, packet_write_error};
 use super::packet_generator::generate_recovery_set_id;
 use super::progress::CreateReporter;
 use super::source_file::SourceFileInfo;
@@ -123,10 +124,7 @@ impl CreateContext {
             }
 
             // Get file metadata
-            let metadata = std::fs::metadata(path).map_err(|e| CreateError::FileReadError {
-                file: path.to_string_lossy().to_string(),
-                source: e,
-            })?;
+            let metadata = get_metadata(path)?;
 
             let size = metadata.len();
             let source_info = SourceFileInfo::new(path.clone(), size, index);
@@ -276,10 +274,7 @@ impl CreateContext {
             file.hash_16k = hash_16k;
 
             // Open file for processing with MD5 tracking
-            let f = File::open(&file.path).map_err(|e| CreateError::FileReadError {
-                file: file.path.to_string_lossy().to_string(),
-                source: e,
-            })?;
+            let f = open_for_reading(&file.path)?;
 
             file_readers.push(Md5Reader::new(f));
 
@@ -542,7 +537,6 @@ impl CreateContext {
             generate_file_verification_packet, generate_main_packet, write_creator_packet,
             write_file_description_packet, write_file_verification_packet, write_main_packet,
         };
-        use std::fs::File;
         use std::io::Write;
 
         let recovery_set_id = self
@@ -582,30 +576,24 @@ impl CreateContext {
 
         // Write index file (base.par2)
         let index_path = output_dir.join(format!("{}.par2", base_name));
-        let mut index_file =
-            File::create(&index_path).map_err(|e| CreateError::FileCreateError {
-                file: index_path.to_string_lossy().to_string(),
-                source: e,
-            })?;
+        let mut index_file = create_file(&index_path)?;
 
         // Write packets using proper serialization functions that compute MD5
         // Reference: par2cmdline-turbo/src/par2creator.cpp WriteCriticalPackets()
         write_main_packet(&mut index_file, &main_packet)
-            .map_err(|e| CreateError::Other(format!("Failed to write main packet: {}", e)))?;
+            .map_err(|e| packet_write_error("main packet", e))?;
 
         write_creator_packet(&mut index_file, &creator_packet)
-            .map_err(|e| CreateError::Other(format!("Failed to write creator packet: {}", e)))?;
+            .map_err(|e| packet_write_error("creator packet", e))?;
 
         for packet in &file_desc_packets {
-            write_file_description_packet(&mut index_file, packet).map_err(|e| {
-                CreateError::Other(format!("Failed to write file description packet: {}", e))
-            })?;
+            write_file_description_packet(&mut index_file, packet)
+                .map_err(|e| packet_write_error("file description packet", e))?;
         }
 
         for packet in &file_verif_packets {
-            write_file_verification_packet(&mut index_file, packet).map_err(|e| {
-                CreateError::Other(format!("Failed to write file verification packet: {}", e))
-            })?;
+            write_file_verification_packet(&mut index_file, packet)
+                .map_err(|e| packet_write_error("file verification packet", e))?;
         }
 
         // Write recovery slice packets
@@ -642,9 +630,9 @@ impl CreateContext {
             };
 
             // Write packet
-            packet_with_md5.write_le(&mut index_file).map_err(|e| {
-                CreateError::Other(format!("Failed to write recovery packet: {}", e))
-            })?;
+            packet_with_md5
+                .write_le(&mut index_file)
+                .map_err(|e| packet_write_error("recovery packet", e))?;
         }
 
         index_file
