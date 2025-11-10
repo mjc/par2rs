@@ -492,7 +492,7 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
     if !quiet {
         println!(); // Blank line after loading
 
-        // Show rsummary statistics
+        // Show summary statistics
         let stats = par2rs::analysis::calculate_par2_stats(
             &packet_set.packets,
             packet_set.recovery_block_count,

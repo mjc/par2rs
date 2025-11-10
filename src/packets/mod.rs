@@ -198,6 +198,37 @@ pub fn parse_packets<R: Read + Seek>(reader: &mut R) -> Vec<Packet> {
     packets
 }
 
+/// Scan forward to find the next packet magic bytes
+///
+/// Reference: par2cmdline-turbo/src/par2repairer.cpp:458-485
+/// When a packet fails validation, we scan forward byte-by-byte to find
+/// the next valid PAR2\0PKT magic sequence, similar to how par2cmdline recovers
+/// from corrupted packets.
+fn scan_for_next_magic<R: Read>(reader: &mut R) -> std::io::Result<Option<[u8; 8]>> {
+    let mut buffer = [0u8; 8];
+
+    // Try to read initial 8 bytes
+    if reader.read_exact(&mut buffer).is_err() {
+        return Ok(None); // EOF or read error
+    }
+
+    // Slide through the stream looking for magic bytes
+    // We keep a rolling window of 8 bytes and check if it matches
+    loop {
+        if buffer == *MAGIC_BYTES {
+            return Ok(Some(buffer));
+        }
+
+        // Shift buffer left by 1 byte and read next byte
+        buffer.rotate_left(1);
+        let mut next_byte = [0u8; 1];
+        match reader.read_exact(&mut next_byte) {
+            Ok(()) => buffer[7] = next_byte[0],
+            Err(_) => return Ok(None), // EOF
+        }
+    }
+}
+
 /// Parse packets with optional recovery slice inclusion
 ///
 /// When `include_recovery_slices` is false, recovery slice packet headers are still
@@ -227,36 +258,41 @@ pub fn parse_packets_with_options<R: Read + Seek>(
         let header = match PacketHeader::parse(reader) {
             Ok(h) => h,
             Err(PacketParseError::TruncatedData { .. }) => {
-                // End of file - normal termination
                 break;
             }
             Err(PacketParseError::InvalidMagic(_)) => {
-                // Invalid magic - rewind one byte and try again
-                // This handles corruption or trailing data
-                if reader.seek(std::io::SeekFrom::Current(-63)).is_err() {
+                // Bad magic - try to find next valid packet by scanning forward
+                if scan_for_next_magic(reader).ok().flatten().is_some() {
+                    // Found magic, but we need to rewind 8 bytes so the next parse reads the header
+                    if reader.seek(std::io::SeekFrom::Current(-8)).is_err() {
+                        break;
+                    }
+                    continue;
+                } else {
                     break;
                 }
-                continue;
             }
             Err(_) => {
-                // Other errors - stop parsing
                 break;
             }
         };
 
         // Special handling for recovery slice packets when not loading data
         if !include_recovery_slices && header.packet_type == recovery_slice_packet::TYPE_OF_PACKET {
-            // Validate the recovery packet structure without loading data
-            if validate_recovery_packet_header(reader, &header).is_ok() {
-                // Valid recovery packet - count it but don't load into memory
-                recovery_block_count += 1;
-            } else {
-                // Invalid recovery packet - skip it
-                if reader
-                    .seek(std::io::SeekFrom::Current((header.length - 64) as i64))
-                    .is_err()
-                {
-                    break;
+            match validate_recovery_packet(reader, &header) {
+                Ok(()) => {
+                    recovery_block_count += 1;
+                }
+                Err(_) => {
+                    // Validation failed - try to find next valid packet
+                    if scan_for_next_magic(reader).ok().flatten().is_some() {
+                        // Found magic, rewind 8 bytes
+                        if reader.seek(std::io::SeekFrom::Current(-8)).is_err() {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
                 }
             }
             continue;
@@ -265,7 +301,17 @@ pub fn parse_packets_with_options<R: Read + Seek>(
         // Read and parse the full packet
         let packet_data = match read_full_packet(reader, &header) {
             Ok(data) => data,
-            Err(_) => break,
+            Err(_) => {
+                // Failed to read packet body - try to find next valid packet
+                if scan_for_next_magic(reader).ok().flatten().is_some() {
+                    if reader.seek(std::io::SeekFrom::Current(-8)).is_err() {
+                        break;
+                    }
+                    continue;
+                } else {
+                    break;
+                }
+            }
         };
 
         let mut cursor = std::io::Cursor::new(&packet_data);
@@ -282,49 +328,32 @@ pub fn parse_packets_with_options<R: Read + Seek>(
     (packets, recovery_block_count)
 }
 
-/// Validate a recovery packet by loading it into a buffer and verifying MD5
-///
-/// This reads and validates:
-/// - The full packet data including recovery data
-/// - Computes MD5 hash to verify integrity
-/// - Then discards the data (doesn't keep in memory)
-///
-/// This ensures the recovery packet is valid without keeping gigabytes in RAM.
-///
-/// Returns Ok if valid, Err if the packet is corrupted.
-fn validate_recovery_packet_header<R: Read + Seek>(
+/// Validate a recovery packet by loading it with binrw and checking its MD5
+fn validate_recovery_packet<R: Read + Seek>(
     reader: &mut R,
     header: &PacketHeader,
 ) -> std::io::Result<()> {
-    use crate::checksum::compute_md5_bytes;
+    // Read the full packet into a buffer
+    let packet_data = read_full_packet(reader, header)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
-    // Calculate size of data after the initial header (which we already read)
-    let remaining_size = (header.length - 64) as usize;
+    // Parse the recovery packet to validate structure
+    let mut cursor = std::io::Cursor::new(&packet_data);
+    let packet = cursor
+        .read_le::<RecoverySlicePacket>()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
-    // Read the entire packet body into a temporary buffer
-    let mut packet_body = vec![0u8; remaining_size];
-    reader.read_exact(&mut packet_body)?;
-
-    // Extract MD5 hash from header (bytes 16-32 of the original 64-byte header)
-    let expected_md5: [u8; 16] = header.raw[16..32].try_into().unwrap();
-
-    // Prepare data for MD5 computation: set_id + type + packet_body
-    // (everything except magic, length, and md5 itself)
-    let mut data_to_hash = Vec::new();
-    data_to_hash.extend_from_slice(&header.raw[32..64]); // set_id (16 bytes) + type (16 bytes)
-    data_to_hash.extend_from_slice(&packet_body); // exponent + recovery_data
-
-    // Compute MD5 and verify
-    let computed_md5 = compute_md5_bytes(&data_to_hash);
-
-    if computed_md5 != expected_md5 {
+    // Verify the MD5 hash
+    if !packet.verify() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "Recovery packet MD5 verification failed",
+            format!(
+                "Recovery packet MD5 verification failed for exponent {}",
+                packet.exponent
+            ),
         ));
     }
 
-    // Packet is valid, buffer is dropped here (no memory retained)
     Ok(())
 }
 
@@ -605,6 +634,150 @@ mod tests {
             let mut cursor = Cursor::new(&data);
             let result = PacketHeader::parse(&mut cursor);
             assert!(matches!(result, Err(PacketParseError::InvalidLength(_))));
+        }
+
+        #[test]
+        fn scan_for_next_magic_finds_magic() {
+            // Test that scan_for_next_magic can find PAR2 magic in garbage data
+            let mut data = Vec::new();
+
+            // Add garbage bytes
+            data.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+            data.extend_from_slice(&[0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00]);
+
+            // Add PAR2 magic
+            data.extend_from_slice(MAGIC_BYTES);
+
+            let mut cursor = Cursor::new(&data);
+            let result = scan_for_next_magic(&mut cursor);
+
+            assert!(result.is_ok());
+            let magic = result.unwrap();
+            assert!(magic.is_some());
+            assert_eq!(magic.unwrap(), MAGIC_BYTES);
+
+            // Cursor should be positioned right after the magic
+            let pos = cursor.position();
+            assert_eq!(pos, 24); // 16 garbage bytes + 8 magic bytes
+        }
+
+        #[test]
+        fn scan_for_next_magic_no_magic_found() {
+            // Test that scan_for_next_magic returns None when no magic is found
+            let data = vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+            let mut cursor = Cursor::new(&data);
+            let result = scan_for_next_magic(&mut cursor);
+
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_none());
+        }
+
+        #[test]
+        fn scan_for_next_magic_empty_reader() {
+            // Test that scan_for_next_magic handles empty input
+            let data = Vec::<u8>::new();
+            let mut cursor = Cursor::new(&data);
+            let result = scan_for_next_magic(&mut cursor);
+
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_none());
+        }
+
+        #[test]
+        fn scan_for_next_magic_at_beginning() {
+            // Test that scan_for_next_magic finds magic at the very start
+            let mut data = Vec::new();
+            data.extend_from_slice(MAGIC_BYTES);
+            data.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]); // Some trailing data
+
+            let mut cursor = Cursor::new(&data);
+            let result = scan_for_next_magic(&mut cursor);
+
+            assert!(result.is_ok());
+            let magic = result.unwrap();
+            assert!(magic.is_some());
+            assert_eq!(magic.unwrap(), MAGIC_BYTES);
+        }
+
+        #[test]
+        fn scan_for_next_magic_partial_match() {
+            // Test that scan_for_next_magic doesn't false-positive on partial matches
+            let mut data = Vec::new();
+
+            // Add partial magic (first 7 bytes of PAR2 magic)
+            data.extend_from_slice(&[0x50, 0x41, 0x52, 0x32, 0x00, 0x50, 0x4B]);
+            // Add garbage
+            data.extend_from_slice(&[0xFF]);
+            // Add more garbage
+            data.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+            // Add real magic
+            data.extend_from_slice(MAGIC_BYTES);
+
+            let mut cursor = Cursor::new(&data);
+            let result = scan_for_next_magic(&mut cursor);
+
+            assert!(result.is_ok());
+            let magic = result.unwrap();
+            assert!(magic.is_some());
+            // Should find the real magic at byte 12 (7 + 1 + 4)
+            let pos = cursor.position();
+            assert_eq!(pos, 20); // 12 bytes before magic + 8 magic bytes
+        }
+
+        #[test]
+        fn corrupt_packet_recovery() {
+            // Test that we can recover from a corrupt packet by finding the next valid magic
+            // Simulates the scenario from vol003-007.par2 where a recovery packet has
+            // corrupt length/MD5 but we can find the next valid packet
+
+            let mut file_data = Vec::new();
+
+            // 1. Valid Main packet (92 bytes)
+            let mut main_type = [0u8; 16];
+            main_type.copy_from_slice(main_packet::TYPE_OF_PACKET);
+            let mut main_packet = create_valid_header(&main_type, 92);
+            // Add minimal body (slice_size + file_count)
+            main_packet.extend_from_slice(&5242880u64.to_le_bytes()); // slice size
+            main_packet.extend_from_slice(&1u32.to_le_bytes()); // 1 file
+            main_packet.extend_from_slice(&[0u8; 16]); // 1 file ID
+            file_data.extend_from_slice(&main_packet);
+
+            // 2. Corrupt recovery packet - valid header but wrong length field
+            // Header says 200 bytes but we'll put garbage data
+            let mut recovery_type = [0u8; 16];
+            recovery_type.copy_from_slice(recovery_slice_packet::TYPE_OF_PACKET);
+            let mut corrupt_recovery = vec![0u8; 64];
+            corrupt_recovery[0..8].copy_from_slice(MAGIC_BYTES);
+            corrupt_recovery[8..16].copy_from_slice(&200u64.to_le_bytes()); // Says 200 bytes
+            corrupt_recovery[16..32].copy_from_slice(&[0x99u8; 16]); // Bad MD5
+            corrupt_recovery[32..48].copy_from_slice(&[0xAAu8; 16]); // Set ID
+            corrupt_recovery[48..64].copy_from_slice(&recovery_type);
+            // Add 4 bytes exponent
+            corrupt_recovery.extend_from_slice(&3u32.to_le_bytes());
+            // Add garbage data (but NOT 200 bytes total - simulate corruption)
+            corrupt_recovery.extend_from_slice(&[0x42u8; 500]); // Way more than header claims
+            file_data.extend_from_slice(&corrupt_recovery);
+
+            // 3. Add some garbage bytes before next packet
+            file_data.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+
+            // 4. Valid Creator packet (88 bytes)
+            let mut creator_type = [0u8; 16];
+            creator_type.copy_from_slice(creator_packet::TYPE_OF_PACKET);
+            let mut creator_packet = create_valid_header(&creator_type, 88);
+            creator_packet.extend_from_slice(b"par2rs test\0\0\0\0\0\0\0\0\0\0\0\0\0"); // 24 byte client string
+            file_data.extend_from_slice(&creator_packet);
+
+            // Try to parse - should skip corrupt packet and find valid ones
+            let mut cursor = Cursor::new(&file_data);
+            let (packets, _recovery_count) = parse_packets_with_options(&mut cursor, false);
+
+            // Should have found the Main and Creator packets, skipped the corrupt recovery
+            assert!(!packets.is_empty(), "Should find at least main packet");
+            assert!(
+                matches!(packets[0], Packet::Main(_)),
+                "First packet should be Main"
+            );
         }
     }
 }
