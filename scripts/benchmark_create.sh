@@ -15,8 +15,6 @@
 #   ./benchmark_create.sh 100 2048 10 5      # 100MB file, 2MB blocks, 10% redundancy, 5 iterations
 #   ./benchmark_create.sh 2048 512 15 10     # 2GB file, 512KB blocks, 15% redundancy, 10 iterations
 
-set -e
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PAR2RS="$PROJECT_ROOT/target/release/par2"
@@ -30,13 +28,19 @@ ITERATIONS="${4:-3}"
 
 # Temporary directories to clean up
 TEMP=""
+KEEP_TEMP=0
 
 # Cleanup function
 cleanup() {
-    echo ""
-    echo -e "${BLUE}Cleaning up temporary files...${NC}"
-    [ -n "$TEMP" ] && rm -rf "$TEMP" 2>/dev/null || true
-    echo "Done!"
+    if [ $KEEP_TEMP -eq 0 ]; then
+        echo ""
+        echo -e "${BLUE}Cleaning up temporary files...${NC}"
+        [ -n "$TEMP" ] && rm -rf "$TEMP" 2>/dev/null || true
+        echo "Done!"
+    else
+        echo ""
+        echo -e "${RED}Keeping temporary files for debugging: $TEMP${NC}"
+    fi
 }
 
 # Register cleanup on exit (including errors)
@@ -94,7 +98,7 @@ for iter in $(seq 1 $ITERATIONS); do
     # par2rs
     rm -f "$TEMP/testfile_par2rs"*.par2
     START=$(date +%s.%N)
-    $PAR2RS c -s$BLOCK_SIZE_BYTES -r$REDUNDANCY_PCT -q -q "$TEMP/testfile_par2rs.par2" "$TEMP/testfile.dat" 2>&1 > /dev/null
+    $PAR2RS c -s$BLOCK_SIZE_BYTES -r$REDUNDANCY_PCT -q "$TEMP/testfile_par2rs.par2" "$TEMP/testfile.dat" 2>&1 > /dev/null
     END=$(date +%s.%N)
     TIME=$(echo "$END - $START" | bc)
     PAR2RS_TIMES+=($TIME)
@@ -122,6 +126,83 @@ echo "  par2rs average:      ${PAR2RS_AVG}s"
 echo -e "${GREEN}  Speedup: ${SPEEDUP}x${NC}"
 echo ""
 
+# Verify both outputs are valid and can verify the file
+echo -e "${YELLOW}Verifying PAR2 outputs...${NC}"
+
+# Verify par2cmdline output
+echo -n "  par2cmdline verification: "
+if $PAR2CMDLINE v -q -q "$TEMP/testfile_par2cmd.par2" >/dev/null 2>&1; then
+    echo -e "${GREEN}PASS${NC}"
+else
+    echo -e "${RED}FAIL - par2cmdline output invalid!${NC}"
+    echo ""
+    $PAR2CMDLINE v "$TEMP/testfile_par2cmd.par2" 2>&1
+    KEEP_TEMP=1
+    exit 1
+fi
+
+# Verify par2rs output with par2cmdline (cross-validation)
+echo -n "  par2rs verification (par2cmdline): "
+if $PAR2CMDLINE v -q -q "$TEMP/testfile_par2rs.par2" >/dev/null 2>&1; then
+    echo -e "${GREEN}PASS${NC}"
+else
+    echo -e "${RED}FAIL - par2rs output invalid per par2cmdline!${NC}"
+    echo ""
+    echo -e "${YELLOW}par2cmdline verification output:${NC}"
+    $PAR2CMDLINE v "$TEMP/testfile_par2rs.par2" 2>&1
+    echo ""
+    echo -e "${YELLOW}par2rs file list:${NC}"
+    ls -lh "$TEMP/"*par2rs* 2>&1
+    KEEP_TEMP=1
+    exit 1
+fi
+
+# Verify par2rs output with par2rs (self-validation)
+echo -n "  par2rs verification (par2rs):      "
+if $PAR2RS v -q "$TEMP/testfile_par2rs.par2" >/dev/null 2>&1; then
+    echo -e "${GREEN}PASS${NC}"
+else
+    echo -e "${RED}FAIL - par2rs output invalid per par2rs!${NC}"
+    echo ""
+    echo -e "${YELLOW}par2rs verification output:${NC}"
+    $PAR2RS v "$TEMP/testfile_par2rs.par2" 2>&1
+    KEEP_TEMP=1
+    exit 1
+fi
+
+# Test repair capability - corrupt the file and repair with both
+echo ""
+echo -e "${YELLOW}Testing repair capability...${NC}"
+
+# Test par2cmdline repair
+cp "$TEMP/testfile.dat" "$TEMP/testfile_repair1.dat"
+dd if=/dev/urandom of="$TEMP/testfile_repair1.dat" bs=1K count=100 seek=500 conv=notrunc 2>/dev/null
+echo -n "  par2cmdline repair: "
+if $PAR2CMDLINE r -q -q "$TEMP/testfile_par2cmd.par2" "$TEMP/testfile_repair1.dat" >/dev/null 2>&1; then
+    echo -e "${GREEN}PASS${NC}"
+else
+    echo -e "${RED}FAIL - par2cmdline repair failed!${NC}"
+    echo ""
+    $PAR2CMDLINE r "$TEMP/testfile_par2cmd.par2" "$TEMP/testfile_repair1.dat" 2>&1
+    KEEP_TEMP=1
+    exit 1
+fi
+
+# Test par2rs repair with par2rs-generated files
+cp "$TEMP/testfile.dat" "$TEMP/testfile_repair2.dat"
+dd if=/dev/urandom of="$TEMP/testfile_repair2.dat" bs=1K count=100 seek=500 conv=notrunc 2>/dev/null
+echo -n "  par2rs repair (par2rs):      "
+if $PAR2RS r -q "$TEMP/testfile_par2rs.par2" "$TEMP/testfile_repair2.dat" >/dev/null 2>&1; then
+    echo -e "${GREEN}PASS${NC}"
+else
+    echo -e "${RED}FAIL - par2rs repair failed!${NC}"
+    echo ""
+    $PAR2RS r "$TEMP/testfile_par2rs.par2" "$TEMP/testfile_repair2.dat" 2>&1
+    KEEP_TEMP=1
+    exit 1
+fi
+
+echo ""
 echo -e "${BLUE}================================${NC}"
-echo -e "${BLUE}Benchmark Complete${NC}"
+echo -e "${BLUE}Benchmark Complete - All Tests PASSED${NC}"
 echo -e "${BLUE}================================${NC}"

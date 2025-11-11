@@ -293,6 +293,30 @@ impl CreateContext {
 
         // Process data in chunks (like par2cmdline-turbo ProcessData loop)
         // OPTIMIZATION: Compute hashes during this pass instead of separate hash pass
+
+        // Import Reed-Solomon functions
+        use crate::reed_solomon::codec::{
+            build_split_mul_table, process_slice_multiply_add, process_slice_multiply_direct,
+        };
+        use crate::reed_solomon::galois::Galois16;
+
+        // PARPAR OPTIMIZATION: Pre-compute GF(2^16) coefficients as u16 values
+        // Build SIMD tables just-in-time in the hot loop (stays in registers)
+        // This matches parpar's approach and saves memory bandwidth vs pre-built heap tables
+        // Reference: par2cmdline-turbo/parpar/gf16/gf16_shuffle2x_x86.h:134-184
+        let recovery_coefficients: Vec<Vec<u16>> = exponents
+            .iter()
+            .map(|&exp| {
+                (0..self.source_block_count as usize)
+                    .map(|src_idx| {
+                        let base = Galois16::new(encoder.base_values()[src_idx]);
+                        let coefficient = base.pow(exp);
+                        coefficient.value() // Store just the 16-bit GF value
+                    })
+                    .collect()
+            })
+            .collect();
+
         let mut block_offset = 0u64;
         while block_offset < self.block_size {
             let chunk_len = ((self.block_size - block_offset) as usize).min(chunk_size);
@@ -343,43 +367,34 @@ impl CreateContext {
                 }
             }
 
-            // Process this chunk through Reed-Solomon
+            // Process this chunk through Reed-Solomon using just-in-time coefficient tables
             // Reference: RecoveryBlockEncoder::encode_recovery_block internals
-            use crate::reed_solomon::codec::{
-                build_split_mul_table, process_slice_multiply_add, process_slice_multiply_direct,
-            };
-            use crate::reed_solomon::galois::Galois16;
 
-            // Helper closure to process a single recovery block with all input chunks
-            let process_recovery_block = |exp: u16, recovery_data: &mut Vec<u8>| {
-                for (src_idx, input_chunk) in input_buffers.iter().enumerate() {
-                    let base = Galois16::new(encoder.base_values()[src_idx]);
-                    let coefficient = base.pow(exp);
-                    let mul_table = build_split_mul_table(coefficient);
+            // Process recovery blocks - parallelize if thread_count > 1
+            if self.config.thread_count == 1 {
+                // Sequential processing - reuse single temp buffer
+                let mut temp_buffer = vec![0u8; chunk_len];
 
-                    // Get or initialize the recovery block buffer for this chunk
-                    if block_offset == 0 {
-                        // First chunk: use direct write
+                for (recovery_idx, (_exp, recovery_data)) in recovery_blocks.iter_mut().enumerate()
+                {
+                    for (src_idx, input_chunk) in input_buffers.iter().enumerate() {
+                        // Build SIMD table just-in-time from coefficient (stays in registers/stack)
+                        // This is faster than loading pre-built heap tables due to memory bandwidth
+                        let coefficient =
+                            Galois16::new(recovery_coefficients[recovery_idx][src_idx]);
+                        let mul_table = build_split_mul_table(coefficient);
+
+                        // Get or initialize the recovery block buffer for this chunk
                         if src_idx == 0 {
-                            let mut temp = vec![0u8; chunk_len];
-                            process_slice_multiply_direct(input_chunk, &mut temp, &mul_table);
-                            recovery_data.extend_from_slice(&temp);
-                        } else {
-                            // Need to XOR with existing data
-                            let start = recovery_data.len() - chunk_len;
-                            process_slice_multiply_add(
+                            // First source: direct multiply into temp buffer
+                            process_slice_multiply_direct(
                                 input_chunk,
-                                &mut recovery_data[start..],
+                                &mut temp_buffer,
                                 &mul_table,
                             );
-                        }
-                    } else {
-                        // Subsequent chunks: append new data
-                        if src_idx == 0 {
-                            let mut temp = vec![0u8; chunk_len];
-                            process_slice_multiply_direct(input_chunk, &mut temp, &mul_table);
-                            recovery_data.extend_from_slice(&temp);
+                            recovery_data.extend_from_slice(&temp_buffer);
                         } else {
+                            // Subsequent sources: multiply-add into existing recovery data
                             let start = recovery_data.len() - chunk_len;
                             process_slice_multiply_add(
                                 input_chunk,
@@ -389,23 +404,42 @@ impl CreateContext {
                         }
                     }
                 }
-            };
-
-            // Process recovery blocks - parallelize if thread_count > 1
-            if self.config.thread_count == 1 {
-                // Sequential processing
-                for (exp, recovery_data) in recovery_blocks.iter_mut() {
-                    process_recovery_block(*exp, recovery_data);
-                }
             } else {
                 // Parallel processing of recovery blocks
                 use rayon::prelude::*;
 
-                recovery_blocks
-                    .par_iter_mut()
-                    .for_each(|(exp, recovery_data)| {
-                        process_recovery_block(*exp, recovery_data);
-                    });
+                recovery_blocks.par_iter_mut().enumerate().for_each(
+                    |(recovery_idx, (_exp, recovery_data))| {
+                        // Each thread gets its own temp buffer
+                        let mut temp_buffer = vec![0u8; chunk_len];
+
+                        for (src_idx, input_chunk) in input_buffers.iter().enumerate() {
+                            // Build SIMD table just-in-time from coefficient (stays in registers/stack)
+                            // This is faster than loading pre-built heap tables due to memory bandwidth
+                            let coefficient =
+                                Galois16::new(recovery_coefficients[recovery_idx][src_idx]);
+                            let mul_table = build_split_mul_table(coefficient);
+
+                            if src_idx == 0 {
+                                // First source: direct multiply into temp buffer
+                                process_slice_multiply_direct(
+                                    input_chunk,
+                                    &mut temp_buffer,
+                                    &mul_table,
+                                );
+                                recovery_data.extend_from_slice(&temp_buffer);
+                            } else {
+                                // Subsequent sources: multiply-add into existing recovery data
+                                let start = recovery_data.len() - chunk_len;
+                                process_slice_multiply_add(
+                                    input_chunk,
+                                    &mut recovery_data[start..],
+                                    &mul_table,
+                                );
+                            }
+                        }
+                    },
+                );
             }
 
             block_offset += chunk_len as u64;
