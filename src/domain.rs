@@ -310,6 +310,47 @@ impl std::fmt::Display for BlockSize {
     }
 }
 
+/// Type-safe wrapper for processing chunk size (bytes)
+/// Prevents mixing chunk sizes with block sizes
+/// Chunk size is the memory-constrained processing unit size,
+/// while block size is the PAR2 format block size
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChunkSize(usize);
+
+impl ChunkSize {
+    pub const fn new(bytes: usize) -> Self {
+        ChunkSize(bytes)
+    }
+
+    pub const fn as_usize(&self) -> usize {
+        self.0
+    }
+}
+
+impl From<usize> for ChunkSize {
+    fn from(bytes: usize) -> Self {
+        ChunkSize::new(bytes)
+    }
+}
+
+impl PartialEq<usize> for ChunkSize {
+    fn eq(&self, other: &usize) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialOrd<usize> for ChunkSize {
+    fn partial_cmp(&self, other: &usize) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(other)
+    }
+}
+
+impl std::fmt::Display for ChunkSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Type-safe wrapper for block count
 /// Prevents mixing block counts with other u32 values
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

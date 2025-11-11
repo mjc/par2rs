@@ -412,7 +412,7 @@ impl GlobalVerificationEngine {
         }
 
         // Scan byte-by-byte through the entire file (like par2cmdline-turbo's Step loop)
-        let mut step_count = 0;
+        let mut step_count: u64 = 0;
         loop {
             step_count += 1;
 

@@ -8,7 +8,7 @@ use super::packet_generator::generate_recovery_set_id;
 use super::progress::CreateReporter;
 use super::source_file::SourceFileInfo;
 use super::types::CreateConfig;
-use crate::domain::RecoverySetId;
+use crate::domain::{BlockSize, ChunkSize, RecoverySetId};
 
 /// Main context for PAR2 creation
 ///
@@ -35,7 +35,7 @@ pub struct CreateContext {
     source_files: Vec<SourceFileInfo>,
 
     /// Calculated block size (bytes)
-    block_size: u64,
+    block_size: BlockSize,
 
     /// Total number of source blocks across all files
     source_block_count: u32,
@@ -64,7 +64,7 @@ impl CreateContext {
             reporter,
             recovery_set_id: None,
             source_files: Vec::new(),
-            block_size: 0,
+            block_size: BlockSize::new(0),
             source_block_count: 0,
             recovery_block_count: 0,
             recovery_blocks: Vec::new(),
@@ -147,7 +147,7 @@ impl CreateContext {
     fn calculate_block_size(&mut self) -> CreateResult<()> {
         if let Some(block_size) = self.config.block_size {
             // User specified block size
-            self.block_size = block_size;
+            self.block_size = BlockSize::new(block_size);
         } else {
             // Auto-calculate based on total size
             let total_size: u64 = self.source_files.iter().map(|f| f.size).sum();
@@ -164,14 +164,14 @@ impl CreateContext {
             let calculated = total_size.div_ceil(TARGET_BLOCKS);
             let calculated = (calculated + 3) & !3; // Round up to multiple of 4
 
-            self.block_size = calculated.clamp(MIN_BLOCK_SIZE, MAX_BLOCK_SIZE);
+            self.block_size = BlockSize::new(calculated.clamp(MIN_BLOCK_SIZE, MAX_BLOCK_SIZE));
         }
 
         // Calculate total source block count
         self.source_block_count = self
             .source_files
             .iter()
-            .map(|f| f.calculate_block_count(self.block_size))
+            .map(|f| f.calculate_block_count(self.block_size.as_u64()))
             .sum();
 
         Ok(())
@@ -201,7 +201,8 @@ impl CreateContext {
     /// FinishFileHashComputation()
     /// Generate recovery set ID
     fn generate_recovery_set_id(&mut self) -> CreateResult<()> {
-        let set_id = generate_recovery_set_id(self.block_size, &self.source_files)?;
+        // Generate recovery set ID
+        let set_id = generate_recovery_set_id(self.block_size.as_u64(), &self.source_files)?;
         self.recovery_set_id = Some(set_id);
         Ok(())
     }
@@ -232,7 +233,7 @@ impl CreateContext {
 
         // Create encoder
         let encoder =
-            RecoveryBlockEncoder::new(self.block_size as usize, self.source_block_count as usize);
+            RecoveryBlockEncoder::new(self.block_size.as_usize(), self.source_block_count as usize);
 
         // Determine chunk size based on memory constraints
         // Reference: par2cmdline-turbo CalculateProcessBlockSize()
@@ -241,7 +242,10 @@ impl CreateContext {
         self.reporter.report_scanning_files(
             0,
             self.recovery_block_count as usize,
-            &format!("Processing files (chunk size: {} bytes)...", chunk_size),
+            &format!(
+                "Processing files (chunk size: {} bytes)...",
+                chunk_size.as_usize()
+            ),
         );
 
         // Initialize recovery blocks (without pre-allocating capacity to save memory)
@@ -275,10 +279,9 @@ impl CreateContext {
 
             // Open file for processing with MD5 tracking
             let f = open_for_reading(&file.path)?;
-
             file_readers.push(Md5Reader::new(f));
 
-            let block_count = file.calculate_block_count(self.block_size);
+            let block_count = file.calculate_block_count(self.block_size.as_u64());
             file.block_count = block_count;
             file.global_block_offset = global_block_offset;
 
@@ -318,8 +321,11 @@ impl CreateContext {
             .collect();
 
         let mut block_offset = 0u64;
-        while block_offset < self.block_size {
-            let chunk_len = ((self.block_size - block_offset) as usize).min(chunk_size);
+        while block_offset < self.block_size.as_u64() {
+            // Calculate how many bytes to read for this chunk
+            // Don't exceed the block size
+            let chunk_len =
+                ((self.block_size.as_u64() - block_offset) as usize).min(chunk_size.as_usize());
 
             // Allocate buffers for input chunks (reused for each source block)
             let mut input_buffers: Vec<Vec<u8>> =
@@ -334,11 +340,12 @@ impl CreateContext {
 
                 for block_idx in 0..block_count {
                     let is_last_block = block_idx == block_count - 1;
-                    let block_size_actual = if is_last_block && file.size % self.block_size != 0 {
-                        (file.size % self.block_size) as usize
-                    } else {
-                        self.block_size as usize
-                    };
+                    let block_size_actual =
+                        if is_last_block && file.size % self.block_size.as_u64() != 0 {
+                            (file.size % self.block_size.as_u64()) as usize
+                        } else {
+                            self.block_size.as_usize()
+                        };
 
                     let bytes_available = if block_offset >= block_size_actual as u64 {
                         0
@@ -358,7 +365,8 @@ impl CreateContext {
                             })?;
                     }
 
-                    // Update incremental checksums for this block
+                    // Update incremental checksums with actual bytes read
+                    // Padding will be added once at the end, not in chunks
                     block_md5_states[file_block_idx].update(&chunk[..bytes_to_read]);
                     block_crc32_states[file_block_idx].update(&chunk[..bytes_to_read]);
 
@@ -445,7 +453,7 @@ impl CreateContext {
             block_offset += chunk_len as u64;
 
             // Report progress
-            let progress = ((block_offset as f64 / self.block_size as f64)
+            let progress = ((block_offset as f64 / self.block_size.as_u64() as f64)
                 * self.recovery_block_count as f64) as u32;
             self.reporter.report_recovery_generation(
                 progress.min(self.recovery_block_count),
@@ -477,16 +485,28 @@ impl CreateContext {
             file.file_id = compute_file_id(&file.hash_16k, file.size, filename);
 
             // Finalize block checksums from incremental state
+            // Reference: Par2CreatorSourceFile::UpdateHashes and HasherGetBlock
             for block_idx in 0..file.block_count {
                 let is_last_block = block_idx == file.block_count - 1;
-                let needs_padding = is_last_block && file.size % self.block_size != 0;
 
-                if needs_padding {
-                    // For padded blocks, we need to add the padding zeros to the hash
-                    let actual_size = (file.size % self.block_size) as usize;
-                    let padding_size = self.block_size as usize - actual_size;
+                // Par2cmdline approach: hash actual data, then add zeropad to finalize
+                // We've hashed the actual bytes in the chunk loop above
+                // Now we need to add padding for partial blocks
+                if is_last_block && file.size % self.block_size.as_u64() != 0 {
+                    let actual_size = (file.size % self.block_size.as_u64()) as usize;
+                    let padding_size = self.block_size.as_usize() - actual_size;
+
+                    log::debug!(
+                        "Block {}: Partial block - actual_size={}, padding_size={}, total={}",
+                        file_block_idx,
+                        actual_size,
+                        padding_size,
+                        actual_size + padding_size
+                    );
+
+                    // Add padding by hashing zeros
+                    // Reference: parpar/hasher/hasher_input_base.h md5_final_block with zeroPad
                     let padding = vec![0u8; padding_size];
-
                     block_md5_states[file_block_idx].update(&padding);
                     block_crc32_states[file_block_idx].update(&padding);
                 }
@@ -498,6 +518,16 @@ impl CreateContext {
 
                 // Finalize CRC32
                 let crc32_value = block_crc32_states[file_block_idx].clone().finalize();
+
+                log::debug!(
+                    "Block {}: MD5={:02x}{:02x}{:02x}{:02x}..., CRC32={:08x}",
+                    file_block_idx,
+                    md5_bytes[0],
+                    md5_bytes[1],
+                    md5_bytes[2],
+                    md5_bytes[3],
+                    crc32_value
+                );
 
                 file.block_checksums.push(BlockChecksum {
                     crc32: crc32_value,
@@ -529,7 +559,7 @@ impl CreateContext {
 
     /// Calculate optimal chunk size for processing
     /// Reference: par2cmdline-turbo/src/par2creator.cpp:329-360 CalculateProcessBlockSize()
-    fn calculate_chunk_size(&self) -> usize {
+    fn calculate_chunk_size(&self) -> ChunkSize {
         // Memory limit: 1GB
         const DEFAULT_MEMORY_LIMIT: usize = 1024 * 1024 * 1024; // 1GB
 
@@ -541,12 +571,12 @@ impl CreateContext {
         // recovery_block_count * block_size (output recovery blocks)
         // + block_overhead * block_size (input transfer buffers)
         let full_block_memory =
-            self.block_size as usize * (self.recovery_block_count as usize + block_overhead);
+            self.block_size.as_usize() * (self.recovery_block_count as usize + block_overhead);
 
         // Check if we can process full blocks at once (like par2cmdline)
         if full_block_memory <= DEFAULT_MEMORY_LIMIT {
             // Process entire blocks at once - no chunking needed
-            return self.block_size as usize;
+            return ChunkSize::new(self.block_size.as_usize());
         }
 
         // Need to use chunking - calculate chunk size
@@ -558,7 +588,7 @@ impl CreateContext {
         let aligned_chunk = chunk_size & !3;
 
         // But don't exceed block size
-        aligned_chunk.min(self.block_size as usize)
+        ChunkSize::new(aligned_chunk.min(self.block_size.as_usize()))
     }
 
     /// Write PAR2 files (index + volume files)
@@ -579,8 +609,11 @@ impl CreateContext {
 
         // Generate all critical packets
         // Reference: par2cmdline-turbo/src/par2creator.cpp CreateMainPacket(), CreateCreatorPacket()
-        let main_packet =
-            generate_main_packet(recovery_set_id, self.block_size, &self.source_files)?;
+        let main_packet = generate_main_packet(
+            recovery_set_id,
+            self.block_size.as_u64(),
+            &self.source_files,
+        )?;
         let creator_packet = generate_creator_packet(recovery_set_id)?;
 
         let file_desc_packets: Vec<_> = self
@@ -689,7 +722,7 @@ impl CreateContext {
 
     /// Get block size
     pub fn block_size(&self) -> u64 {
-        self.block_size
+        self.block_size.as_u64()
     }
 
     /// Get recovery block count

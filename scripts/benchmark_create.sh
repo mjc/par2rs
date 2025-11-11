@@ -39,7 +39,10 @@ cleanup() {
         echo "Done!"
     else
         echo ""
-        echo -e "${RED}Keeping temporary files for debugging: $TEMP${NC}"
+        echo -e "${RED}Keeping temporary files for debugging:${NC}"
+        echo -e "  Base: $TEMP"
+        echo -e "  par2cmdline output: $PAR2CMD_DIR"
+        echo -e "  par2rs output: $PAR2RS_DIR"
     fi
 }
 
@@ -67,13 +70,22 @@ echo -e "${YELLOW}Building par2rs...${NC}"
 cargo build --release 2>&1 | grep -E "(Compiling par2rs|Finished|error)" || true
 echo ""
 
-# Create test directory
+# Create test directory with subdirectories for each tool
 TEMP=$(mktemp -d)
+PAR2CMD_DIR="$TEMP/par2cmdline"
+PAR2RS_DIR="$TEMP/par2rs"
+mkdir -p "$PAR2CMD_DIR" "$PAR2RS_DIR"
+
 echo -e "${YELLOW}Creating test file in $TEMP...${NC}"
 
-# Generate test file once (reused across all iterations)
+# Generate test file once in base directory
+echo -e "${YELLOW}Creating test file in $TEMP...${NC}"
 dd if=/dev/urandom of="$TEMP/testfile.dat" bs=1M count=$FILE_SIZE_MB 2>&1 | tail -2
 echo ""
+
+# Copy test file to each subdirectory for isolated testing
+cp "$TEMP/testfile.dat" "$PAR2CMD_DIR/testfile.dat"
+cp "$TEMP/testfile.dat" "$PAR2RS_DIR/testfile.dat"
 
 # Calculate block size parameter (par2cmdline uses -s for block size in bytes)
 BLOCK_SIZE_BYTES=$((BLOCK_SIZE_KB * 1024))
@@ -86,19 +98,19 @@ declare -a PAR2RS_TIMES
 for iter in $(seq 1 $ITERATIONS); do
     echo -e "${GREEN}  Iteration $iter/$ITERATIONS${NC}"
     
-    # par2cmdline
-    rm -f "$TEMP/testfile_par2cmd"*.par2
+    # par2cmdline - in its own directory with its own copy of the file
+    rm -f "$PAR2CMD_DIR"/*.par2
     START=$(date +%s.%N)
-    $PAR2CMDLINE c -s$BLOCK_SIZE_BYTES -r$REDUNDANCY_PCT -q -q "$TEMP/testfile_par2cmd.par2" "$TEMP/testfile.dat" 2>&1 > /dev/null
+    $PAR2CMDLINE c -s$BLOCK_SIZE_BYTES -r$REDUNDANCY_PCT -q -q "$PAR2CMD_DIR/testfile.par2" "$PAR2CMD_DIR/testfile.dat" 2>&1 > /dev/null
     END=$(date +%s.%N)
     TIME=$(echo "$END - $START" | bc)
     PAR2CMD_TIMES+=($TIME)
     echo "    par2cmdline: ${TIME}s"
     
-    # par2rs
-    rm -f "$TEMP/testfile_par2rs"*.par2
+    # par2rs - in its own directory with its own copy of the file
+    rm -f "$PAR2RS_DIR"/*.par2
     START=$(date +%s.%N)
-    $PAR2RS c -s$BLOCK_SIZE_BYTES -r$REDUNDANCY_PCT -q "$TEMP/testfile_par2rs.par2" "$TEMP/testfile.dat" 2>&1 > /dev/null
+    $PAR2RS c -s$BLOCK_SIZE_BYTES -r$REDUNDANCY_PCT -q "$PAR2RS_DIR/testfile.par2" "$PAR2RS_DIR/testfile.dat" 2>&1 > /dev/null
     END=$(date +%s.%N)
     TIME=$(echo "$END - $START" | bc)
     PAR2RS_TIMES+=($TIME)
@@ -129,43 +141,43 @@ echo ""
 # Verify both outputs are valid and can verify the file
 echo -e "${YELLOW}Verifying PAR2 outputs...${NC}"
 
-# Verify par2cmdline output
+# Verify par2cmdline output (in its own directory)
 echo -n "  par2cmdline verification: "
-if $PAR2CMDLINE v -q -q "$TEMP/testfile_par2cmd.par2" >/dev/null 2>&1; then
+if $PAR2CMDLINE v -q -q "$PAR2CMD_DIR/testfile.par2" >/dev/null 2>&1; then
     echo -e "${GREEN}PASS${NC}"
 else
     echo -e "${RED}FAIL - par2cmdline output invalid!${NC}"
     echo ""
-    $PAR2CMDLINE v "$TEMP/testfile_par2cmd.par2" 2>&1
+    $PAR2CMDLINE v "$PAR2CMD_DIR/testfile.par2" 2>&1
     KEEP_TEMP=1
     exit 1
 fi
 
-# Verify par2rs output with par2cmdline (cross-validation)
+# Verify par2rs output with par2cmdline (cross-validation, in its own directory)
 echo -n "  par2rs verification (par2cmdline): "
-if $PAR2CMDLINE v -q -q "$TEMP/testfile_par2rs.par2" >/dev/null 2>&1; then
+if $PAR2CMDLINE v -q -q "$PAR2RS_DIR/testfile.par2" >/dev/null 2>&1; then
     echo -e "${GREEN}PASS${NC}"
 else
     echo -e "${RED}FAIL - par2rs output invalid per par2cmdline!${NC}"
     echo ""
     echo -e "${YELLOW}par2cmdline verification output:${NC}"
-    $PAR2CMDLINE v "$TEMP/testfile_par2rs.par2" 2>&1
+    $PAR2CMDLINE v "$PAR2RS_DIR/testfile.par2" 2>&1
     echo ""
     echo -e "${YELLOW}par2rs file list:${NC}"
-    ls -lh "$TEMP/"*par2rs* 2>&1
+    ls -lh "$PAR2RS_DIR/" 2>&1
     KEEP_TEMP=1
     exit 1
 fi
 
-# Verify par2rs output with par2rs (self-validation)
+# Verify par2rs output with par2rs (self-validation, in its own directory)
 echo -n "  par2rs verification (par2rs):      "
-if $PAR2RS v -q "$TEMP/testfile_par2rs.par2" >/dev/null 2>&1; then
+if $PAR2RS v -q "$PAR2RS_DIR/testfile.par2" >/dev/null 2>&1; then
     echo -e "${GREEN}PASS${NC}"
 else
     echo -e "${RED}FAIL - par2rs output invalid per par2rs!${NC}"
     echo ""
     echo -e "${YELLOW}par2rs verification output:${NC}"
-    $PAR2RS v "$TEMP/testfile_par2rs.par2" 2>&1
+    $PAR2RS v "$PAR2RS_DIR/testfile.par2" 2>&1
     KEEP_TEMP=1
     exit 1
 fi
@@ -174,30 +186,28 @@ fi
 echo ""
 echo -e "${YELLOW}Testing repair capability...${NC}"
 
-# Test par2cmdline repair
-cp "$TEMP/testfile.dat" "$TEMP/testfile_repair1.dat"
-dd if=/dev/urandom of="$TEMP/testfile_repair1.dat" bs=1K count=100 seek=500 conv=notrunc 2>/dev/null
+# Test par2cmdline repair (corrupt its own copy)
+dd if=/dev/urandom of="$PAR2CMD_DIR/testfile.dat" bs=1K count=100 seek=500 conv=notrunc 2>/dev/null
 echo -n "  par2cmdline repair: "
-if $PAR2CMDLINE r -q -q "$TEMP/testfile_par2cmd.par2" "$TEMP/testfile_repair1.dat" >/dev/null 2>&1; then
+if $PAR2CMDLINE r -q -q "$PAR2CMD_DIR/testfile.par2" >/dev/null 2>&1; then
     echo -e "${GREEN}PASS${NC}"
 else
     echo -e "${RED}FAIL - par2cmdline repair failed!${NC}"
     echo ""
-    $PAR2CMDLINE r "$TEMP/testfile_par2cmd.par2" "$TEMP/testfile_repair1.dat" 2>&1
+    $PAR2CMDLINE r "$PAR2CMD_DIR/testfile.par2" 2>&1
     KEEP_TEMP=1
     exit 1
 fi
 
-# Test par2rs repair with par2rs-generated files
-cp "$TEMP/testfile.dat" "$TEMP/testfile_repair2.dat"
-dd if=/dev/urandom of="$TEMP/testfile_repair2.dat" bs=1K count=100 seek=500 conv=notrunc 2>/dev/null
+# Test par2rs repair (corrupt its own copy)
+dd if=/dev/urandom of="$PAR2RS_DIR/testfile.dat" bs=1K count=100 seek=500 conv=notrunc 2>/dev/null
 echo -n "  par2rs repair (par2rs):      "
-if $PAR2RS r -q "$TEMP/testfile_par2rs.par2" "$TEMP/testfile_repair2.dat" >/dev/null 2>&1; then
+if $PAR2RS r -q "$PAR2RS_DIR/testfile.par2" >/dev/null 2>&1; then
     echo -e "${GREEN}PASS${NC}"
 else
     echo -e "${RED}FAIL - par2rs repair failed!${NC}"
     echo ""
-    $PAR2RS r "$TEMP/testfile_par2rs.par2" "$TEMP/testfile_repair2.dat" 2>&1
+    $PAR2RS r "$PAR2RS_DIR/testfile.par2" 2>&1
     KEEP_TEMP=1
     exit 1
 fi
