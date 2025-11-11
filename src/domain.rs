@@ -384,6 +384,22 @@ impl std::ops::Add for BlockCount {
     }
 }
 
+impl std::ops::Sub for BlockCount {
+    type Output = BlockCount;
+
+    fn sub(self, rhs: BlockCount) -> BlockCount {
+        BlockCount(self.0 - rhs.0)
+    }
+}
+
+impl std::ops::Sub<usize> for BlockCount {
+    type Output = usize;
+
+    fn sub(self, rhs: usize) -> usize {
+        self.0 as usize - rhs
+    }
+}
+
 impl std::ops::AddAssign for BlockCount {
     fn add_assign(&mut self, rhs: BlockCount) {
         self.0 += rhs.0;
@@ -409,6 +425,63 @@ impl PartialOrd<u32> for BlockCount {
 }
 
 impl std::fmt::Display for BlockCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Type-safe wrapper for file size in bytes
+/// Prevents mixing file sizes with block offsets or other u64 values
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FileSize(u64);
+
+impl FileSize {
+    pub const fn new(bytes: u64) -> Self {
+        FileSize(bytes)
+    }
+
+    pub const fn as_u64(&self) -> u64 {
+        self.0
+    }
+
+    pub const fn as_usize(&self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl From<u64> for FileSize {
+    fn from(bytes: u64) -> Self {
+        FileSize::new(bytes)
+    }
+}
+
+impl std::ops::Rem<BlockSize> for FileSize {
+    type Output = u64;
+
+    fn rem(self, rhs: BlockSize) -> u64 {
+        self.0 % rhs.as_u64()
+    }
+}
+
+impl std::iter::Sum for FileSize {
+    fn sum<I: Iterator<Item = FileSize>>(iter: I) -> FileSize {
+        FileSize(iter.map(|s| s.0).sum())
+    }
+}
+
+impl PartialEq<u64> for FileSize {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialOrd<u64> for FileSize {
+    fn partial_cmp(&self, other: &u64) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(other)
+    }
+}
+
+impl std::fmt::Display for FileSize {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }

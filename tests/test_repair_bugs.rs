@@ -61,7 +61,7 @@ impl TestEnv {
     fn corrupt_slice(&self, slice_index: usize, data: &[u8]) {
         let context = self.load_context();
         let slice_size = context.recovery_set.slice_size;
-        self.corrupt_at(slice_index as u64 * slice_size, data);
+        self.corrupt_at(slice_index as u64 * slice_size.as_u64(), data);
     }
 
     fn read_file(&self) -> Vec<u8> {

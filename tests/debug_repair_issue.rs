@@ -90,26 +90,27 @@ fn debug_repair_issue() {
     println!(
         "Valid slices after corruption: {} of {}",
         valid_slices.len(),
-        file_info.slice_count
+        file_info.slice_count.as_usize()
     );
 
-    let missing_slices: Vec<usize> = (0..file_info.slice_count)
+    let missing_slices: Vec<usize> = (0..file_info.slice_count.as_usize())
         .filter(|idx| !valid_slices.contains(idx))
         .collect();
     println!("Missing slice indices: {:?}", missing_slices);
 
     // Show which bytes each missing slice should contain
     for &slice_idx in &missing_slices {
-        let offset = slice_idx * context.recovery_set.slice_size as usize;
-        let size = if slice_idx == file_info.slice_count - 1 {
-            let remaining = file_info.file_length % context.recovery_set.slice_size;
+        let offset = slice_idx * context.recovery_set.slice_size.as_usize();
+        let size = if slice_idx == file_info.slice_count.as_usize() - 1 {
+            let remaining =
+                file_info.file_length.as_u64() % context.recovery_set.slice_size.as_u64();
             if remaining == 0 {
-                context.recovery_set.slice_size as usize
+                context.recovery_set.slice_size.as_usize()
             } else {
                 remaining as usize
             }
         } else {
-            context.recovery_set.slice_size as usize
+            context.recovery_set.slice_size.as_usize()
         };
 
         println!(
@@ -153,16 +154,16 @@ fn debug_repair_issue() {
 
             // Compare the repaired slices with original
             for &slice_idx in &missing_slices {
-                let offset = slice_idx * context.recovery_set.slice_size as usize;
+                let offset = slice_idx * context.recovery_set.slice_size.as_usize();
                 let size = if slice_idx == file_info.slice_count - 1 {
                     let remaining = file_info.file_length % context.recovery_set.slice_size;
                     if remaining == 0 {
-                        context.recovery_set.slice_size as usize
+                        context.recovery_set.slice_size.as_usize()
                     } else {
                         remaining as usize
                     }
                 } else {
-                    context.recovery_set.slice_size as usize
+                    context.recovery_set.slice_size.as_usize()
                 };
 
                 println!(

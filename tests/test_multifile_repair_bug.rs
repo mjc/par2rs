@@ -207,9 +207,9 @@ fn test_multifile_repair_with_two_damaged_files() {
         println!(
             "  [{:4}-{:4}] {} ({} slices)",
             file_info.global_slice_offset.as_usize(),
-            file_info.global_slice_offset.as_usize() + file_info.slice_count - 1,
+            file_info.global_slice_offset.as_usize() + file_info.slice_count.as_usize() - 1,
             file_info.file_name,
-            file_info.slice_count
+            file_info.slice_count.as_usize()
         );
     }
 
@@ -401,7 +401,7 @@ fn test_reconstruction_excludes_all_damaged_slices() {
         .recovery_set
         .files
         .iter()
-        .map(|f| f.slice_count)
+        .map(|f| f.slice_count.as_usize())
         .sum();
 
     println!("Total slices: {}", total_slices);

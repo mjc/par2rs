@@ -4,7 +4,7 @@ use super::error::{RepairError, Result};
 use super::error_helpers::delete_file;
 use super::progress::{ConsoleReporter, ProgressReporter};
 use super::types::{FileInfo, RecoverySetInfo};
-use crate::domain::{FileId, GlobalSliceIndex};
+use crate::domain::{BlockCount, BlockSize, FileId, FileSize, GlobalSliceIndex};
 use crate::packets::{FileDescriptionPacket, Packet, RecoverySliceMetadata};
 use log::debug;
 use rustc_hash::FxHashMap as HashMap;
@@ -123,10 +123,10 @@ impl RepairContext {
             files.push(FileInfo {
                 file_id: fd.file_id,
                 file_name: file_name.clone(),
-                file_length: fd.file_length,
+                file_length: FileSize::new(fd.file_length),
                 md5_hash: fd.md5_hash,
                 md5_16k: fd.md5_16k,
-                slice_count,
+                slice_count: BlockCount::new(slice_count as u32),
                 global_slice_offset: GlobalSliceIndex::new(global_slice_offset),
             });
 
@@ -153,7 +153,7 @@ impl RepairContext {
 
         Ok(RecoverySetInfo {
             set_id: main.set_id,
-            slice_size: main.slice_size,
+            slice_size: BlockSize::new(main.slice_size),
             files,
             recovery_slices_metadata: Vec::new(), // Populated later for memory-efficient loading
             file_slice_checksums,

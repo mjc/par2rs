@@ -2,7 +2,7 @@
 // We can't easily test console output, but we can test that methods don't panic
 // and that the trait is properly implemented
 
-use par2rs::domain::RecoverySetId;
+use par2rs::domain::{BlockSize, RecoverySetId};
 use par2rs::repair::{ConsoleReporter, ProgressReporter, SilentReporter};
 use par2rs::repair::{FileStatus, RecoverySetInfo, VerificationResult};
 use rustc_hash::FxHashMap;
@@ -10,7 +10,7 @@ use rustc_hash::FxHashMap;
 fn create_test_recovery_set() -> RecoverySetInfo {
     RecoverySetInfo {
         set_id: RecoverySetId::new([0; 16]),
-        slice_size: 16384,
+        slice_size: BlockSize::new(16384),
         files: vec![],
         recovery_slices_metadata: vec![],
         file_slice_checksums: FxHashMap::default(),
