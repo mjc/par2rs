@@ -8,7 +8,7 @@ use super::packet_generator::generate_recovery_set_id;
 use super::progress::CreateReporter;
 use super::source_file::SourceFileInfo;
 use super::types::CreateConfig;
-use crate::domain::{BlockSize, ChunkSize, RecoverySetId};
+use crate::domain::{BlockSize, ChunkSize, RecoverySetId, SourceBlockCount};
 
 /// Main context for PAR2 creation
 ///
@@ -141,33 +141,107 @@ impl CreateContext {
         Ok(())
     }
 
-    /// Calculate optimal block size based on total file size
+    /// Calculate optimal block size based on source_block_count or total file size
     ///
-    /// Reference: par2cmdline-turbo/src/par2creator.cpp ComputeBlockCount()
+    /// Reference: par2cmdline-turbo/src/commandline.cpp:1120-1245 ComputeBlockSize()
     fn calculate_block_size(&mut self) -> CreateResult<()> {
+        // Reference: par2cmdline-turbo/src/commandline.cpp:1120-1123
+        // If neither block_size nor source_block_count specified, default to 2000 blocks
+        let target_block_count =
+            if self.config.block_size.is_none() && self.config.source_block_count.is_none() {
+                SourceBlockCount::new(2000)
+            } else if let Some(count) = self.config.source_block_count {
+                count
+            } else {
+                // block_size is specified, we'll use it directly below
+                SourceBlockCount::new(0) // Won't be used
+            };
+
         if let Some(block_size) = self.config.block_size {
-            // User specified block size
+            // User specified block size explicitly (-s option)
+            // Reference: par2cmdline-turbo/src/par2creator.cpp:108
             self.block_size = BlockSize::new(block_size);
         } else {
-            // Auto-calculate based on total size
-            let total_size: u64 = self.source_files.iter().map(|f| f.size).sum();
+            // Calculate block_size from target_block_count
+            // Reference: par2cmdline-turbo/src/commandline.cpp:1147-1239
+            let block_count = target_block_count.as_u64();
+            let file_count = self.source_files.len() as u64;
 
-            // par2cmdline-turbo algorithm:
-            // - Aim for 2000 blocks for optimal balance
-            // - Round to multiple of 4 bytes (alignment)
-            // - Minimum 512 bytes, maximum 16MB
+            if block_count < file_count {
+                return Err(CreateError::Other(format!(
+                    "Block count ({}) cannot be smaller than the number of files ({})",
+                    block_count, file_count
+                )));
+            }
 
-            const TARGET_BLOCKS: u64 = 2000;
-            const MIN_BLOCK_SIZE: u64 = 512;
-            const MAX_BLOCK_SIZE: u64 = 16 * 1024 * 1024; // 16MB
+            if block_count == file_count {
+                // If block count equals file count, use size of largest file
+                // Reference: par2cmdline-turbo/src/commandline.cpp:1158-1173
+                let largest_filesize = self.source_files.iter().map(|f| f.size).max().unwrap_or(0);
+                let block_size = (largest_filesize + 3) & !3; // Round up to multiple of 4
+                self.block_size = BlockSize::new(block_size);
+            } else {
+                // Use binary search to find block size that results in target block count
+                // Reference: par2cmdline-turbo/src/commandline.cpp:1175-1237
 
-            let calculated = total_size.div_ceil(TARGET_BLOCKS);
-            let calculated = (calculated + 3) & !3; // Round up to multiple of 4
+                // Calculate total size in 4-byte units (par2 uses 4-byte alignment)
+                let total_size: u64 = self.source_files.iter().map(|f| (f.size + 3) / 4).sum();
 
-            self.block_size = BlockSize::new(calculated.clamp(MIN_BLOCK_SIZE, MAX_BLOCK_SIZE));
+                if block_count > total_size {
+                    // Too many blocks requested, use minimum size
+                    self.block_size = BlockSize::new(4);
+                } else {
+                    // Binary search for block size
+                    // Lower/upper bounds are in 4-byte units
+                    let mut lower_bound = total_size / block_count;
+                    let mut upper_bound =
+                        (total_size + block_count - file_count - 1) / (block_count - file_count);
+
+                    let mut size = 0u64;
+                    let mut count = 0u64;
+
+                    while lower_bound < upper_bound {
+                        size = (lower_bound + upper_bound) / 2;
+
+                        // Calculate how many blocks result from this size
+                        count = 0;
+                        for file in &self.source_files {
+                            count += ((file.size + 3) / 4 + size - 1) / size;
+                        }
+
+                        if count > block_count {
+                            lower_bound = size + 1;
+                            if lower_bound >= upper_bound {
+                                size = lower_bound;
+                                // Recalculate count with final size
+                                count = 0;
+                                for file in &self.source_files {
+                                    count += ((file.size + 3) / 4 + size - 1) / size;
+                                }
+                            }
+                        } else {
+                            upper_bound = size;
+                        }
+                    }
+
+                    if count > 32768 {
+                        return Err(CreateError::Other(format!(
+                            "Error calculating block size. Block count cannot be higher than 32768 (got {})",
+                            count
+                        )));
+                    } else if count == 0 {
+                        return Err(CreateError::Other(
+                            "Error calculating block size. Block count cannot be 0".to_string(),
+                        ));
+                    }
+
+                    // Convert from 4-byte units to bytes
+                    self.block_size = BlockSize::new(size * 4);
+                }
+            }
         }
 
-        // Calculate total source block count
+        // Calculate total source block count with the determined block_size
         self.source_block_count = self
             .source_files
             .iter()
@@ -560,35 +634,10 @@ impl CreateContext {
     /// Calculate optimal chunk size for processing
     /// Reference: par2cmdline-turbo/src/par2creator.cpp:329-360 CalculateProcessBlockSize()
     fn calculate_chunk_size(&self) -> ChunkSize {
-        // Memory limit: 1GB
-        const DEFAULT_MEMORY_LIMIT: usize = 1024 * 1024 * 1024; // 1GB
-
-        // Transfer buffer overhead (par2cmdline uses NUM_TRANSFER_BUFFERS + sourceblockcount)
-        // We need overhead for: input_buffers (sourceblockcount)
-        let block_overhead = self.source_block_count as usize;
-
-        // Total memory needed if we process full blocks at once:
-        // recovery_block_count * block_size (output recovery blocks)
-        // + block_overhead * block_size (input transfer buffers)
-        let full_block_memory =
-            self.block_size.as_usize() * (self.recovery_block_count as usize + block_overhead);
-
-        // Check if we can process full blocks at once (like par2cmdline)
-        if full_block_memory <= DEFAULT_MEMORY_LIMIT {
-            // Process entire blocks at once - no chunking needed
-            return ChunkSize::new(self.block_size.as_usize());
-        }
-
-        // Need to use chunking - calculate chunk size
-        // Memory formula: (recovery_block_count + block_overhead) * chunk_size <= memory_limit
-        let chunk_size =
-            DEFAULT_MEMORY_LIMIT / (self.recovery_block_count as usize + block_overhead);
-
-        // Align to 4-byte boundary (like par2cmdline: ~3 &)
-        let aligned_chunk = chunk_size & !3;
-
-        // But don't exceed block size
-        ChunkSize::new(aligned_chunk.min(self.block_size.as_usize()))
+        // Always process full blocks at once to ensure correct checksums
+        // The incremental MD5/CRC32 computation requires reading complete blocks
+        // in a single pass, not split across multiple chunks
+        ChunkSize::new(self.block_size.as_usize())
     }
 
     /// Write PAR2 files (index + volume files)

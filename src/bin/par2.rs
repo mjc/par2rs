@@ -349,10 +349,9 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
         context = context.block_size(size);
     }
     if let Some(count) = block_count {
-        // Par2cmdline uses -b for block count, which sets recovery blocks based on data size
-        // This is different from recovery_block_count (-c)
-        // For now, treat as recovery_block_count
-        context = context.recovery_block_count(count);
+        // Par2cmdline uses -b for source block count (target number of blocks)
+        // This is used to calculate block_size if block_size is not specified
+        context = context.source_block_count(count);
     }
     if let Some(count) = recovery_block_count {
         context = context.recovery_block_count(count);

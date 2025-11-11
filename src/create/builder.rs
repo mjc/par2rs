@@ -4,6 +4,7 @@ use super::context::CreateContext;
 use super::error::CreateResult;
 use super::progress::{ConsoleCreateReporter, CreateReporter};
 use super::types::{CreateConfig, RecoveryFileScheme};
+use crate::domain::SourceBlockCount;
 use std::path::PathBuf;
 
 /// Builder for CreateContext
@@ -65,9 +66,19 @@ impl CreateContextBuilder {
 
     /// Set explicit block size in bytes
     ///
-    /// If not set, block size will be auto-calculated
+    /// If not set, block size will be auto-calculated from source_block_count
+    /// Reference: par2cmdline -s option
     pub fn block_size(mut self, size: u64) -> Self {
         self.config.block_size = Some(size);
+        self
+    }
+
+    /// Set target number of source blocks
+    ///
+    /// If block_size is not set, block size will be calculated to achieve this target
+    /// Reference: par2cmdline -b option
+    pub fn source_block_count(mut self, count: u32) -> Self {
+        self.config.source_block_count = Some(SourceBlockCount::new(count));
         self
     }
 

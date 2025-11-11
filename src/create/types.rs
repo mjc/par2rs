@@ -1,5 +1,6 @@
 //! Type definitions for PAR2 creation
 
+use crate::domain::SourceBlockCount;
 use std::path::PathBuf;
 
 /// Recovery file scheme determines how recovery blocks are distributed across files
@@ -31,8 +32,14 @@ pub struct CreateConfig {
     /// List of source files to protect
     pub source_files: Vec<PathBuf>,
 
-    /// Block size in bytes (if None, will be auto-calculated)
+    /// Block size in bytes (if None, will be auto-calculated from source_block_count)
+    /// Reference: par2cmdline -s option
     pub block_size: Option<u64>,
+
+    /// Target number of source blocks (if None, defaults to 2000)
+    /// Reference: par2cmdline -b option
+    /// If block_size is set, this is ignored. If neither is set, defaults to 2000.
+    pub source_block_count: Option<SourceBlockCount>,
 
     /// Number of recovery blocks to create (if None, calculated from redundancy_percentage)
     pub recovery_block_count: Option<u32>,
@@ -65,6 +72,7 @@ impl Default for CreateConfig {
             output_name: String::new(),
             source_files: Vec::new(),
             block_size: None,
+            source_block_count: None,
             recovery_block_count: None,
             redundancy_percentage: Some(5), // 5% is typical default
             recovery_file_scheme: RecoveryFileScheme::default(),

@@ -76,6 +76,12 @@ pub fn hash_source_file(
                 crate::checksum::compute_block_checksums(&buffer[..bytes_read])
             };
 
+            // DEBUG: Print first block checksum
+            if block_idx == 0 {
+                eprintln!("DEBUG: Block 0 MD5: {:?}", md5.as_bytes());
+                eprintln!("DEBUG: Block 0 CRC32: {:08x}", crc32.as_u32());
+            }
+
             block_checksums.push(BlockChecksum {
                 crc32: crc32.as_u32(),
                 hash: md5,

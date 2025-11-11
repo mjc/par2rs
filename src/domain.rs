@@ -351,6 +351,37 @@ impl std::fmt::Display for ChunkSize {
     }
 }
 
+/// Newtype for target source block count (par2cmdline -b option)
+/// This is the TARGET number of source blocks to create.
+/// Used to calculate block_size if block_size is not explicitly specified.
+/// Reference: par2cmdline-turbo/src/commandline.h blockcount variable
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SourceBlockCount(u32);
+
+impl SourceBlockCount {
+    pub const fn new(count: u32) -> Self {
+        SourceBlockCount(count)
+    }
+
+    pub const fn as_u32(&self) -> u32 {
+        self.0
+    }
+
+    pub const fn as_usize(&self) -> usize {
+        self.0 as usize
+    }
+
+    pub const fn as_u64(&self) -> u64 {
+        self.0 as u64
+    }
+}
+
+impl From<u32> for SourceBlockCount {
+    fn from(count: u32) -> Self {
+        SourceBlockCount::new(count)
+    }
+}
+
 /// Type-safe wrapper for block count
 /// Prevents mixing block counts with other u32 values
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
