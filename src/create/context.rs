@@ -634,9 +634,10 @@ impl CreateContext {
     /// Calculate optimal chunk size for processing
     /// Reference: par2cmdline-turbo/src/par2creator.cpp:329-360 CalculateProcessBlockSize()
     fn calculate_chunk_size(&self) -> ChunkSize {
-        // Always process full blocks at once to ensure correct checksums
-        // The incremental MD5/CRC32 computation requires reading complete blocks
-        // in a single pass, not split across multiple chunks
+        // Always process full blocks at once
+        // TODO: Implement proper seeking to support memory-limited chunking like par2cmdline-turbo
+        // par2cmdline-turbo seeks to (block_offset + chunk_offset) for each block on each read
+        // Our current sequential reader approach doesn't support this
         ChunkSize::new(self.block_size.as_usize())
     }
 
