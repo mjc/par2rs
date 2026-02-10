@@ -25,6 +25,8 @@
           lib.makeLibraryPath [
             # load external libraries that you need in your rust project here
           ];
+
+        cargoTargetEnvPrefix = pkgs.lib.toUpper (builtins.replaceStrings ["-"] ["_"] pkgs.rust.toRustTargetSpec pkgs.stdenv.hostPlatform);
       in {
         # Package output - can be used as flake input and drop-in replacement for par2cmdline
         packages = {
@@ -102,10 +104,12 @@
               valgrind # for iai-callgrind benchmarks
               gh # GitHub CLI
               git-filter-repo # for rewriting git history
+              sccache
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
               heaptrack
               perf
+              mold
             ];
 
           RUSTC_VERSION = overrides.toolchain.channel;
@@ -123,6 +127,9 @@
                 else "x86_64-apple-darwin"
               else "x86_64-unknown-linux-gnu"
             }/bin/
+            export RUSTC_WRAPPER="${pkgs.sccache}/bin/sccache"
+            export "CARGO_TARGET_''${cargoTargetEnvPrefix}_LINKER"="${pkgs.lib.optionalString pkgs.stdenv.isLinux "${pkgs.mold}/bin/mold -run "}${pkgs.stdenv.cc}/bin/cc"
+            export "CARGO_TARGET_''${cargoTargetEnvPrefix}_RUSTFLAGS"="-C target-cpu=native"
           '';
 
           # Add precompiled library to rustc search path
