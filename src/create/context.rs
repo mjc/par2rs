@@ -290,7 +290,7 @@ impl CreateContext {
     ///
     /// Reference: par2cmdline-turbo/src/par2creator.cpp ProcessData()
     fn generate_recovery_blocks(&mut self) -> CreateResult<()> {
-        use crate::checksum::{calculate_file_md5_16k, compute_file_id, Md5Reader};
+        use crate::checksum::{calculate_file_md5_16k, compute_file_id};
         use crate::create::source_file::BlockChecksum;
         use crate::reed_solomon::RecoveryBlockEncoder;
         use std::fs::File;
@@ -328,14 +328,16 @@ impl CreateContext {
         let mut recovery_blocks: Vec<(u16, Vec<u8>)> =
             exponents.iter().map(|&exp| (exp, Vec::new())).collect();
 
-        // Track MD5 readers and incremental block checksum state for each file
-        // We'll open files once and keep them open for the entire chunked loop
-        let mut file_readers: Vec<Md5Reader<File>> = Vec::new();
+        // Track seekable file handles and full-file MD5 state for each file
+        // We'll open files once and seek as needed for chunked processing
+        let mut file_handles: Vec<File> = Vec::new();
+        let mut file_md5_states: Vec<Md5> = Vec::new();
 
         // Track incremental MD5 and CRC32 state for each block (not full data!)
         // This is memory-efficient: only state objects, not 10GB of block data
         use crc32fast::Hasher as Crc32Hasher;
         use md5::{Digest, Md5};
+        use std::io::Seek;
 
         let mut block_md5_states: Vec<Md5> = Vec::new();
         let mut block_crc32_states: Vec<Crc32Hasher> = Vec::new();
@@ -351,9 +353,10 @@ impl CreateContext {
                 })?;
             file.hash_16k = hash_16k;
 
-            // Open file for processing with MD5 tracking
+            // Open file for processing (seekable)
             let f = open_for_reading(&file.path)?;
-            file_readers.push(Md5Reader::new(f));
+            file_handles.push(f);
+            file_md5_states.push(Md5::new());
 
             let block_count = file.calculate_block_count(self.block_size.as_u64());
             file.block_count = block_count;
@@ -431,12 +434,29 @@ impl CreateContext {
 
                     let mut chunk = vec![0u8; chunk_len];
                     if bytes_to_read > 0 {
-                        file_readers[file_idx]
+                        // Calculate file position: block_idx * block_size + block_offset
+                        // Reference: par2cmdline-turbo DataBlock::ReadData (datablock.cpp:45-91)
+                        let file_position =
+                            (block_idx as u64 * self.block_size.as_u64()) + block_offset;
+
+                        // Seek to the correct position in the file
+                        file_handles[file_idx]
+                            .seek(std::io::SeekFrom::Start(file_position))
+                            .map_err(|e| CreateError::FileReadError {
+                                file: file.path.to_string_lossy().to_string(),
+                                source: e,
+                            })?;
+
+                        // Read the data
+                        file_handles[file_idx]
                             .read_exact(&mut chunk[..bytes_to_read])
                             .map_err(|e| CreateError::FileReadError {
                                 file: file.path.to_string_lossy().to_string(),
                                 source: e,
                             })?;
+
+                        // Update full-file MD5 hash
+                        file_md5_states[file_idx].update(&chunk[..bytes_to_read]);
                     }
 
                     // Update incremental checksums with actual bytes read
@@ -536,13 +556,17 @@ impl CreateContext {
         }
 
         // Finalize file hashes and compute block checksums
-        // Now that we've read all the data through Md5Readers, finalize to get MD5 hashes
+        // Now that we've read all the data, finalize to get MD5 hashes
         let mut file_block_idx = 0usize;
 
-        // Take ownership of file_readers to consume them
-        let finalized_hashes: Vec<[u8; 16]> = file_readers
+        let finalized_hashes: Vec<[u8; 16]> = file_md5_states
             .into_iter()
-            .map(|reader| reader.finalize().1)
+            .map(|state| {
+                let hash = state.finalize();
+                let mut bytes = [0u8; 16];
+                bytes.copy_from_slice(&hash);
+                bytes
+            })
             .collect();
 
         for (file_idx, file) in self.source_files.iter_mut().enumerate() {
@@ -634,11 +658,36 @@ impl CreateContext {
     /// Calculate optimal chunk size for processing
     /// Reference: par2cmdline-turbo/src/par2creator.cpp:329-360 CalculateProcessBlockSize()
     fn calculate_chunk_size(&self) -> ChunkSize {
-        // Always process full blocks at once
-        // TODO: Implement proper seeking to support memory-limited chunking like par2cmdline-turbo
-        // par2cmdline-turbo seeks to (block_offset + chunk_offset) for each block on each read
-        // Our current sequential reader approach doesn't support this
-        ChunkSize::new(self.block_size.as_usize())
+        // Reference: par2cmdline-turbo/src/par2creator.cpp CalculateProcessBlockSize()
+        // Memory limit: 1GB
+        const DEFAULT_MEMORY_LIMIT: usize = 1024 * 1024 * 1024; // 1GB
+
+        // Transfer buffer overhead (par2cmdline uses NUM_TRANSFER_BUFFERS + sourceblockcount)
+        // We need overhead for: input_buffers (sourceblockcount)
+        let block_overhead = self.source_block_count as usize;
+
+        // Total memory needed if we process full blocks at once:
+        // recovery_block_count * block_size (output recovery blocks)
+        // + block_overhead * block_size (input transfer buffers)
+        let full_block_memory =
+            self.block_size.as_usize() * (self.recovery_block_count as usize + block_overhead);
+
+        // Check if we can process full blocks at once (like par2cmdline)
+        if full_block_memory <= DEFAULT_MEMORY_LIMIT {
+            // Process entire blocks at once - no chunking needed
+            return ChunkSize::new(self.block_size.as_usize());
+        }
+
+        // Need to use chunking - calculate chunk size
+        // Memory formula: (recovery_block_count + block_overhead) * chunk_size <= memory_limit
+        let chunk_size =
+            DEFAULT_MEMORY_LIMIT / (self.recovery_block_count as usize + block_overhead);
+
+        // Align to 4-byte boundary (like par2cmdline: ~3 &)
+        let aligned_chunk = chunk_size & !3;
+
+        // But don't exceed block size
+        ChunkSize::new(aligned_chunk.min(self.block_size.as_usize()))
     }
 
     /// Write PAR2 files (index + volume files)
