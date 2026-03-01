@@ -167,6 +167,90 @@ fn allocate_recovery_blocks(
     allocations
 }
 
+/// Data for a single recovery volume file
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryFilePlan {
+    /// Filename for this volume (e.g. "test.vol00+2.par2")
+    pub filename: PathBuf,
+    /// First recovery block exponent in this file
+    pub first_exponent: u32,
+    /// Number of recovery blocks in this file
+    pub block_count: u32,
+}
+
+/// Generate recovery file plan (filenames + allocation data together)
+///
+/// Returns one entry per volume file. The index file (base.par2) is NOT
+/// included — callers handle that separately.
+///
+/// Reference: par2cmdline-turbo/src/par2creator.cpp InitialiseOutputFiles()
+pub fn plan_recovery_files(
+    base_name: &str,
+    recovery_file_count: u32,
+    recovery_block_count: u32,
+    first_recovery_block: u32,
+    scheme: RecoveryScheme,
+    largest_file_size: u64,
+    block_size: u64,
+) -> Vec<RecoveryFilePlan> {
+    let allocations = allocate_recovery_blocks(
+        recovery_file_count,
+        recovery_block_count,
+        first_recovery_block,
+        scheme,
+        largest_file_size,
+        block_size,
+    );
+
+    // Compute digit widths for filenames (same logic as generate_recovery_filenames)
+    let mut limit_low = 0;
+    let mut limit_count = 0;
+    for alloc in &allocations {
+        if limit_low < alloc.exponent {
+            limit_low = alloc.exponent;
+        }
+        if limit_count < alloc.count {
+            limit_count = alloc.count;
+        }
+    }
+    let digits_low = count_digits(limit_low);
+    let digits_count = count_digits(limit_count);
+
+    // Build plan for volume files only (skip the last entry, which is the index)
+    let mut plan = Vec::with_capacity(recovery_file_count as usize);
+    for file_number in 0..recovery_file_count as usize {
+        let alloc = &allocations[file_number];
+        let filename = format!(
+            "{}.vol{:0width_exp$}+{:0width_cnt$}.par2",
+            base_name,
+            alloc.exponent,
+            alloc.count,
+            width_exp = digits_low,
+            width_cnt = digits_count,
+        );
+        plan.push(RecoveryFilePlan {
+            filename: PathBuf::from(filename),
+            first_exponent: alloc.exponent,
+            block_count: alloc.count,
+        });
+    }
+
+    plan
+}
+
+/// Compute default number of recovery files for the Variable scheme
+///
+/// Uses ceil(log2(recovery_block_count)), matching par2cmdline-turbo's default.
+/// Minimum is 1.
+pub fn default_recovery_file_count(recovery_block_count: u32) -> u32 {
+    if recovery_block_count <= 1 {
+        return 1;
+    }
+    // ceil(log2(n)) = number of bits needed to represent n-1
+    let bits = u32::BITS - (recovery_block_count - 1).leading_zeros();
+    bits.max(1)
+}
+
 /// Generate recovery file names
 ///
 /// # Arguments
@@ -495,6 +579,46 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].to_str().unwrap(), "test.vol0+5.par2");
         assert_eq!(files[1].to_str().unwrap(), "test.par2");
+    }
+
+    /// Test plan_recovery_files returns filenames + allocation data together
+    #[test]
+    fn plan_recovery_files_returns_filenames_and_allocation() {
+        let plan =
+            plan_recovery_files("test", 3, 10, 0, RecoveryScheme::Variable, 1_000_000, 16384);
+        // 3 volume files (index file is NOT included in plan)
+        assert_eq!(plan.len(), 3);
+        assert_eq!(plan[0].filename.to_str().unwrap(), "test.vol00+2.par2");
+        assert_eq!(plan[0].first_exponent, 0);
+        assert_eq!(plan[0].block_count, 2);
+        assert_eq!(plan[1].filename.to_str().unwrap(), "test.vol02+4.par2");
+        assert_eq!(plan[1].first_exponent, 2);
+        assert_eq!(plan[1].block_count, 4);
+        assert_eq!(plan[2].filename.to_str().unwrap(), "test.vol06+4.par2");
+        assert_eq!(plan[2].first_exponent, 6);
+        assert_eq!(plan[2].block_count, 4);
+    }
+
+    /// Test plan_recovery_files with zero recovery files returns empty plan
+    #[test]
+    fn plan_recovery_files_zero_files_returns_empty() {
+        let plan = plan_recovery_files("test", 0, 0, 0, RecoveryScheme::Variable, 1_000_000, 1024);
+        assert!(plan.is_empty());
+    }
+
+    /// Test default_recovery_file_count gives ceil(log2(n))
+    #[test]
+    fn default_recovery_file_count_is_ceil_log2() {
+        assert_eq!(default_recovery_file_count(1), 1);
+        assert_eq!(default_recovery_file_count(2), 1);
+        assert_eq!(default_recovery_file_count(3), 2);
+        assert_eq!(default_recovery_file_count(4), 2);
+        assert_eq!(default_recovery_file_count(5), 3);
+        assert_eq!(default_recovery_file_count(8), 3);
+        assert_eq!(default_recovery_file_count(9), 4);
+        assert_eq!(default_recovery_file_count(10), 4);
+        assert_eq!(default_recovery_file_count(16), 4);
+        assert_eq!(default_recovery_file_count(17), 5);
     }
 
     /// Test variable scheme low_block_count calculation

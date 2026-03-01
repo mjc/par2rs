@@ -111,6 +111,16 @@ impl CreateContextBuilder {
         self
     }
 
+    /// Set first recovery block exponent (default 0)
+    ///
+    /// Advanced option: sets the starting exponent for recovery blocks.
+    /// Normally left at 0; useful when splitting recovery data across separate par2 sets.
+    /// Reference: par2cmdline -f option
+    pub fn first_recovery_block(mut self, exponent: u32) -> Self {
+        self.config.first_recovery_block = exponent;
+        self
+    }
+
     /// Set memory limit for processing
     pub fn memory_limit(mut self, limit: usize) -> Self {
         self.config.memory_limit = Some(limit);

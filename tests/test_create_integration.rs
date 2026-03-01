@@ -335,6 +335,249 @@ fn test_output_file_structure_matches_par2cmdline() {
     println!("par2rs created {} files", our_files.len());
 }
 
+/// Volume files must each contain critical packets (so repair works without the index)
+#[test]
+fn volume_files_each_contain_critical_packets() {
+    let temp = tempdir().unwrap();
+    let test_file = temp.path().join("test.dat");
+    let par2_file = temp.path().join("test.par2");
+
+    create_test_file(&test_file, 4096, 0xAB).unwrap();
+
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(par2_file.to_str().unwrap())
+        .source_files(vec![test_file])
+        .recovery_block_count(4)
+        .reporter(reporter)
+        .build()
+        .unwrap();
+
+    context.create().unwrap();
+
+    // Every .vol*.par2 file must contain at least one recovery block AND critical packets
+    let vol_files: Vec<PathBuf> = fs::read_dir(temp.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.contains(".vol"))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    assert!(!vol_files.is_empty(), "Expected at least one volume file");
+
+    for vol in &vol_files {
+        let packets = par2rs::par2_files::load_par2_packets(&[vol.clone()], true, false);
+        assert!(
+            packets.recovery_block_count > 0,
+            "{} should contain recovery blocks",
+            vol.display()
+        );
+        assert!(
+            !packets.packets.is_empty(),
+            "{} should contain critical packets",
+            vol.display()
+        );
+    }
+}
+
+/// Repair must succeed using only volume files (no index file)
+#[test]
+fn repair_using_only_volume_files_succeeds() {
+    if !par2_available() {
+        eprintln!("Skipping test: par2cmdline-turbo not available");
+        return;
+    }
+
+    let temp = tempdir().unwrap();
+    let test_file = temp.path().join("test.dat");
+    let par2_file = temp.path().join("test.par2");
+
+    create_test_file(&test_file, 4096, 0xEF).unwrap();
+
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(par2_file.to_str().unwrap())
+        .source_files(vec![test_file.clone()])
+        .redundancy_percentage(20)
+        .reporter(reporter)
+        .build()
+        .unwrap();
+
+    context.create().unwrap();
+
+    // Delete the index file — repair must still work using volume files alone
+    fs::remove_file(&par2_file).unwrap();
+
+    // Corrupt the source file
+    let mut data = fs::read(&test_file).unwrap();
+    data[100] = !data[100];
+    fs::write(&test_file, &data).unwrap();
+
+    // Find any volume file to use as the repair entry point
+    let vol_file = fs::read_dir(temp.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.contains(".vol") && s.ends_with(".par2"))
+                .unwrap_or(false)
+        })
+        .expect("No volume file found");
+
+    let repair_output = Command::new("par2")
+        .arg("repair")
+        .arg(&vol_file)
+        .output()
+        .unwrap();
+
+    assert!(
+        repair_output.status.success(),
+        "Repair from volume file only failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&repair_output.stdout),
+        String::from_utf8_lossy(&repair_output.stderr),
+    );
+}
+
+/// Volume splitting: par2rs should produce index + volume files, not one big file
+#[test]
+fn create_produces_index_plus_volume_files() {
+    let temp = tempdir().unwrap();
+    let test_file = temp.path().join("test.dat");
+    let par2_file = temp.path().join("test.par2");
+
+    create_test_file(&test_file, 4096, 0xAB).unwrap();
+
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(par2_file.to_str().unwrap())
+        .source_files(vec![test_file])
+        .recovery_block_count(4)
+        .reporter(reporter)
+        .build()
+        .unwrap();
+
+    context.create().unwrap();
+
+    // Should produce test.par2 (index) + at least one test.vol*.par2 (volume)
+    let par2_files: Vec<PathBuf> = fs::read_dir(temp.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("par2"))
+        .collect();
+
+    assert!(
+        par2_files.len() >= 2,
+        "Expected index + at least one volume file, got {} file(s): {:?}",
+        par2_files.len(),
+        par2_files
+    );
+
+    // The base index file must exist
+    assert!(par2_file.exists(), "Index file test.par2 must exist");
+
+    // At least one volume file must exist
+    let vol_files: Vec<_> = par2_files
+        .iter()
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.contains(".vol"))
+                .unwrap_or(false)
+        })
+        .collect();
+    assert!(
+        !vol_files.is_empty(),
+        "Expected at least one .volNNN+MM.par2 file"
+    );
+}
+
+/// Index file must contain no recovery slice packets
+#[test]
+fn index_file_contains_no_recovery_data() {
+    let temp = tempdir().unwrap();
+    let test_file = temp.path().join("test.dat");
+    let par2_file = temp.path().join("test.par2");
+
+    create_test_file(&test_file, 4096, 0xCD).unwrap();
+
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(par2_file.to_str().unwrap())
+        .source_files(vec![test_file])
+        .recovery_block_count(4)
+        .reporter(reporter)
+        .build()
+        .unwrap();
+
+    context.create().unwrap();
+
+    // The index file (base.par2) must have no recovery slices
+    // par2rs uses par2rs::par2_files::load_par2_packets to check
+    let packets = par2rs::par2_files::load_par2_packets(&[par2_file.clone()], true, false);
+    assert_eq!(
+        packets.recovery_block_count, 0,
+        "Index file must contain no recovery slice packets"
+    );
+}
+
+/// first_recovery_block builder method sets non-zero starting exponent
+#[test]
+fn first_recovery_block_sets_starting_exponent() {
+    if !par2_available() {
+        eprintln!("Skipping test: par2cmdline-turbo not available");
+        return;
+    }
+
+    let temp = tempdir().unwrap();
+    let test_file = temp.path().join("test.dat");
+    let par2_file = temp.path().join("test.par2");
+
+    create_test_file(&test_file, 4096, 0x77).unwrap();
+
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(par2_file.to_str().unwrap())
+        .source_files(vec![test_file])
+        .recovery_block_count(4)
+        .first_recovery_block(10) // non-zero starting exponent
+        .reporter(reporter)
+        .build()
+        .unwrap();
+
+    context.create().unwrap();
+
+    // par2cmdline-turbo must still verify it
+    assert!(
+        run_par2_verify(&par2_file).unwrap(),
+        "par2cmdline-turbo failed to verify PAR2 with non-zero first_recovery_block"
+    );
+
+    // Volume filenames should reflect the non-zero starting exponent
+    let vol_files: Vec<_> = fs::read_dir(temp.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.contains(".vol1") || s.contains(".vol2") || s.contains(".vol3"))
+                .unwrap_or(false)
+        })
+        .collect();
+    assert!(
+        !vol_files.is_empty(),
+        "Expected volume files with non-zero exponent in filename"
+    );
+}
+
 #[test]
 fn test_create_builder_validation() {
     // Test empty source files
@@ -388,10 +631,12 @@ fn test_block_size_calculation() {
         .build()
         .unwrap();
 
-    // Block size should be >= 512 (minimum)
+    // Block size must be a non-zero multiple of 4 (spec minimum is 4 bytes)
+    // A 1KB file with 2000 target blocks: 2000 > 1024/4=256 units, so algorithm
+    // hits the "too many blocks" path and returns the minimum size of 4. This is correct.
     assert!(
-        context.block_size() >= 512,
-        "Block size too small: {}",
+        context.block_size() >= 4 && context.block_size() % 4 == 0,
+        "Block size invalid: {}",
         context.block_size()
     );
 

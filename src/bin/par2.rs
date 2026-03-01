@@ -299,11 +299,17 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
         .transpose()
         .context("Invalid recovery file count")?;
 
-    let _first_recovery_block: Option<u32> = matches
+    let first_recovery_block: Option<u32> = matches
         .get_one::<String>("first_recovery_block")
         .map(|s| s.parse())
         .transpose()
         .context("Invalid first recovery block number")?;
+
+    let memory_mb: Option<usize> = matches
+        .get_one::<String>("memory")
+        .map(|s| s.parse())
+        .transpose()
+        .context("Invalid memory value")?;
 
     let threads: Option<u32> = matches
         .get_one::<String>("threads")
@@ -359,6 +365,18 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     if let Some(count) = recovery_file_count {
         context = context.recovery_file_count(count);
     }
+    if let Some(exponent) = first_recovery_block {
+        context = context.first_recovery_block(exponent);
+    }
+    if let Some(limit_mb) = memory_mb {
+        context = context.memory_limit(limit_mb * 1024 * 1024);
+    }
+    if uniform {
+        context = context.recovery_file_scheme(par2rs::create::RecoveryFileScheme::Uniform);
+    }
+    if limit_size {
+        context = context.recovery_file_scheme(par2rs::create::RecoveryFileScheme::Limited(0));
+    }
     if let Some(thread_count) = threads {
         context = context.thread_count(thread_count);
     }
@@ -367,24 +385,9 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     let force_scalar = matches.get_flag("force_scalar");
     par2rs::reed_solomon::codec::init_simd_level(force_scalar);
 
-    // TODO: Handle these par2cmdline-specific options:
-    // - first_recovery_block (-f): Set starting recovery block number
-    // - uniform (-u): Use uniform recovery file sizes
-    // - limit_size (-l): Limit size of recovery files
-    // - recurse (-R): Recurse into subdirectories
-    // - basepath (-B): Set basepath for datafiles
-    // - memory (-m): Memory limit
-    // - threads (-t): Number of threads
-    // - file_threads (-T): Number of file hashing threads
-
+    // TODO: -R (recurse) and -B (basepath) are not yet implemented
     if recurse {
         eprintln!("Warning: -R (recurse) option not yet implemented");
-    }
-    if uniform {
-        eprintln!("Warning: -u (uniform) option not yet implemented");
-    }
-    if limit_size {
-        eprintln!("Warning: -l (limit size) option not yet implemented");
     }
 
     let mut create_context = context

@@ -91,6 +91,35 @@ const LENGTH_END: usize = 16;
 const TYPE_OFFSET: usize = 48;
 const TYPE_END: usize = 64;
 
+/// Extract the base stem of a PAR2 filename, stripping `.par2` and any `.volN+M` suffix.
+///
+/// Examples:
+/// - `test.par2`         → `test`
+/// - `test.vol0+1.par2`  → `test`
+/// - `test.vol000+02.par2` → `test`
+fn par2_base_stem(path: &Path) -> String {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let without_ext = name.strip_suffix(".par2").unwrap_or(name);
+    // Strip `.vol<digits>+<digits>` suffix if present
+    if let Some(dot_pos) = without_ext.rfind('.') {
+        let after_dot = &without_ext[dot_pos + 1..];
+        if let Some(rest) = after_dot.strip_prefix("vol") {
+            if let Some(plus_pos) = rest.find('+') {
+                let before = &rest[..plus_pos];
+                let after = &rest[plus_pos + 1..];
+                if !before.is_empty()
+                    && before.bytes().all(|b| b.is_ascii_digit())
+                    && !after.is_empty()
+                    && after.bytes().all(|b| b.is_ascii_digit())
+                {
+                    return without_ext[..dot_pos].to_string();
+                }
+            }
+        }
+    }
+    without_ext.to_string()
+}
+
 /// Find all PAR2 files in a directory, excluding the specified file
 #[must_use]
 pub fn find_par2_files_in_directory(folder_path: &Path, exclude_file: &Path) -> Vec<PathBuf> {
@@ -115,18 +144,25 @@ pub fn find_par2_files_in_directory(folder_path: &Path, exclude_file: &Path) -> 
 }
 
 /// Collect all PAR2 files related to the input file (main file + volume files)
+///
+/// Only returns files that share the same base stem as `file_path`, preventing
+/// accidental mixing of different PAR2 sets in the same directory.
 #[must_use]
 pub fn collect_par2_files(file_path: &Path) -> Vec<PathBuf> {
-    // Get the directory containing the PAR2 file
     let folder_path = file_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
 
-    let mut par2_files = vec![file_path.to_path_buf()];
-    par2_files.extend(find_par2_files_in_directory(folder_path, file_path));
+    let base_stem = par2_base_stem(file_path);
 
-    // Sort files to match system par2verify order
+    let mut par2_files = vec![file_path.to_path_buf()];
+    par2_files.extend(
+        find_par2_files_in_directory(folder_path, file_path)
+            .into_iter()
+            .filter(|p| par2_base_stem(p) == base_stem),
+    );
+
     par2_files.sort();
     par2_files
 }
@@ -533,4 +569,58 @@ fn get_packet_length(header: &[u8; PACKET_HEADER_SIZE]) -> Option<u64> {
         .try_into()
         .ok()
         .map(u64::from_le_bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn par2_base_stem_strips_par2_extension() {
+        assert_eq!(par2_base_stem(Path::new("test.par2")), "test");
+    }
+
+    #[test]
+    fn par2_base_stem_strips_vol_suffix() {
+        assert_eq!(par2_base_stem(Path::new("test.vol0+1.par2")), "test");
+        assert_eq!(par2_base_stem(Path::new("test.vol000+02.par2")), "test");
+        assert_eq!(par2_base_stem(Path::new("test.vol06+4.par2")), "test");
+    }
+
+    #[test]
+    fn par2_base_stem_handles_dots_in_base() {
+        assert_eq!(par2_base_stem(Path::new("my.file.par2")), "my.file");
+        assert_eq!(par2_base_stem(Path::new("my.file.vol0+1.par2")), "my.file");
+    }
+
+    #[test]
+    fn collect_par2_files_excludes_different_base_stem() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+
+        // Create dummy .par2 files
+        std::fs::write(dir.join("file1.par2"), b"").unwrap();
+        std::fs::write(dir.join("file1.vol0+1.par2"), b"").unwrap();
+        std::fs::write(dir.join("file2.par2"), b"").unwrap();
+        std::fs::write(dir.join("file2.vol0+1.par2"), b"").unwrap();
+
+        let collected = collect_par2_files(&dir.join("file1.par2"));
+
+        // Should only contain file1's files
+        assert!(
+            collected.iter().all(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.starts_with("file1"))
+                    .unwrap_or(false)
+            }),
+            "Should not include file2's PAR2 files: {:?}",
+            collected
+        );
+        assert_eq!(
+            collected.len(),
+            2,
+            "Expected file1.par2 + file1.vol0+1.par2"
+        );
+    }
 }

@@ -10,6 +10,46 @@ use super::source_file::SourceFileInfo;
 use super::types::CreateConfig;
 use crate::domain::{BlockSize, ChunkSize, RecoverySetId, SourceBlockCount};
 
+/// Serialize and write a single PAR2 recovery slice packet
+///
+/// Computes the packet MD5, builds the packet, and writes it to `writer`.
+///
+/// Reference: par2cmdline-turbo/src/par2creator.cpp WriteRecoveryPackets()
+fn write_recovery_slice_packet<W: std::io::Write>(
+    writer: &mut W,
+    exponent: u32,
+    recovery_data: &[u8],
+    recovery_set_id: RecoverySetId,
+) -> std::io::Result<()> {
+    use crate::packets::RecoverySlicePacket;
+    use binrw::BinWrite;
+
+    let packet_length = 8 + 8 + 16 + 16 + 16 + 4 + recovery_data.len() as u64;
+
+    // Compute MD5 over: set_id || type || exponent || data
+    let mut md5_data = Vec::with_capacity(16 + 16 + 4 + recovery_data.len());
+    md5_data.extend_from_slice(recovery_set_id.as_bytes());
+    md5_data.extend_from_slice(b"PAR 2.0\0RecvSlic");
+    md5_data.extend_from_slice(&exponent.to_le_bytes());
+    md5_data.extend_from_slice(recovery_data);
+    let computed_md5 = crate::checksum::compute_md5_bytes(&md5_data);
+
+    let packet = RecoverySlicePacket {
+        length: packet_length,
+        md5: crate::domain::Md5Hash::new(computed_md5),
+        set_id: recovery_set_id,
+        type_of_packet: *b"PAR 2.0\0RecvSlic",
+        exponent,
+        recovery_data: recovery_data.to_vec(),
+    };
+
+    let mut buf = Vec::with_capacity(packet_length as usize);
+    packet
+        .write_le(&mut std::io::Cursor::new(&mut buf))
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    writer.write_all(&buf)
+}
+
 /// Main context for PAR2 creation
 ///
 /// This structure manages the entire PAR2 creation process:
@@ -690,11 +730,37 @@ impl CreateContext {
         ChunkSize::new(aligned_chunk.min(self.block_size.as_usize()))
     }
 
-    /// Write PAR2 files (index + volume files)
+    /// Map config recovery file scheme to file_naming scheme + file count
+    ///
+    /// Reference: par2cmdline-turbo/src/par2creator.cpp InitialiseOutputFiles()
+    fn resolve_recovery_scheme(&self) -> (super::file_naming::RecoveryScheme, u32) {
+        use super::file_naming::{default_recovery_file_count, RecoveryScheme};
+        use super::types::RecoveryFileScheme;
+
+        let default_count = default_recovery_file_count(self.recovery_block_count);
+
+        match self.config.recovery_file_scheme {
+            RecoveryFileScheme::Variable => {
+                let count = self.config.recovery_file_count.unwrap_or(default_count);
+                (RecoveryScheme::Variable, count)
+            }
+            RecoveryFileScheme::Uniform => {
+                let count = self.config.recovery_file_count.unwrap_or(default_count);
+                (RecoveryScheme::Uniform, count)
+            }
+            RecoveryFileScheme::Limited(_) => {
+                let count = self.config.recovery_file_count.unwrap_or(default_count);
+                (RecoveryScheme::Limited, count)
+            }
+        }
+    }
+
+    /// Write PAR2 files: index file (critical packets only) + volume files (critical + recovery)
     ///
     /// Reference: par2cmdline-turbo/src/par2creator.cpp WriteCriticalPackets() and
-    /// WriteRecoveryPacketHeaders()
+    /// WriteRecoveryPacketHeaders() / InitialiseOutputFiles()
     fn write_par2_files(&mut self) -> CreateResult<()> {
+        use super::file_naming::plan_recovery_files;
         use super::packet_generator::{
             generate_creator_packet, generate_file_description_packet,
             generate_file_verification_packet, generate_main_packet, write_creator_packet,
@@ -727,89 +793,102 @@ impl CreateContext {
             .map(|f| generate_file_verification_packet(recovery_set_id, f))
             .collect::<CreateResult<_>>()?;
 
+        // Serialize critical packets to a byte buffer once, reuse for every output file
+        // Reference: par2cmdline-turbo/src/par2creator.cpp WriteCriticalPackets()
+        let mut critical_bytes: Vec<u8> = Vec::new();
+        write_main_packet(&mut critical_bytes, &main_packet)
+            .map_err(|e| packet_write_error("main packet", e))?;
+        write_creator_packet(&mut critical_bytes, &creator_packet)
+            .map_err(|e| packet_write_error("creator packet", e))?;
+        for packet in &file_desc_packets {
+            write_file_description_packet(&mut critical_bytes, packet)
+                .map_err(|e| packet_write_error("file description packet", e))?;
+        }
+        for packet in &file_verif_packets {
+            write_file_verification_packet(&mut critical_bytes, packet)
+                .map_err(|e| packet_write_error("file verification packet", e))?;
+        }
+
         // Determine output directory and base name
         let output_path = std::path::Path::new(&self.config.output_name);
         let output_dir = output_path
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .to_path_buf();
-
         let base_name = output_path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("output")
             .to_string();
 
-        // Write index file (base.par2)
+        // Write index file: critical packets only, no recovery data
+        // Reference: par2cmdline-turbo creates base.par2 with no recovery slices
         let index_path = output_dir.join(format!("{}.par2", base_name));
         let mut index_file = create_file(&index_path)?;
-
-        // Write packets using proper serialization functions that compute MD5
-        // Reference: par2cmdline-turbo/src/par2creator.cpp WriteCriticalPackets()
-        write_main_packet(&mut index_file, &main_packet)
-            .map_err(|e| packet_write_error("main packet", e))?;
-
-        write_creator_packet(&mut index_file, &creator_packet)
-            .map_err(|e| packet_write_error("creator packet", e))?;
-
-        for packet in &file_desc_packets {
-            write_file_description_packet(&mut index_file, packet)
-                .map_err(|e| packet_write_error("file description packet", e))?;
-        }
-
-        for packet in &file_verif_packets {
-            write_file_verification_packet(&mut index_file, packet)
-                .map_err(|e| packet_write_error("file verification packet", e))?;
-        }
-
-        // Write recovery slice packets
-        // Reference: par2cmdline-turbo/src/par2creator.cpp WriteRecoveryPackets()
-        for (exponent, recovery_data) in &self.recovery_blocks {
-            use crate::packets::RecoverySlicePacket;
-            use binrw::BinWrite;
-
-            // Calculate packet length
-            let packet_length = 8 + 8 + 16 + 16 + 16 + 4 + recovery_data.len() as u64;
-
-            // Build packet
-            let packet = RecoverySlicePacket {
-                length: packet_length,
-                md5: crate::domain::Md5Hash::new([0u8; 16]), // Will be computed
-                set_id: recovery_set_id,
-                type_of_packet: *b"PAR 2.0\0RecvSlic",
-                exponent: *exponent as u32,
-                recovery_data: recovery_data.clone(),
-            };
-
-            // Compute MD5 of packet body
-            let mut md5_data = Vec::new();
-            md5_data.extend_from_slice(recovery_set_id.as_bytes());
-            md5_data.extend_from_slice(b"PAR 2.0\0RecvSlic");
-            md5_data.extend_from_slice(&(*exponent as u32).to_le_bytes());
-            md5_data.extend_from_slice(recovery_data);
-
-            let computed_md5 = crate::checksum::compute_md5_bytes(&md5_data);
-
-            let packet_with_md5 = RecoverySlicePacket {
-                md5: crate::domain::Md5Hash::new(computed_md5),
-                ..packet
-            };
-
-            // Write packet
-            packet_with_md5
-                .write_le(&mut index_file)
-                .map_err(|e| packet_write_error("recovery packet", e))?;
-        }
-
+        index_file
+            .write_all(&critical_bytes)
+            .map_err(|e| CreateError::FileCreateError {
+                file: index_path.to_string_lossy().to_string(),
+                source: e,
+            })?;
         index_file
             .flush()
             .map_err(|e| CreateError::FileCreateError {
                 file: index_path.to_string_lossy().to_string(),
                 source: e,
             })?;
-
         self.output_files
             .push(index_path.to_string_lossy().to_string());
+
+        // Determine volume file plan
+        let largest_file_size = self.source_files.iter().map(|f| f.size).max().unwrap_or(0);
+        let (scheme, file_count) = self.resolve_recovery_scheme();
+        let plan = plan_recovery_files(
+            &base_name,
+            file_count,
+            self.recovery_block_count,
+            self.config.first_recovery_block,
+            scheme,
+            largest_file_size,
+            self.block_size.as_u64(),
+        );
+
+        // Write each volume file: critical packets + its slice of recovery blocks
+        // Reference: par2cmdline-turbo/src/par2creator.cpp WriteRecoveryPackets()
+        for entry in &plan {
+            let vol_path = output_dir.join(&entry.filename);
+            let mut vol_file = create_file(&vol_path)?;
+
+            vol_file
+                .write_all(&critical_bytes)
+                .map_err(|e| CreateError::FileCreateError {
+                    file: vol_path.to_string_lossy().to_string(),
+                    source: e,
+                })?;
+
+            // Write recovery slice packets for this volume
+            for i in 0..entry.block_count {
+                let packet_exponent = entry.first_exponent + i;
+                // Recovery blocks are indexed from first_recovery_block
+                let local_idx = (packet_exponent - self.config.first_recovery_block) as usize;
+                let (_, recovery_data) = &self.recovery_blocks[local_idx];
+
+                write_recovery_slice_packet(
+                    &mut vol_file,
+                    packet_exponent,
+                    recovery_data,
+                    recovery_set_id,
+                )
+                .map_err(|e| packet_write_error("recovery packet", e))?;
+            }
+
+            vol_file.flush().map_err(|e| CreateError::FileCreateError {
+                file: vol_path.to_string_lossy().to_string(),
+                source: e,
+            })?;
+            self.output_files
+                .push(vol_path.to_string_lossy().to_string());
+        }
 
         Ok(())
     }

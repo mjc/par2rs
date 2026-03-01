@@ -33,12 +33,10 @@ pub mod context;
 pub mod error;
 pub mod error_helpers;
 pub mod file_naming;
-pub mod hashing;
 pub mod packet_generator;
 pub mod progress;
 pub mod source_file;
 pub mod types;
-pub mod writer;
 
 pub use builder::CreateContextBuilder;
 pub use context::CreateContext;
@@ -46,7 +44,6 @@ pub use error::{CreateError, CreateResult};
 pub use file_naming::{generate_recovery_filenames, RecoveryScheme};
 pub use progress::{ConsoleCreateReporter, CreateReporter, SilentCreateReporter};
 pub use types::{CreateConfig, RecoveryFileScheme};
-pub use writer::{Par2Writer, SourceFileInfo};
 
 // Re-export from reed_solomon for convenience
 pub use crate::reed_solomon::RecoveryBlockEncoder;

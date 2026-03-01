@@ -63,30 +63,19 @@ fn test_mixed_recovery_sets_ignored() {
     let stderr = String::from_utf8_lossy(&verify_output.stderr);
     let stdout = String::from_utf8_lossy(&verify_output.stdout);
 
-    // Should warn about mixed recovery sets
-    assert!(
-        stderr.contains("Multiple recovery sets detected")
-            || stdout.contains("Multiple recovery sets detected"),
-        "Expected warning about mixed recovery sets, got:\nstderr: {}\nstdout: {}",
-        stderr,
-        stdout
-    );
-
-    // But verification should still succeed for file1
+    // Verification should succeed: collect_par2_files filters to file1's base stem
+    // so file2.par2 is never loaded, avoiding any mixed-set confusion
     assert!(
         verify_output.status.success(),
-        "Verification should succeed even with mixed PAR2 files in directory.\nstderr: {}\nstdout: {}",
+        "Verification should succeed even with other PAR2 files in the same directory.\nstderr: {}\nstdout: {}",
         stderr,
         stdout
     );
 
-    // Verify the output indicates file1 is correct
+    // No spurious "multiple recovery sets" warning should appear
     assert!(
-        stdout.contains("repair is not required")
-            || stdout.contains("file(s) are ok")
-            || verify_output.status.success(),
-        "Expected successful verification, got:\nstderr: {}\nstdout: {}",
+        !stderr.contains("Multiple recovery sets detected"),
+        "Should not warn about mixed recovery sets when base stem filtering is applied.\nstderr: {}",
         stderr,
-        stdout
     );
 }
