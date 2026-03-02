@@ -166,3 +166,136 @@ impl Default for CreateContextBuilder {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Default / new() ---
+
+    #[test]
+    fn default_produces_same_as_new() {
+        // Both should produce a builder with the same default config
+        let b1 = CreateContextBuilder::new();
+        let b2 = CreateContextBuilder::default();
+        // Verify both have empty output_name (proxy for default config)
+        assert!(b1.config.output_name.is_empty());
+        assert!(b2.config.output_name.is_empty());
+    }
+
+    // --- Fluent API ---
+
+    #[test]
+    fn setter_chain_sets_fields() {
+        let builder = CreateContextBuilder::new()
+            .output_name("mydata.par2")
+            .redundancy_percentage(10)
+            .thread_count(2)
+            .first_recovery_block(5)
+            .memory_limit(1024 * 1024)
+            .source_block_count(1000)
+            .recovery_block_count(50)
+            .recovery_file_count(4)
+            .recovery_file_scheme(RecoveryFileScheme::Uniform);
+
+        assert_eq!(builder.config.output_name, "mydata.par2");
+        assert_eq!(builder.config.redundancy_percentage, Some(10));
+        assert_eq!(builder.config.thread_count, 2);
+        assert_eq!(builder.config.first_recovery_block, 5);
+        assert_eq!(builder.config.memory_limit, Some(1024 * 1024));
+        assert_eq!(builder.config.recovery_block_count, Some(50));
+        assert_eq!(builder.config.recovery_file_count, Some(4));
+        assert_eq!(
+            builder.config.recovery_file_scheme,
+            RecoveryFileScheme::Uniform
+        );
+    }
+
+    #[test]
+    fn add_source_file_appends() {
+        let builder = CreateContextBuilder::new()
+            .add_source_file(PathBuf::from("a.dat"))
+            .add_source_file(PathBuf::from("b.dat"));
+        assert_eq!(builder.config.source_files.len(), 2);
+    }
+
+    #[test]
+    fn source_files_replaces() {
+        let builder = CreateContextBuilder::new()
+            .add_source_file(PathBuf::from("a.dat"))
+            .source_files(vec![PathBuf::from("x.dat")]);
+        assert_eq!(builder.config.source_files.len(), 1);
+        assert_eq!(builder.config.source_files[0], PathBuf::from("x.dat"));
+    }
+
+    #[test]
+    fn quiet_true_sets_reporter() {
+        let builder = CreateContextBuilder::new().quiet(true);
+        assert!(builder.reporter.is_some());
+    }
+
+    #[test]
+    fn quiet_false_sets_reporter() {
+        let builder = CreateContextBuilder::new().quiet(false);
+        assert!(builder.reporter.is_some());
+    }
+
+    // --- build() validation failures ---
+
+    #[test]
+    fn build_fails_with_no_output_name() {
+        let result = CreateContextBuilder::new()
+            .source_files(vec![PathBuf::from("a.dat")])
+            .build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_fails_with_no_source_files() {
+        let result = CreateContextBuilder::new().output_name("out.par2").build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_fails_with_nonexistent_source_file() {
+        let result = CreateContextBuilder::new()
+            .output_name("out.par2")
+            .source_files(vec![PathBuf::from("/nonexistent/file.dat")])
+            .build();
+        assert!(result.is_err());
+    }
+
+    // --- build() success with real temp file ---
+
+    #[test]
+    fn build_succeeds_with_valid_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("test.dat");
+        std::fs::write(&file_path, b"hello par2rs").unwrap();
+
+        let ctx = CreateContextBuilder::new()
+            .output_name("out.par2")
+            .source_files(vec![file_path])
+            .redundancy_percentage(5)
+            .build();
+
+        assert!(ctx.is_ok());
+    }
+
+    #[test]
+    fn build_with_explicit_block_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("test.dat");
+        std::fs::write(&file_path, b"hello par2rs").unwrap();
+
+        let ctx = CreateContextBuilder::new()
+            .output_name("out.par2")
+            .source_files(vec![file_path])
+            .block_size(512)
+            .recovery_block_count(2)
+            .build();
+
+        assert!(ctx.is_ok());
+        assert_eq!(ctx.unwrap().block_size(), 512);
+    }
+}

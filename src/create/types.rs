@@ -20,7 +20,7 @@ pub enum RecoveryFileScheme {
 
     /// Create limited number of recovery files
     /// Distributes blocks as evenly as possible across specified file count
-    Limited(u32),
+    Limited,
 }
 
 /// Configuration for PAR2 creation
@@ -125,5 +125,139 @@ impl CreateConfig {
         } else {
             self.thread_count as usize
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn valid_config() -> CreateConfig {
+        CreateConfig {
+            output_name: "out.par2".to_string(),
+            source_files: vec![PathBuf::from("a.dat")],
+            ..CreateConfig::default()
+        }
+    }
+
+    // --- Default ---
+
+    #[test]
+    fn default_has_expected_values() {
+        let c = CreateConfig::default();
+        assert!(c.output_name.is_empty());
+        assert!(c.source_files.is_empty());
+        assert_eq!(c.redundancy_percentage, Some(5));
+        assert_eq!(c.thread_count, 0);
+        assert_eq!(c.first_recovery_block, 0);
+        assert_eq!(c.recovery_file_scheme, RecoveryFileScheme::Variable);
+    }
+
+    // --- validate() ---
+
+    #[test]
+    fn validate_rejects_empty_output_name() {
+        let c = CreateConfig {
+            output_name: String::new(),
+            source_files: vec![PathBuf::from("a.dat")],
+            ..CreateConfig::default()
+        };
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_no_source_files() {
+        let c = CreateConfig {
+            output_name: "out.par2".to_string(),
+            ..CreateConfig::default()
+        };
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_redundancy() {
+        let c = CreateConfig {
+            redundancy_percentage: Some(0),
+            ..valid_config()
+        };
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_over_100_redundancy() {
+        let c = CreateConfig {
+            redundancy_percentage: Some(101),
+            ..valid_config()
+        };
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_100_redundancy() {
+        let c = CreateConfig {
+            redundancy_percentage: Some(100),
+            ..valid_config()
+        };
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_block_size_not_multiple_of_4() {
+        let c = CreateConfig {
+            block_size: Some(10),
+            ..valid_config()
+        };
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_block_size_zero() {
+        let c = CreateConfig {
+            block_size: Some(0),
+            ..valid_config()
+        };
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_valid_block_size() {
+        let c = CreateConfig {
+            block_size: Some(4096),
+            ..valid_config()
+        };
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_ok_without_redundancy_or_block_count() {
+        // Neither redundancy_percentage nor recovery_block_count — validate() doesn't
+        // require one (that check is in calculate_recovery_blocks)
+        let c = CreateConfig {
+            redundancy_percentage: None,
+            recovery_block_count: None,
+            ..valid_config()
+        };
+        assert!(c.validate().is_ok());
+    }
+
+    // --- effective_threads() ---
+
+    #[test]
+    fn effective_threads_zero_returns_at_least_one() {
+        let c = CreateConfig {
+            thread_count: 0,
+            ..valid_config()
+        };
+        assert!(c.effective_threads() >= 1);
+    }
+
+    #[test]
+    fn effective_threads_nonzero_returns_exact() {
+        let c = CreateConfig {
+            thread_count: 4,
+            ..valid_config()
+        };
+        assert_eq!(c.effective_threads(), 4);
     }
 }

@@ -375,7 +375,7 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
         context = context.recovery_file_scheme(par2rs::create::RecoveryFileScheme::Uniform);
     }
     if limit_size {
-        context = context.recovery_file_scheme(par2rs::create::RecoveryFileScheme::Limited(0));
+        context = context.recovery_file_scheme(par2rs::create::RecoveryFileScheme::Limited);
     }
     if let Some(thread_count) = threads {
         context = context.thread_count(thread_count);

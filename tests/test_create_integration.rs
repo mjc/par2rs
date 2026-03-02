@@ -371,7 +371,7 @@ fn volume_files_each_contain_critical_packets() {
     assert!(!vol_files.is_empty(), "Expected at least one volume file");
 
     for vol in &vol_files {
-        let packets = par2rs::par2_files::load_par2_packets(&[vol.clone()], true, false);
+        let packets = par2rs::par2_files::load_par2_packets(std::slice::from_ref(vol), true, false);
         assert!(
             packets.recovery_block_count > 0,
             "{} should contain recovery blocks",
@@ -521,7 +521,8 @@ fn index_file_contains_no_recovery_data() {
 
     // The index file (base.par2) must have no recovery slices
     // par2rs uses par2rs::par2_files::load_par2_packets to check
-    let packets = par2rs::par2_files::load_par2_packets(&[par2_file.clone()], true, false);
+    let packets =
+        par2rs::par2_files::load_par2_packets(std::slice::from_ref(&par2_file), true, false);
     assert_eq!(
         packets.recovery_block_count, 0,
         "Index file must contain no recovery slice packets"
@@ -635,7 +636,7 @@ fn test_block_size_calculation() {
     // A 1KB file with 2000 target blocks: 2000 > 1024/4=256 units, so algorithm
     // hits the "too many blocks" path and returns the minimum size of 4. This is correct.
     assert!(
-        context.block_size() >= 4 && context.block_size() % 4 == 0,
+        context.block_size() >= 4 && context.block_size().is_multiple_of(4),
         "Block size invalid: {}",
         context.block_size()
     );

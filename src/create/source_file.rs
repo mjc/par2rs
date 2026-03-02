@@ -83,3 +83,70 @@ impl SourceFileInfo {
             .to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    // --- new() ---
+
+    #[test]
+    fn new_sets_fields_correctly() {
+        let path = PathBuf::from("/tmp/test.dat");
+        let info = SourceFileInfo::new(path.clone(), 1024, 3);
+
+        assert_eq!(info.path, path);
+        assert_eq!(info.size, 1024);
+        assert_eq!(info.index, 3);
+        assert_eq!(info.block_count, 0);
+        assert_eq!(info.global_block_offset, 0);
+        assert!(info.block_checksums.is_empty());
+    }
+
+    // --- calculate_block_count() ---
+
+    #[test]
+    fn block_count_exact_multiple() {
+        let info = SourceFileInfo::new(PathBuf::from("a.dat"), 1024, 0);
+        assert_eq!(info.calculate_block_count(512), 2);
+    }
+
+    #[test]
+    fn block_count_rounds_up() {
+        let info = SourceFileInfo::new(PathBuf::from("a.dat"), 1025, 0);
+        assert_eq!(info.calculate_block_count(512), 3);
+    }
+
+    #[test]
+    fn block_count_smaller_than_block_size() {
+        let info = SourceFileInfo::new(PathBuf::from("a.dat"), 100, 0);
+        assert_eq!(info.calculate_block_count(512), 1);
+    }
+
+    #[test]
+    fn block_count_zero_size_file() {
+        let info = SourceFileInfo::new(PathBuf::from("a.dat"), 0, 0);
+        assert_eq!(info.calculate_block_count(512), 0);
+    }
+
+    #[test]
+    fn block_count_exactly_one_block() {
+        let info = SourceFileInfo::new(PathBuf::from("a.dat"), 512, 0);
+        assert_eq!(info.calculate_block_count(512), 1);
+    }
+
+    // --- filename() ---
+
+    #[test]
+    fn filename_returns_just_name() {
+        let info = SourceFileInfo::new(PathBuf::from("/some/dir/file.dat"), 0, 0);
+        assert_eq!(info.filename(), "file.dat");
+    }
+
+    #[test]
+    fn filename_bare_name() {
+        let info = SourceFileInfo::new(PathBuf::from("bare.txt"), 0, 0);
+        assert_eq!(info.filename(), "bare.txt");
+    }
+}

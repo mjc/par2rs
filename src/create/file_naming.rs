@@ -3,25 +3,8 @@
 // Reference: par2cmdline-turbo/src/par2creator.cpp InitialiseOutputFiles() lines 484-630
 // Reference: par2cmdline-turbo/src/libpar2.h Scheme enum lines 91-96
 
+use super::types::RecoveryFileScheme;
 use std::path::PathBuf;
-
-/// Recovery file naming scheme
-/// Reference: par2cmdline-turbo/src/libpar2.h lines 91-96
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RecoveryScheme {
-    /// All PAR2 files have roughly the same number of blocks
-    /// Reference: par2cmdline-turbo/src/par2creator.cpp lines 503-514
-    Uniform,
-
-    /// Each PAR2 file has 2x as many blocks as the previous (exponential)
-    /// Reference: par2cmdline-turbo/src/par2creator.cpp lines 516-537
-    #[default]
-    Variable,
-
-    /// Like Variable but limits maximum file size to largest source file size
-    /// Reference: par2cmdline-turbo/src/par2creator.cpp lines 539-580
-    Limited,
-}
 
 /// File allocation for a single recovery file
 /// Reference: par2cmdline-turbo/src/par2creator.cpp FileAllocation class lines 465-476
@@ -52,7 +35,7 @@ fn allocate_recovery_blocks(
     recovery_file_count: u32,
     recovery_block_count: u32,
     first_recovery_block: u32,
-    scheme: RecoveryScheme,
+    scheme: RecoveryFileScheme,
     largest_file_size: u64,
     block_size: u64,
 ) -> Vec<FileAllocation> {
@@ -77,7 +60,7 @@ fn allocate_recovery_blocks(
 
     match scheme {
         // Reference: par2cmdline-turbo/src/par2creator.cpp lines 503-514
-        RecoveryScheme::Uniform => {
+        RecoveryFileScheme::Uniform => {
             // Files will have roughly the same number of recovery blocks each.
             let base = recovery_block_count / recovery_file_count;
             let remainder = recovery_block_count % recovery_file_count;
@@ -94,7 +77,7 @@ fn allocate_recovery_blocks(
         }
 
         // Reference: par2cmdline-turbo/src/par2creator.cpp lines 516-537
-        RecoveryScheme::Variable => {
+        RecoveryFileScheme::Variable => {
             // Files will have recovery blocks allocated in an exponential fashion.
 
             // Work out how many blocks to place in the smallest file
@@ -117,7 +100,7 @@ fn allocate_recovery_blocks(
         }
 
         // Reference: par2cmdline-turbo/src/par2creator.cpp lines 539-580
-        RecoveryScheme::Limited => {
+        RecoveryFileScheme::Limited => {
             // Files will be allocated in an exponential fashion but the
             // maximum file size will be limited.
 
@@ -189,7 +172,7 @@ pub fn plan_recovery_files(
     recovery_file_count: u32,
     recovery_block_count: u32,
     first_recovery_block: u32,
-    scheme: RecoveryScheme,
+    scheme: RecoveryFileScheme,
     largest_file_size: u64,
     block_size: u64,
 ) -> Vec<RecoveryFilePlan> {
@@ -218,8 +201,7 @@ pub fn plan_recovery_files(
 
     // Build plan for volume files only (skip the last entry, which is the index)
     let mut plan = Vec::with_capacity(recovery_file_count as usize);
-    for file_number in 0..recovery_file_count as usize {
-        let alloc = &allocations[file_number];
+    for alloc in allocations.iter().take(recovery_file_count as usize) {
         let filename = format!(
             "{}.vol{:0width_exp$}+{:0width_cnt$}.par2",
             base_name,
@@ -251,102 +233,6 @@ pub fn default_recovery_file_count(recovery_block_count: u32) -> u32 {
     bits.max(1)
 }
 
-/// Generate recovery file names
-///
-/// # Arguments
-/// * `base_name` - Base filename (without .par2 extension)
-/// * `recovery_file_count` - Number of recovery files to create
-/// * `recovery_block_count` - Total number of recovery blocks
-/// * `first_recovery_block` - First exponent value (usually 0)
-/// * `scheme` - Distribution scheme
-/// * `largest_file_size` - Size of largest source file (bytes)
-/// * `block_size` - Block size (bytes)
-///
-/// # Returns
-/// Vector of filenames. Last entry is base.par2 (index file).
-///
-/// # Examples
-/// ```
-/// use par2rs::create::file_naming::{generate_recovery_filenames, RecoveryScheme};
-///
-/// // Variable scheme with 10 recovery blocks, 3 files
-/// // Algorithm: lowblockcount=2 (since (1<<3)-1=7 < 10), so allocates 2, 4, 4
-/// let files = generate_recovery_filenames(
-///     "testfile",
-///     3,
-///     10,
-///     0,
-///     RecoveryScheme::Variable,
-///     1_000_000,
-///     16384,
-/// );
-/// assert_eq!(files.len(), 4);
-/// assert_eq!(files[0].to_str().unwrap(), "testfile.vol00+2.par2");
-/// assert_eq!(files[1].to_str().unwrap(), "testfile.vol02+4.par2");
-/// assert_eq!(files[2].to_str().unwrap(), "testfile.vol06+4.par2");
-/// assert_eq!(files[3].to_str().unwrap(), "testfile.par2");
-/// ```
-///
-/// Reference: par2cmdline-turbo/src/par2creator.cpp lines 587-630
-pub fn generate_recovery_filenames(
-    base_name: &str,
-    recovery_file_count: u32,
-    recovery_block_count: u32,
-    first_recovery_block: u32,
-    scheme: RecoveryScheme,
-    largest_file_size: u64,
-    block_size: u64,
-) -> Vec<PathBuf> {
-    let allocations = allocate_recovery_blocks(
-        recovery_file_count,
-        recovery_block_count,
-        first_recovery_block,
-        scheme,
-        largest_file_size,
-        block_size,
-    );
-
-    // Determine the format to use for filenames of recovery files
-    // Reference: par2cmdline-turbo/src/par2creator.cpp lines 587-620
-    let mut limit_low = 0;
-    let mut limit_count = 0;
-    for alloc in &allocations {
-        if limit_low < alloc.exponent {
-            limit_low = alloc.exponent;
-        }
-        if limit_count < alloc.count {
-            limit_count = alloc.count;
-        }
-    }
-
-    // Calculate number of digits needed for exponent and count
-    let digits_low = count_digits(limit_low);
-    let digits_count = count_digits(limit_count);
-
-    // Generate filenames
-    // Reference: par2cmdline-turbo/src/par2creator.cpp lines 622-629
-    let mut filenames = Vec::with_capacity((recovery_file_count + 1) as usize);
-
-    for file_number in 0..recovery_file_count {
-        let alloc = &allocations[file_number as usize];
-        let filename = format!(
-            "{}.vol{:0width_exp$}+{:0width_cnt$}.par2",
-            base_name,
-            alloc.exponent,
-            alloc.count,
-            width_exp = digits_low,
-            width_cnt = digits_count
-        );
-        filenames.push(PathBuf::from(filename));
-    }
-
-    // Index file (last entry)
-    // Reference: par2cmdline-turbo/src/par2creator.cpp line 630
-    filenames.push(PathBuf::from(format!("{}.par2", base_name)));
-
-    filenames
-}
-
 /// Count number of decimal digits needed to represent a number
 /// Reference: par2cmdline-turbo/src/par2creator.cpp lines 604-608, 611-615
 fn count_digits(n: u32) -> usize {
@@ -371,7 +257,7 @@ mod tests {
     #[test]
     fn test_uniform_scheme() {
         // 10 blocks into 3 files: 4, 3, 3
-        let allocations = allocate_recovery_blocks(3, 10, 0, RecoveryScheme::Uniform, 0, 1);
+        let allocations = allocate_recovery_blocks(3, 10, 0, RecoveryFileScheme::Uniform, 0, 1);
 
         assert_eq!(allocations.len(), 4); // 3 recovery files + 1 index file
 
@@ -397,7 +283,7 @@ mod tests {
         // 10 blocks into 3 files
         // max=(1<<3)-1=7, 7<10 so double: lowblockcount=2, max=14
         // Allocate: 2, 4, 4
-        let allocations = allocate_recovery_blocks(3, 10, 0, RecoveryScheme::Variable, 0, 1);
+        let allocations = allocate_recovery_blocks(3, 10, 0, RecoveryFileScheme::Variable, 0, 1);
 
         assert_eq!(allocations.len(), 4);
 
@@ -421,7 +307,7 @@ mod tests {
     #[test]
     fn test_variable_scheme_exact() {
         // 7 blocks into 3 files: 1, 2, 4 (exactly fits)
-        let allocations = allocate_recovery_blocks(3, 7, 0, RecoveryScheme::Variable, 0, 1);
+        let allocations = allocate_recovery_blocks(3, 7, 0, RecoveryFileScheme::Variable, 0, 1);
 
         assert_eq!(allocations.len(), 4);
 
@@ -445,7 +331,7 @@ mod tests {
             5,
             100,
             0,
-            RecoveryScheme::Limited,
+            RecoveryFileScheme::Limited,
             largest_file_size,
             block_size,
         );
@@ -461,102 +347,6 @@ mod tests {
         assert_eq!(allocations[5].count, 0);
     }
 
-    /// Test filename generation with uniform scheme
-    /// Reference: par2cmdline-turbo/src/par2creator.cpp lines 622-630
-    #[test]
-    fn test_generate_filenames_uniform() {
-        let files = generate_recovery_filenames(
-            "test",
-            3,
-            10,
-            0,
-            RecoveryScheme::Uniform,
-            1_000_000,
-            16384,
-        );
-
-        assert_eq!(files.len(), 4);
-
-        // Uniform: 4, 3, 3 blocks
-        // Exponents: 0, 4, 7
-        // Max exponent: 10 (2 digits), max count: 4 (1 digit)
-        assert_eq!(files[0].to_str().unwrap(), "test.vol00+4.par2");
-        assert_eq!(files[1].to_str().unwrap(), "test.vol04+3.par2");
-        assert_eq!(files[2].to_str().unwrap(), "test.vol07+3.par2");
-        assert_eq!(files[3].to_str().unwrap(), "test.par2");
-    }
-
-    /// Test filename generation with variable scheme
-    /// Reference: par2cmdline-turbo/src/par2creator.cpp lines 622-630
-    #[test]
-    fn test_generate_filenames_variable() {
-        let files = generate_recovery_filenames(
-            "testfile",
-            3,
-            10,
-            0,
-            RecoveryScheme::Variable,
-            1_000_000,
-            16384,
-        );
-
-        assert_eq!(files.len(), 4);
-
-        // Variable: 2, 4, 4 blocks
-        // Exponents: 0, 2, 6
-        // Max exponent: 10 (2 digits), max count: 4 (1 digit)
-        assert_eq!(files[0].to_str().unwrap(), "testfile.vol00+2.par2");
-        assert_eq!(files[1].to_str().unwrap(), "testfile.vol02+4.par2");
-        assert_eq!(files[2].to_str().unwrap(), "testfile.vol06+4.par2");
-        assert_eq!(files[3].to_str().unwrap(), "testfile.par2");
-    }
-
-    /// Test filename formatting with large numbers
-    /// Reference: par2cmdline-turbo/src/par2creator.cpp lines 604-620
-    #[test]
-    fn test_filename_digit_padding() {
-        let files = generate_recovery_filenames(
-            "big",
-            2,
-            1000,
-            0,
-            RecoveryScheme::Uniform,
-            1_000_000,
-            16384,
-        );
-
-        // Uniform: 500, 500
-        // Max exponent: 1000 (4 digits), max count: 500 (3 digits)
-        assert_eq!(files[0].to_str().unwrap(), "big.vol0000+500.par2");
-        assert_eq!(files[1].to_str().unwrap(), "big.vol0500+500.par2");
-        assert_eq!(files[2].to_str().unwrap(), "big.par2");
-    }
-
-    /// Test with non-zero first recovery block
-    /// Reference: par2cmdline-turbo/src/par2creator.cpp line 491
-    #[test]
-    fn test_nonzero_first_block() {
-        let files =
-            generate_recovery_filenames("test", 2, 5, 10, RecoveryScheme::Uniform, 1_000_000, 1024);
-
-        // Uniform: 3, 2 blocks starting at exponent 10
-        // Exponents: 10, 13
-        assert_eq!(files[0].to_str().unwrap(), "test.vol10+3.par2");
-        assert_eq!(files[1].to_str().unwrap(), "test.vol13+2.par2");
-        assert_eq!(files[2].to_str().unwrap(), "test.par2");
-    }
-
-    /// Test zero recovery files (only index file)
-    /// Reference: par2cmdline-turbo/src/par2creator.cpp lines 484-489
-    #[test]
-    fn test_zero_recovery_files() {
-        let files =
-            generate_recovery_filenames("test", 0, 0, 0, RecoveryScheme::Variable, 1_000_000, 1024);
-
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].to_str().unwrap(), "test.par2");
-    }
-
     /// Test count_digits helper
     /// Reference: par2cmdline-turbo/src/par2creator.cpp lines 604-615
     #[test]
@@ -570,22 +360,18 @@ mod tests {
         assert_eq!(count_digits(1000), 4);
     }
 
-    /// Test single recovery file
-    #[test]
-    fn test_single_recovery_file() {
-        let files =
-            generate_recovery_filenames("test", 1, 5, 0, RecoveryScheme::Uniform, 1_000_000, 1024);
-
-        assert_eq!(files.len(), 2);
-        assert_eq!(files[0].to_str().unwrap(), "test.vol0+5.par2");
-        assert_eq!(files[1].to_str().unwrap(), "test.par2");
-    }
-
     /// Test plan_recovery_files returns filenames + allocation data together
     #[test]
     fn plan_recovery_files_returns_filenames_and_allocation() {
-        let plan =
-            plan_recovery_files("test", 3, 10, 0, RecoveryScheme::Variable, 1_000_000, 16384);
+        let plan = plan_recovery_files(
+            "test",
+            3,
+            10,
+            0,
+            RecoveryFileScheme::Variable,
+            1_000_000,
+            16384,
+        );
         // 3 volume files (index file is NOT included in plan)
         assert_eq!(plan.len(), 3);
         assert_eq!(plan[0].filename.to_str().unwrap(), "test.vol00+2.par2");
@@ -602,7 +388,15 @@ mod tests {
     /// Test plan_recovery_files with zero recovery files returns empty plan
     #[test]
     fn plan_recovery_files_zero_files_returns_empty() {
-        let plan = plan_recovery_files("test", 0, 0, 0, RecoveryScheme::Variable, 1_000_000, 1024);
+        let plan = plan_recovery_files(
+            "test",
+            0,
+            0,
+            0,
+            RecoveryFileScheme::Variable,
+            1_000_000,
+            1024,
+        );
         assert!(plan.is_empty());
     }
 
@@ -628,7 +422,7 @@ mod tests {
         // 3 files: max = (1<<3) - 1 = 7
         // If recovery_block_count = 8, need to double: lowblockcount = 2
         // 2 << 0 = 2, 2 << 1 = 4, 2 << 2 = 8 (total 14)
-        let allocations = allocate_recovery_blocks(3, 14, 0, RecoveryScheme::Variable, 0, 1);
+        let allocations = allocate_recovery_blocks(3, 14, 0, RecoveryFileScheme::Variable, 0, 1);
 
         assert_eq!(allocations[0].count, 2);
         assert_eq!(allocations[1].count, 4);

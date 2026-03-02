@@ -49,7 +49,7 @@ impl CreateReporter for ConsoleCreateReporter {
             let percent = (bytes_processed as f64 / total_bytes as f64 * 100.0) as u32;
             print!("\rHashing {}: {}%", filename, percent);
             use std::io::Write;
-            std::io::stdout().flush().unwrap();
+            let _ = std::io::stdout().flush();
         }
     }
 
@@ -70,7 +70,7 @@ impl CreateReporter for ConsoleCreateReporter {
                 blocks_generated, total_blocks, percent
             );
             use std::io::Write;
-            std::io::stdout().flush().unwrap();
+            let _ = std::io::stdout().flush();
         }
     }
 

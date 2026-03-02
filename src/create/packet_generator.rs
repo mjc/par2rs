@@ -330,48 +330,6 @@ pub fn write_file_verification_packet<W: std::io::Write>(
     Ok(())
 }
 
-/// Trait for packets that have an MD5 field
-pub trait PacketWithMd5 {
-    fn set_md5(&mut self, md5: Md5Hash);
-    fn get_md5(&self) -> &Md5Hash;
-}
-
-impl PacketWithMd5 for MainPacket {
-    fn set_md5(&mut self, md5: Md5Hash) {
-        self.md5 = md5;
-    }
-    fn get_md5(&self) -> &Md5Hash {
-        &self.md5
-    }
-}
-
-impl PacketWithMd5 for CreatorPacket {
-    fn set_md5(&mut self, md5: Md5Hash) {
-        self.md5 = md5;
-    }
-    fn get_md5(&self) -> &Md5Hash {
-        &self.md5
-    }
-}
-
-impl PacketWithMd5 for FileDescriptionPacket {
-    fn set_md5(&mut self, md5: Md5Hash) {
-        self.md5 = md5;
-    }
-    fn get_md5(&self) -> &Md5Hash {
-        &self.md5
-    }
-}
-
-impl PacketWithMd5 for InputFileSliceChecksumPacket {
-    fn set_md5(&mut self, md5: Md5Hash) {
-        self.md5 = md5;
-    }
-    fn get_md5(&self) -> &Md5Hash {
-        &self.md5
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

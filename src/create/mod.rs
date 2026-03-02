@@ -41,7 +41,7 @@ pub mod types;
 pub use builder::CreateContextBuilder;
 pub use context::CreateContext;
 pub use error::{CreateError, CreateResult};
-pub use file_naming::{generate_recovery_filenames, RecoveryScheme};
+pub use file_naming::RecoveryFilePlan;
 pub use progress::{ConsoleCreateReporter, CreateReporter, SilentCreateReporter};
 pub use types::{CreateConfig, RecoveryFileScheme};
 

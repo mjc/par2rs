@@ -5,7 +5,6 @@
 
 use super::error::{CreateError, CreateResult};
 use std::fs::File;
-use std::io;
 use std::path::Path;
 
 /// Open a file for reading, wrapping I/O errors with file context
@@ -73,56 +72,6 @@ pub fn create_file(path: impl AsRef<Path>) -> CreateResult<File> {
 /// ```
 pub fn packet_write_error(packet_type: &str, error: impl std::fmt::Display) -> CreateError {
     CreateError::Other(format!("Failed to write {}: {}", packet_type, error))
-}
-
-/// Wrapper for read operations that automatically maps to FileReadError
-///
-/// This is useful for chaining read operations where you want consistent error handling.
-///
-/// # Example
-/// ```no_run
-/// use par2rs::create::error_helpers::ReadContext;
-/// use std::io::Read;
-/// use std::path::Path;
-///
-/// let path = Path::new("test.dat");
-/// let mut file = std::fs::File::open(path).unwrap();
-/// let mut buffer = vec![0u8; 1024];
-/// let mut ctx = ReadContext::new(path);
-///
-/// // This will wrap any I/O error with file context
-/// ctx.read(&mut file, &mut buffer)?;
-/// # Ok::<(), par2rs::create::CreateError>(())
-/// ```
-pub struct ReadContext {
-    file_path: String,
-}
-
-impl ReadContext {
-    /// Create a new read context for a file path
-    pub fn new(path: impl AsRef<Path>) -> Self {
-        Self {
-            file_path: path.as_ref().to_string_lossy().to_string(),
-        }
-    }
-
-    /// Perform a read operation, wrapping any I/O error with file context
-    pub fn read(&mut self, reader: &mut impl io::Read, buf: &mut [u8]) -> CreateResult<usize> {
-        reader.read(buf).map_err(|e| CreateError::FileReadError {
-            file: self.file_path.clone(),
-            source: e,
-        })
-    }
-
-    /// Perform a read_exact operation, wrapping any I/O error with file context
-    pub fn read_exact(&mut self, reader: &mut impl io::Read, buf: &mut [u8]) -> CreateResult<()> {
-        reader
-            .read_exact(buf)
-            .map_err(|e| CreateError::FileReadError {
-                file: self.file_path.clone(),
-                source: e,
-            })
-    }
 }
 
 #[cfg(test)]
@@ -204,7 +153,7 @@ mod tests {
 
     #[test]
     fn test_packet_write_error_formatting() {
-        let io_err = io::Error::other("disk full");
+        let io_err = std::io::Error::other("disk full");
         let err = packet_write_error("MainPacket", io_err);
 
         let err_string = format!("{}", err);
@@ -215,66 +164,13 @@ mod tests {
     #[test]
     fn test_packet_write_error_different_types() {
         let err1 = packet_write_error("CreatorPacket", "serialize error");
-        let err2 = packet_write_error("RecoveryPacket", io::Error::from(io::ErrorKind::WriteZero));
+        let err2 = packet_write_error(
+            "RecoveryPacket",
+            std::io::Error::from(std::io::ErrorKind::WriteZero),
+        );
 
         assert!(format!("{}", err1).contains("CreatorPacket"));
         assert!(format!("{}", err2).contains("RecoveryPacket"));
-    }
-
-    #[test]
-    fn test_read_context_new() {
-        let ctx = ReadContext::new("/path/to/file.dat");
-        assert_eq!(ctx.file_path, "/path/to/file.dat");
-    }
-
-    #[test]
-    fn test_read_context_read_success() {
-        let temp = tempdir().unwrap();
-        let path = temp.path().join("test.dat");
-        std::fs::write(&path, b"hello world").unwrap();
-
-        let mut file = File::open(&path).unwrap();
-        let mut buffer = vec![0u8; 5];
-        let mut ctx = ReadContext::new(&path);
-
-        let result = ctx.read(&mut file, &mut buffer);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 5);
-        assert_eq!(&buffer, b"hello");
-    }
-
-    #[test]
-    fn test_read_context_read_exact_success() {
-        let temp = tempdir().unwrap();
-        let path = temp.path().join("test.dat");
-        std::fs::write(&path, b"exact test").unwrap();
-
-        let mut file = File::open(&path).unwrap();
-        let mut buffer = vec![0u8; 10];
-        let mut ctx = ReadContext::new(&path);
-
-        let result = ctx.read_exact(&mut file, &mut buffer);
-        assert!(result.is_ok());
-        assert_eq!(&buffer, b"exact test");
-    }
-
-    #[test]
-    fn test_read_context_error_includes_path() {
-        use std::io::Cursor;
-
-        let mut ctx = ReadContext::new("/test/path.dat");
-        let mut reader = Cursor::new(vec![1, 2, 3]);
-        let mut buffer = vec![0u8; 10]; // Try to read more than available
-
-        let result = ctx.read_exact(&mut reader, &mut buffer);
-        assert!(result.is_err());
-
-        match result.unwrap_err() {
-            CreateError::FileReadError { file, .. } => {
-                assert_eq!(file, "/test/path.dat");
-            }
-            _ => panic!("Wrong error type"),
-        }
     }
 
     #[test]
