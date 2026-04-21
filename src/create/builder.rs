@@ -64,6 +64,12 @@ impl CreateContextBuilder {
         self
     }
 
+    /// Set base path used to derive source packet names.
+    pub fn base_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.config.base_path = Some(path.into());
+        self
+    }
+
     /// Set explicit block size in bytes
     ///
     /// If not set, block size will be auto-calculated from source_block_count
@@ -193,6 +199,7 @@ mod tests {
             .thread_count(2)
             .first_recovery_block(5)
             .memory_limit(1024 * 1024)
+            .base_path(PathBuf::from("/tmp/base"))
             .source_block_count(1000)
             .recovery_block_count(50)
             .recovery_file_count(4)
@@ -203,6 +210,7 @@ mod tests {
         assert_eq!(builder.config.thread_count, 2);
         assert_eq!(builder.config.first_recovery_block, 5);
         assert_eq!(builder.config.memory_limit, Some(1024 * 1024));
+        assert_eq!(builder.config.base_path, Some(PathBuf::from("/tmp/base")));
         assert_eq!(builder.config.recovery_block_count, Some(50));
         assert_eq!(builder.config.recovery_file_count, Some(4));
         assert_eq!(

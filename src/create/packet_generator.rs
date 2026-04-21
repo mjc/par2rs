@@ -83,15 +83,7 @@ pub fn generate_file_description_packet(
     recovery_set_id: RecoverySetId,
     source_file: &SourceFileInfo,
 ) -> CreateResult<FileDescriptionPacket> {
-    let filename_bytes = source_file
-        .path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| {
-            CreateError::Other(format!("Invalid filename: {}", source_file.path.display()))
-        })?
-        .as_bytes()
-        .to_vec();
+    let filename_bytes = source_file.packet_name().as_bytes();
 
     // Ensure filename is not empty
     if filename_bytes.is_empty() {
@@ -99,7 +91,8 @@ pub fn generate_file_description_packet(
     }
 
     // Add null terminator and pad to multiple of 4
-    let mut name_with_null = filename_bytes.clone();
+    let mut name_with_null = Vec::with_capacity((filename_bytes.len() + 4) & !3);
+    name_with_null.extend_from_slice(filename_bytes);
     name_with_null.push(0);
     while name_with_null.len() % 4 != 0 {
         name_with_null.push(0);
@@ -342,6 +335,7 @@ mod tests {
             SourceFileInfo {
                 file_id: FileId::new([1u8; 16]),
                 path: PathBuf::from("test1.dat"),
+                packet_name: "test1.dat".to_string(),
                 size: 1024,
                 hash: Md5Hash::new([2u8; 16]),
                 hash_16k: Md5Hash::new([0u8; 16]),
@@ -353,6 +347,7 @@ mod tests {
             SourceFileInfo {
                 file_id: FileId::new([3u8; 16]),
                 path: PathBuf::from("test2.dat"),
+                packet_name: "test2.dat".to_string(),
                 size: 2048,
                 hash: Md5Hash::new([4u8; 16]),
                 hash_16k: Md5Hash::new([0u8; 16]),
@@ -375,6 +370,7 @@ mod tests {
         let source_files = vec![SourceFileInfo {
             file_id: FileId::new([0xBB; 16]),
             path: PathBuf::from("test.dat"),
+            packet_name: "test.dat".to_string(),
             size: 1024,
             hash: Md5Hash::new([0xCC; 16]),
             hash_16k: Md5Hash::new([0u8; 16]),
@@ -413,6 +409,7 @@ mod tests {
         let source_file = SourceFileInfo {
             file_id: FileId::new([0xBB; 16]),
             path: PathBuf::from("/tmp/test.dat"),
+            packet_name: "test.dat".to_string(),
             size: 12345,
             hash: Md5Hash::new([0xCC; 16]),
             hash_16k: Md5Hash::new([0u8; 16]),
@@ -441,6 +438,7 @@ mod tests {
         let source_file = SourceFileInfo {
             file_id: FileId::new([0xBB; 16]),
             path: PathBuf::from("test.dat"),
+            packet_name: "test.dat".to_string(),
             size: 1024,
             hash: Md5Hash::new([0xCC; 16]),
             hash_16k: Md5Hash::new([0u8; 16]),
@@ -479,6 +477,7 @@ mod tests {
         let source_file = SourceFileInfo {
             file_id: FileId::new([0xBB; 16]),
             path: PathBuf::from("test.dat"),
+            packet_name: "test.dat".to_string(),
             size: 512,
             hash: Md5Hash::new([0xCC; 16]),
             hash_16k: Md5Hash::new([0u8; 16]),
@@ -515,6 +514,7 @@ mod tests {
         let source_file = SourceFileInfo {
             file_id: FileId::new([0xBB; 16]),
             path: PathBuf::from("/tmp/test.dat"),
+            packet_name: "test.dat".to_string(),
             size: 12345,
             hash: Md5Hash::new([0xCC; 16]),
             hash_16k: Md5Hash::new([0u8; 16]),

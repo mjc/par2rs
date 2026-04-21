@@ -32,6 +32,9 @@ pub struct CreateConfig {
     /// List of source files to protect
     pub source_files: Vec<PathBuf>,
 
+    /// Base path used to derive packet names stored in PAR2 metadata
+    pub base_path: Option<PathBuf>,
+
     /// Block size in bytes (if None, will be auto-calculated from source_block_count)
     /// Reference: par2cmdline -s option
     pub block_size: Option<u64>,
@@ -71,6 +74,7 @@ impl Default for CreateConfig {
         CreateConfig {
             output_name: String::new(),
             source_files: Vec::new(),
+            base_path: None,
             block_size: None,
             source_block_count: None,
             recovery_block_count: None,

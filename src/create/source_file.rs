@@ -14,6 +14,9 @@ pub struct SourceFileInfo {
     /// Path to the source file
     pub path: PathBuf,
 
+    /// PAR2 packet name, normalized once during source discovery
+    pub packet_name: String,
+
     /// File size in bytes
     pub size: u64,
 
@@ -52,9 +55,21 @@ pub struct BlockChecksum {
 impl SourceFileInfo {
     /// Create a new source file info with basic metadata
     pub fn new(path: PathBuf, size: u64, index: usize) -> Self {
+        let packet_name = packet_name_from_path(&path);
+        Self::new_with_packet_name(path, packet_name, size, index)
+    }
+
+    /// Create a new source file info with a precomputed PAR2 packet name
+    pub fn new_with_packet_name(
+        path: PathBuf,
+        packet_name: String,
+        size: u64,
+        index: usize,
+    ) -> Self {
         SourceFileInfo {
             file_id: FileId::new([0u8; 16]), // Will be computed during hashing
             path,
+            packet_name,
             size,
             hash: Md5Hash::new([0u8; 16]), // Will be computed during hashing
             hash_16k: Md5Hash::new([0u8; 16]), // Will be computed during hashing
@@ -76,12 +91,30 @@ impl SourceFileInfo {
 
     /// Get the filename
     pub fn filename(&self) -> String {
-        self.path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string()
+        self.packet_name.clone()
     }
+
+    /// Get the normalized PAR2 packet name without allocating.
+    pub fn packet_name(&self) -> &str {
+        &self.packet_name
+    }
+}
+
+pub(crate) fn packet_name_from_path(path: &std::path::Path) -> String {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+pub(crate) fn normalize_packet_path(path: &std::path::Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => part.to_str(),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 #[cfg(test)]
@@ -97,6 +130,7 @@ mod tests {
         let info = SourceFileInfo::new(path.clone(), 1024, 3);
 
         assert_eq!(info.path, path);
+        assert_eq!(info.packet_name(), "test.dat");
         assert_eq!(info.size, 1024);
         assert_eq!(info.index, 3);
         assert_eq!(info.block_count, 0);
@@ -148,5 +182,17 @@ mod tests {
     fn filename_bare_name() {
         let info = SourceFileInfo::new(PathBuf::from("bare.txt"), 0, 0);
         assert_eq!(info.filename(), "bare.txt");
+    }
+
+    #[test]
+    fn new_with_packet_name_uses_precomputed_name() {
+        let info = SourceFileInfo::new_with_packet_name(
+            PathBuf::from("/base/nested/file.dat"),
+            "nested/file.dat".to_string(),
+            0,
+            0,
+        );
+        assert_eq!(info.packet_name(), "nested/file.dat");
+        assert_eq!(info.filename(), "nested/file.dat");
     }
 }
