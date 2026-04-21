@@ -762,14 +762,7 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
 
     if results.missing_block_count == 0 {
         if purge {
-            let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false, false);
-            let context = par2rs::repair::RepairContextBuilder::new()
-                .packets(packet_set.packets)
-                .base_path(base_dir)
-                .reporter(Box::new(par2rs::repair::ConsoleReporter::new(quiet)))
-                .build()
-                .context("Failed to initialize purge context")?;
-            context.purge_files(&file_name.to_string_lossy())?;
+            par2rs::repair::RepairContext::purge_par_files_for(&file_name.to_string_lossy())?;
         }
         Ok(())
     } else if results.repair_possible {
@@ -854,8 +847,16 @@ fn handle_repair(matches: &clap::ArgMatches) -> Result<()> {
         result.print_result();
     }
 
-    if purge && result.is_success() {
-        context.purge_files(&resolved_par2_file)?;
+    if purge {
+        match &result {
+            par2rs::repair::RepairResult::Success { .. } => {
+                context.purge_files(&resolved_par2_file)?
+            }
+            par2rs::repair::RepairResult::NoRepairNeeded { .. } => {
+                context.purge_par_files(&resolved_par2_file)?
+            }
+            par2rs::repair::RepairResult::Failed { .. } => {}
+        }
     }
 
     if result.is_success() {

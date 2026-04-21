@@ -81,9 +81,18 @@ fn main() -> Result<()> {
         result.print_result();
     }
 
-    // Purge backup and PAR2 files on successful repair if -p flag is set
-    if purge && result.is_success() {
-        context.purge_files(&resolved_par2_file)?;
+    // par2cmdline-turbo purges backups only after an actual repair. If no
+    // repair was needed, -p removes PAR2 files and leaves existing backups.
+    if purge {
+        match &result {
+            par2rs::repair::RepairResult::Success { .. } => {
+                context.purge_files(&resolved_par2_file)?
+            }
+            par2rs::repair::RepairResult::NoRepairNeeded { .. } => {
+                context.purge_par_files(&resolved_par2_file)?
+            }
+            par2rs::repair::RepairResult::Failed { .. } => {}
+        }
     }
 
     // Exit with success if repair was successful or not needed, error otherwise

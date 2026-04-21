@@ -147,14 +147,7 @@ fn main() -> Result<()> {
     );
 
     if purge {
-        let packet_set = par2_files::load_par2_packets(&par2_files, false, false);
-        let context = par2rs::repair::RepairContextBuilder::new()
-            .packets(packet_set.packets)
-            .base_path(base_dir)
-            .reporter(Box::new(par2rs::repair::ConsoleReporter::new(quiet)))
-            .build()
-            .context("Failed to initialize purge context")?;
-        context.purge_files(&file_name.to_string_lossy())?;
+        par2rs::repair::RepairContext::purge_par_files_for(&file_name.to_string_lossy())?;
     }
 
     Ok(())
