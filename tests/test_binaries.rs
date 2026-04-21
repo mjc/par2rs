@@ -1879,6 +1879,55 @@ fn test_par1_repair_rejects_zero_memory_flag() {
 }
 
 #[test]
+fn test_par2repair_insufficient_recovery_exits_two() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let data_file = temp_dir.path().join("data.bin");
+    create_test_file(&data_file, b"abcdefghijkl").expect("Failed to create test file");
+
+    let par2_file = temp_dir.path().join("data.bin.par2");
+    let create_output = Command::new(get_binary_path("par2create"))
+        .arg("-q")
+        .arg("-s4")
+        .arg("-c1")
+        .arg(&par2_file)
+        .arg(&data_file)
+        .output()
+        .expect("Failed to execute par2create");
+    assert!(
+        create_output.status.success(),
+        "par2create failed: {}",
+        String::from_utf8_lossy(&create_output.stderr)
+    );
+
+    fs::remove_file(&data_file).expect("Failed to remove data file");
+
+    let combined_repair = Command::new(get_binary_path("par2"))
+        .arg("repair")
+        .arg(&par2_file)
+        .output()
+        .expect("Failed to execute par2 repair");
+    assert_eq!(
+        combined_repair.status.code(),
+        Some(2),
+        "par2 repair exit mismatch: stdout={}, stderr={}",
+        String::from_utf8_lossy(&combined_repair.stdout),
+        String::from_utf8_lossy(&combined_repair.stderr)
+    );
+
+    let standalone_repair = Command::new(get_binary_path("par2repair"))
+        .arg(&par2_file)
+        .output()
+        .expect("Failed to execute par2repair");
+    assert_eq!(
+        standalone_repair.status.code(),
+        Some(2),
+        "par2repair exit mismatch: stdout={}, stderr={}",
+        String::from_utf8_lossy(&standalone_repair.stdout),
+        String::from_utf8_lossy(&standalone_repair.stderr)
+    );
+}
+
+#[test]
 fn test_par2repair_with_fixtures() {
     let par2_file = Path::new("tests/fixtures/repair_scenarios/testfile.par2");
     if !par2_file.exists() {

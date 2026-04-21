@@ -141,6 +141,19 @@ impl RepairResult {
         )
     }
 
+    /// Process exit code matching par2cmdline-turbo's common repair outcomes.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            RepairResult::Success { .. } | RepairResult::NoRepairNeeded { .. } => 0,
+            RepairResult::Failed { message, .. }
+                if message.starts_with("Insufficient recovery data") =>
+            {
+                2
+            }
+            RepairResult::Failed { .. } => 1,
+        }
+    }
+
     /// Get the files that were successfully repaired
     pub fn repaired_files(&self) -> &[String] {
         match self {

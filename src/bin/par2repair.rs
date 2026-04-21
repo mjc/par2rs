@@ -96,9 +96,10 @@ fn main() -> Result<()> {
     }
 
     // Exit with success if repair was successful or not needed, error otherwise
-    if result.is_success() {
+    let exit_code = result.exit_code();
+    if exit_code == 0 {
         Ok(())
     } else {
-        std::process::exit(2);
+        std::process::exit(exit_code);
     }
 }
