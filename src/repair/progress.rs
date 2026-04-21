@@ -231,6 +231,7 @@ impl ProgressReporter for ConsoleReporter {
         if self.quiet {
             return;
         }
+        print!("Constructing: 0.0%\r");
         println!("Constructing: done.");
     }
 
