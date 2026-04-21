@@ -684,44 +684,43 @@ impl CreateContext {
 
     /// Calculate number of recovery blocks to generate
     fn calculate_recovery_blocks(&mut self) -> CreateResult<()> {
-        if let Some(count) = self.config.recovery_block_count {
+        let recovery_blocks = if let Some(count) = self.config.recovery_block_count {
             // Explicit count specified
-            self.recovery_block_count = count;
+            count as u64
         } else if let Some(target_size) = self.config.recovery_target_size {
-            self.recovery_block_count =
-                self.calculate_recovery_blocks_for_target_size(target_size)?;
+            self.calculate_recovery_blocks_for_target_size(target_size)?
         } else if let Some(percent) = self.config.redundancy_percentage {
             // Reference: par2cmdline-turbo/src/commandline.cpp ComputeRecoveryBlockCount()
             let count = (self.source_block_count as u64 * percent as u64 + 50) / 100;
-            if count > u32::MAX as u64 {
-                return Err(CreateError::Other(
-                    "Too many recovery blocks requested".to_string(),
-                ));
-            }
-            self.recovery_block_count = (count as u32).max(1);
+            count.max(1)
         } else {
             return Err(CreateError::Other(
                 "Must specify recovery block count, redundancy percentage, or target recovery size"
                     .to_string(),
             ));
-        }
+        };
 
-        if self.recovery_block_count > 65536 {
+        self.recovery_block_count = self.checked_recovery_block_count(recovery_blocks)?;
+        Ok(())
+    }
+
+    fn checked_recovery_block_count(&self, recovery_blocks: u64) -> CreateResult<u32> {
+        if recovery_blocks > 65536 {
             return Err(CreateError::Other(
                 "Too many recovery blocks requested".to_string(),
             ));
         }
 
-        if self.config.first_recovery_block as u64 + self.recovery_block_count as u64 >= 65536 {
+        if self.config.first_recovery_block as u64 + recovery_blocks >= 65536 {
             return Err(CreateError::Other(
                 "First recovery block number is too high".to_string(),
             ));
         }
 
-        Ok(())
+        Ok(recovery_blocks as u32)
     }
 
-    fn calculate_recovery_blocks_for_target_size(&self, target_size: u64) -> CreateResult<u32> {
+    fn calculate_recovery_blocks_for_target_size(&self, target_size: u64) -> CreateResult<u64> {
         use super::file_naming::default_recovery_file_count_for_scheme;
 
         let overhead_per_recovery_file = self.source_block_count as u64 * 21;
@@ -754,14 +753,8 @@ impl CreateContext {
         } else {
             ((target_size - overhead) / recovery_packet_size)
                 .max(1)
-                .min(u32::MAX as u64) as u32
+                .min(u32::MAX as u64)
         };
-
-        if self.config.first_recovery_block + recovery_blocks >= 65536 {
-            return Err(CreateError::Other(
-                "First recovery block number is too high".to_string(),
-            ));
-        }
 
         Ok(recovery_blocks)
     }

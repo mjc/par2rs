@@ -3,7 +3,8 @@
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
 use par2rs::create::cli::{
-    expand_source_files, parse_redundancy_option, validate_recovery_file_count, RedundancyOption,
+    expand_source_files, parse_redundancy_option, validate_recovery_file_count,
+    warn_for_high_redundancy, RedundancyOption,
 };
 use std::path::PathBuf;
 
@@ -168,11 +169,7 @@ fn main() -> Result<()> {
         validate_recovery_file_count(count).map_err(anyhow::Error::msg)?;
     }
 
-    if let Some(RedundancyOption::Percent(redundancy)) = redundancy {
-        if redundancy > 100 {
-            eprintln!("WARNING: Creating recovery file(s) with {redundancy}% redundancy.");
-        }
-    }
+    warn_for_high_redundancy(redundancy);
 
     let output_name = matches
         .get_one::<String>("archive_name")

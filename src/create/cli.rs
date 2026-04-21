@@ -78,6 +78,14 @@ pub fn validate_recovery_file_count(count: u32) -> Result<u32, String> {
     }
 }
 
+pub fn warn_for_high_redundancy(redundancy: Option<RedundancyOption>) {
+    if let Some(RedundancyOption::Percent(percent)) = redundancy {
+        if percent > 100 {
+            eprintln!("WARNING: Creating recovery file(s) with {percent}% redundancy.");
+        }
+    }
+}
+
 fn collect_directory_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
     let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.path());
