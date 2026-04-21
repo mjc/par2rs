@@ -1619,6 +1619,46 @@ fn test_par2verify_ignores_foreign_extra_par2_set() {
 }
 
 #[test]
+fn test_par2verify_exit_codes_match_repair_possibility() {
+    for (recovery_blocks, expected_code) in [(1, 2), (3, 1)] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let data_file = temp_dir.path().join("data.bin");
+        create_test_file(&data_file, b"abcdefghijkl").expect("Failed to create test file");
+
+        let par2_file = temp_dir.path().join("data.bin.par2");
+        let create_output = Command::new(get_binary_path("par2create"))
+            .arg("-q")
+            .arg("-s4")
+            .arg("-c")
+            .arg(recovery_blocks.to_string())
+            .arg(&par2_file)
+            .arg(&data_file)
+            .output()
+            .expect("Failed to execute par2create");
+        assert!(
+            create_output.status.success(),
+            "par2create failed: {}",
+            String::from_utf8_lossy(&create_output.stderr)
+        );
+
+        fs::remove_file(&data_file).expect("Failed to remove data file");
+
+        let verify_output = Command::new(get_binary_path("par2verify"))
+            .arg(&par2_file)
+            .output()
+            .expect("Failed to execute par2verify");
+        assert_eq!(
+            verify_output.status.code(),
+            Some(expected_code),
+            "par2verify exit mismatch for -c {}: stdout={}, stderr={}",
+            recovery_blocks,
+            String::from_utf8_lossy(&verify_output.stdout),
+            String::from_utf8_lossy(&verify_output.stderr)
+        );
+    }
+}
+
+#[test]
 fn test_par2verify_purge_removes_par_files_when_valid() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let (par2_file, source) = create_purge_test_set(&temp_dir);
