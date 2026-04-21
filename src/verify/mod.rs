@@ -27,7 +27,7 @@ pub use global_table::{
     GlobalBlockEntry, GlobalBlockPosition, GlobalBlockTable, GlobalBlockTableBuilder,
 };
 pub use types::{
-    BlockVerificationResult, FileScanMetadata, FileStatus, FileVerificationResult,
+    BlockSource, BlockVerificationResult, FileScanMetadata, FileStatus, FileVerificationResult,
     VerificationResults,
 };
 pub use utils::extract_file_name;

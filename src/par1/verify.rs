@@ -150,6 +150,7 @@ pub(crate) fn verify_entry(base_dir: &Path, entry: &Par1FileEntry) -> FileVerifi
         damaged_blocks,
         block_positions: HashMap::default(),
         matched_path: None,
+        block_sources: HashMap::default(),
     }
 }
 
@@ -263,6 +264,7 @@ fn file_result_from_match(
         damaged_blocks,
         block_positions: HashMap::default(),
         matched_path: file_match.matched_path.clone(),
+        block_sources: HashMap::default(),
     }
 }
 

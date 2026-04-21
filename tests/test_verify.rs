@@ -644,6 +644,7 @@ mod file_status_tests {
             damaged_blocks: vec![],
             block_positions: Default::default(),
             matched_path: None,
+        block_sources: Default::default(),
         };
 
         let cloned = result.clone();
@@ -769,6 +770,7 @@ mod print_verification_results_tests {
             damaged_blocks,
             block_positions: Default::default(),
             matched_path: None,
+        block_sources: Default::default(),
         });
 
         let results = VerificationResults {
@@ -838,6 +840,7 @@ mod verification_result_calculations {
                 damaged_blocks: if i > 0 { vec![0u32, 1u32] } else { vec![] },
                 block_positions: Default::default(),
                 matched_path: None,
+        block_sources: Default::default(),
             });
         }
 
@@ -898,6 +901,7 @@ mod verification_result_calculations {
                 damaged_blocks: vec![],
                 block_positions: Default::default(),
                 matched_path: None,
+        block_sources: Default::default(),
             },
             FileVerificationResult {
                 file_name: "damaged.txt".to_string(),
@@ -908,6 +912,7 @@ mod verification_result_calculations {
                 damaged_blocks: vec![5, 6, 7, 8, 9],
                 block_positions: Default::default(),
                 matched_path: None,
+        block_sources: Default::default(),
             },
             FileVerificationResult {
                 file_name: "missing.txt".to_string(),
@@ -918,6 +923,7 @@ mod verification_result_calculations {
                 damaged_blocks: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
                 block_positions: Default::default(),
                 matched_path: None,
+        block_sources: Default::default(),
             },
         ];
 
@@ -1091,6 +1097,7 @@ mod file_name_handling {
             damaged_blocks: vec![],
             block_positions: Default::default(),
             matched_path: None,
+        block_sources: Default::default(),
         };
 
         assert_eq!(result.file_name, "файл.txt");

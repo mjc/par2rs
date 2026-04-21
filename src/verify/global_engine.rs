@@ -7,8 +7,8 @@
 use super::global_table::{GlobalBlockTable, GlobalBlockTableBuilder};
 use super::scanner_state::ScannerState;
 use super::types::{
-    BlockCount, BlockNumber, BlockVerificationResult, FileScanMetadata, FileSize, FileStatus,
-    FileVerificationResult, VerificationResults,
+    BlockCount, BlockNumber, BlockSource, BlockVerificationResult, FileScanMetadata, FileSize,
+    FileStatus, FileVerificationResult, VerificationResults,
 };
 use super::utils::extract_file_name;
 
@@ -28,6 +28,8 @@ type AvailableBlocksMap = HashMap<(Md5Hash, Crc32Value), Vec<(FileId, u32)>>;
 type FileStatusMap = HashMap<FileId, FileStatus>;
 /// Map of file IDs to wrong-name paths that exactly matched them.
 type RenamedFileMatches = HashMap<FileId, PathBuf>;
+/// Concrete source locations for blocks found during scanning.
+type BlockLocationMap = HashMap<(FileId, u32), BlockSource>;
 
 /// Result of attempting to match a block against the global table
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +100,8 @@ pub struct GlobalVerificationEngine {
     skip_leeway: usize,
     /// Only scan extra files that can be exact renamed matches.
     rename_only: bool,
+    /// Additional non-PAR2 files to scan for renamed or misplaced data.
+    extra_files: Vec<PathBuf>,
 }
 
 /// Result of verifying a single file using global block table
@@ -175,6 +179,7 @@ impl GlobalVerificationEngine {
             data_skipping: config.data_skipping,
             skip_leeway: config.skip_leeway,
             rename_only: config.rename_only,
+            extra_files: config.extra_files.clone(),
         })
     }
 
@@ -194,7 +199,7 @@ impl GlobalVerificationEngine {
         reporter: &R,
         parallel: bool,
     ) -> VerificationResults {
-        self.verify_recovery_set_with_extra_files(reporter, parallel, &[])
+        self.verify_recovery_set_with_extra_files(reporter, parallel, &self.extra_files)
     }
 
     /// Verify the recovery set while also scanning user-supplied extra files.
@@ -209,10 +214,24 @@ impl GlobalVerificationEngine {
         extra_files: &[PathBuf],
     ) -> VerificationResults {
         // Note: report_verification_start and report_files_found should be called by the caller
+        let combined_extra_files;
+        let scan_extra_files = if self.extra_files.is_empty() {
+            extra_files
+        } else if extra_files.is_empty() {
+            &self.extra_files
+        } else {
+            combined_extra_files = self
+                .extra_files
+                .iter()
+                .chain(extra_files.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            &combined_extra_files
+        };
 
         // Step 1: Scan all available files to build availability map
-        let (available_blocks, file_statuses, scan_metadatas, renamed_matches) =
-            self.scan_available_blocks_with_extra_files(reporter, parallel, extra_files);
+        let (available_blocks, file_statuses, scan_metadatas, renamed_matches, block_locations) =
+            self.scan_available_blocks_with_extra_files(reporter, parallel, scan_extra_files);
 
         // Step 2: Create aggregate results (individual file reporting already done in scan_available_blocks)
         let file_results = self.create_file_results(
@@ -220,6 +239,7 @@ impl GlobalVerificationEngine {
             &file_statuses,
             &scan_metadatas,
             &renamed_matches,
+            &block_locations,
         );
         let block_results = self.create_block_verification_results(&available_blocks);
 
@@ -247,6 +267,7 @@ impl GlobalVerificationEngine {
         FileStatusMap,
         HashMap<FileId, FileScanMetadata>,
         RenamedFileMatches,
+        BlockLocationMap,
     ) {
         // Wrap reporter in Mutex for thread-safe output (like par2cmdline-turbo's output_lock)
         let reporter_lock = Mutex::new(reporter);
@@ -279,10 +300,13 @@ impl GlobalVerificationEngine {
         let mut global_block_map = HashMap::default();
         let mut file_statuses = HashMap::default();
         let mut scan_metadatas = HashMap::default();
+        let mut block_locations = HashMap::default();
 
-        for (local_map, _file_size, file_id, status, metadata) in file_results {
+        for (local_map, _file_size, file_id, status, metadata, source_path) in file_results {
             // Store the computed status
             file_statuses.insert(file_id, status);
+
+            Self::merge_block_locations(&mut block_locations, &metadata, &source_path);
 
             // Store the scan metadata
             scan_metadatas.insert(file_id, metadata);
@@ -339,6 +363,8 @@ impl GlobalVerificationEngine {
                     .record_block_found(*offset, *file_id, *block_number);
             }
 
+            Self::merge_block_locations(&mut block_locations, &metadata, &extra_path);
+
             for (key, entries) in local_map {
                 global_block_map
                     .entry(key)
@@ -352,6 +378,7 @@ impl GlobalVerificationEngine {
             file_statuses,
             scan_metadatas,
             renamed_matches,
+            block_locations,
         )
     }
 
@@ -404,6 +431,7 @@ impl GlobalVerificationEngine {
         FileId,
         FileStatus,
         FileScanMetadata,
+        PathBuf,
     ) {
         use crate::verify::types::FileSize;
 
@@ -453,7 +481,23 @@ impl GlobalVerificationEngine {
             file_description.file_id,
             status,
             scan_metadata,
+            file_path,
         )
+    }
+
+    fn merge_block_locations(
+        block_locations: &mut BlockLocationMap,
+        metadata: &FileScanMetadata,
+        source_path: &Path,
+    ) {
+        for (offset, file_id, block_number) in &metadata.found_blocks {
+            block_locations
+                .entry((*file_id, *block_number))
+                .or_insert_with(|| BlockSource {
+                    file_path: source_path.to_path_buf(),
+                    offset: *offset,
+                });
+        }
     }
 
     /// Scan a single file and return its local block map with progress reporting
@@ -1202,6 +1246,7 @@ impl GlobalVerificationEngine {
         file_statuses: &FileStatusMap,
         scan_metadatas: &HashMap<FileId, FileScanMetadata>,
         renamed_matches: &RenamedFileMatches,
+        block_locations: &BlockLocationMap,
     ) -> Vec<FileVerificationResult> {
         let mut file_results = Vec::new();
 
@@ -1270,6 +1315,14 @@ impl GlobalVerificationEngine {
                         .collect()
                 })
                 .unwrap_or_default();
+            let mut block_sources = HashMap::default();
+            for block_num in 0..total_blocks.as_usize() {
+                let block_number = block_num as u32;
+                if let Some(source) = block_locations.get(&(file_description.file_id, block_number))
+                {
+                    block_sources.insert(block_number, source.clone());
+                }
+            }
 
             // Just create the result record (reporting already done inline)
 
@@ -1284,6 +1337,7 @@ impl GlobalVerificationEngine {
                 matched_path: (status == FileStatus::Renamed)
                     .then(|| renamed_matches.get(&file_description.file_id).cloned())
                     .flatten(),
+                block_sources,
             });
         }
 

@@ -410,6 +410,15 @@ pub struct FileVerificationResult {
     /// This is populated only for exact extra-file rename matches where
     /// `status == FileStatus::Renamed`.
     pub matched_path: Option<PathBuf>,
+    /// Source files and offsets where blocks were found during scanning.
+    /// Maps block_number -> concrete source location for repair reads.
+    pub block_sources: rustc_hash::FxHashMap<u32, BlockSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockSource {
+    pub file_path: PathBuf,
+    pub offset: usize,
 }
 
 /// Buffer for scanning file data
