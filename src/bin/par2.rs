@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
 use par2rs::create::cli::{
-    expand_source_files, parse_redundancy_option, validate_recovery_file_count,
+    parse_redundancy_option, resolve_create_inputs, validate_recovery_file_count,
     warn_for_high_redundancy, RedundancyOption,
 };
 use par2rs::reporters::VerificationReporter;
@@ -35,8 +35,7 @@ fn main() -> Result<()> {
                 .arg(
                     Arg::new("files")
                         .help("Files to protect")
-                        .required(true)
-                        .num_args(1..)
+                        .num_args(0..)
                         .index(2),
                 )
                 // Global options (match par2cmdline)
@@ -264,9 +263,8 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
 
     let source_inputs: Vec<PathBuf> = matches
         .get_many::<String>("files")
-        .expect("files are required")
-        .map(PathBuf::from)
-        .collect();
+        .map(|files| files.map(PathBuf::from).collect())
+        .unwrap_or_default();
 
     // Handle verbosity/quiet flags (par2cmdline style)
     let _verbose_count = matches.get_count("verbose"); // TODO: Use for logging level
@@ -327,8 +325,6 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     let uniform = matches.get_flag("uniform");
     let limit_size = matches.get_flag("limit_size");
     let recurse = matches.get_flag("recurse");
-    let source_files =
-        expand_source_files(source_inputs, recurse).context("Failed to expand source file list")?;
 
     if let Some(count) = recovery_file_count {
         validate_recovery_file_count(count).map_err(anyhow::Error::msg)?;
@@ -336,17 +332,22 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
 
     warn_for_high_redundancy(redundancy);
 
-    // Use archive name if specified, otherwise use par2_file
-    let output_name = matches
-        .get_one::<String>("archive_name")
-        .unwrap_or(par2_file);
+    let (output_name, source_files) = resolve_create_inputs(
+        par2_file,
+        matches
+            .get_one::<String>("archive_name")
+            .map(String::as_str),
+        source_inputs,
+        recurse,
+    )
+    .map_err(anyhow::Error::msg)?;
 
     if !quiet_mode {
         println!(
             "Creating PAR2 files for {} source files...",
             source_files.len()
         );
-        println!("Output: {}", output_name);
+        println!("Output: {output_name}");
         if let Some(RedundancyOption::Percent(redundancy)) = redundancy {
             println!("Redundancy: {}%", redundancy);
         }

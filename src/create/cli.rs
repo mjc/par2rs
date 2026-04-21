@@ -68,6 +68,43 @@ pub fn expand_source_files(inputs: Vec<PathBuf>, recurse: bool) -> std::io::Resu
     Ok(files)
 }
 
+pub fn resolve_create_inputs(
+    par2_file: &str,
+    archive_name: Option<&str>,
+    source_inputs: Vec<PathBuf>,
+    recurse: bool,
+) -> Result<(String, Vec<PathBuf>), String> {
+    if source_inputs.is_empty() {
+        return resolve_implicit_source(par2_file, archive_name);
+    }
+
+    let output_name = archive_name.unwrap_or(par2_file).to_string();
+    let source_files = expand_source_files(source_inputs, recurse)
+        .map_err(|err| format!("Failed to expand source file list: {err}"))?;
+    Ok((output_name, source_files))
+}
+
+fn resolve_implicit_source(
+    par2_file: &str,
+    archive_name: Option<&str>,
+) -> Result<(String, Vec<PathBuf>), String> {
+    let source = PathBuf::from(par2_file);
+    let metadata = std::fs::metadata(&source)
+        .map_err(|_| "You must specify a list of files when creating.".to_string())?;
+
+    if par2_file.to_ascii_lowercase().ends_with(".par2")
+        || !metadata.is_file()
+        || metadata.len() == 0
+    {
+        return Err("You must specify a list of files when creating.".to_string());
+    }
+
+    let output_name = archive_name
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{par2_file}.par2"));
+    Ok((output_name, vec![source]))
+}
+
 pub fn validate_recovery_file_count(count: u32) -> Result<u32, String> {
     if (1..=31).contains(&count) {
         Ok(count)

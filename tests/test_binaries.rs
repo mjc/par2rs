@@ -425,6 +425,64 @@ fn test_par2create_creates_par2_files() {
 }
 
 #[test]
+fn test_par2create_uses_single_existing_file_as_source() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("implicit.dat");
+    create_test_file(&source, b"implicit source file").expect("Failed to create source file");
+
+    let output = Command::new(get_binary_path("par2create"))
+        .current_dir(temp_dir.path())
+        .arg("-q")
+        .arg("-s")
+        .arg("4")
+        .arg("-c")
+        .arg("1")
+        .arg("implicit.dat")
+        .output()
+        .expect("Failed to execute par2create");
+
+    assert!(
+        output.status.success(),
+        "par2create implicit source failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(temp_dir.path().join("implicit.dat.par2").exists());
+    assert!(temp_dir.path().join("implicit.dat.vol0+1.par2").exists());
+}
+
+#[test]
+fn test_par2_create_uses_single_existing_file_as_source() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("implicit-unified.dat");
+    create_test_file(&source, b"implicit source file").expect("Failed to create source file");
+
+    let output = Command::new(get_binary_path("par2"))
+        .current_dir(temp_dir.path())
+        .arg("create")
+        .arg("-q")
+        .arg("-s")
+        .arg("4")
+        .arg("-c")
+        .arg("1")
+        .arg("implicit-unified.dat")
+        .output()
+        .expect("Failed to execute par2 create");
+
+    assert!(
+        output.status.success(),
+        "par2 create implicit source failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(temp_dir.path().join("implicit-unified.dat.par2").exists());
+    assert!(temp_dir
+        .path()
+        .join("implicit-unified.dat.vol0+1.par2")
+        .exists());
+}
+
+#[test]
 fn test_par2create_accepts_target_size_redundancy() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let source = temp_dir.path().join("target-size.txt");

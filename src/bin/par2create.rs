@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
 use par2rs::create::cli::{
-    expand_source_files, parse_redundancy_option, validate_recovery_file_count,
+    parse_redundancy_option, resolve_create_inputs, validate_recovery_file_count,
     warn_for_high_redundancy, RedundancyOption,
 };
 use std::path::PathBuf;
@@ -134,8 +134,7 @@ fn main() -> Result<()> {
         .arg(
             Arg::new("files")
                 .help("Files to protect")
-                .required(true)
-                .num_args(1..)
+                .num_args(0..)
                 .index(2),
         )
         .get_matches();
@@ -145,11 +144,8 @@ fn main() -> Result<()> {
         .expect("par2_file is required");
     let source_inputs: Vec<PathBuf> = matches
         .get_many::<String>("files")
-        .expect("files are required")
-        .map(PathBuf::from)
-        .collect();
-    let source_files = expand_source_files(source_inputs, matches.get_flag("recurse"))
-        .context("Failed to expand source file list")?;
+        .map(|files| files.map(PathBuf::from).collect())
+        .unwrap_or_default();
 
     let quiet_mode = matches.get_count("quiet") > 0;
     let redundancy = matches
@@ -171,16 +167,22 @@ fn main() -> Result<()> {
 
     warn_for_high_redundancy(redundancy);
 
-    let output_name = matches
-        .get_one::<String>("archive_name")
-        .unwrap_or(par2_file);
+    let (output_name, source_files) = resolve_create_inputs(
+        par2_file,
+        matches
+            .get_one::<String>("archive_name")
+            .map(String::as_str),
+        source_inputs,
+        matches.get_flag("recurse"),
+    )
+    .map_err(anyhow::Error::msg)?;
 
     if !quiet_mode {
         println!(
             "Creating PAR2 files for {} source files...",
             source_files.len()
         );
-        println!("Output: {}", output_name);
+        println!("Output: {output_name}");
         if let Some(RedundancyOption::Percent(redundancy)) = redundancy {
             println!("Redundancy: {}%", redundancy);
         }
