@@ -581,6 +581,45 @@ fn output_directory_is_default_basepath_for_packet_names() {
     assert_eq!(packet_name, "nested/test.dat");
 }
 
+#[test]
+fn zero_byte_source_files_are_skipped_during_create() {
+    let temp = tempdir().unwrap();
+    let empty_file = temp.path().join("empty.dat");
+    let data_file = temp.path().join("data.dat");
+    let par2_file = temp.path().join("skip-empty.par2");
+
+    fs::write(&empty_file, []).unwrap();
+    create_test_file(&data_file, 1024, 0xBB).unwrap();
+
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(par2_file.to_str().unwrap())
+        .source_files(vec![empty_file, data_file])
+        .recovery_block_count(1)
+        .reporter(reporter)
+        .build()
+        .unwrap();
+
+    context.create().unwrap();
+
+    let packet_set =
+        par2rs::par2_files::load_par2_packets(std::slice::from_ref(&par2_file), false, false);
+    let packet_names: Vec<_> = packet_set
+        .packets
+        .iter()
+        .filter_map(|packet| match packet {
+            par2rs::Packet::FileDescription(desc) => desc
+                .file_name
+                .split(|b| *b == 0)
+                .next()
+                .and_then(|name| std::str::from_utf8(name).ok()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(packet_names, vec!["data.dat"]);
+}
+
 /// Index file must contain no recovery slice packets
 #[test]
 fn index_file_contains_no_recovery_data() {

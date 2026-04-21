@@ -527,6 +527,10 @@ impl CreateContext {
             let metadata = get_metadata(path)?;
 
             let size = metadata.len();
+            if size == 0 {
+                continue;
+            }
+
             let packet_name = self.packet_name_for_path(path)?;
             let source_info =
                 SourceFileInfo::new_with_packet_name(path.clone(), packet_name, size, index);
