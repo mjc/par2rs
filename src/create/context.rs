@@ -535,23 +535,24 @@ impl CreateContext {
     }
 
     fn packet_name_for_path(&self, path: &std::path::Path) -> CreateResult<String> {
-        if let Some(base_path) = &self.config.base_path {
+        let default_base_path = std::path::Path::new(&self.config.output_name)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf();
+        let base_path = self.config.base_path.as_ref().unwrap_or(&default_base_path);
+
+        if !base_path.as_os_str().is_empty() {
             if let Ok(relative) = path.strip_prefix(base_path) {
                 return Ok(normalize_packet_path(relative));
             }
 
-            let canonical_base =
-                std::fs::canonicalize(base_path).map_err(|e| CreateError::FileReadError {
-                    file: base_path.to_string_lossy().to_string(),
-                    source: e,
-                })?;
-            let canonical_path =
-                std::fs::canonicalize(path).map_err(|e| CreateError::FileReadError {
-                    file: path.to_string_lossy().to_string(),
-                    source: e,
-                })?;
-            if let Ok(relative) = canonical_path.strip_prefix(&canonical_base) {
-                return Ok(normalize_packet_path(relative));
+            if let (Ok(canonical_base), Ok(canonical_path)) = (
+                std::fs::canonicalize(base_path),
+                std::fs::canonicalize(path),
+            ) {
+                if let Ok(relative) = canonical_path.strip_prefix(&canonical_base) {
+                    return Ok(normalize_packet_path(relative));
+                }
             }
         }
 
