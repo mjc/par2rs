@@ -1049,8 +1049,17 @@ pub fn repair_files_with_base_path_and_extra_files(
         return Err(RepairError::FileNotFound(par2_file.to_string()));
     }
 
-    // Collect all PAR2 files in the set
-    let par2_files = crate::par2_files::collect_par2_files(par2_path);
+    // Collect all PAR2 files in the set. Explicit PAR2 inputs are allowed here,
+    // but packet loading filters out packets from foreign recovery sets.
+    let mut par2_files = crate::par2_files::collect_par2_files(par2_path);
+    par2_files.extend(
+        verify_config
+            .extra_files
+            .iter()
+            .filter(|path| is_par2_path(path))
+            .cloned(),
+    );
+    crate::par2_files::sort_dedup_preserving_first(&mut par2_files);
 
     // Load metadata for memory-efficient recovery slice loading
     let metadata = crate::par2_files::parse_recovery_slice_metadata(&par2_files, false);
@@ -1187,6 +1196,12 @@ fn repair_verification_is_complete(results: &crate::verify::VerificationResults)
     results.renamed_file_count == 0
         && results.corrupted_file_count == 0
         && results.missing_file_count == 0
+}
+
+fn is_par2_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("par2"))
 }
 
 fn rename_only_repair_result(

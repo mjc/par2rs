@@ -88,7 +88,21 @@ fn main() -> Result<()> {
         .and_then(|name| name.to_str())
         .map(Path::new)
         .unwrap_or(&file_path);
-    let par2_files = par2_files::collect_par2_files(file_name);
+
+    // Collect all PAR2 files in the set, plus explicit extra PAR2 files.
+    let mut par2_files = par2_files::collect_par2_files(file_name);
+    par2_files.extend(
+        verify_config
+            .extra_files
+            .iter()
+            .filter(|path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("par2"))
+            })
+            .cloned(),
+    );
+    par2_files::sort_dedup_preserving_first(&mut par2_files);
 
     // Parse packets excluding recovery slices but validate and count them
     if !quiet {

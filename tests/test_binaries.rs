@@ -1571,6 +1571,54 @@ fn test_par2verify_scans_extra_file_arguments() {
 }
 
 #[test]
+fn test_par2verify_ignores_foreign_extra_par2_set() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let data1 = temp_dir.path().join("data1.bin");
+    let data2 = temp_dir.path().join("data2.bin");
+    create_test_file(&data1, b"abcdefghijkl").expect("Failed to create first data file");
+    create_test_file(&data2, b"mnopqrstuvwx").expect("Failed to create second data file");
+
+    let par2_file1 = temp_dir.path().join("data1.bin.par2");
+    let par2_file2 = temp_dir.path().join("data2.bin.par2");
+    for (par2_file, data_file) in [(&par2_file1, &data1), (&par2_file2, &data2)] {
+        let create_output = Command::new(get_binary_path("par2create"))
+            .arg("-q")
+            .arg("-s4")
+            .arg("-c1")
+            .arg(par2_file)
+            .arg(data_file)
+            .output()
+            .expect("Failed to execute par2create");
+        assert!(
+            create_output.status.success(),
+            "par2create failed: {}",
+            String::from_utf8_lossy(&create_output.stderr)
+        );
+    }
+
+    let verify_output = Command::new(get_binary_path("par2verify"))
+        .arg(&par2_file1)
+        .arg(&par2_file2)
+        .output()
+        .expect("Failed to execute par2verify");
+
+    assert!(
+        verify_output.status.success(),
+        "par2verify failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&verify_output.stdout),
+        String::from_utf8_lossy(&verify_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&verify_output.stdout);
+    let stderr = String::from_utf8_lossy(&verify_output.stderr);
+    assert!(
+        !stdout.contains("Target: \"data2.bin\"") && !stderr.contains("Multiple recovery sets"),
+        "foreign PAR2 set was not ignored: stdout={}, stderr={}",
+        stdout,
+        stderr
+    );
+}
+
+#[test]
 fn test_par2verify_purge_removes_par_files_when_valid() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let (par2_file, source) = create_purge_test_set(&temp_dir);

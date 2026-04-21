@@ -705,8 +705,7 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
             })
             .cloned(),
     );
-    par2_files.sort();
-    par2_files.dedup();
+    par2rs::par2_files::sort_dedup_preserving_first(&mut par2_files);
 
     // Parse packets excluding recovery slices but validate and count them
     // Recovery slice data is NOT loaded into memory (saves gigabytes for large PAR2 sets)
