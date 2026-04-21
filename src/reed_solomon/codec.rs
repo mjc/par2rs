@@ -26,10 +26,12 @@ use crate::reed_solomon::simd::{detect_simd_support, process_slice_multiply_add_
 use crate::RecoverySlicePacket;
 use log::debug;
 use rustc_hash::FxHashMap as HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 // Global SIMD level detection (done once at first use)
 static SIMD_LEVEL: OnceLock<SimdLevel> = OnceLock::new();
+static REPAIR_PROGRESS_OUTPUT: AtomicBool = AtomicBool::new(true);
 
 /// Initialize SIMD level once, using an explicit override from caller.
 ///
@@ -43,6 +45,15 @@ pub fn init_simd_level(force_scalar: bool) {
             detect_simd_support()
         }
     });
+}
+
+/// Enable or suppress low-level repair progress printed by the Reed-Solomon path.
+pub fn set_repair_progress_output(enabled: bool) {
+    REPAIR_PROGRESS_OUTPUT.store(enabled, Ordering::Relaxed);
+}
+
+fn repair_progress_output_enabled() -> bool {
+    REPAIR_PROGRESS_OUTPUT.load(Ordering::Relaxed)
 }
 
 /// Process entire slice at once: output = coefficient * input (direct write, no XOR)
@@ -1450,9 +1461,11 @@ impl ReconstructionEngine {
             num_chunks, chunk_size
         );
 
-        // Print initial progress for sabnzbd
-        print!("\rRepairing: 0.0%");
-        std::io::Write::flush(&mut std::io::stdout()).ok();
+        if repair_progress_output_enabled() {
+            // Print initial progress for sabnzbd
+            print!("\rRepairing: 0.0%");
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+        }
 
         for chunk_idx in 0..num_chunks {
             let chunk_offset = chunk_idx * chunk_size;
@@ -1465,7 +1478,9 @@ impl ReconstructionEngine {
             } else {
                 num_chunks / 100
             };
-            if chunk_idx % report_interval == 0 || chunk_idx == num_chunks - 1 {
+            if repair_progress_output_enabled()
+                && (chunk_idx % report_interval == 0 || chunk_idx == num_chunks - 1)
+            {
                 let percentage = (chunk_idx as f64 / num_chunks as f64) * 100.0;
                 print!("\rRepairing: {:.1}%", percentage);
                 std::io::Write::flush(&mut std::io::stdout()).ok();
@@ -1544,7 +1559,7 @@ impl ReconstructionEngine {
 
                 // Report progress periodically based on input slices processed
                 // This provides progress updates even with large chunk sizes
-                if num_chunks == 1 && idx % 100 == 0 {
+                if repair_progress_output_enabled() && num_chunks == 1 && idx % 100 == 0 {
                     let percentage = (idx as f64 / available_slices.len() as f64) * 100.0;
                     print!("\rRepairing: {:.1}%", percentage);
                     std::io::Write::flush(&mut std::io::stdout()).ok();
@@ -1640,10 +1655,12 @@ impl ReconstructionEngine {
             }
         }
 
-        // Print final 100% progress
-        print!("\rRepairing: 100.0%");
-        println!(); // Newline after completion
-        std::io::Write::flush(&mut std::io::stdout()).ok();
+        if repair_progress_output_enabled() {
+            // Print final 100% progress
+            print!("\rRepairing: 100.0%");
+            println!(); // Newline after completion
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+        }
 
         debug!("Chunked reconstruction completed successfully");
 
