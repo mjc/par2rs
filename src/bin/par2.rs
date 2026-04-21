@@ -90,6 +90,7 @@ fn main() -> Result<()> {
                     Arg::new("block_count")
                         .short('b')
                         .help("Set the Block-Count")
+                        .conflicts_with("block_size")
                         .value_name("N"),
                 )
                 .arg(
@@ -102,6 +103,7 @@ fn main() -> Result<()> {
                     Arg::new("redundancy")
                         .short('r')
                         .help("Level of redundancy (%) or target size with g/m/k suffix")
+                        .conflicts_with("recovery_block_count")
                         .value_name("N"),
                 )
                 .arg(
@@ -120,12 +122,14 @@ fn main() -> Result<()> {
                     Arg::new("uniform")
                         .short('u')
                         .help("Uniform recovery file sizes")
+                        .conflicts_with("limit_size")
                         .action(ArgAction::SetTrue),
                 )
                 .arg(
                     Arg::new("limit_size")
                         .short('l')
                         .help("Limit size of recovery files (don't use both -u and -l)")
+                        .conflicts_with("recovery_file_count")
                         .action(ArgAction::SetTrue),
                 )
                 .arg(
@@ -323,6 +327,13 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     let source_files =
         expand_source_files(source_inputs, recurse).context("Failed to expand source file list")?;
 
+    if let Some(count) = recovery_file_count {
+        anyhow::ensure!(
+            (1..=31).contains(&count),
+            "Invalid recovery file count: {count} (must be 1-31)"
+        );
+    }
+
     // Use archive name if specified, otherwise use par2_file
     let output_name = matches
         .get_one::<String>("archive_name")
@@ -368,6 +379,9 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     }
     if let Some(count) = recovery_file_count {
         context = context.recovery_file_count(count);
+        if !uniform && !limit_size {
+            context = context.recovery_file_scheme(par2rs::create::RecoveryFileScheme::Uniform);
+        }
     }
     if let Some(exponent) = first_recovery_block {
         context = context.first_recovery_block(exponent);

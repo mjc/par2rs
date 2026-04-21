@@ -454,6 +454,88 @@ fn test_par2create_accepts_target_size_redundancy() {
     assert!(temp_dir.path().join("target-size.par2").exists());
 }
 
+#[test]
+fn test_par2create_rejects_conflicting_create_options() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("conflict.txt");
+    create_test_file(&source, b"conflict smoke test").expect("Failed to create source file");
+    let output_base = temp_dir.path().join("conflict.par2");
+
+    let output = Command::new(get_binary_path("par2create"))
+        .arg("-s")
+        .arg("4")
+        .arg("-c")
+        .arg("1")
+        .arg("-r")
+        .arg("5")
+        .arg(&output_base)
+        .arg(&source)
+        .output()
+        .expect("Failed to execute par2create");
+
+    assert!(
+        !output.status.success(),
+        "par2create accepted conflicting -c and -r options"
+    );
+}
+
+#[test]
+fn test_par2create_rejects_too_many_recovery_files() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("too-many.txt");
+    create_test_file(&source, b"too many recovery files").expect("Failed to create source file");
+    let output_base = temp_dir.path().join("too-many.par2");
+
+    let output = Command::new(get_binary_path("par2create"))
+        .arg("-q")
+        .arg("-s")
+        .arg("4")
+        .arg("-c")
+        .arg("1")
+        .arg("-n")
+        .arg("32")
+        .arg(&output_base)
+        .arg(&source)
+        .output()
+        .expect("Failed to execute par2create");
+
+    assert!(
+        !output.status.success(),
+        "par2create accepted more than 31 recovery files"
+    );
+}
+
+#[test]
+fn test_par2create_n_uses_uniform_file_sizes() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("uniform.txt");
+    create_test_file(&source, b"uniform recovery file count")
+        .expect("Failed to create source file");
+    let output_base = temp_dir.path().join("uniform.par2");
+
+    let output = Command::new(get_binary_path("par2create"))
+        .arg("-q")
+        .arg("-s")
+        .arg("4")
+        .arg("-c")
+        .arg("5")
+        .arg("-n")
+        .arg("2")
+        .arg(&output_base)
+        .arg(&source)
+        .output()
+        .expect("Failed to execute par2create");
+
+    assert!(
+        output.status.success(),
+        "par2create -n failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(temp_dir.path().join("uniform.vol0+3.par2").exists());
+    assert!(temp_dir.path().join("uniform.vol3+2.par2").exists());
+}
+
 // =============================================================================
 // split_par2 binary tests
 // =============================================================================
