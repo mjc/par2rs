@@ -205,8 +205,8 @@ impl ProgressReporter for ConsoleReporter {
 
     fn report_repair_header(&self) {
         if !self.quiet {
-            // Don't print a separate header - sabnzbd expects only "Repairing: XX.X%" format
-            // The first progress update will show the repair status
+            println!();
+            println!("Computing Reed Solomon matrix.");
         }
     }
 

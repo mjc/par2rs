@@ -725,6 +725,7 @@ impl RepairContext {
             total_input_slices,
             dummy_recovery_slices,
         );
+        self.reporter().report_constructing();
 
         // Create output buffers for all missing slices
         let mut output_buffers: HashMap<usize, Cursor<Vec<u8>>> = HashMap::default();
