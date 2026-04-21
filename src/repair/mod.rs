@@ -1065,6 +1065,28 @@ pub fn repair_files_with_base_path_and_extra_files_and_verification_reporter(
     extra_files: &[PathBuf],
     verification_reporter: &dyn crate::reporters::VerificationReporter,
 ) -> Result<(RepairContext, RepairResult)> {
+    repair_files_with_verification_reporter_and_loading_progress(
+        par2_file,
+        reporter,
+        verify_config,
+        base_path_override,
+        extra_files,
+        verification_reporter,
+        false,
+    )
+}
+
+/// Repair files while reporting pre-repair verification, optionally showing
+/// packet loading output.
+pub fn repair_files_with_verification_reporter_and_loading_progress(
+    par2_file: &str,
+    reporter: Box<dyn ProgressReporter>,
+    verify_config: &crate::verify::VerificationConfig,
+    base_path_override: Option<&Path>,
+    extra_files: &[PathBuf],
+    verification_reporter: &dyn crate::reporters::VerificationReporter,
+    show_loading_progress: bool,
+) -> Result<(RepairContext, RepairResult)> {
     let par2_path = Path::new(par2_file);
 
     // Validate file exists
@@ -1090,8 +1112,9 @@ pub fn repair_files_with_base_path_and_extra_files_and_verification_reporter(
     // Load packets WITHOUT recovery slices (use metadata for lazy loading instead)
     // This saves ~1.5GB of memory for large PAR2 sets since recovery data is
     // loaded on-demand during reconstruction via RecoverySliceProvider
-    let initial_packet_set = crate::par2_files::load_par2_packets(&par2_files, false, false);
-    if initial_packet_set.packets.is_empty() {
+    let context_packet_set =
+        crate::par2_files::load_par2_packets(&par2_files, false, show_loading_progress);
+    if context_packet_set.packets.is_empty() {
         return Err(RepairError::NoValidPackets);
     }
 
@@ -1105,7 +1128,7 @@ pub fn repair_files_with_base_path_and_extra_files_and_verification_reporter(
     // Create repair context before verification so normal repair output prints
     // the set summary once before source verification.
     let mut repair_builder = RepairContextBuilder::new()
-        .packets(initial_packet_set.packets)
+        .packets(context_packet_set.packets)
         .metadata(metadata)
         .base_path(base_path.clone())
         .reporter(reporter);

@@ -460,6 +460,10 @@ pub fn load_par2_packets(
     include_recovery_slices: bool,
     show_progress: bool,
 ) -> PacketSet {
+    if show_progress {
+        return load_par2_packets_with_progress(par2_files, include_recovery_slices);
+    }
+
     // Parse files in parallel and collect results
     // Use mutex for thread-safe output (like par2cmdline-turbo's output_lock)
     let output_lock = Mutex::new(());
@@ -534,6 +538,109 @@ pub fn load_par2_packets(
     };
 
     // Determine base directory from the first PAR2 file
+    let base_dir = par2_files
+        .first()
+        .and_then(|p| p.parent())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    PacketSet::new(packets, recovery_block_count, base_dir)
+}
+
+fn load_par2_packets_with_progress(
+    par2_files: &[PathBuf],
+    include_recovery_slices: bool,
+) -> PacketSet {
+    let output_lock = Mutex::new(());
+    let mut primary_set_id = None;
+    let mut seen_hashes = HashSet::default();
+    let mut packets = Vec::new();
+
+    for par2_file in par2_files {
+        let filename = par2_file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown");
+        {
+            let _guard = output_lock.lock().unwrap();
+            println!("Loading \"{}\".", filename);
+        }
+
+        let result =
+            match parse_single_file(par2_file, include_recovery_slices, false, &output_lock) {
+                Ok(result) => result,
+                Err(e) => {
+                    let _guard = output_lock.lock().unwrap();
+                    eprintln!(
+                        "Warning: Failed to parse PAR2 file {}: {}",
+                        par2_file.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+
+        let file_set_id = result.packets.first().map(packet_recovery_set_id);
+        if primary_set_id.is_none() {
+            primary_set_id = file_set_id;
+        }
+
+        let mut new_packets = Vec::new();
+        for packet in result.packets {
+            if !include_recovery_slices && matches!(packet, Packet::RecoverySlice(_)) {
+                continue;
+            }
+
+            if primary_set_id.is_some_and(|set_id| packet_recovery_set_id(&packet) != set_id) {
+                continue;
+            }
+
+            let packet_hash = get_packet_hash(&packet);
+            if seen_hashes.insert(packet_hash) {
+                new_packets.push(packet);
+            }
+        }
+
+        let recovery_blocks = if include_recovery_slices {
+            new_packets
+                .iter()
+                .filter(|packet| matches!(packet, Packet::RecoverySlice(_)))
+                .count()
+        } else if file_set_id == primary_set_id {
+            result.recovery_block_count
+        } else {
+            0
+        };
+
+        let loaded_packet_count = new_packets.len()
+            + if include_recovery_slices {
+                0
+            } else {
+                recovery_blocks
+            };
+        print_packet_load_result(loaded_packet_count, recovery_blocks, &output_lock);
+
+        packets.extend(new_packets.into_iter().filter(|packet| {
+            include_recovery_slices || !matches!(packet, Packet::RecoverySlice(_))
+        }));
+    }
+
+    let recovery_block_count = if let Some(set_id) = primary_set_id {
+        if include_recovery_slices {
+            packets
+                .iter()
+                .filter(|packet| matches!(packet, Packet::RecoverySlice(_)))
+                .count()
+        } else {
+            parse_recovery_slice_metadata(par2_files, false)
+                .into_iter()
+                .filter(|metadata| metadata.set_id == set_id)
+                .count()
+        }
+    } else {
+        0
+    };
+
     let base_dir = par2_files
         .first()
         .and_then(|p| p.parent())
