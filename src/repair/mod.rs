@@ -1101,6 +1101,22 @@ pub fn repair_files_with_base_path_and_extra_files_and_verification_reporter(
         .or_else(|| verify_config.base_path.clone())
         .unwrap_or_else(|| par2_path.parent().unwrap_or(Path::new(".")).to_path_buf());
 
+    // Create repair context before verification so normal repair output prints
+    // the set summary once before source verification.
+    let mut repair_builder = RepairContextBuilder::new()
+        .packets(initial_packet_set.packets)
+        .metadata(metadata)
+        .base_path(base_path.clone())
+        .reporter(reporter);
+    if let Some(memory_limit) = verify_config.memory_limit {
+        repair_builder = repair_builder.memory_limit(memory_limit);
+    }
+    let repair_context = repair_builder.build()?;
+
+    repair_context
+        .reporter()
+        .report_statistics(&repair_context.recovery_set);
+
     // CRITICAL FIX: Run comprehensive verification to get accurate block availability
     // Reference: par2cmdline-turbo uses byte-by-byte sliding window scanning (FileCheckSummer)
     // to find blocks at ANY position (displaced blocks), not just aligned positions.
@@ -1134,26 +1150,6 @@ pub fn repair_files_with_base_path_and_extra_files_and_verification_reporter(
         verification_reporter,
     );
     verification_reporter.report_verification_results(&verification_results);
-
-    // Re-load packets for repair context (verification consumed them)
-    // This is acceptable since packet parsing is fast (no recovery slice data)
-    let packet_set = crate::par2_files::load_par2_packets(&par2_files, false, false);
-
-    // Create repair context using builder
-    let mut repair_builder = RepairContextBuilder::new()
-        .packets(packet_set.packets)
-        .metadata(metadata)
-        .base_path(base_path.clone())
-        .reporter(reporter);
-    if let Some(memory_limit) = verify_config.memory_limit {
-        repair_builder = repair_builder.memory_limit(memory_limit);
-    }
-    let repair_context = repair_builder.build()?;
-
-    // Report statistics before starting
-    repair_context
-        .reporter()
-        .report_statistics(&repair_context.recovery_set);
 
     let renamed_files = repair_context.restore_renamed_files(&verification_results)?;
     if !renamed_files.is_empty() {

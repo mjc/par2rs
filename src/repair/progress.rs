@@ -79,12 +79,24 @@ pub trait ProgressReporter: Send + Sync {
 /// Console reporter - standard par2cmdline-style output
 pub struct ConsoleReporter {
     quiet: bool,
+    show_recovery_info: bool,
 }
 
 impl ConsoleReporter {
     /// Create a new console reporter
     pub fn new(quiet: bool) -> Self {
-        Self { quiet }
+        Self {
+            quiet,
+            show_recovery_info: true,
+        }
+    }
+
+    /// Create a new console reporter with control over recovery summary output.
+    pub fn with_recovery_info(quiet: bool, show_recovery_info: bool) -> Self {
+        Self {
+            quiet,
+            show_recovery_info,
+        }
     }
 }
 
@@ -94,17 +106,11 @@ impl ProgressReporter for ConsoleReporter {
             return;
         }
 
-        println!(
-            "There are {} recoverable files and {} recovery blocks.",
-            recovery_set.files.len(),
-            recovery_set.recovery_slices_metadata.len()
-        );
-        println!("The block size used was {} bytes.", recovery_set.slice_size);
-        println!();
+        recovery_set.print_statistics();
     }
 
     fn report_file_opening(&self, file_name: &str) {
-        if self.quiet {
+        if self.quiet || !self.show_recovery_info {
             return;
         }
         println!("Opening: \"{}\"", file_name);
@@ -158,7 +164,7 @@ impl ProgressReporter for ConsoleReporter {
     }
 
     fn report_recovery_info(&self, available: usize, needed: usize) {
-        if self.quiet {
+        if self.quiet || !self.show_recovery_info {
             return;
         }
 
