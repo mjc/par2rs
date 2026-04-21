@@ -147,18 +147,13 @@ impl ProgressReporter for ConsoleReporter {
             return;
         }
 
-        // Calculate percentage with higher precision: (10000 * progress / total) for 0.01% precision
-        let percentage_100x = ((10000 * bytes_processed) / total_bytes) as u32;
-        let percentage = percentage_100x as f64 / 100.0;
-
-        // Format as "Scanning: "filename": XX.XX%\r" with two decimal places
-        let truncated_name = if file_name.len() > 45 {
-            format!("{}...", &file_name[..42])
-        } else {
-            file_name.to_string()
-        };
-
-        print!("Scanning: \"{}\": {:.2}%\r", truncated_name, percentage);
+        let _ = file_name;
+        let percentage_10x = ((1000 * bytes_processed) / total_bytes) as u32;
+        print!(
+            "Scanning: {}.{}%\r",
+            percentage_10x / 10,
+            percentage_10x % 10
+        );
         std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
     }
 

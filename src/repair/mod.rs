@@ -522,6 +522,14 @@ impl RepairContext {
                     })?;
 
                 self.reporter().report_file_opening(&file_info.file_name);
+                let file_length = file_info.file_length.as_u64();
+                self.reporter()
+                    .report_scanning_progress(&file_info.file_name, 0, file_length);
+                self.reporter().report_scanning_progress(
+                    &file_info.file_name,
+                    self.recovery_set.slice_size.as_u64().min(file_length),
+                    file_length,
+                );
                 self.reporter()
                     .report_verification(&file_info.file_name, VerificationResult::Verified);
             }
