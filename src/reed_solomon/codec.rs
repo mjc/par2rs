@@ -1462,8 +1462,7 @@ impl ReconstructionEngine {
         );
 
         if repair_progress_output_enabled() {
-            // Print initial progress for sabnzbd
-            print!("\rRepairing: 0.0%");
+            print!("\rSolving: 0.0%");
             std::io::Write::flush(&mut std::io::stdout()).ok();
         }
 
@@ -1471,7 +1470,6 @@ impl ReconstructionEngine {
             let chunk_offset = chunk_idx * chunk_size;
             let current_chunk_size = (self.slice_size - chunk_offset).min(chunk_size);
 
-            // Report progress for sabnzbd compatibility
             // Print every ~1% or at minimum every chunk for small files
             let report_interval = if num_chunks < 100 {
                 1
@@ -1482,7 +1480,7 @@ impl ReconstructionEngine {
                 && (chunk_idx % report_interval == 0 || chunk_idx == num_chunks - 1)
             {
                 let percentage = (chunk_idx as f64 / num_chunks as f64) * 100.0;
-                print!("\rRepairing: {:.1}%", percentage);
+                print!("\rSolving: {:.1}%", percentage);
                 std::io::Write::flush(&mut std::io::stdout()).ok();
             }
 
@@ -1561,7 +1559,7 @@ impl ReconstructionEngine {
                 // This provides progress updates even with large chunk sizes
                 if repair_progress_output_enabled() && num_chunks == 1 && idx % 100 == 0 {
                     let percentage = (idx as f64 / available_slices.len() as f64) * 100.0;
-                    print!("\rRepairing: {:.1}%", percentage);
+                    print!("\rSolving: {:.1}%", percentage);
                     std::io::Write::flush(&mut std::io::stdout()).ok();
                 }
 
@@ -1656,9 +1654,8 @@ impl ReconstructionEngine {
         }
 
         if repair_progress_output_enabled() {
-            // Print final 100% progress
-            print!("\rRepairing: 100.0%");
-            println!(); // Newline after completion
+            print!("\rSolving: done.");
+            println!();
             std::io::Write::flush(&mut std::io::stdout()).ok();
         }
 
