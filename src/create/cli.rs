@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+const SOURCE_LIST_REQUIRED: &str = "You must specify a list of files when creating.";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RedundancyOption {
     Percent(u32),
@@ -89,14 +91,13 @@ fn resolve_implicit_source(
     archive_name: Option<&str>,
 ) -> Result<(String, Vec<PathBuf>), String> {
     let source = PathBuf::from(par2_file);
-    let metadata = std::fs::metadata(&source)
-        .map_err(|_| "You must specify a list of files when creating.".to_string())?;
+    let metadata = std::fs::metadata(&source).map_err(|_| SOURCE_LIST_REQUIRED.to_string())?;
 
     if par2_file.to_ascii_lowercase().ends_with(".par2")
         || !metadata.is_file()
         || metadata.len() == 0
     {
-        return Err("You must specify a list of files when creating.".to_string());
+        return Err(SOURCE_LIST_REQUIRED.to_string());
     }
 
     let output_name = archive_name
