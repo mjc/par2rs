@@ -63,6 +63,25 @@ fn run_par2_create(
     Ok(output.status.success())
 }
 
+fn file_description_names(par2_file: &Path) -> Vec<String> {
+    let par2_files = vec![par2_file.to_path_buf()];
+    let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false, false);
+
+    packet_set
+        .packets
+        .iter()
+        .filter_map(|packet| match packet {
+            par2rs::Packet::FileDescription(desc) => desc
+                .file_name
+                .split(|b| *b == 0)
+                .next()
+                .and_then(|name| std::str::from_utf8(name).ok())
+                .map(str::to_owned),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn test_par2cmdline_available() {
     assert!(
@@ -522,23 +541,10 @@ fn basepath_packet_names_are_computed_during_source_scan() {
 
     context.create().unwrap();
 
-    let packet_set =
-        par2rs::par2_files::load_par2_packets(std::slice::from_ref(&par2_file), false, false);
-    let packet_name = packet_set
-        .packets
-        .iter()
-        .find_map(|packet| match packet {
-            par2rs::Packet::FileDescription(desc) => Some(&desc.file_name),
-            _ => None,
-        })
-        .expect("missing file description packet");
-    let packet_name = packet_name
-        .split(|b| *b == 0)
-        .next()
-        .and_then(|name| std::str::from_utf8(name).ok())
-        .unwrap();
-
-    assert_eq!(packet_name, "nested/test.dat");
+    assert_eq!(
+        file_description_names(&par2_file),
+        vec![String::from("nested/test.dat")]
+    );
 }
 
 #[test]
@@ -562,23 +568,10 @@ fn output_directory_is_default_basepath_for_packet_names() {
 
     context.create().unwrap();
 
-    let packet_set =
-        par2rs::par2_files::load_par2_packets(std::slice::from_ref(&par2_file), false, false);
-    let packet_name = packet_set
-        .packets
-        .iter()
-        .find_map(|packet| match packet {
-            par2rs::Packet::FileDescription(desc) => Some(&desc.file_name),
-            _ => None,
-        })
-        .expect("missing file description packet");
-    let packet_name = packet_name
-        .split(|b| *b == 0)
-        .next()
-        .and_then(|name| std::str::from_utf8(name).ok())
-        .unwrap();
-
-    assert_eq!(packet_name, "nested/test.dat");
+    assert_eq!(
+        file_description_names(&par2_file),
+        vec![String::from("nested/test.dat")]
+    );
 }
 
 #[test]
@@ -602,22 +595,10 @@ fn zero_byte_source_files_are_skipped_during_create() {
 
     context.create().unwrap();
 
-    let packet_set =
-        par2rs::par2_files::load_par2_packets(std::slice::from_ref(&par2_file), false, false);
-    let packet_names: Vec<_> = packet_set
-        .packets
-        .iter()
-        .filter_map(|packet| match packet {
-            par2rs::Packet::FileDescription(desc) => desc
-                .file_name
-                .split(|b| *b == 0)
-                .next()
-                .and_then(|name| std::str::from_utf8(name).ok()),
-            _ => None,
-        })
-        .collect();
-
-    assert_eq!(packet_names, vec!["data.dat"]);
+    assert_eq!(
+        file_description_names(&par2_file),
+        vec![String::from("data.dat")]
+    );
 }
 
 /// Index file must contain no recovery slice packets
