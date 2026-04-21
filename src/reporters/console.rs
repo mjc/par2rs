@@ -14,6 +14,7 @@ pub struct ConsoleVerificationReporter {
     /// Mutex to ensure atomic printing from multiple threads
     /// Reference: par2cmdline-turbo uses output_lock for thread-safe console output
     output_lock: Mutex<()>,
+    reported_files: Mutex<HashSet<String>>,
 }
 
 /// Concise verification output used for a single `-q`, matching
@@ -48,6 +49,7 @@ impl ConsoleVerificationReporter {
     pub fn new() -> Self {
         Self {
             output_lock: Mutex::new(()),
+            reported_files: Mutex::new(HashSet::new()),
         }
     }
 }
@@ -106,6 +108,10 @@ impl VerificationReporter for ConsoleVerificationReporter {
 
     fn report_file_status(&self, file_name: &str, status: FileStatus) {
         let _lock = self.output_lock.lock().unwrap();
+        self.reported_files
+            .lock()
+            .unwrap()
+            .insert(file_name.to_string());
         match status {
             FileStatus::Present => println!("Target: \"{}\" - found.", file_name),
             FileStatus::Missing => println!("Target: \"{}\" - missing.", file_name),
@@ -126,6 +132,10 @@ impl VerificationReporter for ConsoleVerificationReporter {
     ) {
         let _lock = self.output_lock.lock().unwrap();
         if !damaged_blocks.is_empty() {
+            self.reported_files
+                .lock()
+                .unwrap()
+                .insert(file_name.to_string());
             println!(
                 "Target: \"{}\" - damaged. Found {} of {} data blocks.",
                 file_name, available_blocks, total_blocks
@@ -135,6 +145,24 @@ impl VerificationReporter for ConsoleVerificationReporter {
 
     fn report_verification_results(&self, results: &VerificationResults) {
         let _lock = self.output_lock.lock().unwrap();
+        let mut reported_files = self.reported_files.lock().unwrap();
+        for file in &results.files {
+            if !reported_files.insert(file.file_name.clone()) {
+                continue;
+            }
+
+            match file.status {
+                FileStatus::Present => println!("Target: \"{}\" - found.", file.file_name),
+                FileStatus::Missing => println!("Target: \"{}\" - missing.", file.file_name),
+                FileStatus::Corrupted => println!(
+                    "Target: \"{}\" - damaged. Found {} of {} data blocks.",
+                    file.file_name, file.blocks_available, file.total_blocks
+                ),
+                FileStatus::Renamed => println!("Target: \"{}\" - renamed.", file.file_name),
+            }
+        }
+        drop(reported_files);
+
         // Use the Display implementation for main summary
         // par2cmdline doesn't print detailed block lists in normal mode
         print!("{}", results);
