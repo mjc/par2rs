@@ -521,6 +521,7 @@ impl RepairContext {
                         ))
                     })?;
 
+                self.reporter().report_file_opening(&file_info.file_name);
                 self.reporter()
                     .report_verification(&file_info.file_name, VerificationResult::Verified);
             }

@@ -110,7 +110,7 @@ impl ProgressReporter for ConsoleReporter {
     }
 
     fn report_file_opening(&self, file_name: &str) {
-        if self.quiet || !self.show_recovery_info {
+        if self.quiet {
             return;
         }
         println!("Opening: \"{}\"", file_name);
