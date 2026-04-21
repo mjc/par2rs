@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
+use par2rs::create::cli::{expand_source_files, parse_redundancy_option, RedundancyOption};
 use par2rs::reporters::VerificationReporter;
 use std::path::PathBuf;
 
@@ -268,7 +269,7 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     // Parse redundancy - handle percentage or size suffix (g/m/k)
     let redundancy = matches
         .get_one::<String>("redundancy")
-        .map(|value| parse_redundancy_option(value))
+        .map(|value| parse_redundancy_option(value).map_err(anyhow::Error::msg))
         .transpose()?;
 
     // Parse optional arguments (matching par2cmdline exactly)
@@ -319,7 +320,8 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     let uniform = matches.get_flag("uniform");
     let limit_size = matches.get_flag("limit_size");
     let recurse = matches.get_flag("recurse");
-    let source_files = expand_source_files(source_inputs, recurse)?;
+    let source_files =
+        expand_source_files(source_inputs, recurse).context("Failed to expand source file list")?;
 
     // Use archive name if specified, otherwise use par2_file
     let output_name = matches
@@ -407,80 +409,6 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn expand_source_files(inputs: Vec<PathBuf>, recurse: bool) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    for input in inputs {
-        if input.is_dir() && recurse {
-            collect_directory_files(&input, &mut files)
-                .with_context(|| format!("Failed to recurse into {}", input.display()))?;
-        } else {
-            files.push(input);
-        }
-    }
-    Ok(files)
-}
-
-fn collect_directory_files(dir: &std::path::Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.path());
-
-    for entry in entries {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_directory_files(&path, files)?;
-        } else if path.is_file() {
-            files.push(path);
-        }
-    }
-
-    Ok(())
-}
-
-#[derive(Clone, Copy)]
-enum RedundancyOption {
-    Percent(u32),
-    TargetSize(u64),
-}
-
-/// Parse redundancy option as a percentage or target size.
-/// Supports par2cmdline style `m40` and suffix style `40m`.
-fn parse_redundancy_option(redundancy_str: &str) -> Result<RedundancyOption> {
-    if redundancy_str.is_empty() {
-        anyhow::bail!("Invalid redundancy option");
-    }
-
-    let lower = redundancy_str.to_ascii_lowercase();
-    let first = lower.as_bytes()[0] as char;
-    let last = lower.as_bytes()[lower.len() - 1] as char;
-
-    if matches!(first, 'g' | 'm' | 'k') {
-        parse_redundancy_size(first, &lower[1..])
-    } else if matches!(last, 'g' | 'm' | 'k') {
-        parse_redundancy_size(last, &lower[..lower.len() - 1])
-    } else {
-        let percentage: u32 = redundancy_str
-            .parse()
-            .context("Invalid redundancy percentage")?;
-        Ok(RedundancyOption::Percent(percentage))
-    }
-}
-
-fn parse_redundancy_size(unit: char, digits: &str) -> Result<RedundancyOption> {
-    if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
-        anyhow::bail!("Invalid redundancy size value");
-    }
-
-    let mut bytes: u64 = digits.parse().context("Invalid redundancy size value")?;
-    match unit {
-        'g' => bytes *= 1024 * 1024 * 1024,
-        'm' => bytes *= 1024 * 1024,
-        'k' => bytes *= 1024,
-        _ => unreachable!("unit checked by caller"),
-    }
-
-    Ok(RedundancyOption::TargetSize(bytes))
 }
 
 fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {

@@ -1,0 +1,137 @@
+//! Shared helpers for create-compatible command-line frontends.
+
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RedundancyOption {
+    Percent(u32),
+    TargetSize(u64),
+}
+
+/// Parse redundancy option as a percentage or target size.
+///
+/// Supports par2cmdline style `m40` and suffix style `40m`.
+pub fn parse_redundancy_option(redundancy_str: &str) -> Result<RedundancyOption, String> {
+    if redundancy_str.is_empty() {
+        return Err("Invalid redundancy option".to_string());
+    }
+
+    let lower = redundancy_str.to_ascii_lowercase();
+    let first = lower.as_bytes()[0] as char;
+    let last = lower.as_bytes()[lower.len() - 1] as char;
+
+    if matches!(first, 'g' | 'm' | 'k') {
+        parse_redundancy_size(first, &lower[1..])
+    } else if matches!(last, 'g' | 'm' | 'k') {
+        parse_redundancy_size(last, &lower[..lower.len() - 1])
+    } else {
+        let percentage = redundancy_str
+            .parse()
+            .map_err(|_| "Invalid redundancy percentage".to_string())?;
+        Ok(RedundancyOption::Percent(percentage))
+    }
+}
+
+fn parse_redundancy_size(unit: char, digits: &str) -> Result<RedundancyOption, String> {
+    if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err("Invalid redundancy size value".to_string());
+    }
+
+    let mut bytes: u64 = digits
+        .parse()
+        .map_err(|_| "Invalid redundancy size value".to_string())?;
+    bytes = match unit {
+        'g' => bytes
+            .checked_mul(1024 * 1024 * 1024)
+            .ok_or_else(|| "Invalid redundancy size value".to_string())?,
+        'm' => bytes
+            .checked_mul(1024 * 1024)
+            .ok_or_else(|| "Invalid redundancy size value".to_string())?,
+        'k' => bytes
+            .checked_mul(1024)
+            .ok_or_else(|| "Invalid redundancy size value".to_string())?,
+        _ => unreachable!("unit checked by caller"),
+    };
+
+    Ok(RedundancyOption::TargetSize(bytes))
+}
+
+pub fn expand_source_files(inputs: Vec<PathBuf>, recurse: bool) -> std::io::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for input in inputs {
+        if input.is_dir() && recurse {
+            collect_directory_files(&input, &mut files)?;
+        } else {
+            files.push(input);
+        }
+    }
+    Ok(files)
+}
+
+fn collect_directory_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_directory_files(&path, files)?;
+        } else if path.is_file() {
+            files.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_redundancy_percent() {
+        assert_eq!(
+            parse_redundancy_option("10").unwrap(),
+            RedundancyOption::Percent(10)
+        );
+    }
+
+    #[test]
+    fn parse_redundancy_target_size_prefix_and_suffix() {
+        assert_eq!(
+            parse_redundancy_option("k10").unwrap(),
+            RedundancyOption::TargetSize(10 * 1024)
+        );
+        assert_eq!(
+            parse_redundancy_option("10m").unwrap(),
+            RedundancyOption::TargetSize(10 * 1024 * 1024)
+        );
+        assert_eq!(
+            parse_redundancy_option("g2").unwrap(),
+            RedundancyOption::TargetSize(2 * 1024 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn parse_redundancy_rejects_invalid_target_size() {
+        assert!(parse_redundancy_option("m").is_err());
+        assert!(parse_redundancy_option("m1x").is_err());
+        assert!(parse_redundancy_option("").is_err());
+    }
+
+    #[test]
+    fn expand_source_files_recurses_in_stable_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("b.txt"), b"b").unwrap();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+
+        let files = expand_source_files(vec![root.clone()], true).unwrap();
+        assert_eq!(files, vec![root.join("a.txt"), nested.join("b.txt")]);
+
+        let files = expand_source_files(vec![root.clone()], false).unwrap();
+        assert_eq!(files, vec![root]);
+    }
+}
