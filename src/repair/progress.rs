@@ -51,6 +51,12 @@ pub trait ProgressReporter: Send + Sync {
     /// Report file writing progress
     fn report_writing_progress(&self, file_name: &str, bytes_written: u64, total_bytes: u64);
 
+    /// Report the start of writing recovered data
+    fn report_writing_recovered_data(&self);
+
+    /// Report the number of repaired bytes written to disk
+    fn report_bytes_written(&self, bytes_written: u64);
+
     /// Report repair completion for a file
     fn report_repair_complete(&self, file_name: &str, repaired: bool);
 
@@ -263,21 +269,32 @@ impl ProgressReporter for ConsoleReporter {
         }
     }
 
+    fn report_writing_recovered_data(&self) {
+        if self.quiet {
+            return;
+        }
+        println!("Writing recovered data");
+    }
+
+    fn report_bytes_written(&self, bytes_written: u64) {
+        if self.quiet {
+            return;
+        }
+        println!("Wrote {} bytes to disk", bytes_written);
+    }
+
     fn report_repair_start(&self, file_name: &str) {
         if self.quiet {
             return;
         }
-        print!("Repairing \"{}\"... ", file_name);
-        std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+        let _ = file_name;
     }
 
     fn report_repair_complete(&self, _file_name: &str, repaired: bool) {
         if self.quiet {
             return;
         }
-        if repaired {
-            println!("done.");
-        } else {
+        if !repaired {
             println!("already valid.");
         }
     }
@@ -374,6 +391,8 @@ impl ProgressReporter for SilentReporter {
     fn report_computing_progress(&self, _blocks_processed: usize, _total_blocks: usize) {}
     fn report_repair_start(&self, _file_name: &str) {}
     fn report_writing_progress(&self, _file_name: &str, _bytes_written: u64, _total_bytes: u64) {}
+    fn report_writing_recovered_data(&self) {}
+    fn report_bytes_written(&self, _bytes_written: u64) {}
     fn report_repair_complete(&self, _file_name: &str, _repaired: bool) {}
     fn report_repair_failed(&self, _file_name: &str, _error: &str) {}
     fn report_verification_header(&self) {}

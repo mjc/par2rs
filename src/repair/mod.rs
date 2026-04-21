@@ -834,6 +834,7 @@ impl RepairContext {
         block_sources: &HashMap<u32, BlockSource>,
     ) -> Result<()> {
         debug!("Writing repaired file with streaming I/O: {:?}", file_path);
+        self.reporter().report_writing_recovered_data();
 
         // Write to temp file first, then rename to avoid corrupting source while reading
         let temp_path = file_path.with_extension("par2_tmp");
@@ -993,6 +994,7 @@ impl RepairContext {
             "✓ Wrote {} bytes to {:?}, MD5 verified: {:02x?}",
             bytes_written, file_path, computed_md5
         );
+        self.reporter().report_bytes_written(bytes_written);
 
         Ok(())
     }
