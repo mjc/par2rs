@@ -4,7 +4,9 @@
 
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
-use par2rs::create::cli::{expand_source_files, parse_redundancy_option, RedundancyOption};
+use par2rs::create::cli::{
+    expand_source_files, parse_redundancy_option, validate_recovery_file_count, RedundancyOption,
+};
 use par2rs::reporters::VerificationReporter;
 use std::path::PathBuf;
 
@@ -328,10 +330,7 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
         expand_source_files(source_inputs, recurse).context("Failed to expand source file list")?;
 
     if let Some(count) = recovery_file_count {
-        anyhow::ensure!(
-            (1..=31).contains(&count),
-            "Invalid recovery file count: {count} (must be 1-31)"
-        );
+        validate_recovery_file_count(count).map_err(anyhow::Error::msg)?;
     }
 
     // Use archive name if specified, otherwise use par2_file

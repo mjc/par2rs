@@ -68,6 +68,16 @@ pub fn expand_source_files(inputs: Vec<PathBuf>, recurse: bool) -> std::io::Resu
     Ok(files)
 }
 
+pub fn validate_recovery_file_count(count: u32) -> Result<u32, String> {
+    if (1..=31).contains(&count) {
+        Ok(count)
+    } else {
+        Err(format!(
+            "Invalid recovery file count: {count} (must be 1-31)"
+        ))
+    }
+}
+
 fn collect_directory_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
     let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.path());
@@ -133,5 +143,13 @@ mod tests {
 
         let files = expand_source_files(vec![root.clone()], false).unwrap();
         assert_eq!(files, vec![root]);
+    }
+
+    #[test]
+    fn validate_recovery_file_count_matches_turbo_limit() {
+        assert_eq!(validate_recovery_file_count(1).unwrap(), 1);
+        assert_eq!(validate_recovery_file_count(31).unwrap(), 31);
+        assert!(validate_recovery_file_count(0).is_err());
+        assert!(validate_recovery_file_count(32).is_err());
     }
 }

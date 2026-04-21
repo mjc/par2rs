@@ -2,7 +2,9 @@
 
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
-use par2rs::create::cli::{expand_source_files, parse_redundancy_option, RedundancyOption};
+use par2rs::create::cli::{
+    expand_source_files, parse_redundancy_option, validate_recovery_file_count, RedundancyOption,
+};
 use std::path::PathBuf;
 
 fn main() -> Result<()> {
@@ -163,10 +165,7 @@ fn main() -> Result<()> {
     let threads: Option<u32> = parse_optional_u32(&matches, "threads")?;
 
     if let Some(count) = recovery_file_count {
-        anyhow::ensure!(
-            (1..=31).contains(&count),
-            "Invalid recovery file count: {count} (must be 1-31)"
-        );
+        validate_recovery_file_count(count).map_err(anyhow::Error::msg)?;
     }
 
     let output_name = matches
