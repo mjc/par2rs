@@ -556,7 +556,7 @@ fn load_par2_packets_with_progress(
     let mut seen_hashes = HashSet::default();
     let mut packets = Vec::new();
 
-    for par2_file in par2_files {
+    for par2_file in loading_progress_order(par2_files) {
         let filename = par2_file
             .file_name()
             .and_then(|name| name.to_str())
@@ -648,6 +648,35 @@ fn load_par2_packets_with_progress(
         .unwrap_or_else(|| PathBuf::from("."));
 
     PacketSet::new(packets, recovery_block_count, base_dir)
+}
+
+fn loading_progress_order(par2_files: &[PathBuf]) -> Vec<&PathBuf> {
+    let Some(first) = par2_files.first() else {
+        return Vec::new();
+    };
+
+    let first_filename = loading_filename(first);
+    let mut ordered = Vec::with_capacity(par2_files.len());
+    ordered.push(first);
+    ordered.extend(
+        par2_files
+            .iter()
+            .skip(1)
+            .filter(|path| loading_filename(path) != first_filename),
+    );
+    ordered.extend(
+        par2_files
+            .iter()
+            .skip(1)
+            .filter(|path| loading_filename(path) == first_filename),
+    );
+    ordered
+}
+
+fn loading_filename(path: &Path) -> &str {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
 }
 
 fn packet_recovery_set_id(packet: &Packet) -> RecoverySetId {
