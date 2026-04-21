@@ -10,9 +10,18 @@ use super::source_file::{normalize_packet_path, packet_name_from_path, SourceFil
 use super::types::CreateConfig;
 use crate::domain::{BlockSize, ChunkSize, RecoverySetId, SourceBlockCount};
 use crate::reed_solomon::codec::SplitMulTable;
+use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 
 const DEFAULT_MEMORY_LIMIT: usize = 1024 * 1024 * 1024; // 1 GiB
 const RECOVERY_PACKET_TYPE: &[u8; 16] = b"PAR 2.0\0RecvSlic";
+
+fn default_output_base_path(output_name: &str) -> PathBuf {
+    Path::new(output_name)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()
+}
 
 /// Serialize and write a single PAR2 recovery slice packet
 ///
@@ -534,12 +543,16 @@ impl CreateContext {
         Ok(())
     }
 
-    fn packet_name_for_path(&self, path: &std::path::Path) -> CreateResult<String> {
-        let default_base_path = std::path::Path::new(&self.config.output_name)
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .to_path_buf();
-        let base_path = self.config.base_path.as_ref().unwrap_or(&default_base_path);
+    fn packet_base_path(&self) -> Cow<'_, Path> {
+        match &self.config.base_path {
+            Some(base_path) => Cow::Borrowed(base_path.as_path()),
+            None => Cow::Owned(default_output_base_path(&self.config.output_name)),
+        }
+    }
+
+    fn packet_name_for_path(&self, path: &Path) -> CreateResult<String> {
+        let base_path = self.packet_base_path();
+        let base_path = base_path.as_ref();
 
         if !base_path.as_os_str().is_empty() {
             if let Ok(relative) = path.strip_prefix(base_path) {
@@ -870,10 +883,10 @@ impl CreateContext {
         }
 
         // Determine output directory and base name
-        let output_path = std::path::Path::new(&self.config.output_name);
+        let output_path = Path::new(&self.config.output_name);
         let output_dir = output_path
             .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
+            .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
         let base_name = output_path
             .file_stem()
