@@ -94,6 +94,17 @@ impl CreateContextBuilder {
     /// This determines how many recovery blocks to create
     pub fn redundancy_percentage(mut self, percent: u32) -> Self {
         self.config.redundancy_percentage = Some(percent);
+        self.config.recovery_target_size = None;
+        self
+    }
+
+    /// Set target recovery file size in bytes.
+    ///
+    /// If set, overrides redundancy_percentage unless an explicit recovery block
+    /// count is also provided.
+    pub fn recovery_target_size(mut self, bytes: u64) -> Self {
+        self.config.recovery_target_size = Some(bytes);
+        self.config.redundancy_percentage = None;
         self
     }
 
@@ -196,6 +207,7 @@ mod tests {
         let builder = CreateContextBuilder::new()
             .output_name("mydata.par2")
             .redundancy_percentage(10)
+            .recovery_target_size(40 * 1024 * 1024)
             .thread_count(2)
             .first_recovery_block(5)
             .memory_limit(1024 * 1024)
@@ -206,7 +218,8 @@ mod tests {
             .recovery_file_scheme(RecoveryFileScheme::Uniform);
 
         assert_eq!(builder.config.output_name, "mydata.par2");
-        assert_eq!(builder.config.redundancy_percentage, Some(10));
+        assert_eq!(builder.config.redundancy_percentage, None);
+        assert_eq!(builder.config.recovery_target_size, Some(40 * 1024 * 1024));
         assert_eq!(builder.config.thread_count, 2);
         assert_eq!(builder.config.first_recovery_block, 5);
         assert_eq!(builder.config.memory_limit, Some(1024 * 1024));

@@ -757,4 +757,56 @@ fn test_recovery_block_count_calculation() {
         5,
         "Explicit recovery block count not respected"
     );
+
+    // Test with target recovery size (-rk/-rm/-rg style)
+    let target_file = temp.path().join("target.dat");
+    create_test_file(&target_file, 10 * 1024, 0x66).unwrap();
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
+    let context = par2rs::create::CreateContextBuilder::new()
+        .output_name("target.par2")
+        .source_files(vec![target_file])
+        .block_size(1024)
+        .recovery_target_size(10_000)
+        .recovery_file_count(2)
+        .reporter(reporter)
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        context.recovery_block_count(),
+        8,
+        "Target-size recovery block count should match par2cmdline-turbo formula"
+    );
+}
+
+#[test]
+fn target_size_redundancy_verifies_with_par2cmdline() {
+    if !par2_available() {
+        eprintln!("Skipping test: par2cmdline-turbo not available");
+        return;
+    }
+
+    let temp = tempdir().unwrap();
+    let test_file = temp.path().join("target.dat");
+    let par2_file = temp.path().join("target.par2");
+
+    create_test_file(&test_file, 16 * 1024, 0x34).unwrap();
+
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(par2_file.to_str().unwrap())
+        .source_files(vec![test_file])
+        .block_size(1024)
+        .recovery_target_size(10 * 1024)
+        .recovery_file_count(2)
+        .reporter(reporter)
+        .build()
+        .unwrap();
+
+    context.create().unwrap();
+
+    assert!(
+        run_par2_verify(&par2_file).unwrap(),
+        "par2cmdline-turbo failed to verify target-size redundancy set"
+    );
 }

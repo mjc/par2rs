@@ -220,17 +220,45 @@ pub fn plan_recovery_files(
     plan
 }
 
-/// Compute default number of recovery files for the Variable scheme
+/// Compute default number of recovery files for the Variable/Uniform schemes
 ///
-/// Uses ceil(log2(recovery_block_count)), matching par2cmdline-turbo's default.
-/// Minimum is 1.
+/// Uses the number of bits required to represent recovery_block_count,
+/// matching par2cmdline-turbo's default.
 pub fn default_recovery_file_count(recovery_block_count: u32) -> u32 {
-    if recovery_block_count <= 1 {
-        return 1;
+    let mut file_count = 0;
+    let mut blocks = recovery_block_count;
+    while blocks > 0 {
+        file_count += 1;
+        blocks >>= 1;
     }
-    // ceil(log2(n)) = number of bits needed to represent n-1
-    let bits = u32::BITS - (recovery_block_count - 1).leading_zeros();
-    bits.max(1)
+    file_count
+}
+
+/// Compute default number of recovery files for the selected scheme.
+///
+/// Reference: par2cmdline-turbo/src/libpar2.cpp ComputeRecoveryFileCount()
+pub fn default_recovery_file_count_for_scheme(
+    scheme: RecoveryFileScheme,
+    recovery_block_count: u32,
+    largest_file_size: u64,
+    block_size: u64,
+) -> u32 {
+    if recovery_block_count == 0 {
+        return 0;
+    }
+
+    match scheme {
+        RecoveryFileScheme::Variable | RecoveryFileScheme::Uniform => {
+            default_recovery_file_count(recovery_block_count)
+        }
+        RecoveryFileScheme::Limited => {
+            let largest = largest_file_size.div_ceil(block_size) as u32;
+            let whole = recovery_block_count / largest;
+            let whole = whole.saturating_sub(1);
+            let extra = recovery_block_count - whole * largest;
+            whole + default_recovery_file_count(extra)
+        }
+    }
 }
 
 /// Count number of decimal digits needed to represent a number
@@ -400,19 +428,33 @@ mod tests {
         assert!(plan.is_empty());
     }
 
-    /// Test default_recovery_file_count gives ceil(log2(n))
+    /// Test default_recovery_file_count matches par2cmdline-turbo bit count
     #[test]
-    fn default_recovery_file_count_is_ceil_log2() {
+    fn default_recovery_file_count_is_bit_count() {
+        assert_eq!(default_recovery_file_count(0), 0);
         assert_eq!(default_recovery_file_count(1), 1);
-        assert_eq!(default_recovery_file_count(2), 1);
+        assert_eq!(default_recovery_file_count(2), 2);
         assert_eq!(default_recovery_file_count(3), 2);
-        assert_eq!(default_recovery_file_count(4), 2);
+        assert_eq!(default_recovery_file_count(4), 3);
         assert_eq!(default_recovery_file_count(5), 3);
-        assert_eq!(default_recovery_file_count(8), 3);
+        assert_eq!(default_recovery_file_count(8), 4);
         assert_eq!(default_recovery_file_count(9), 4);
         assert_eq!(default_recovery_file_count(10), 4);
-        assert_eq!(default_recovery_file_count(16), 4);
+        assert_eq!(default_recovery_file_count(16), 5);
         assert_eq!(default_recovery_file_count(17), 5);
+    }
+
+    #[test]
+    fn default_limited_recovery_file_count_matches_turbo_shape() {
+        assert_eq!(
+            default_recovery_file_count_for_scheme(
+                RecoveryFileScheme::Limited,
+                100,
+                10 * 1024,
+                1024,
+            ),
+            13
+        );
     }
 
     /// Test variable scheme low_block_count calculation

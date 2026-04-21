@@ -143,12 +143,10 @@ fn main() -> Result<()> {
     let source_files = expand_source_files(source_inputs, matches.get_flag("recurse"))?;
 
     let quiet_mode = matches.get_count("quiet") > 0;
-    let redundancy_percentage =
-        if let Some(redundancy_str) = matches.get_one::<String>("redundancy") {
-            parse_redundancy_option(redundancy_str)?
-        } else {
-            Some(5)
-        };
+    let redundancy = matches
+        .get_one::<String>("redundancy")
+        .map(|value| parse_redundancy_option(value))
+        .transpose()?;
 
     let block_size: Option<u64> = parse_optional_u64(&matches, "block_size")?;
     let block_count: Option<u32> = parse_optional_u32(&matches, "block_count")?;
@@ -168,7 +166,7 @@ fn main() -> Result<()> {
             source_files.len()
         );
         println!("Output: {}", output_name);
-        if let Some(redundancy) = redundancy_percentage {
+        if let Some(RedundancyOption::Percent(redundancy)) = redundancy {
             println!("Redundancy: {}%", redundancy);
         }
     }
@@ -179,8 +177,11 @@ fn main() -> Result<()> {
         .source_files(source_files)
         .reporter(reporter);
 
-    if let Some(redundancy) = redundancy_percentage {
-        context = context.redundancy_percentage(redundancy);
+    if let Some(redundancy) = redundancy {
+        context = match redundancy {
+            RedundancyOption::Percent(percent) => context.redundancy_percentage(percent),
+            RedundancyOption::TargetSize(bytes) => context.recovery_target_size(bytes),
+        };
     }
     if let Some(size) = block_size {
         context = context.block_size(size);
@@ -286,33 +287,47 @@ fn parse_optional_usize(matches: &clap::ArgMatches, id: &str) -> Result<Option<u
         .with_context(|| format!("Invalid {id} value"))
 }
 
-fn parse_redundancy_option(redundancy_str: &str) -> Result<Option<u32>> {
+#[derive(Clone, Copy)]
+enum RedundancyOption {
+    Percent(u32),
+    TargetSize(u64),
+}
+
+/// Parse redundancy option as a percentage or target size.
+/// Supports par2cmdline style `m40` and suffix style `40m`.
+fn parse_redundancy_option(redundancy_str: &str) -> Result<RedundancyOption> {
     if redundancy_str.is_empty() {
-        return Ok(None);
+        anyhow::bail!("Invalid redundancy option");
     }
 
-    let last_char = redundancy_str
-        .chars()
-        .last()
-        .unwrap()
-        .to_lowercase()
-        .next()
-        .unwrap();
+    let lower = redundancy_str.to_ascii_lowercase();
+    let first = lower.as_bytes()[0] as char;
+    let last = lower.as_bytes()[lower.len() - 1] as char;
 
-    if matches!(last_char, 'g' | 'm' | 'k') {
-        eprintln!(
-            "Warning: Size-based redundancy ({}g/m/k) not yet implemented, treating as percentage",
-            last_char
-        );
-        let numeric_part = &redundancy_str[..redundancy_str.len() - 1];
-        let percentage: u32 = numeric_part
-            .parse()
-            .context("Invalid redundancy size value")?;
-        Ok(Some(percentage))
+    if matches!(first, 'g' | 'm' | 'k') {
+        parse_redundancy_size(first, &lower[1..])
+    } else if matches!(last, 'g' | 'm' | 'k') {
+        parse_redundancy_size(last, &lower[..lower.len() - 1])
     } else {
         let percentage: u32 = redundancy_str
             .parse()
             .context("Invalid redundancy percentage")?;
-        Ok(Some(percentage))
+        Ok(RedundancyOption::Percent(percentage))
     }
+}
+
+fn parse_redundancy_size(unit: char, digits: &str) -> Result<RedundancyOption> {
+    if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
+        anyhow::bail!("Invalid redundancy size value");
+    }
+
+    let mut bytes: u64 = digits.parse().context("Invalid redundancy size value")?;
+    match unit {
+        'g' => bytes *= 1024 * 1024 * 1024,
+        'm' => bytes *= 1024 * 1024,
+        'k' => bytes *= 1024,
+        _ => unreachable!("unit checked by caller"),
+    }
+
+    Ok(RedundancyOption::TargetSize(bytes))
 }

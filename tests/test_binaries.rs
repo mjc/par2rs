@@ -424,6 +424,36 @@ fn test_par2create_creates_par2_files() {
     assert!(has_volume, "expected at least one recovery volume file");
 }
 
+#[test]
+fn test_par2create_accepts_target_size_redundancy() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("target-size.txt");
+    create_test_file(&source, b"target size redundancy smoke test")
+        .expect("Failed to create source file");
+
+    let output_base = temp_dir.path().join("target-size.par2");
+    let output = Command::new(get_binary_path("par2create"))
+        .arg("-q")
+        .arg("-s")
+        .arg("4")
+        .arg("-r")
+        .arg("k1")
+        .arg("-n")
+        .arg("1")
+        .arg(&output_base)
+        .arg(&source)
+        .output()
+        .expect("Failed to execute par2create");
+
+    assert!(
+        output.status.success(),
+        "par2create -rk failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(temp_dir.path().join("target-size.par2").exists());
+}
+
 // =============================================================================
 // split_par2 binary tests
 // =============================================================================

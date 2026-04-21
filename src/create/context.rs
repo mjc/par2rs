@@ -673,17 +673,66 @@ impl CreateContext {
         if let Some(count) = self.config.recovery_block_count {
             // Explicit count specified
             self.recovery_block_count = count;
+        } else if let Some(target_size) = self.config.recovery_target_size {
+            self.recovery_block_count =
+                self.calculate_recovery_blocks_for_target_size(target_size)?;
         } else if let Some(percent) = self.config.redundancy_percentage {
             // Calculate from percentage
             let count = (self.source_block_count as f64 * (percent as f64 / 100.0)).ceil() as u32;
             self.recovery_block_count = count.max(1); // At least 1 recovery block
         } else {
             return Err(CreateError::Other(
-                "Must specify either recovery_block_count or redundancy_percentage".to_string(),
+                "Must specify recovery block count, redundancy percentage, or target recovery size"
+                    .to_string(),
             ));
         }
 
         Ok(())
+    }
+
+    fn calculate_recovery_blocks_for_target_size(&self, target_size: u64) -> CreateResult<u32> {
+        use super::file_naming::default_recovery_file_count_for_scheme;
+
+        let overhead_per_recovery_file = self.source_block_count as u64 * 21;
+        let recovery_packet_size = self.block_size.as_u64() + 70;
+        let largest_file_size = self.source_files.iter().map(|f| f.size).max().unwrap_or(0);
+
+        let recovery_file_count = if let Some(count) = self.config.recovery_file_count {
+            count
+        } else {
+            let estimated_file_count = 15u64;
+            let overhead = estimated_file_count * overhead_per_recovery_file;
+            let estimated_recovery_blocks = if overhead > target_size {
+                1
+            } else {
+                ((target_size - overhead) / recovery_packet_size)
+                    .max(1)
+                    .min(u32::MAX as u64) as u32
+            };
+            default_recovery_file_count_for_scheme(
+                self.config.recovery_file_scheme,
+                estimated_recovery_blocks,
+                largest_file_size,
+                self.block_size.as_u64(),
+            )
+        };
+
+        let overhead = recovery_file_count as u64 * overhead_per_recovery_file;
+        let recovery_blocks = if overhead > target_size {
+            1
+        } else {
+            ((target_size - overhead) / recovery_packet_size)
+                .max(1)
+                .min(u32::MAX as u64) as u32
+        };
+
+        if self.config.first_recovery_block + recovery_blocks >= 65536 {
+            return Err(CreateError::Other(
+                "First recovery block number is too high".to_string(),
+            ));
+        }
+
+        Ok(recovery_blocks)
     }
 
     /// Compute MD5 hashes and checksums for all source files
@@ -853,8 +902,13 @@ impl CreateContext {
         // Determine volume file plan
         let largest_file_size = self.source_files.iter().map(|f| f.size).max().unwrap_or(0);
         let file_count = {
-            use super::file_naming::default_recovery_file_count;
-            let default_count = default_recovery_file_count(self.recovery_block_count);
+            use super::file_naming::default_recovery_file_count_for_scheme;
+            let default_count = default_recovery_file_count_for_scheme(
+                self.config.recovery_file_scheme,
+                self.recovery_block_count,
+                largest_file_size,
+                self.block_size.as_u64(),
+            );
             self.config.recovery_file_count.unwrap_or(default_count)
         };
         let plan = plan_recovery_files(

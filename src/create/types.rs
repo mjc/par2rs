@@ -51,6 +51,9 @@ pub struct CreateConfig {
     /// Used to calculate recovery_block_count if not specified
     pub redundancy_percentage: Option<u32>,
 
+    /// Target total recovery data size in bytes (-rk/-rm/-rg)
+    pub recovery_target_size: Option<u64>,
+
     /// Recovery file distribution scheme
     pub recovery_file_scheme: RecoveryFileScheme,
 
@@ -79,6 +82,7 @@ impl Default for CreateConfig {
             source_block_count: None,
             recovery_block_count: None,
             redundancy_percentage: Some(5), // 5% is typical default
+            recovery_target_size: None,
             recovery_file_scheme: RecoveryFileScheme::default(),
             recovery_file_count: None,
             memory_limit: None,
