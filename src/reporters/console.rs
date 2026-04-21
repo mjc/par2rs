@@ -99,8 +99,9 @@ impl VerificationReporter for ConsoleVerificationReporter {
         // par2cmdline doesn't print this
     }
 
-    fn report_verifying_file(&self, _file_name: &str) {
-        // par2cmdline doesn't print individual file verification start
+    fn report_verifying_file(&self, file_name: &str) {
+        let _lock = self.output_lock.lock().unwrap();
+        println!("Opening: \"{}\"", file_name);
     }
 
     fn report_file_status(&self, file_name: &str, status: FileStatus) {
