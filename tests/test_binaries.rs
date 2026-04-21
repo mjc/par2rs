@@ -4,7 +4,7 @@
 //! - par2 (unified interface)
 //! - par2verify
 //! - par2repair
-//! - par2create (placeholder)
+//! - par2create
 //! - split_par2
 //!
 //! NOTE: These tests are ignored in CI/Nix builds because they require
@@ -375,12 +375,53 @@ fn test_par2repair_no_parallel() {
 #[test]
 fn test_par2create_runs() {
     let output = Command::new(get_binary_path("par2create"))
+        .arg("--help")
         .output()
         .expect("Failed to execute par2create");
 
-    // Currently just a placeholder
+    assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("not yet implemented") || output.status.success());
+    assert!(stdout.contains("Create PAR2 recovery files"));
+    assert!(stdout.contains("-r"));
+}
+
+#[test]
+fn test_par2create_creates_par2_files() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("sample.txt");
+    create_test_file(&source, b"standalone par2create smoke test")
+        .expect("Failed to create source file");
+
+    let output_base = temp_dir.path().join("sample.par2");
+    let output = Command::new(get_binary_path("par2create"))
+        .arg("-q")
+        .arg("-s")
+        .arg("4")
+        .arg("-c")
+        .arg("1")
+        .arg(&output_base)
+        .arg(&source)
+        .output()
+        .expect("Failed to execute par2create");
+
+    assert!(
+        output.status.success(),
+        "par2create failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(temp_dir.path().join("sample.par2").exists());
+    let has_volume = fs::read_dir(temp_dir.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .map(|name| name.starts_with("sample.vol") && name.ends_with(".par2"))
+                .unwrap_or(false)
+        });
+    assert!(has_volume, "expected at least one recovery volume file");
 }
 
 // =============================================================================

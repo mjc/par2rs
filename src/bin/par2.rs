@@ -5,6 +5,7 @@
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
 use par2rs::reporters::VerificationReporter;
+use std::path::PathBuf;
 
 fn main() -> Result<()> {
     env_logger::Builder::from_default_env()
@@ -249,13 +250,11 @@ fn main() -> Result<()> {
 }
 
 fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
-    use std::path::PathBuf;
-
     let par2_file = matches
         .get_one::<String>("par2_file")
         .expect("par2_file is required");
 
-    let source_files: Vec<PathBuf> = matches
+    let source_inputs: Vec<PathBuf> = matches
         .get_many::<String>("files")
         .expect("files are required")
         .map(PathBuf::from)
@@ -311,6 +310,8 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
         .transpose()
         .context("Invalid memory value")?;
 
+    let base_path = matches.get_one::<String>("basepath").map(PathBuf::from);
+
     let threads: Option<u32> = matches
         .get_one::<String>("threads")
         .map(|s| s.parse())
@@ -320,6 +321,7 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     let uniform = matches.get_flag("uniform");
     let limit_size = matches.get_flag("limit_size");
     let recurse = matches.get_flag("recurse");
+    let source_files = expand_source_files(source_inputs, recurse)?;
 
     // Use archive name if specified, otherwise use par2_file
     let output_name = matches
@@ -371,6 +373,9 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     if let Some(limit_mb) = memory_mb {
         context = context.memory_limit(limit_mb * 1024 * 1024);
     }
+    if let Some(path) = base_path {
+        context = context.base_path(path);
+    }
     if uniform {
         context = context.recovery_file_scheme(par2rs::create::RecoveryFileScheme::Uniform);
     }
@@ -384,11 +389,6 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     // Initialize SIMD policy from CLI flag (disable SIMD if requested)
     let force_scalar = matches.get_flag("force_scalar");
     par2rs::reed_solomon::codec::init_simd_level(force_scalar);
-
-    // TODO: -R (recurse) and -B (basepath) are not yet implemented
-    if recurse {
-        eprintln!("Warning: -R (recurse) option not yet implemented");
-    }
 
     let mut create_context = context
         .build()
@@ -404,6 +404,35 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
             println!("  {}", file);
         }
         println!("\nDone.");
+    }
+
+    Ok(())
+}
+
+fn expand_source_files(inputs: Vec<PathBuf>, recurse: bool) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for input in inputs {
+        if input.is_dir() && recurse {
+            collect_directory_files(&input, &mut files)
+                .with_context(|| format!("Failed to recurse into {}", input.display()))?;
+        } else {
+            files.push(input);
+        }
+    }
+    Ok(files)
+}
+
+fn collect_directory_files(dir: &std::path::Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_directory_files(&path, files)?;
+        } else if path.is_file() {
+            files.push(path);
+        }
     }
 
     Ok(())
