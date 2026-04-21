@@ -15,6 +15,26 @@ pub struct ConsoleVerificationReporter {
     output_lock: Mutex<()>,
 }
 
+/// Concise verification output used for a single `-q`, matching
+/// par2cmdline-turbo's quiet-but-not-silent mode.
+pub struct ConciseVerificationReporter {
+    output_lock: Mutex<()>,
+}
+
+impl Default for ConciseVerificationReporter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ConciseVerificationReporter {
+    pub fn new() -> Self {
+        Self {
+            output_lock: Mutex::new(()),
+        }
+    }
+}
+
 impl Default for ConsoleVerificationReporter {
     fn default() -> Self {
         Self::new()
@@ -125,6 +145,77 @@ impl VerificationReporter for ConsoleVerificationReporter {
         print!("Scanning: {}.{}%\r", percent / 10, percent % 10);
         let _ = io::stdout().flush();
     }
+}
+
+impl Reporter for ConciseVerificationReporter {
+    fn report_progress(&self, _message: &str, _progress: f64) {}
+
+    fn report_error(&self, error: &str) {
+        let _lock = self.output_lock.lock().unwrap();
+        eprintln!("Error: {}", error);
+    }
+
+    fn report_complete(&self, message: &str) {
+        let _lock = self.output_lock.lock().unwrap();
+        println!("{}", message);
+    }
+}
+
+impl VerificationReporter for ConciseVerificationReporter {
+    fn report_verification_start(&self, _parallel: bool) {}
+
+    fn report_files_found(&self, _count: usize) {}
+
+    fn report_verifying_file(&self, _file_name: &str) {}
+
+    fn report_file_status(&self, file_name: &str, status: FileStatus) {
+        let _lock = self.output_lock.lock().unwrap();
+        match status {
+            FileStatus::Present => println!("Target: \"{}\" - found.", file_name),
+            FileStatus::Missing => println!("Target: \"{}\" - missing.", file_name),
+            FileStatus::Corrupted => {}
+            FileStatus::Renamed => println!("Target: \"{}\" - renamed.", file_name),
+        }
+    }
+
+    fn report_damaged_blocks(
+        &self,
+        file_name: &str,
+        damaged_blocks: &[u32],
+        available_blocks: usize,
+        total_blocks: usize,
+    ) {
+        let _lock = self.output_lock.lock().unwrap();
+        if !damaged_blocks.is_empty() {
+            println!(
+                "Target: \"{}\" - damaged. Found {} of {} data blocks.",
+                file_name, available_blocks, total_blocks
+            );
+        }
+    }
+
+    fn report_verification_results(&self, results: &VerificationResults) {
+        let _lock = self.output_lock.lock().unwrap();
+        println!();
+
+        match (results.missing_block_count, results.repair_possible) {
+            (0, _) => println!("All files are correct, repair is not required."),
+            (_, true) => {
+                println!("Repair is required.");
+                println!("Repair is possible.");
+            }
+            (missing, false) => {
+                println!("Repair is required.");
+                println!("Repair is not possible.");
+                println!(
+                    "You need {} more recovery blocks to be able to repair.",
+                    missing - results.recovery_blocks_available
+                );
+            }
+        }
+    }
+
+    fn report_scanning_progress(&self, _fraction: f64) {}
 }
 
 // Base Reporter implementation for ConsoleRepairReporter
