@@ -1063,9 +1063,11 @@ pub fn repair_files_with_base_path_and_extra_files(
         return Err(RepairError::NoValidPackets);
     }
 
-    // Get the base directory for file resolution
+    // Get the base directory for file resolution. An explicit caller override
+    // wins over the CLI/configured base path.
     let base_path = base_path_override
         .map(Path::to_path_buf)
+        .or_else(|| verify_config.base_path.clone())
         .unwrap_or_else(|| par2_path.parent().unwrap_or(Path::new(".")).to_path_buf());
 
     // CRITICAL FIX: Run comprehensive verification to get accurate block availability
@@ -1084,6 +1086,8 @@ pub fn repair_files_with_base_path_and_extra_files(
         verify_config.threads,
         verify_config.parallel,
     );
+    repair_verify_config.extra_files = verify_config.extra_files.clone();
+    repair_verify_config.base_path = Some(base_path.clone());
     repair_verify_config.file_threads = verify_config.file_threads;
     repair_verify_config.data_skipping = verify_config.data_skipping;
     repair_verify_config.skip_leeway = verify_config.skip_leeway;

@@ -24,6 +24,8 @@ pub struct VerificationConfig {
     pub rename_only: bool,
     /// Additional data files to scan for misplaced or renamed source data.
     pub extra_files: Vec<PathBuf>,
+    /// Base directory for resolving protected data files.
+    pub base_path: Option<PathBuf>,
 }
 
 impl Default for VerificationConfig {
@@ -38,6 +40,7 @@ impl Default for VerificationConfig {
             skip_leeway: 0,
             rename_only: false,
             extra_files: Vec::new(),
+            base_path: None,
         }
     }
 }
@@ -54,6 +57,7 @@ impl VerificationConfig {
             skip_leeway: 0,
             rename_only: false,
             extra_files: Vec::new(),
+            base_path: None,
         }
     }
 
@@ -69,11 +73,17 @@ impl VerificationConfig {
             skip_leeway: 0,
             rename_only: false,
             extra_files: Vec::new(),
+            base_path: None,
         }
     }
 
     pub fn with_extra_files(mut self, extra_files: Vec<PathBuf>) -> Self {
         self.extra_files = extra_files;
+        self
+    }
+
+    pub fn with_base_path(mut self, base_path: Option<PathBuf>) -> Self {
+        self.base_path = base_path;
         self
     }
 
@@ -143,8 +153,14 @@ impl VerificationConfig {
             .try_get_many::<String>("files")
             .ok()
             .flatten()
-            .map(|files| files.map(|file| Self::normalize_extra_file(file)).collect())
+            .map(|files| files.map(|file| Self::normalize_arg_path(file)).collect())
             .unwrap_or_default();
+
+        let base_path = matches
+            .try_get_one::<String>("basepath")
+            .ok()
+            .flatten()
+            .map(|path| Self::normalize_arg_path(path));
 
         Ok(Self {
             threads,
@@ -161,11 +177,12 @@ impl VerificationConfig {
                 .copied()
                 .unwrap_or(false),
             extra_files,
+            base_path,
         })
     }
 
-    fn normalize_extra_file(file: &str) -> PathBuf {
-        let path = PathBuf::from(file);
+    fn normalize_arg_path(value: &str) -> PathBuf {
+        let path = PathBuf::from(value);
         if path.is_absolute() {
             path
         } else {
