@@ -253,7 +253,8 @@ fn main() -> Result<()> {
                     Arg::new("skip_leeway")
                         .short('S')
                         .help("Skip leeway (distance +/- from expected block position)")
-                        .value_name("N"),
+                        .value_name("N")
+                        .requires("data_skipping"),
                 ),
         )
         .subcommand(
@@ -350,7 +351,8 @@ fn main() -> Result<()> {
                     Arg::new("skip_leeway")
                         .short('S')
                         .help("Skip leeway (distance +/- from expected block position)")
-                        .value_name("N"),
+                        .value_name("N")
+                        .requires("data_skipping"),
                 ),
         )
         .get_matches_from(args);

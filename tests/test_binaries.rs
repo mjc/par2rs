@@ -1235,6 +1235,30 @@ fn test_par2_verify_repair_accept_scan_compat_flags() {
 }
 
 #[test]
+fn test_verify_repair_reject_skip_leeway_without_data_skipping() {
+    let par2_file = Path::new("tests/fixtures/edge_cases/test_valid.par2");
+    if !par2_file.exists() {
+        eprintln!("Skipping test - fixture not found");
+        return;
+    }
+
+    let verify_output = Command::new(get_binary_path("par2"))
+        .arg("verify")
+        .arg("-S10")
+        .arg(par2_file)
+        .output()
+        .expect("Failed to execute par2 verify");
+    assert!(!verify_output.status.success());
+
+    let repair_output = Command::new(get_binary_path("par2repair"))
+        .arg("-S10")
+        .arg(par2_file)
+        .output()
+        .expect("Failed to execute par2repair");
+    assert!(!repair_output.status.success());
+}
+
+#[test]
 fn test_par2_verify_repair_accept_all_use_resource_flags() {
     let par2_file = Path::new("tests/fixtures/edge_cases/test_valid.par2");
     if !par2_file.exists() {

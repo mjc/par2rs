@@ -93,7 +93,8 @@ pub fn parse_args() -> clap::ArgMatches {
             Arg::new("skip_leeway")
                 .help("Skip leeway (distance +/- from expected block position)")
                 .short('S')
-                .value_name("N"),
+                .value_name("N")
+                .requires("data_skipping"),
         )
         .get_matches_from(args)
 }
@@ -196,7 +197,8 @@ pub fn parse_repair_args() -> clap::ArgMatches {
             Arg::new("skip_leeway")
                 .help("Skip leeway (distance +/- from expected block position)")
                 .short('S')
-                .value_name("N"),
+                .value_name("N")
+                .requires("data_skipping"),
         )
         .get_matches_from(args)
 }
