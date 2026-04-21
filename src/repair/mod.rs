@@ -1025,12 +1025,14 @@ pub fn repair_files_with_base_path(
     verify_config: &crate::verify::VerificationConfig,
     base_path_override: Option<&Path>,
 ) -> Result<(RepairContext, RepairResult)> {
-    repair_files_with_base_path_and_extra_files(
+    let silent_reporter = crate::reporters::SilentVerificationReporter;
+    repair_files_with_base_path_and_extra_files_and_verification_reporter(
         par2_file,
         reporter,
         verify_config,
         base_path_override,
         &[],
+        &silent_reporter,
     )
 }
 
@@ -1041,6 +1043,26 @@ pub fn repair_files_with_base_path_and_extra_files(
     verify_config: &crate::verify::VerificationConfig,
     base_path_override: Option<&Path>,
     extra_files: &[PathBuf],
+) -> Result<(RepairContext, RepairResult)> {
+    let silent_reporter = crate::reporters::SilentVerificationReporter;
+    repair_files_with_base_path_and_extra_files_and_verification_reporter(
+        par2_file,
+        reporter,
+        verify_config,
+        base_path_override,
+        extra_files,
+        &silent_reporter,
+    )
+}
+
+/// Repair files while reporting the pre-repair verification pass.
+pub fn repair_files_with_base_path_and_extra_files_and_verification_reporter(
+    par2_file: &str,
+    reporter: Box<dyn ProgressReporter>,
+    verify_config: &crate::verify::VerificationConfig,
+    base_path_override: Option<&Path>,
+    extra_files: &[PathBuf],
+    verification_reporter: &dyn crate::reporters::VerificationReporter,
 ) -> Result<(RepairContext, RepairResult)> {
     let par2_path = Path::new(par2_file);
 
@@ -1104,8 +1126,14 @@ pub fn repair_files_with_base_path_and_extra_files(
     if !extra_files.is_empty() || verify_config.rename_only {
         repair_verify_config.skip_full_file_md5 = false;
     }
-    let mut verification_results =
-        run_repair_verification(&par2_files, &repair_verify_config, &base_path, extra_files);
+    let mut verification_results = run_repair_verification(
+        &par2_files,
+        &repair_verify_config,
+        &base_path,
+        extra_files,
+        verification_reporter,
+    );
+    verification_reporter.report_verification_results(&verification_results);
 
     // Re-load packets for repair context (verification consumed them)
     // This is acceptable since packet parsing is fast (no recovery slice data)
@@ -1130,7 +1158,13 @@ pub fn repair_files_with_base_path_and_extra_files(
     let renamed_files = repair_context.restore_renamed_files(&verification_results)?;
     if !renamed_files.is_empty() {
         verification_results =
-            run_repair_verification(&par2_files, &repair_verify_config, &base_path, extra_files);
+            run_repair_verification(
+                &par2_files,
+                &repair_verify_config,
+                &base_path,
+                extra_files,
+                verification_reporter,
+            );
 
         if repair_verification_is_complete(&verification_results) {
             return Ok((
@@ -1170,22 +1204,22 @@ fn run_repair_verification(
     repair_verify_config: &crate::verify::VerificationConfig,
     base_path: &Path,
     extra_files: &[PathBuf],
+    verification_reporter: &dyn crate::reporters::VerificationReporter,
 ) -> crate::verify::VerificationResults {
     let packet_set = crate::par2_files::load_par2_packets(par2_files, false, false);
-    let silent_reporter = crate::reporters::SilentVerificationReporter;
 
     if extra_files.is_empty() {
         crate::verify::comprehensive_verify_files(
             packet_set,
             repair_verify_config,
-            &silent_reporter,
+            verification_reporter,
             base_path,
         )
     } else {
         crate::verify::comprehensive_verify_files_with_extra_files(
             packet_set,
             repair_verify_config,
-            &silent_reporter,
+            verification_reporter,
             base_path,
             extra_files,
         )

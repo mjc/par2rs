@@ -194,7 +194,7 @@ impl GlobalVerificationEngine {
     /// 1. Scanning all available files and building a map of available blocks
     /// 2. Comparing against the global block table to determine what's missing
     /// 3. Computing file-level status based on block availability
-    pub fn verify_recovery_set<R: VerificationReporter>(
+    pub fn verify_recovery_set<R: VerificationReporter + ?Sized>(
         &self,
         reporter: &R,
         parallel: bool,
@@ -207,7 +207,7 @@ impl GlobalVerificationEngine {
     /// Extra files are not target filters. They are scanned for blocks that match
     /// protected files, matching par2cmdline's `[files]` behavior for renamed or
     /// misplaced data files.
-    pub fn verify_recovery_set_with_extra_files<R: VerificationReporter>(
+    pub fn verify_recovery_set_with_extra_files<R: VerificationReporter + ?Sized>(
         &self,
         reporter: &R,
         parallel: bool,
@@ -257,7 +257,7 @@ impl GlobalVerificationEngine {
     /// Scan all available files and build a global map of which blocks exist where
     /// This is the core of the global block table approach - we scan every file
     /// and index every block we find by its checksum, regardless of filename
-    fn scan_available_blocks_with_extra_files<R: VerificationReporter>(
+    fn scan_available_blocks_with_extra_files<R: VerificationReporter + ?Sized>(
         &self,
         reporter: &R,
         parallel: bool,
@@ -382,7 +382,7 @@ impl GlobalVerificationEngine {
         )
     }
 
-    fn process_extra_file<R: VerificationReporter>(
+    fn process_extra_file<R: VerificationReporter + ?Sized>(
         &self,
         file_path: &Path,
         reporter_lock: &Mutex<&R>,
@@ -421,7 +421,7 @@ impl GlobalVerificationEngine {
     }
 
     /// Process a single file: scan blocks and report status
-    fn process_single_file<R: VerificationReporter>(
+    fn process_single_file<R: VerificationReporter + ?Sized>(
         &self,
         file_description: &FileDescriptionPacket,
         reporter_lock: &Mutex<&R>,
@@ -501,7 +501,7 @@ impl GlobalVerificationEngine {
     }
 
     /// Scan a single file and return its local block map with progress reporting
-    fn scan_single_file_with_progress<R: VerificationReporter>(
+    fn scan_single_file_with_progress<R: VerificationReporter + ?Sized>(
         &self,
         file_path: &Path,
         file_size: FileSize,
@@ -959,7 +959,7 @@ impl GlobalVerificationEngine {
     }
 
     /// Report scanning progress to the reporter
-    fn report_progress<R: VerificationReporter>(
+    fn report_progress<R: VerificationReporter + ?Sized>(
         reporter_lock: &Mutex<&R>,
         state: &crate::verify::scanner_state::ScannerState,
         file_size: crate::verify::types::FileSize,
@@ -1210,7 +1210,7 @@ impl GlobalVerificationEngine {
     }
 
     /// Report file verification status to the reporter
-    fn report_file_status<R: VerificationReporter>(
+    fn report_file_status<R: VerificationReporter + ?Sized>(
         reporter_lock: &Mutex<&R>,
         file_name: &str,
         status: FileStatus,
