@@ -88,7 +88,7 @@ impl CreateContextBuilder {
         self
     }
 
-    /// Set redundancy percentage (1-100)
+    /// Set redundancy percentage.
     ///
     /// Typical values: 5-10%
     /// This determines how many recovery blocks to create

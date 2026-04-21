@@ -333,6 +333,12 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
         validate_recovery_file_count(count).map_err(anyhow::Error::msg)?;
     }
 
+    if let Some(RedundancyOption::Percent(redundancy)) = redundancy {
+        if redundancy > 100 {
+            eprintln!("WARNING: Creating recovery file(s) with {redundancy}% redundancy.");
+        }
+    }
+
     // Use archive name if specified, otherwise use par2_file
     let output_name = matches
         .get_one::<String>("archive_name")

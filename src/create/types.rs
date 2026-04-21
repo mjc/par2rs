@@ -47,7 +47,7 @@ pub struct CreateConfig {
     /// Number of recovery blocks to create (if None, calculated from redundancy_percentage)
     pub recovery_block_count: Option<u32>,
 
-    /// Redundancy percentage (1-100, typically 5-10)
+    /// Redundancy percentage (positive, typically 5-10)
     /// Used to calculate recovery_block_count if not specified
     pub redundancy_percentage: Option<u32>,
 
@@ -107,7 +107,7 @@ impl CreateConfig {
 
         // Validate redundancy percentage if specified
         if let Some(pct) = self.redundancy_percentage {
-            if !(1..=100).contains(&pct) {
+            if pct == 0 {
                 return Err(CreateError::InvalidRedundancy(pct));
             }
         }
@@ -193,12 +193,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_over_100_redundancy() {
+    fn validate_accepts_over_100_redundancy() {
         let c = CreateConfig {
             redundancy_percentage: Some(101),
             ..valid_config()
         };
-        assert!(c.validate().is_err());
+        assert!(c.validate().is_ok());
     }
 
     #[test]

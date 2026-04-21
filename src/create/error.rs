@@ -31,7 +31,7 @@ pub enum CreateError {
     InvalidBlockSize(String),
 
     /// Invalid redundancy percentage
-    #[error("Invalid redundancy percentage: {0}% (must be 1-100)")]
+    #[error("Invalid redundancy percentage: {0}% (must be positive)")]
     InvalidRedundancy(u32),
 
     /// No source files specified

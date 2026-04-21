@@ -57,7 +57,7 @@ pub use crate::reed_solomon::RecoveryBlockEncoder;
 ///
 /// * `output_name` - Base name for PAR2 files (e.g., "mydata.par2")
 /// * `source_files` - List of files to protect
-/// * `redundancy_percentage` - Redundancy percentage (5-100, typical is 5-10)
+/// * `redundancy_percentage` - Redundancy percentage (typical is 5-10)
 /// * `reporter` - Progress reporter implementation
 ///
 /// # Returns

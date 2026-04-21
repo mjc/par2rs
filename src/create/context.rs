@@ -691,13 +691,30 @@ impl CreateContext {
             self.recovery_block_count =
                 self.calculate_recovery_blocks_for_target_size(target_size)?;
         } else if let Some(percent) = self.config.redundancy_percentage {
-            // Calculate from percentage
-            let count = (self.source_block_count as f64 * (percent as f64 / 100.0)).ceil() as u32;
-            self.recovery_block_count = count.max(1); // At least 1 recovery block
+            // Reference: par2cmdline-turbo/src/commandline.cpp ComputeRecoveryBlockCount()
+            let count = (self.source_block_count as u64 * percent as u64 + 50) / 100;
+            if count > u32::MAX as u64 {
+                return Err(CreateError::Other(
+                    "Too many recovery blocks requested".to_string(),
+                ));
+            }
+            self.recovery_block_count = (count as u32).max(1);
         } else {
             return Err(CreateError::Other(
                 "Must specify recovery block count, redundancy percentage, or target recovery size"
                     .to_string(),
+            ));
+        }
+
+        if self.recovery_block_count > 65536 {
+            return Err(CreateError::Other(
+                "Too many recovery blocks requested".to_string(),
+            ));
+        }
+
+        if self.config.first_recovery_block as u64 + self.recovery_block_count as u64 >= 65536 {
+            return Err(CreateError::Other(
+                "First recovery block number is too high".to_string(),
             ));
         }
 

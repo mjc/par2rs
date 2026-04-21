@@ -683,12 +683,46 @@ fn test_create_builder_validation() {
         .build();
     assert!(result.is_err(), "Should fail with 0% redundancy");
 
+    let temp = tempdir().unwrap();
+    let valid_source = temp.path().join("valid.txt");
+    create_test_file(&valid_source, 16, 0x11).unwrap();
+
     let result = par2rs::create::CreateContextBuilder::new()
         .output_name("test.par2")
-        .source_files(vec![PathBuf::from("test.txt")])
+        .source_files(vec![valid_source])
         .redundancy_percentage(101)
         .build();
-    assert!(result.is_err(), "Should fail with >100% redundancy");
+    assert!(result.is_ok(), "Should accept >100% redundancy");
+}
+
+#[test]
+fn high_redundancy_percentage_verifies_with_par2cmdline() {
+    if !par2_available() {
+        eprintln!("Skipping test: par2cmdline-turbo not available");
+        return;
+    }
+
+    let temp = tempdir().unwrap();
+    let test_file = temp.path().join("high.dat");
+    let par2_file = temp.path().join("high.par2");
+
+    create_test_file(&test_file, 4096, 0xA1).unwrap();
+
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(par2_file.to_str().unwrap())
+        .source_files(vec![test_file])
+        .redundancy_percentage(101)
+        .reporter(reporter)
+        .build()
+        .unwrap();
+
+    context.create().unwrap();
+
+    assert!(
+        run_par2_verify(&par2_file).unwrap(),
+        "par2cmdline-turbo failed to verify high-redundancy set"
+    );
 }
 
 #[test]

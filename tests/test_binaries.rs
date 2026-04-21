@@ -455,6 +455,35 @@ fn test_par2create_accepts_target_size_redundancy() {
 }
 
 #[test]
+fn test_par2create_accepts_high_redundancy_with_warning() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("high-percent.txt");
+    create_test_file(&source, b"high redundancy smoke test").expect("Failed to create source file");
+
+    let output_base = temp_dir.path().join("high-percent.par2");
+    let output = Command::new(get_binary_path("par2create"))
+        .arg("-q")
+        .arg("-s")
+        .arg("4")
+        .arg("-r")
+        .arg("101")
+        .arg(&output_base)
+        .arg(&source)
+        .output()
+        .expect("Failed to execute par2create");
+
+    assert!(
+        output.status.success(),
+        "par2create -r101 failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("WARNING: Creating recovery file(s) with 101% redundancy."));
+    assert!(temp_dir.path().join("high-percent.par2").exists());
+}
+
+#[test]
 fn test_par2create_rejects_conflicting_create_options() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let source = temp_dir.path().join("conflict.txt");
