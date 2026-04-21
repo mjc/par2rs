@@ -195,7 +195,7 @@ fn test_verification_results_all_ok() {
     };
 
     let display = results.to_string();
-    assert!(display.contains("5 file(s) are ok."));
+    assert!(!display.contains("5 file(s) are ok."));
     assert!(display.contains("All files are correct"));
 }
 

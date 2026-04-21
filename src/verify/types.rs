@@ -329,15 +329,23 @@ impl VerificationResults {
 
 impl fmt::Display for VerificationResults {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f)?;
+
+        if self.missing_block_count == 0
+            && self.renamed_file_count == 0
+            && self.corrupted_file_count == 0
+            && self.missing_file_count == 0
+        {
+            writeln!(f, "All files are correct, repair is not required.")?;
+            return Ok(());
+        }
+
         // par2cmdline prints "Scanning extra files:" after verification
         writeln!(f, "Scanning extra files:")?;
         writeln!(f)?;
         writeln!(f)?;
 
-        // Print repair status first if repair is needed
-        if self.missing_block_count > 0 {
-            writeln!(f, "Repair is required.")?;
-        }
+        writeln!(f, "Repair is required.")?;
 
         // Functional file status reporting
         [
@@ -367,7 +375,6 @@ impl fmt::Display for VerificationResults {
 
         // Repair status using functional pattern matching
         match (self.missing_block_count, self.repair_possible) {
-            (0, _) => writeln!(f, "All files are correct, repair is not required.")?,
             (missing, true) => {
                 writeln!(f, "Repair is possible.")?;
                 if self.recovery_blocks_available > missing {
