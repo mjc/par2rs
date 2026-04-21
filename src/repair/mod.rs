@@ -842,7 +842,6 @@ impl RepairContext {
         block_sources: &HashMap<u32, BlockSource>,
     ) -> Result<()> {
         debug!("Writing repaired file with streaming I/O: {:?}", file_path);
-        self.reporter().report_writing_recovered_data();
 
         // Write to temp file first, then rename to avoid corrupting source while reading
         let temp_path = file_path.with_extension("par2_tmp");
@@ -965,8 +964,12 @@ impl RepairContext {
             } else {
                 return Err(RepairError::SliceNotAvailable(slice_index));
             }
+
+            self.reporter()
+                .report_computing_progress(slice_index + 1, file_info.slice_count.as_usize());
         }
 
+        self.reporter().report_writing_recovered_data();
         flush_writer(&mut writer, &temp_path)?;
 
         // Finalize MD5 computation and get the hash

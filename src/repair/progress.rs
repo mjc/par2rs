@@ -236,12 +236,15 @@ impl ProgressReporter for ConsoleReporter {
     }
 
     fn report_computing_progress(&self, blocks_processed: usize, total_blocks: usize) {
-        if self.quiet {
+        if self.quiet || total_blocks == 0 {
             return;
         }
-        let percentage = (blocks_processed as f64 / total_blocks as f64) * 100.0;
-        // Output format compatible with sabnzbd: "Repairing: XX.X%"
-        print!("\rRepairing: {:.1}%", percentage);
+        let percentage_10x = (blocks_processed * 1000) / total_blocks;
+        print!(
+            "\rRepairing: {}.{}%",
+            percentage_10x / 10,
+            percentage_10x % 10
+        );
         std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
         if blocks_processed == total_blocks {
             println!();
