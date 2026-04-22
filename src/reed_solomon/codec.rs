@@ -31,6 +31,20 @@ use std::sync::OnceLock;
 // Global SIMD level detection (done once at first use)
 static SIMD_LEVEL: OnceLock<SimdLevel> = OnceLock::new();
 
+/// Initialize SIMD level once, using an explicit override from caller.
+///
+/// Call this at program startup (or before heavy RS work) to set SIMD level
+/// based on command-line args. Passing `true` forces scalar (no SIMD).
+pub fn init_simd_level(force_scalar: bool) {
+    SIMD_LEVEL.get_or_init(|| {
+        if force_scalar {
+            SimdLevel::None
+        } else {
+            detect_simd_support()
+        }
+    });
+}
+
 /// Process entire slice at once: output = coefficient * input (direct write, no XOR)
 ///
 /// Uses the centralized scalar implementation from simd::common with Direct write mode.
@@ -51,11 +65,7 @@ pub fn process_slice_multiply_add(input: &[u8], output: &mut [u8], tables: &Spli
     let min_len = input.len().min(output.len());
 
     // Get SIMD level (cached after first call)
-    let simd_level = if std::env::var("PAR2RS_FORCE_SCALAR").is_ok() {
-        SimdLevel::None
-    } else {
-        *SIMD_LEVEL.get_or_init(detect_simd_support)
-    };
+    let simd_level = *SIMD_LEVEL.get_or_init(detect_simd_support);
 
     // Try SIMD first for large enough buffers
     if min_len >= 32 && simd_level != SimdLevel::None {

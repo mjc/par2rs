@@ -12,9 +12,14 @@
 
 use anyhow::{Context, Result};
 use par2rs::{analysis, par2_files, reporters::VerificationReporter, verify};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn main() -> Result<()> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("-VV")) {
+        par2rs::print_long_version();
+        return Ok(());
+    }
+
     // Initialize the logger
     env_logger::Builder::from_default_env()
         .format_timestamp(None)
@@ -27,45 +32,86 @@ fn main() -> Result<()> {
     let input_file = matches
         .get_one::<String>("input")
         .expect("input is required by clap");
+    let quiet = matches.get_count("quiet") > 0;
+    let purge = matches.get_flag("purge");
+    let base_path_override = matches
+        .get_one::<String>("basepath")
+        .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
+    let extra_files: Vec<PathBuf> = matches
+        .get_many::<String>("files")
+        .map(|files| {
+            files
+                .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)))
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Create verification config from command line arguments
     let verify_config = verify::VerificationConfig::from_args(&matches);
 
-    let file_path = Path::new(input_file);
-
-    // Validate file exists
-    anyhow::ensure!(file_path.exists(), "File does not exist: {}", input_file);
+    let file_path = par2_files::resolve_par2_file_argument(Path::new(input_file))
+        .with_context(|| format!("Failed to locate PAR2 file for {}", input_file))?;
 
     // Change to parent directory for file resolution
-    if let Some(parent) = file_path.parent() {
+    if let Some(parent) = file_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         std::env::set_current_dir(parent)
             .with_context(|| format!("Failed to set current directory to {}", parent.display()))?;
     }
 
-    // Collect all PAR2 files in the set
-    let par2_files = par2_files::collect_par2_files(file_path);
+    // Collect all PAR2 files in the set (use just filename after cd)
+    let file_name = file_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(Path::new)
+        .unwrap_or(&file_path);
+    let par2_files = par2_files::collect_par2_files(file_name);
 
     // Parse packets excluding recovery slices but validate and count them
-    println!("Loading PAR2 files...\n");
-    let packet_set = par2_files::load_par2_packets(&par2_files, false, true);
+    if !quiet {
+        println!("Loading PAR2 files...\n");
+    }
+    let packet_set = par2_files::load_par2_packets(&par2_files, false, !quiet);
 
-    println!(); // Blank line after loading
+    if !quiet {
+        println!(); // Blank line after loading
 
-    // Show summary statistics
-    let stats =
-        analysis::calculate_par2_stats(&packet_set.packets, packet_set.recovery_block_count);
-    analysis::print_summary_stats(&stats);
+        // Show summary statistics
+        let stats =
+            analysis::calculate_par2_stats(&packet_set.packets, packet_set.recovery_block_count);
+        analysis::print_summary_stats(&stats);
+    }
 
-    let base_dir = packet_set.base_dir.clone();
+    let base_dir = base_path_override.unwrap_or_else(|| packet_set.base_dir.clone());
 
     // Perform comprehensive verification with configuration
-    println!("\nVerifying source files:\n");
     let reporter = par2rs::reporters::ConsoleVerificationReporter::new();
-    let verification_results =
-        verify::comprehensive_verify_files(packet_set, &verify_config, &reporter, base_dir);
+    let verification_results = if quiet {
+        let silent = par2rs::reporters::SilentVerificationReporter;
+        verify::comprehensive_verify_files_with_extra_files(
+            packet_set,
+            &verify_config,
+            &silent,
+            &base_dir,
+            &extra_files,
+        )
+    } else {
+        println!("\nVerifying source files:\n");
+        verify::comprehensive_verify_files_with_extra_files(
+            packet_set,
+            &verify_config,
+            &reporter,
+            &base_dir,
+            &extra_files,
+        )
+    };
 
     // Print detailed results
-    reporter.report_verification_results(&verification_results);
+    if !quiet {
+        reporter.report_verification_results(&verification_results);
+    }
 
     // Return success if no repair is needed, error if repair is required
     anyhow::ensure!(
@@ -73,6 +119,17 @@ fn main() -> Result<()> {
         "Repair required: {} blocks are missing or damaged",
         verification_results.missing_block_count
     );
+
+    if purge {
+        let packet_set = par2_files::load_par2_packets(&par2_files, false, false);
+        let context = par2rs::repair::RepairContextBuilder::new()
+            .packets(packet_set.packets)
+            .base_path(base_dir)
+            .reporter(Box::new(par2rs::repair::ConsoleReporter::new(quiet)))
+            .build()
+            .context("Failed to initialize purge context")?;
+        context.purge_files(&file_name.to_string_lossy())?;
+    }
 
     Ok(())
 }

@@ -4,9 +4,19 @@
 
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
+use par2rs::create::cli::{
+    parse_redundancy_option, resolve_create_inputs, validate_recovery_file_count,
+    warn_for_high_redundancy, RedundancyOption,
+};
 use par2rs::reporters::VerificationReporter;
+use std::path::{Path, PathBuf};
 
 fn main() -> Result<()> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("-VV")) {
+        par2rs::print_long_version();
+        return Ok(());
+    }
+
     env_logger::Builder::from_default_env()
         .format_timestamp(None)
         .format_module_path(false)
@@ -30,38 +40,122 @@ fn main() -> Result<()> {
                 .arg(
                     Arg::new("files")
                         .help("Files to protect")
-                        .required(true)
-                        .num_args(1..)
+                        .num_args(0..)
                         .index(2),
                 )
+                // Global options (match par2cmdline)
                 .arg(
-                    Arg::new("redundancy")
-                        .short('r')
-                        .long("redundancy")
-                        .help("Redundancy percentage (default: 5)")
-                        .value_name("PERCENT")
-                        .default_value("5"),
+                    Arg::new("basepath")
+                        .short('B')
+                        .long("basepath")
+                        .help("Set the basepath to use as reference for the datafiles")
+                        .value_name("PATH"),
                 )
                 .arg(
-                    Arg::new("block_size")
-                        .short('s')
-                        .long("block-size")
-                        .help("Block size in bytes")
-                        .value_name("BYTES"),
+                    Arg::new("verbose")
+                        .short('v')
+                        .long("verbose")
+                        .help("Be more verbose")
+                        .action(ArgAction::Count),
+                )
+                .arg(
+                    Arg::new("quiet")
+                        .short('q')
+                        .long("quiet")
+                        .help("Be more quiet (-q -q gives silence)")
+                        .action(ArgAction::Count),
+                )
+                .arg(
+                    Arg::new("memory")
+                        .short('m')
+                        .long("memory")
+                        .help("Memory (in MB) to use")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("threads")
+                        .short('t')
+                        .long("threads")
+                        .help("Number of threads used for main processing")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("force_scalar")
+                        .long("force-scalar")
+                        .help("Force scalar code paths (disable SIMD optimizations)")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("file_threads")
+                        .short('T')
+                        .long("file-threads")
+                        .help("Number of files hashed in parallel")
+                        .value_name("N"),
+                )
+                // Create-specific options (match par2cmdline exactly)
+                .arg(
+                    Arg::new("archive_name")
+                        .short('a')
+                        .help("Set the main PAR2 archive name")
+                        .value_name("FILE"),
                 )
                 .arg(
                     Arg::new("block_count")
                         .short('b')
-                        .long("block-count")
-                        .help("Number of recovery blocks")
-                        .value_name("COUNT"),
+                        .help("Set the Block-Count")
+                        .conflicts_with("block_size")
+                        .value_name("N"),
                 )
                 .arg(
-                    Arg::new("recovery_count")
+                    Arg::new("block_size")
+                        .short('s')
+                        .help("Set the Block-Size (don't use both -b and -s)")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("redundancy")
+                        .short('r')
+                        .help("Level of redundancy (%) or target size with g/m/k suffix")
+                        .conflicts_with("recovery_block_count")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("recovery_block_count")
+                        .short('c')
+                        .help("Recovery Block-Count (don't use both -r and -c)")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("first_recovery_block")
+                        .short('f')
+                        .help("First Recovery-Block-Number")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("uniform")
+                        .short('u')
+                        .help("Uniform recovery file sizes")
+                        .conflicts_with("limit_size")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("limit_size")
+                        .short('l')
+                        .help("Limit size of recovery files (don't use both -u and -l)")
+                        .conflicts_with("recovery_file_count")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("recovery_file_count")
                         .short('n')
-                        .long("recovery-count")
-                        .help("Number of recovery files")
-                        .value_name("COUNT"),
+                        .help("Number of recovery files (max 31) (don't use both -n and -l)")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("recurse")
+                        .short('R')
+                        .help("Recurse into subdirectories")
+                        .action(ArgAction::SetTrue),
                 ),
         )
         .subcommand(
@@ -76,15 +170,36 @@ fn main() -> Result<()> {
                 )
                 .arg(
                     Arg::new("files")
-                        .help("Specific files to verify (optional)")
+                        .help("Extra files to scan (optional)")
                         .num_args(0..)
                         .index(2),
+                )
+                .arg(
+                    Arg::new("basepath")
+                        .short('B')
+                        .long("basepath")
+                        .help("Set the basepath to use as reference for the datafiles")
+                        .value_name("PATH"),
+                )
+                .arg(
+                    Arg::new("verbose")
+                        .short('v')
+                        .long("verbose")
+                        .help("Be more verbose")
+                        .action(ArgAction::Count),
                 )
                 .arg(
                     Arg::new("quiet")
                         .short('q')
                         .long("quiet")
-                        .help("Quiet mode - minimal output")
+                        .help("Be more quiet (-q -q gives silence)")
+                        .action(ArgAction::Count),
+                )
+                .arg(
+                    Arg::new("purge")
+                        .short('p')
+                        .long("purge")
+                        .help("Purge backup files and par files when no recovery is needed")
                         .action(ArgAction::SetTrue),
                 )
                 .arg(
@@ -96,10 +211,36 @@ fn main() -> Result<()> {
                         .default_value("0"),
                 )
                 .arg(
+                    Arg::new("memory")
+                        .short('m')
+                        .long("memory")
+                        .help("Memory (in MB) to use")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("file_threads")
+                        .short('T')
+                        .long("file-threads")
+                        .help("Number of files hashed in parallel")
+                        .value_name("N"),
+                )
+                .arg(
                     Arg::new("no-parallel")
                         .long("no-parallel")
                         .help("Disable all parallel processing")
                         .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("data_skipping")
+                        .short('N')
+                        .help("Data skipping (find badly mispositioned data blocks)")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("skip_leeway")
+                        .short('S')
+                        .help("Skip leeway (distance +/- from expected block position)")
+                        .value_name("N"),
                 ),
         )
         .subcommand(
@@ -114,16 +255,30 @@ fn main() -> Result<()> {
                 )
                 .arg(
                     Arg::new("files")
-                        .help("Specific files to repair (optional)")
+                        .help("Extra files to scan (optional)")
                         .num_args(0..)
                         .index(2),
+                )
+                .arg(
+                    Arg::new("basepath")
+                        .short('B')
+                        .long("basepath")
+                        .help("Set the basepath to use as reference for the datafiles")
+                        .value_name("PATH"),
+                )
+                .arg(
+                    Arg::new("verbose")
+                        .short('v')
+                        .long("verbose")
+                        .help("Be more verbose")
+                        .action(ArgAction::Count),
                 )
                 .arg(
                     Arg::new("quiet")
                         .short('q')
                         .long("quiet")
-                        .help("Quiet mode - minimal output")
-                        .action(ArgAction::SetTrue),
+                        .help("Be more quiet (-q -q gives silence)")
+                        .action(ArgAction::Count),
                 )
                 .arg(
                     Arg::new("purge")
@@ -141,17 +296,37 @@ fn main() -> Result<()> {
                         .default_value("0"),
                 )
                 .arg(
+                    Arg::new("memory")
+                        .short('m')
+                        .long("memory")
+                        .help("Memory (in MB) to use")
+                        .value_name("N"),
+                )
+                .arg(
+                    Arg::new("file_threads")
+                        .short('T')
+                        .long("file-threads")
+                        .help("Number of files hashed in parallel")
+                        .value_name("N"),
+                )
+                .arg(
                     Arg::new("no-parallel")
                         .long("no-parallel")
                         .help("Disable all parallel processing")
                         .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("data_skipping")
+                        .short('N')
+                        .help("Data skipping (find badly mispositioned data blocks)")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("skip_leeway")
+                        .short('S')
+                        .help("Skip leeway (distance +/- from expected block position)")
+                        .value_name("N"),
                 ),
-        )
-        // Backward compatibility: allow command as first positional argument
-        .arg(
-            Arg::new("command")
-                .help("Command (c/create, v/verify, r/repair)")
-                .index(1),
         )
         .get_matches();
 
@@ -173,10 +348,176 @@ fn main() -> Result<()> {
     }
 }
 
-fn handle_create(_matches: &clap::ArgMatches) -> Result<()> {
-    eprintln!("PAR2 create functionality not yet implemented");
-    eprintln!("Use 'par2create' binary directly for now");
-    std::process::exit(1);
+fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
+    let par2_file = matches
+        .get_one::<String>("par2_file")
+        .expect("par2_file is required");
+
+    let source_inputs: Vec<PathBuf> = matches
+        .get_many::<String>("files")
+        .map(|files| files.map(PathBuf::from).collect())
+        .unwrap_or_default();
+
+    // Handle verbosity/quiet flags (par2cmdline style)
+    let _verbose_count = matches.get_count("verbose"); // TODO: Use for logging level
+    let quiet_count = matches.get_count("quiet");
+    let quiet_mode = quiet_count > 0;
+
+    // Parse redundancy - handle percentage or size suffix (g/m/k)
+    let redundancy = matches
+        .get_one::<String>("redundancy")
+        .map(|value| parse_redundancy_option(value).map_err(anyhow::Error::msg))
+        .transpose()?;
+
+    // Parse optional arguments (matching par2cmdline exactly)
+    let block_size: Option<u64> = matches
+        .get_one::<String>("block_size")
+        .map(|s| s.parse())
+        .transpose()
+        .context("Invalid block size")?;
+
+    let block_count: Option<u32> = matches
+        .get_one::<String>("block_count")
+        .map(|s| s.parse())
+        .transpose()
+        .context("Invalid block count")?;
+
+    let recovery_block_count: Option<u32> = matches
+        .get_one::<String>("recovery_block_count")
+        .map(|s| s.parse())
+        .transpose()
+        .context("Invalid recovery block count")?;
+
+    let recovery_file_count: Option<u32> = matches
+        .get_one::<String>("recovery_file_count")
+        .map(|s| s.parse())
+        .transpose()
+        .context("Invalid recovery file count")?;
+
+    let first_recovery_block: Option<u32> = matches
+        .get_one::<String>("first_recovery_block")
+        .map(|s| s.parse())
+        .transpose()
+        .context("Invalid first recovery block number")?;
+
+    let memory_mb: Option<usize> = matches
+        .get_one::<String>("memory")
+        .map(|s| s.parse())
+        .transpose()
+        .context("Invalid memory value")?;
+
+    let base_path = matches.get_one::<String>("basepath").map(PathBuf::from);
+
+    let threads: Option<u32> = matches
+        .get_one::<String>("threads")
+        .map(|s| s.parse())
+        .transpose()
+        .context("Invalid thread count")?;
+
+    let uniform = matches.get_flag("uniform");
+    let limit_size = matches.get_flag("limit_size");
+    let recurse = matches.get_flag("recurse");
+
+    if let Some(count) = recovery_file_count {
+        validate_recovery_file_count(count).map_err(anyhow::Error::msg)?;
+    }
+
+    warn_for_high_redundancy(redundancy);
+
+    let (output_name, source_files) = resolve_create_inputs(
+        par2_file,
+        matches
+            .get_one::<String>("archive_name")
+            .map(String::as_str),
+        source_inputs,
+        recurse,
+    )
+    .map_err(anyhow::Error::msg)?;
+
+    if !quiet_mode {
+        println!(
+            "Creating PAR2 files for {} source files...",
+            source_files.len()
+        );
+        println!("Output: {output_name}");
+        if let Some(RedundancyOption::Percent(redundancy)) = redundancy {
+            println!("Redundancy: {}%", redundancy);
+        }
+    }
+
+    // Create PAR2 files using our implementation
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(quiet_mode));
+
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(output_name)
+        .source_files(source_files)
+        .reporter(reporter);
+
+    if let Some(redundancy) = redundancy {
+        context = match redundancy {
+            RedundancyOption::Percent(percent) => context.redundancy_percentage(percent),
+            RedundancyOption::TargetSize(bytes) => context.recovery_target_size(bytes),
+        };
+    }
+
+    // Apply optional parameters
+    if let Some(size) = block_size {
+        context = context.block_size(size);
+    }
+    if let Some(count) = block_count {
+        // Par2cmdline uses -b for source block count (target number of blocks)
+        // This is used to calculate block_size if block_size is not specified
+        context = context.source_block_count(count);
+    }
+    if let Some(count) = recovery_block_count {
+        context = context.recovery_block_count(count);
+    }
+    if let Some(count) = recovery_file_count {
+        context = context.recovery_file_count(count);
+        if !uniform && !limit_size {
+            context = context.recovery_file_scheme(par2rs::create::RecoveryFileScheme::Uniform);
+        }
+    }
+    if let Some(exponent) = first_recovery_block {
+        context = context.first_recovery_block(exponent);
+    }
+    if let Some(limit_mb) = memory_mb {
+        context = context.memory_limit(limit_mb * 1024 * 1024);
+    }
+    if let Some(path) = base_path {
+        context = context.base_path(path);
+    }
+    if uniform {
+        context = context.recovery_file_scheme(par2rs::create::RecoveryFileScheme::Uniform);
+    }
+    if limit_size {
+        context = context.recovery_file_scheme(par2rs::create::RecoveryFileScheme::Limited);
+    }
+    if let Some(thread_count) = threads {
+        context = context.thread_count(thread_count);
+    }
+
+    // Initialize SIMD policy from CLI flag (disable SIMD if requested)
+    let force_scalar = matches.get_flag("force_scalar");
+    par2rs::reed_solomon::codec::init_simd_level(force_scalar);
+
+    let mut create_context = context
+        .build()
+        .context("Failed to initialize PAR2 creation context")?;
+
+    create_context
+        .create()
+        .context("Failed to create PAR2 files")?;
+
+    if !quiet_mode {
+        println!("\nCreated PAR2 files:");
+        for file in create_context.output_files() {
+            println!("  {}", file);
+        }
+        println!("\nDone.");
+    }
+
+    Ok(())
 }
 
 fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
@@ -185,7 +526,19 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
     let par2_file = matches
         .get_one::<String>("par2_file")
         .expect("par2_file is required");
-    let quiet = matches.get_flag("quiet");
+    let quiet = matches.get_count("quiet") > 0;
+    let purge = matches.get_flag("purge");
+    let base_path_override = matches
+        .get_one::<String>("basepath")
+        .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
+    let extra_files: Vec<PathBuf> = matches
+        .get_many::<String>("files")
+        .map(|files| {
+            files
+                .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)))
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Create verification config from command line arguments
     let verify_config = par2rs::verify::VerificationConfig::from_args(matches);
@@ -198,11 +551,14 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         .build_global()
         .ok(); // Ignore error if already initialized
 
-    let file_path = PathBuf::from(par2_file);
-    anyhow::ensure!(file_path.exists(), "File does not exist: {}", par2_file);
+    let file_path = par2rs::par2_files::resolve_par2_file_argument(Path::new(par2_file))
+        .with_context(|| format!("Failed to locate PAR2 file for {}", par2_file))?;
 
     // Change to parent directory for file resolution (like par2verify does)
-    if let Some(parent) = file_path.parent() {
+    if let Some(parent) = file_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         std::env::set_current_dir(parent)
             .with_context(|| format!("Failed to set current directory to {}", parent.display()))?;
     }
@@ -215,10 +571,6 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         .unwrap_or(&file_path);
     let par2_files = par2rs::par2_files::collect_par2_files(file_name);
 
-    if !quiet {
-        println!("Loading PAR2 files...\n");
-    }
-
     // Parse packets excluding recovery slices but validate and count them
     // Recovery slice data is NOT loaded into memory (saves gigabytes for large PAR2 sets)
     // but they are validated and counted for repair possibility checking
@@ -227,7 +579,7 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
     if !quiet {
         println!(); // Blank line after loading
 
-        // Show rsummary statistics
+        // Show summary statistics
         let stats = par2rs::analysis::calculate_par2_stats(
             &packet_set.packets,
             packet_set.recovery_block_count,
@@ -237,15 +589,27 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         println!("\nVerifying source files:\n");
     }
 
-    let base_dir = packet_set.base_dir.clone();
+    let base_dir = base_path_override.unwrap_or_else(|| packet_set.base_dir.clone());
     let reporter = par2rs::reporters::ConsoleVerificationReporter::new();
 
     // Perform comprehensive verification
     let results = if quiet {
         let silent = par2rs::reporters::SilentVerificationReporter;
-        par2rs::verify::comprehensive_verify_files(packet_set, &verify_config, &silent, base_dir)
+        par2rs::verify::comprehensive_verify_files_with_extra_files(
+            packet_set,
+            &verify_config,
+            &silent,
+            &base_dir,
+            &extra_files,
+        )
     } else {
-        par2rs::verify::comprehensive_verify_files(packet_set, &verify_config, &reporter, base_dir)
+        par2rs::verify::comprehensive_verify_files_with_extra_files(
+            packet_set,
+            &verify_config,
+            &reporter,
+            &base_dir,
+            &extra_files,
+        )
     };
 
     if !quiet {
@@ -253,6 +617,16 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
     }
 
     if results.missing_block_count == 0 {
+        if purge {
+            let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false, false);
+            let context = par2rs::repair::RepairContextBuilder::new()
+                .packets(packet_set.packets)
+                .base_path(base_dir)
+                .reporter(Box::new(par2rs::repair::ConsoleReporter::new(quiet)))
+                .build()
+                .context("Failed to initialize purge context")?;
+            context.purge_files(&file_name.to_string_lossy())?;
+        }
         Ok(())
     } else if results.repair_possible {
         if !quiet {
@@ -271,16 +645,32 @@ fn handle_repair(matches: &clap::ArgMatches) -> Result<()> {
     let par2_file = matches
         .get_one::<String>("par2_file")
         .expect("par2_file is required");
-    let quiet = matches.get_flag("quiet");
+    let quiet = matches.get_count("quiet") > 0;
     let purge = matches.get_flag("purge");
+    let base_path_override = matches.get_one::<String>("basepath").map(PathBuf::from);
+    let extra_files: Vec<PathBuf> = matches
+        .get_many::<String>("files")
+        .map(|files| {
+            files
+                .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)))
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Create verification config from command line arguments (like par2repair does)
     let verify_config = par2rs::verify::VerificationConfig::from_args(matches);
 
-    let (context, result) = par2rs::repair::repair_files(
-        par2_file,
+    let resolved_par2_file =
+        par2rs::par2_files::resolve_par2_file_argument(Path::new(par2_file))
+            .with_context(|| format!("Failed to locate PAR2 file for {}", par2_file))?;
+    let resolved_par2_file = resolved_par2_file.to_string_lossy().into_owned();
+
+    let (context, result) = par2rs::repair::repair_files_with_base_path_and_extra_files(
+        &resolved_par2_file,
         Box::new(par2rs::repair::ConsoleReporter::new(quiet)),
         &verify_config,
+        base_path_override.as_deref(),
+        &extra_files,
     )
     .context("Failed to repair files")?;
 
@@ -290,7 +680,7 @@ fn handle_repair(matches: &clap::ArgMatches) -> Result<()> {
     }
 
     if purge && result.is_success() {
-        context.purge_files(par2_file)?;
+        context.purge_files(&resolved_par2_file)?;
     }
 
     if result.is_success() {

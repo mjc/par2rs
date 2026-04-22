@@ -224,7 +224,7 @@ fn test_repair_context_large_file() {
 
     let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
     assert_eq!(
-        context.recovery_set.files[0].slice_count,
+        context.recovery_set.files[0].slice_count.as_usize(),
         expected_slices as usize
     );
 }

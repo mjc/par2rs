@@ -250,3 +250,270 @@ impl std::fmt::Display for Crc32Value {
         write!(f, "{:08x}", self.0)
     }
 }
+
+/// Type-safe wrapper for PAR2 block size (bytes)
+/// Prevents mixing block sizes with other u64 values
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BlockSize(u64);
+
+impl BlockSize {
+    pub const fn new(bytes: u64) -> Self {
+        BlockSize(bytes)
+    }
+
+    pub const fn as_u64(&self) -> u64 {
+        self.0
+    }
+
+    pub const fn as_usize(&self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl From<u64> for BlockSize {
+    fn from(bytes: u64) -> Self {
+        BlockSize::new(bytes)
+    }
+}
+
+impl std::ops::Rem<BlockSize> for u64 {
+    type Output = u64;
+
+    fn rem(self, rhs: BlockSize) -> u64 {
+        self % rhs.0
+    }
+}
+
+impl std::ops::Sub<u64> for BlockSize {
+    type Output = u64;
+
+    fn sub(self, rhs: u64) -> u64 {
+        self.0 - rhs
+    }
+}
+
+impl PartialEq<u64> for BlockSize {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialOrd<u64> for BlockSize {
+    fn partial_cmp(&self, other: &u64) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(other)
+    }
+}
+
+impl std::fmt::Display for BlockSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Type-safe wrapper for processing chunk size (bytes)
+/// Prevents mixing chunk sizes with block sizes
+/// Chunk size is the memory-constrained processing unit size,
+/// while block size is the PAR2 format block size
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChunkSize(usize);
+
+impl ChunkSize {
+    pub const fn new(bytes: usize) -> Self {
+        ChunkSize(bytes)
+    }
+
+    pub const fn as_usize(&self) -> usize {
+        self.0
+    }
+}
+
+impl From<usize> for ChunkSize {
+    fn from(bytes: usize) -> Self {
+        ChunkSize::new(bytes)
+    }
+}
+
+impl PartialEq<usize> for ChunkSize {
+    fn eq(&self, other: &usize) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialOrd<usize> for ChunkSize {
+    fn partial_cmp(&self, other: &usize) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(other)
+    }
+}
+
+impl std::fmt::Display for ChunkSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Newtype for target source block count (par2cmdline -b option)
+/// This is the TARGET number of source blocks to create.
+/// Used to calculate block_size if block_size is not explicitly specified.
+/// Reference: par2cmdline-turbo/src/commandline.h blockcount variable
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SourceBlockCount(u32);
+
+impl SourceBlockCount {
+    pub const fn new(count: u32) -> Self {
+        SourceBlockCount(count)
+    }
+
+    pub const fn as_u32(&self) -> u32 {
+        self.0
+    }
+
+    pub const fn as_usize(&self) -> usize {
+        self.0 as usize
+    }
+
+    pub const fn as_u64(&self) -> u64 {
+        self.0 as u64
+    }
+}
+
+impl From<u32> for SourceBlockCount {
+    fn from(count: u32) -> Self {
+        SourceBlockCount::new(count)
+    }
+}
+
+/// Type-safe wrapper for block count
+/// Prevents mixing block counts with other u32 values
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BlockCount(u32);
+
+impl BlockCount {
+    pub const fn new(count: u32) -> Self {
+        BlockCount(count)
+    }
+
+    pub const fn as_u32(&self) -> u32 {
+        self.0
+    }
+
+    pub const fn as_usize(&self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl From<u32> for BlockCount {
+    fn from(count: u32) -> Self {
+        BlockCount::new(count)
+    }
+}
+
+impl std::ops::Add for BlockCount {
+    type Output = BlockCount;
+
+    fn add(self, rhs: BlockCount) -> BlockCount {
+        BlockCount(self.0 + rhs.0)
+    }
+}
+
+impl std::ops::Sub for BlockCount {
+    type Output = BlockCount;
+
+    fn sub(self, rhs: BlockCount) -> BlockCount {
+        BlockCount(self.0 - rhs.0)
+    }
+}
+
+impl std::ops::Sub<usize> for BlockCount {
+    type Output = usize;
+
+    fn sub(self, rhs: usize) -> usize {
+        self.0 as usize - rhs
+    }
+}
+
+impl std::ops::AddAssign for BlockCount {
+    fn add_assign(&mut self, rhs: BlockCount) {
+        self.0 += rhs.0;
+    }
+}
+
+impl std::iter::Sum for BlockCount {
+    fn sum<I: Iterator<Item = BlockCount>>(iter: I) -> BlockCount {
+        BlockCount(iter.map(|b| b.0).sum())
+    }
+}
+
+impl PartialEq<u32> for BlockCount {
+    fn eq(&self, other: &u32) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialOrd<u32> for BlockCount {
+    fn partial_cmp(&self, other: &u32) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(other)
+    }
+}
+
+impl std::fmt::Display for BlockCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Type-safe wrapper for file size in bytes
+/// Prevents mixing file sizes with block offsets or other u64 values
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FileSize(u64);
+
+impl FileSize {
+    pub const fn new(bytes: u64) -> Self {
+        FileSize(bytes)
+    }
+
+    pub const fn as_u64(&self) -> u64 {
+        self.0
+    }
+
+    pub const fn as_usize(&self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl From<u64> for FileSize {
+    fn from(bytes: u64) -> Self {
+        FileSize::new(bytes)
+    }
+}
+
+impl std::ops::Rem<BlockSize> for FileSize {
+    type Output = u64;
+
+    fn rem(self, rhs: BlockSize) -> u64 {
+        self.0 % rhs.as_u64()
+    }
+}
+
+impl std::iter::Sum for FileSize {
+    fn sum<I: Iterator<Item = FileSize>>(iter: I) -> FileSize {
+        FileSize(iter.map(|s| s.0).sum())
+    }
+}
+
+impl PartialEq<u64> for FileSize {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialOrd<u64> for FileSize {
+    fn partial_cmp(&self, other: &u64) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(other)
+    }
+}
+
+impl std::fmt::Display for FileSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}

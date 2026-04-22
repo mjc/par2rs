@@ -65,6 +65,15 @@ pub trait ProgressReporter: Send + Sync {
 
     /// Report final repair result
     fn report_final_result(&self, result: &RepairResult);
+
+    /// Report that backup file purging has started
+    fn report_purge_backup_files(&self) {}
+
+    /// Report that PAR2 file purging has started
+    fn report_purge_par_files(&self) {}
+
+    /// Report a file removed during purge
+    fn report_purge_remove(&self, _file_name: &str) {}
 }
 
 /// Console reporter - standard par2cmdline-style output
@@ -306,6 +315,24 @@ impl ProgressReporter for ConsoleReporter {
     fn report_final_result(&self, _result: &RepairResult) {
         // Final result is typically handled by the caller
         // This could print a summary if needed
+    }
+
+    fn report_purge_backup_files(&self) {
+        if !self.quiet {
+            println!("\nPurge backup files.");
+        }
+    }
+
+    fn report_purge_par_files(&self) {
+        if !self.quiet {
+            println!("\nPurge par files.");
+        }
+    }
+
+    fn report_purge_remove(&self, file_name: &str) {
+        if !self.quiet {
+            println!("Remove \"{}\".", file_name);
+        }
     }
 }
 

@@ -1,9 +1,10 @@
 //! Repair context management
 
 use super::error::{RepairError, Result};
+use super::error_helpers::delete_file;
 use super::progress::{ConsoleReporter, ProgressReporter};
 use super::types::{FileInfo, RecoverySetInfo};
-use crate::domain::{FileId, GlobalSliceIndex};
+use crate::domain::{BlockCount, BlockSize, FileId, FileSize, GlobalSliceIndex};
 use crate::packets::{FileDescriptionPacket, Packet, RecoverySliceMetadata};
 use log::debug;
 use rustc_hash::FxHashMap as HashMap;
@@ -122,10 +123,10 @@ impl RepairContext {
             files.push(FileInfo {
                 file_id: fd.file_id,
                 file_name: file_name.clone(),
-                file_length: fd.file_length,
+                file_length: FileSize::new(fd.file_length),
                 md5_hash: fd.md5_hash,
                 md5_16k: fd.md5_16k,
-                slice_count,
+                slice_count: BlockCount::new(slice_count as u32),
                 global_slice_offset: GlobalSliceIndex::new(global_slice_offset),
             });
 
@@ -152,7 +153,7 @@ impl RepairContext {
 
         Ok(RecoverySetInfo {
             set_id: main.set_id,
-            slice_size: main.slice_size,
+            slice_size: BlockSize::new(main.slice_size),
             files,
             recovery_slices_metadata: Vec::new(), // Populated later for memory-efficient loading
             file_slice_checksums,
@@ -168,10 +169,10 @@ impl RepairContext {
         let par2_path = Path::new(par2_file);
         let par2_dir = par2_path
             .parent()
-            .ok_or_else(|| RepairError::InvalidPath(par2_path.to_path_buf()))?;
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
 
-        // Print purge backup files message
-        println!("\nPurge backup files.");
+        self.reporter.report_purge_backup_files();
 
         // Remove backup files (.1, .bak, etc.) for all files in the recovery set
         for file_info in &self.recovery_set.files {
@@ -181,27 +182,24 @@ impl RepairContext {
             for ext in &["1", "bak"] {
                 let backup_path = file_path.with_extension(ext);
                 if backup_path.exists() {
-                    fs::remove_file(&backup_path).map_err(|e| RepairError::FileDeleteError {
-                        file: backup_path.clone(),
-                        source: e,
-                    })?;
+                    delete_file(&backup_path)?;
 
-                    println!(
-                        "Remove \"{}\".",
-                        backup_path.file_name().unwrap().to_string_lossy()
-                    );
+                    self.reporter
+                        .report_purge_remove(&backup_path.file_name().unwrap().to_string_lossy());
                 }
             }
         }
 
-        // Print purge par files message
-        println!("\nPurge par files.");
+        self.reporter.report_purge_par_files();
 
         // Remove all PAR2 files in the directory
         if let Ok(entries) = fs::read_dir(par2_dir) {
             for entry in entries.flatten() {
                 if let Some(ext) = entry.path().extension() {
-                    if ext == "par2" {
+                    if ext
+                        .to_str()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("par2"))
+                    {
                         fs::remove_file(entry.path()).map_err(|e| {
                             RepairError::FileDeleteError {
                                 file: entry.path(),
@@ -209,7 +207,8 @@ impl RepairContext {
                             }
                         })?;
 
-                        println!("Remove \"{}\".", entry.file_name().to_string_lossy());
+                        self.reporter
+                            .report_purge_remove(&entry.file_name().to_string_lossy());
                     }
                 }
             }

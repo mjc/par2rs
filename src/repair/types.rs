@@ -1,6 +1,9 @@
 //! Data types for PAR2 repair operations
 
-use crate::domain::{FileId, GlobalSliceIndex, LocalSliceIndex, Md5Hash, RecoverySetId};
+use crate::domain::{
+    BlockCount, BlockSize, FileId, FileSize, GlobalSliceIndex, LocalSliceIndex, Md5Hash,
+    RecoverySetId,
+};
 use crate::{InputFileSliceChecksumPacket, RecoverySliceMetadata};
 use rustc_hash::FxHashMap as HashMap;
 
@@ -9,10 +12,10 @@ use rustc_hash::FxHashMap as HashMap;
 pub struct FileInfo {
     pub file_id: FileId,
     pub file_name: String,
-    pub file_length: u64,
+    pub file_length: FileSize,
     pub md5_hash: Md5Hash,
     pub md5_16k: Md5Hash,
-    pub slice_count: usize,
+    pub slice_count: BlockCount,
     pub global_slice_offset: GlobalSliceIndex, // Starting global slice index for this file
 }
 
@@ -26,7 +29,8 @@ impl FileInfo {
     pub fn global_to_local(&self, global: GlobalSliceIndex) -> Option<LocalSliceIndex> {
         let global_usize = global.as_usize();
         let offset_usize = self.global_slice_offset.as_usize();
-        if global_usize >= offset_usize && global_usize < offset_usize + self.slice_count {
+        if global_usize >= offset_usize && global_usize < offset_usize + self.slice_count.as_usize()
+        {
             Some(LocalSliceIndex::new(global_usize - offset_usize))
         } else {
             None
@@ -38,7 +42,7 @@ impl FileInfo {
 #[derive(Debug)]
 pub struct RecoverySetInfo {
     pub set_id: RecoverySetId,
-    pub slice_size: u64,
+    pub slice_size: BlockSize,
     pub files: Vec<FileInfo>,
     /// Memory-efficient metadata for recovery slices (lazy loading)
     pub recovery_slices_metadata: Vec<RecoverySliceMetadata>,
@@ -48,12 +52,12 @@ pub struct RecoverySetInfo {
 impl RecoverySetInfo {
     /// Calculate the total number of data blocks across all files
     pub fn total_blocks(&self) -> usize {
-        self.files.iter().map(|f| f.slice_count).sum()
+        self.files.iter().map(|f| f.slice_count.as_usize()).sum()
     }
 
     /// Calculate the total size of all data files
     pub fn total_size(&self) -> u64 {
-        self.files.iter().map(|f| f.file_length).sum()
+        self.files.iter().map(|f| f.file_length.as_u64()).sum()
     }
 
     /// Print statistics in par2cmdline format

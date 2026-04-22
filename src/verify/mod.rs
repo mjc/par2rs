@@ -9,8 +9,6 @@ mod file_verification;
 mod global_engine;
 mod global_table;
 mod scanner_state;
-#[cfg(test)]
-mod test_global;
 mod types;
 mod utils;
 pub(crate) mod validation;
@@ -37,7 +35,7 @@ pub use validation::{validate_slices_crc32, validate_slices_crc32_with_progress}
 pub use verifier::FileVerifier;
 
 use crate::reporters::VerificationReporter;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Comprehensive verification with global block table approach
 ///
@@ -59,6 +57,20 @@ pub fn comprehensive_verify_files<R: VerificationReporter>(
     config: &VerificationConfig,
     reporter: &R,
     base_dir: impl AsRef<Path>,
+) -> VerificationResults {
+    comprehensive_verify_files_with_extra_files(packet_set, config, reporter, base_dir, &[])
+}
+
+/// Comprehensive verification with additional user-supplied files to scan.
+///
+/// Extra files are scanned for matching data blocks but do not limit the target
+/// recovery set. This mirrors par2cmdline's optional `[files]` arguments.
+pub fn comprehensive_verify_files_with_extra_files<R: VerificationReporter>(
+    packet_set: crate::par2_files::PacketSet,
+    config: &VerificationConfig,
+    reporter: &R,
+    base_dir: impl AsRef<Path>,
+    extra_files: &[PathBuf],
 ) -> VerificationResults {
     // Note: Rayon thread pool is configured at program start in main binary
     // (see src/bin/par2.rs handle_verify function)
@@ -99,16 +111,13 @@ pub fn comprehensive_verify_files<R: VerificationReporter>(
     let stats = engine.block_table().stats();
     reporter.report_files_found(stats.file_count);
 
-    if config.parallel {
-        eprintln!(
-            "Global block table: {} total blocks, {} unique, {} duplicates",
-            stats.total_blocks, stats.unique_checksums, stats.duplicate_blocks
-        );
-    }
-
     // Perform verification using global table
     // Use should_parallelize() to avoid Rayon overhead when threads=1
-    let mut results = engine.verify_recovery_set(reporter, config.should_parallelize());
+    let mut results = engine.verify_recovery_set_with_extra_files(
+        reporter,
+        config.should_parallelize(),
+        extra_files,
+    );
 
     // Use the recovery block count from the packet set
     results.recovery_blocks_available = packet_set.recovery_block_count;

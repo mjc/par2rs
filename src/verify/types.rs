@@ -328,8 +328,15 @@ impl VerificationResults {
 
 impl fmt::Display for VerificationResults {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Verification Results:")?;
-        writeln!(f, "====================")?;
+        // par2cmdline prints "Scanning extra files:" after verification
+        writeln!(f, "Scanning extra files:")?;
+        writeln!(f)?;
+        writeln!(f)?;
+
+        // Print repair status first if repair is needed
+        if self.missing_block_count > 0 {
+            writeln!(f, "Repair is required.")?;
+        }
 
         // Functional file status reporting
         [
