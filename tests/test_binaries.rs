@@ -653,12 +653,12 @@ fn test_par2_repair_scans_extra_file_arguments() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        source.exists(),
-        "expected protected filename to be restored"
+        !source.exists(),
+        "extra file scan should not recreate the protected filename"
     );
     assert!(
-        !renamed.exists(),
-        "expected renamed extra file to be consumed"
+        renamed.exists(),
+        "extra file scan should not consume user-supplied files"
     );
 }
 
@@ -1152,12 +1152,12 @@ fn test_par2repair_scans_extra_file_arguments() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        source.exists(),
-        "expected protected filename to be restored"
+        !source.exists(),
+        "extra file scan should not recreate the protected filename"
     );
     assert!(
-        !renamed.exists(),
-        "expected renamed extra file to be consumed"
+        renamed.exists(),
+        "extra file scan should not consume user-supplied files"
     );
 }
 

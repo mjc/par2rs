@@ -1008,8 +1008,6 @@ pub fn repair_files_with_base_path_and_extra_files(
         .reporter(reporter)
         .build()?;
 
-    restore_renamed_files_from_extra_files(&repair_context, extra_files, &verification_results)?;
-
     // Report statistics before starting
     repair_context
         .reporter()
@@ -1018,57 +1016,4 @@ pub fn repair_files_with_base_path_and_extra_files(
     let result = repair_context.repair(verification_results)?;
 
     Ok((repair_context, result))
-}
-
-fn restore_renamed_files_from_extra_files(
-    repair_context: &RepairContext,
-    extra_files: &[PathBuf],
-    verification_results: &crate::verify::VerificationResults,
-) -> Result<()> {
-    if extra_files.is_empty() {
-        return Ok(());
-    }
-
-    for file_result in &verification_results.files {
-        if file_result.status != crate::verify::FileStatus::Renamed
-            || !file_result.damaged_blocks.is_empty()
-        {
-            continue;
-        }
-
-        let Some(file_info) = repair_context
-            .recovery_set
-            .files
-            .iter()
-            .find(|file| file.file_id == file_result.file_id)
-        else {
-            continue;
-        };
-
-        let target_path = repair_context.base_path.join(&file_info.file_name);
-        if target_path.exists() {
-            continue;
-        }
-
-        for extra_file in extra_files {
-            let Ok(metadata) = std::fs::metadata(extra_file) else {
-                continue;
-            };
-            if !metadata.is_file() || metadata.len() != file_info.file_length.as_u64() {
-                continue;
-            }
-
-            let Ok(md5) = crate::checksum::calculate_file_md5(extra_file) else {
-                continue;
-            };
-            if md5 != file_info.md5_hash {
-                continue;
-            }
-
-            rename_file(extra_file, &target_path)?;
-            break;
-        }
-    }
-
-    Ok(())
 }

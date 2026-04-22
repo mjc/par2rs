@@ -31,6 +31,14 @@ pub struct ConsoleCreateReporter {
     quiet: bool,
 }
 
+fn percent_complete(completed: u64, total: u64) -> u32 {
+    if total == 0 {
+        100
+    } else {
+        ((completed.min(total) * 100) / total) as u32
+    }
+}
+
 impl ConsoleCreateReporter {
     pub fn new(quiet: bool) -> Self {
         ConsoleCreateReporter { quiet }
@@ -46,7 +54,7 @@ impl CreateReporter for ConsoleCreateReporter {
 
     fn report_file_hashing(&self, filename: &str, bytes_processed: u64, total_bytes: u64) {
         if !self.quiet {
-            let percent = (bytes_processed as f64 / total_bytes as f64 * 100.0) as u32;
+            let percent = percent_complete(bytes_processed, total_bytes);
             print!("\rHashing {}: {}%", filename, percent);
             use std::io::Write;
             let _ = std::io::stdout().flush();
@@ -64,7 +72,7 @@ impl CreateReporter for ConsoleCreateReporter {
 
     fn report_recovery_generation(&self, blocks_generated: u32, total_blocks: u32) {
         if !self.quiet {
-            let percent = (blocks_generated as f64 / total_blocks as f64 * 100.0) as u32;
+            let percent = percent_complete(blocks_generated.into(), total_blocks.into());
             print!(
                 "\rGenerating recovery blocks: {}/{} ({}%)",
                 blocks_generated, total_blocks, percent
@@ -105,4 +113,19 @@ impl CreateReporter for SilentCreateReporter {
     fn report_writing_file(&self, _filename: &str) {}
     fn report_complete(&self, _output_files: &[String]) {}
     fn report_error(&self, _error: &str) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::percent_complete;
+
+    #[test]
+    fn percent_complete_treats_empty_work_as_complete() {
+        assert_eq!(percent_complete(0, 0), 100);
+    }
+
+    #[test]
+    fn percent_complete_clamps_overreported_progress() {
+        assert_eq!(percent_complete(12, 10), 100);
+    }
 }
