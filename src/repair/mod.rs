@@ -217,8 +217,7 @@ impl RepairContext {
         // Convert FileVerificationResult to ValidationCache
         let mut validation_cache = ValidationCache::new();
         let mut file_status = HashMap::default();
-        let mut block_sources_map: HashMap<FileId, HashMap<u32, BlockSource>> =
-            HashMap::default();
+        let mut block_sources_map: HashMap<FileId, HashMap<u32, BlockSource>> = HashMap::default();
 
         for file_result in &verification_results.files {
             // Build set of valid block indices
@@ -255,10 +254,12 @@ impl RepairContext {
             };
             block_sources_map.insert(file_result.file_id, block_sources);
 
-            // Convert verify::FileStatus to repair::FileStatus
+            // Convert verify::FileStatus to repair::FileStatus. A renamed file
+            // supplied as an extra scan target is already available for reads;
+            // repair should not recreate or consume that user-supplied file.
             let status = match file_result.status {
                 crate::verify::FileStatus::Present => FileStatus::Present,
-                crate::verify::FileStatus::Renamed => FileStatus::Corrupted, // Treat renamed as corrupted for repair
+                crate::verify::FileStatus::Renamed => FileStatus::Present,
                 crate::verify::FileStatus::Corrupted => FileStatus::Corrupted,
                 crate::verify::FileStatus::Missing => FileStatus::Missing,
             };
@@ -287,8 +288,15 @@ impl RepairContext {
             self.recovery_set.recovery_slices_metadata.len()
         );
 
-        // Check if repair is needed
-        if total_damaged_blocks == 0 {
+        let all_files_present = verification_results
+            .files
+            .iter()
+            .all(|file| matches!(file.status, crate::verify::FileStatus::Present));
+
+        // Check if repair is needed. A corrupted file can still have every
+        // protected slice available at shifted offsets, in which case repair
+        // rewrites it without consuming recovery slices.
+        if total_damaged_blocks == 0 && all_files_present {
             let verified_files: Vec<String> = file_status.keys().cloned().collect();
             let files_verified = verified_files.len();
             return Ok(RepairResult::NoRepairNeeded {
@@ -393,14 +401,17 @@ impl RepairContext {
                 .collect();
 
             if missing_slices.is_empty() {
-                // All slices validated, but file status says not Present
-                if *status == FileStatus::Corrupted {
+                if *status == FileStatus::Corrupted
+                    && self.has_noncanonical_block_sources(file_info, block_sources_map)
+                {
                     debug!(
-                        "File {} has all valid slices but MD5 doesn't match",
+                        "File {} has all valid slices but MD5 doesn't match; rewriting",
                         file_info.file_name
                     );
+                    files_to_repair.push((file_info, missing_slices));
+                } else {
+                    verified_files.push(file_info.file_name.clone());
                 }
-                verified_files.push(file_info.file_name.clone());
                 continue;
             }
 
@@ -1009,6 +1020,27 @@ impl RepairContext {
 
         Ok(())
     }
+
+    fn has_noncanonical_block_sources(
+        &self,
+        file_info: &FileInfo,
+        block_sources_map: &HashMap<FileId, HashMap<u32, BlockSource>>,
+    ) -> bool {
+        let Some(block_sources) = block_sources_map.get(&file_info.file_id) else {
+            return false;
+        };
+
+        let target_path = self.base_path.join(&file_info.file_name);
+        let slice_size = self.recovery_set.slice_size.as_usize();
+
+        (0..file_info.slice_count.as_usize()).any(|slice_index| {
+            let Some(source) = block_sources.get(&(slice_index as u32)) else {
+                return false;
+            };
+
+            source.file_path != target_path || source.offset != slice_index * slice_size
+        })
+    }
 }
 
 /// High-level repair function - loads PAR2 files and performs repair
@@ -1189,16 +1221,19 @@ pub fn repair_files_with_verification_reporter_and_loading_progress(
     );
     verification_reporter.report_verification_results(&verification_results);
 
-    let renamed_files = repair_context.restore_renamed_files(&verification_results)?;
+    let renamed_files = if verify_config.rename_only || !extra_files.is_empty() {
+        repair_context.restore_renamed_files(&verification_results)?
+    } else {
+        Vec::new()
+    };
     if !renamed_files.is_empty() {
-        verification_results =
-            run_repair_verification(
-                &par2_files,
-                &repair_verify_config,
-                &base_path,
-                extra_files,
-                verification_reporter,
-            );
+        verification_results = run_repair_verification(
+            &par2_files,
+            &repair_verify_config,
+            &base_path,
+            extra_files,
+            verification_reporter,
+        );
 
         if repair_verification_is_complete(&verification_results) {
             return Ok((

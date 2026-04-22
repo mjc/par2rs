@@ -58,7 +58,7 @@ fn verify_marks_complete_extra_file_as_renamed() {
 }
 
 #[test]
-fn repair_restores_complete_extra_file_without_recovery_blocks() {
+fn repair_accepts_complete_extra_file_without_consuming_it() {
     let temp_dir = TempDir::new().unwrap();
     let par2_file = create_small_recovery_set(&temp_dir, "data.bin", b"abcdefghijkl");
 
@@ -75,8 +75,8 @@ fn repair_restores_complete_extra_file_without_recovery_blocks() {
     .unwrap();
 
     assert!(result.is_success(), "{result:?}");
-    assert_eq!(fs::read(target).unwrap(), b"abcdefghijkl");
-    assert!(!misplaced.exists());
+    assert!(!target.exists());
+    assert_eq!(fs::read(misplaced).unwrap(), b"abcdefghijkl");
 }
 
 #[test]

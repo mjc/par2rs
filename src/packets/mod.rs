@@ -1,5 +1,5 @@
 use binrw::BinReaderExt;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek};
 
 pub mod creator_packet;
 pub mod error;

@@ -1481,6 +1481,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut local_map = HashMap::default();
@@ -1561,6 +1562,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut local_map = HashMap::default();
@@ -1618,6 +1620,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut local_map = HashMap::default();
@@ -1682,6 +1685,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         // Test 1: Direct insertion
@@ -2056,6 +2060,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         // Case 1: All blocks available
@@ -2205,6 +2210,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         // Create a buffer with the matching block
@@ -2271,6 +2277,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let block_size = BlockSize::new(1024);
@@ -2333,6 +2340,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let block_size = BlockSize::new(1024);
@@ -2385,6 +2393,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let block_size = BlockSize::new(1024);
@@ -2439,6 +2448,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let block_size = BlockSize::new(1024);
@@ -2494,6 +2504,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         // Create a buffer with 2MB worth of data
@@ -2616,6 +2627,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let block_size = BlockSize::new(1024);
@@ -2680,6 +2692,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut state = ScannerState::new(3072);
@@ -2759,6 +2772,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut local_map = HashMap::default();
@@ -2829,6 +2843,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let block_size = BlockSize::new(1024);
@@ -2879,6 +2894,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         // Simulate finding only 2 of 3 blocks
@@ -2952,6 +2968,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut local_map = HashMap::default();
@@ -3131,6 +3148,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut state = ScannerState::new(64);
@@ -3186,6 +3204,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut state = ScannerState::new(64);
