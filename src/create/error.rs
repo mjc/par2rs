@@ -74,3 +74,72 @@ pub enum CreateError {
     #[error("{0}")]
     Other(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_messages_include_relevant_details() {
+        let errors = vec![
+            CreateError::FileNotFound("missing.bin".to_string()),
+            CreateError::InvalidBlockSize("3".to_string()),
+            CreateError::InvalidBlockCount("0".to_string()),
+            CreateError::InvalidRecoveryBlockCount("32769".to_string()),
+            CreateError::InvalidRecoveryFileCount("32".to_string()),
+            CreateError::InvalidFirstRecoveryBlock("32769".to_string()),
+            CreateError::InvalidRedundancy(0),
+            CreateError::NoSourceFiles,
+            CreateError::EmptySourceFiles,
+            CreateError::ReedSolomonError("matrix failed".to_string()),
+            CreateError::PacketGenerationError("packet failed".to_string()),
+            CreateError::Other("plain error".to_string()),
+        ];
+
+        let messages: Vec<String> = errors.iter().map(ToString::to_string).collect();
+
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("missing.bin")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("Invalid block size")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("Invalid block count")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("Invalid recovery block count")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("Invalid recovery file count")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("Invalid first recovery block")));
+        assert!(messages.iter().any(|message| message.contains("0%")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("No source files specified")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("empty files only")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("matrix failed")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("packet failed")));
+        assert!(messages.iter().any(|message| message == "plain error"));
+    }
+
+    #[test]
+    fn io_error_converts_to_create_error() {
+        let error = CreateError::from(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        ));
+
+        assert!(matches!(error, CreateError::IoError(_)));
+        assert!(error.to_string().contains("denied"));
+    }
+}

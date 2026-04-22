@@ -55,3 +55,15 @@ pub use codec::{build_split_mul_table, ReconstructionEngine, RsError, RsResult, 
 pub use encoder::RecoveryBlockEncoder;
 
 // Don't re-export simd - users shouldn't need direct SIMD access
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn creation_encoder_reexport_is_usable() {
+        let encoder = RecoveryBlockEncoder::new(4, 2);
+
+        assert_eq!(encoder.base_values().len(), 2);
+    }
+}

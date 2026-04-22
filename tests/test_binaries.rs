@@ -7,10 +7,8 @@
 //! - par2create
 //! - split_par2
 //!
-//! NOTE: These tests are ignored in CI/Nix builds because they require
-//! binaries to be in specific filesystem locations (target/debug/)
-
-#![cfg(not(feature = "nix-build"))]
+//! The binary paths come from Cargo when available, with a target/debug fallback
+//! for direct local runs.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,6 +17,18 @@ use tempfile::TempDir;
 
 /// Helper to get the path to a compiled binary
 fn get_binary_path(name: &str) -> PathBuf {
+    let cargo_path = match name {
+        "par2" => option_env!("CARGO_BIN_EXE_par2"),
+        "par2create" => option_env!("CARGO_BIN_EXE_par2create"),
+        "par2repair" => option_env!("CARGO_BIN_EXE_par2repair"),
+        "par2verify" => option_env!("CARGO_BIN_EXE_par2verify"),
+        "split_par2" => option_env!("CARGO_BIN_EXE_split_par2"),
+        _ => None,
+    };
+    if let Some(path) = cargo_path {
+        return PathBuf::from(path);
+    }
+
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("target");
     path.push("debug");

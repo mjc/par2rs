@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-# Feature flag to skip test_binaries.rs in Nix builds
+# Feature flag to skip tests that are unsuitable in Nix builds
 nix-build = []
 
 [dependencies]
