@@ -176,6 +176,7 @@ let results = file_verification::verify_files_and_collect_results(&file_info, tr
 - **Rust**: 1.70+ (see `rust-toolchain.toml` for exact version)
 - **Optional Tools**:
   - `cargo-llvm-cov`: `cargo install cargo-llvm-cov` (for code coverage)
+  - `cargo-tarpaulin`: `cargo install cargo-tarpaulin` (optional comparison coverage)
 
 ### Building
 
@@ -223,21 +224,22 @@ make coverage-html
 # Open coverage report in browser
 make coverage-open
 
-# Generate coverage for CI (multiple formats)
+# Generate coverage for CI (text, LCOV, Cobertura)
 make coverage-ci
 
-# LLVM-based coverage
+# Generate all llvm-cov report formats
 make coverage-llvm
 
 # Compare both tools
 make coverage-both
 ```
 
-For detailed coverage options, see [COVERAGE.md](COVERAGE.md).
+Reports are written under `target/coverage/`. For detailed coverage options,
+see [COVERAGE.md](COVERAGE.md).
 
 ### Coverage Status
 
-[![codecov](https://codecov.io/gh/YOURUSERNAME/par2rs/branch/main/graph/badge.svg)](https://codecov.io/gh/YOURUSERNAME/par2rs)
+[![codecov](https://codecov.io/gh/mjc/par2rs/branch/main/graph/badge.svg)](https://codecov.io/gh/mjc/par2rs)
 
 Coverage reports are automatically generated on every commit and pull request via GitHub Actions.
 

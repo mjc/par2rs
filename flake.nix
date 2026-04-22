@@ -93,6 +93,7 @@
               python3 # for copilot
               rust-analyzer
               cargo-watch
+              cargo-llvm-cov
               rustfmt
               clippy
               yamllint
