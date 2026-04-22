@@ -138,12 +138,23 @@ fn allocate_recovery_blocks(
             }
 
             exponent = first_recovery_block;
-            let mut count = 1;
             let files = file_number;
 
+            let mut low_block_count = 1;
+            let mut max_recovery_blocks = (1 << files) - 1;
+            while max_recovery_blocks < blocks {
+                low_block_count <<= 1;
+                max_recovery_blocks <<= 1;
+            }
+
             // Allocate exponentially at the bottom
+            let mut count = low_block_count;
             for file_number in 0..files {
-                let number = count.min(blocks);
+                let remaining_files = files - file_number - 1;
+                let max_later = remaining_files.saturating_mul(largest);
+                let min_now = blocks.saturating_sub(max_later);
+                let number = count.min(blocks).max(min_now).min(largest);
+
                 allocations[file_number as usize] = FileAllocation {
                     exponent,
                     count: number,
@@ -363,8 +374,6 @@ mod tests {
     #[test]
     fn test_limited_scheme() {
         // 100 blocks, 5 files, largest file = 30 blocks worth
-        // Note: The Limited scheme may not allocate all blocks if the parameters
-        // don't align well. This is expected behavior from par2cmdline-turbo.
 
         let block_size = 1024;
         let largest_file_size = 30 * block_size;
@@ -379,13 +388,30 @@ mod tests {
 
         assert_eq!(allocations.len(), 6);
 
-        // Verify we allocated blocks (may not be all 100 due to algorithm design)
         let total: u32 = allocations[0..5].iter().map(|a| a.count).sum();
-        assert!(total > 0, "Should allocate at least some blocks");
-        assert!(total <= 100, "Should not allocate more than requested");
+        assert_eq!(total, 100, "Should allocate all requested blocks");
+        assert!(
+            allocations[0..5].iter().all(|a| a.count <= 30),
+            "Should respect the Limited scheme file-size cap"
+        );
 
         // Verify index file has no blocks
         assert_eq!(allocations[5].count, 0);
+    }
+
+    #[test]
+    fn limited_scheme_consumes_bottom_phase_remainder() {
+        let allocations = allocate_recovery_blocks(3, 10, 0, RecoveryFileScheme::Limited, 100, 100);
+
+        let total: u32 = allocations[0..3].iter().map(|a| a.count).sum();
+        assert_eq!(total, 10);
+        assert_eq!(allocations[0].exponent, 0);
+        assert_eq!(allocations[1].exponent, allocations[0].count);
+        assert_eq!(
+            allocations[2].exponent,
+            allocations[0].count + allocations[1].count
+        );
+        assert_eq!(allocations[3].exponent, 10);
     }
 
     #[test]

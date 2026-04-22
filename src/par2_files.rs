@@ -431,8 +431,8 @@ pub fn load_par2_packets(
         .collect();
 
     // Check for mixed recovery sets (common user error)
-    if recovery_set_ids.len() > 1 {
-        eprintln!("\n⚠️  WARNING: Multiple recovery sets detected!");
+    if show_progress && recovery_set_ids.len() > 1 {
+        eprintln!("\nWarning: Multiple recovery sets detected.");
         eprintln!(
             "Found {} different recovery set IDs in the PAR2 files.",
             recovery_set_ids.len()
