@@ -1,7 +1,7 @@
 //! Organized packet and slice provider tests
 
 use binrw::BinReaderExt;
-use par2rs::domain::{FileId, Md5Hash, RecoverySetId};
+use par2rs::domain::{BlockCount, BlockSize, FileId, FileSize, Md5Hash, RecoverySetId};
 use par2rs::packets::{InputFileSliceChecksumPacket, Packet, RecoverySlicePacket};
 use par2rs::repair::{
     ActualDataSize, ChunkedSliceProvider, LogicalSliceSize, SliceLocation, SliceProvider,
@@ -160,7 +160,7 @@ mod recovery_set_info {
     fn total_blocks_empty() {
         let info = RecoverySetInfo {
             set_id: RecoverySetId::new([0u8; 16]),
-            slice_size: 1024,
+            slice_size: BlockSize::new(1024),
             files: Vec::new(),
             recovery_slices_metadata: Vec::new(),
             file_slice_checksums: Default::default(),
@@ -172,7 +172,7 @@ mod recovery_set_info {
     fn total_size_empty() {
         let info = RecoverySetInfo {
             set_id: RecoverySetId::new([0u8; 16]),
-            slice_size: 1024,
+            slice_size: BlockSize::new(1024),
             files: Vec::new(),
             recovery_slices_metadata: Vec::new(),
             file_slice_checksums: Default::default(),
@@ -191,10 +191,10 @@ mod file_info {
         let file = FileInfo {
             file_id: FileId::new([0u8; 16]),
             file_name: "test.bin".to_string(),
-            file_length: 10240,
+            file_length: FileSize::new(10240),
             md5_hash: Md5Hash::new([0u8; 16]),
             md5_16k: Md5Hash::new([0u8; 16]),
-            slice_count: 10,
+            slice_count: BlockCount::new(10),
             global_slice_offset: GlobalSliceIndex::new(100),
         };
 
@@ -213,10 +213,10 @@ mod file_info {
         let file = FileInfo {
             file_id: FileId::new([0u8; 16]),
             file_name: "test.bin".to_string(),
-            file_length: 10240,
+            file_length: FileSize::new(10240),
             md5_hash: Md5Hash::new([0u8; 16]),
             md5_16k: Md5Hash::new([0u8; 16]),
-            slice_count: 10,
+            slice_count: BlockCount::new(10),
             global_slice_offset: GlobalSliceIndex::new(50),
         };
 

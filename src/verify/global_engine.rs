@@ -18,7 +18,7 @@ use crate::reporters::VerificationReporter;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
 use smallvec::SmallVec;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Map of block checksums to file locations where they were found
@@ -178,11 +178,25 @@ impl GlobalVerificationEngine {
         reporter: &R,
         parallel: bool,
     ) -> VerificationResults {
+        self.verify_recovery_set_with_extra_files(reporter, parallel, &[])
+    }
+
+    /// Verify the recovery set while also scanning user-supplied extra files.
+    ///
+    /// Extra files are not target filters. They are scanned for blocks that match
+    /// protected files, matching par2cmdline's `[files]` behavior for renamed or
+    /// misplaced data files.
+    pub fn verify_recovery_set_with_extra_files<R: VerificationReporter>(
+        &self,
+        reporter: &R,
+        parallel: bool,
+        extra_files: &[PathBuf],
+    ) -> VerificationResults {
         // Note: report_verification_start and report_files_found should be called by the caller
 
         // Step 1: Scan all available files to build availability map
         let (available_blocks, file_statuses, scan_metadatas) =
-            self.scan_available_blocks(reporter, parallel);
+            self.scan_available_blocks_with_extra_files(reporter, parallel, extra_files);
 
         // Step 2: Create aggregate results (individual file reporting already done in scan_available_blocks)
         let file_results =
@@ -203,10 +217,11 @@ impl GlobalVerificationEngine {
     /// Scan all available files and build a global map of which blocks exist where
     /// This is the core of the global block table approach - we scan every file
     /// and index every block we find by its checksum, regardless of filename
-    fn scan_available_blocks<R: VerificationReporter>(
+    fn scan_available_blocks_with_extra_files<R: VerificationReporter>(
         &self,
         reporter: &R,
         parallel: bool,
+        extra_files: &[PathBuf],
     ) -> (
         AvailableBlocksMap,
         FileStatusMap,
@@ -260,7 +275,49 @@ impl GlobalVerificationEngine {
             }
         }
 
+        let extra_results: Vec<_> = if parallel {
+            extra_files
+                .par_iter()
+                .filter_map(|path| self.process_extra_file(path, &reporter_lock))
+                .collect()
+        } else {
+            extra_files
+                .iter()
+                .filter_map(|path| self.process_extra_file(path, &reporter_lock))
+                .collect()
+        };
+
+        for (local_map, metadata) in extra_results {
+            for (offset, file_id, block_number) in &metadata.found_blocks {
+                scan_metadatas
+                    .entry(*file_id)
+                    .or_default()
+                    .record_block_found(*offset, *file_id, *block_number);
+            }
+
+            for (key, entries) in local_map {
+                global_block_map
+                    .entry(key)
+                    .or_insert_with(Vec::new)
+                    .extend(entries);
+            }
+        }
+
         (global_block_map, file_statuses, scan_metadatas)
+    }
+
+    fn process_extra_file<R: VerificationReporter>(
+        &self,
+        file_path: &Path,
+        reporter_lock: &Mutex<&R>,
+    ) -> Option<(LocalBlockMap, FileScanMetadata)> {
+        let metadata = std::fs::metadata(file_path).ok()?;
+        if !metadata.is_file() {
+            return None;
+        }
+
+        let file_size = FileSize::new(metadata.len());
+        Some(self.scan_single_file_with_progress(file_path, file_size, reporter_lock))
     }
 
     /// Process a single file: scan blocks and report status
@@ -412,7 +469,7 @@ impl GlobalVerificationEngine {
         }
 
         // Scan byte-by-byte through the entire file (like par2cmdline-turbo's Step loop)
-        let mut step_count = 0;
+        let mut step_count: u64 = 0;
         loop {
             step_count += 1;
 
@@ -910,7 +967,12 @@ impl GlobalVerificationEngine {
                 .copied()
                 .unwrap_or_else(|| {
                     if blocks_available.is_complete(total_blocks) {
-                        FileStatus::Present
+                        let file_path = self.base_dir.join(&file_name);
+                        if file_path.exists() {
+                            FileStatus::Present
+                        } else {
+                            FileStatus::Renamed
+                        }
                     } else if blocks_available.is_empty() {
                         FileStatus::Missing
                     } else {

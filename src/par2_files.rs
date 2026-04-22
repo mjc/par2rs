@@ -11,6 +11,7 @@ use rustc_hash::FxHashSet as HashSet;
 use std::fs;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// PAR2 packet set with associated metadata
 ///
@@ -90,17 +91,94 @@ const LENGTH_END: usize = 16;
 const TYPE_OFFSET: usize = 48;
 const TYPE_END: usize = 64;
 
+/// Extract the base stem of a PAR2 filename, stripping `.par2` and any `.volN+M` suffix.
+///
+/// Examples:
+/// - `test.par2`         → `test`
+/// - `test.vol0+1.par2`  → `test`
+/// - `test.vol000+02.par2` → `test`
+fn par2_base_stem(path: &Path) -> String {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let without_ext = if name
+        .get(name.len().saturating_sub(5)..)
+        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".par2"))
+    {
+        &name[..name.len() - 5]
+    } else {
+        name
+    };
+    // Strip `.vol<digits>+<digits>` suffix if present
+    if let Some(dot_pos) = without_ext.rfind('.') {
+        let after_dot = &without_ext[dot_pos + 1..];
+        if let Some(rest) = after_dot
+            .get(..3)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("vol"))
+            .and_then(|_| after_dot.get(3..))
+        {
+            if let Some(plus_pos) = rest.find('+') {
+                let before = &rest[..plus_pos];
+                let after = &rest[plus_pos + 1..];
+                if !before.is_empty()
+                    && before.bytes().all(|b| b.is_ascii_digit())
+                    && !after.is_empty()
+                    && after.bytes().all(|b| b.is_ascii_digit())
+                {
+                    return without_ext[..dot_pos].to_string();
+                }
+            }
+        }
+    }
+    without_ext.to_string()
+}
+
+fn has_par2_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("par2"))
+}
+
+fn append_path_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut candidate = path.as_os_str().to_os_string();
+    candidate.push(suffix);
+    PathBuf::from(candidate)
+}
+
+/// Resolve a command-line PAR2 argument to an existing `.par2` file.
+///
+/// par2cmdline accepts a protected data filename or basename when the matching
+/// `<name>.par2` file exists. Preserve that behavior for verify/repair
+/// frontends while still accepting explicit `.par2` and `.PAR2` paths.
+#[must_use]
+pub fn resolve_par2_file_argument(input: &Path) -> Option<PathBuf> {
+    if has_par2_extension(input) && input.exists() {
+        return Some(input.to_path_buf());
+    }
+
+    [".par2", ".PAR2"]
+        .into_iter()
+        .map(|suffix| append_path_suffix(input, suffix))
+        .find(|candidate| candidate.exists())
+}
+
 /// Find all PAR2 files in a directory, excluding the specified file
 #[must_use]
 pub fn find_par2_files_in_directory(folder_path: &Path, exclude_file: &Path) -> Vec<PathBuf> {
+    let exclude_path = if exclude_file
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .is_some()
+    {
+        exclude_file.to_path_buf()
+    } else {
+        folder_path.join(exclude_file)
+    };
+
     fs::read_dir(folder_path)
         .map(|entries| {
             entries
                 .filter_map(Result::ok)
                 .map(|entry| entry.path())
-                .filter(|path| {
-                    path.extension().is_some_and(|ext| ext == "par2") && path != exclude_file
-                })
+                .filter(|path| has_par2_extension(path) && path != &exclude_path)
                 .collect()
         })
         .unwrap_or_else(|e| {
@@ -114,18 +192,25 @@ pub fn find_par2_files_in_directory(folder_path: &Path, exclude_file: &Path) -> 
 }
 
 /// Collect all PAR2 files related to the input file (main file + volume files)
+///
+/// Only returns files that share the same base stem as `file_path`, preventing
+/// accidental mixing of different PAR2 sets in the same directory.
 #[must_use]
 pub fn collect_par2_files(file_path: &Path) -> Vec<PathBuf> {
-    // Get the directory containing the PAR2 file
     let folder_path = file_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
 
-    let mut par2_files = vec![file_path.to_path_buf()];
-    par2_files.extend(find_par2_files_in_directory(folder_path, file_path));
+    let base_stem = par2_base_stem(file_path);
 
-    // Sort files to match system par2verify order
+    let mut par2_files = vec![file_path.to_path_buf()];
+    par2_files.extend(
+        find_par2_files_in_directory(folder_path, file_path)
+            .into_iter()
+            .filter(|p| par2_base_stem(p) == base_stem),
+    );
+
     par2_files.sort();
     par2_files
 }
@@ -185,6 +270,7 @@ fn parse_single_file(
     par2_file: &Path,
     include_recovery_slices: bool,
     show_progress: bool,
+    output_lock: &Mutex<()>,
 ) -> IoResult<ParseResult> {
     let filename = par2_file
         .file_name()
@@ -192,6 +278,7 @@ fn parse_single_file(
         .unwrap_or("unknown");
 
     if show_progress {
+        let _guard = output_lock.lock().unwrap();
         println!("Loading \"{}\".", filename);
     }
 
@@ -207,7 +294,11 @@ fn parse_single_file(
     };
 
     if show_progress {
-        print_packet_load_result(result.packets.len(), result.recovery_block_count);
+        print_packet_load_result(
+            result.packets.len(),
+            result.recovery_block_count,
+            output_lock,
+        );
     }
 
     Ok(result)
@@ -220,7 +311,13 @@ pub fn parse_par2_file_with_progress(
     include_recovery_slices: bool,
     show_progress: bool,
 ) -> IoResult<(Vec<Packet>, usize)> {
-    let result = parse_single_file(par2_file, include_recovery_slices, show_progress)?;
+    let output_lock = Mutex::new(());
+    let result = parse_single_file(
+        par2_file,
+        include_recovery_slices,
+        show_progress,
+        &output_lock,
+    )?;
 
     // Apply deduplication using the provided set
     let new_packets: Vec<Packet> = result
@@ -236,8 +333,9 @@ pub fn parse_par2_file_with_progress(
     Ok((new_packets, recovery_blocks))
 }
 
-/// Print the result of loading packets from a file
-fn print_packet_load_result(packet_count: usize, recovery_blocks: usize) {
+/// Print the result of loading packets from a file (thread-safe)
+fn print_packet_load_result(packet_count: usize, recovery_blocks: usize, lock: &Mutex<()>) {
+    let _guard = lock.lock().unwrap();
     match (packet_count, recovery_blocks) {
         (0, _) => println!("No new packets found"),
         (count, 0) => println!("Loaded {count} new packets"),
@@ -271,31 +369,41 @@ pub fn load_par2_packets(
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Parse files in parallel and collect results
+    // Use mutex for thread-safe output (like par2cmdline-turbo's output_lock)
     let total_recovery_blocks = AtomicUsize::new(0);
+    let output_lock = Mutex::new(());
 
     let all_packets: Vec<Vec<Packet>> = par2_files
         .par_iter()
         .filter_map(|par2_file| {
-            parse_single_file(par2_file, include_recovery_slices, show_progress)
-                .map(|result| {
-                    // Accumulate recovery block count atomically
-                    total_recovery_blocks.fetch_add(result.recovery_block_count, Ordering::Relaxed);
-                    result.packets
-                })
-                .map_err(|e| {
-                    eprintln!(
-                        "Warning: Failed to parse PAR2 file {}: {}",
-                        par2_file.display(),
-                        e
-                    );
+            parse_single_file(
+                par2_file,
+                include_recovery_slices,
+                show_progress,
+                &output_lock,
+            )
+            .map(|result| {
+                // Accumulate recovery block count atomically
+                total_recovery_blocks.fetch_add(result.recovery_block_count, Ordering::Relaxed);
+                result.packets
+            })
+            .map_err(|e| {
+                let _guard = output_lock.lock().unwrap();
+                eprintln!(
+                    "Warning: Failed to parse PAR2 file {}: {}",
+                    par2_file.display(),
                     e
-                })
-                .ok()
+                );
+                e
+            })
+            .ok()
         })
         .collect();
 
-    // Deduplicate packets in a single pass
+    // Deduplicate packets in a single pass and check for mixed recovery sets
     let mut seen_hashes = HashSet::default();
+    let mut recovery_set_ids: HashSet<crate::domain::RecoverySetId> = HashSet::default();
+
     let packets: Vec<Packet> = all_packets
         .into_iter()
         .flatten()
@@ -304,11 +412,40 @@ pub fn load_par2_packets(
             if !include_recovery_slices && matches!(packet, Packet::RecoverySlice(_)) {
                 return false;
             }
+
+            // Track recovery set IDs to detect mixed PAR2 files
+            let set_id = match packet {
+                Packet::Main(p) => p.set_id,
+                Packet::PackedMain(p) => p.set_id,
+                Packet::FileDescription(p) => p.set_id,
+                Packet::InputFileSliceChecksum(p) => p.set_id,
+                Packet::RecoverySlice(p) => p.set_id,
+                Packet::Creator(p) => p.set_id,
+            };
+            recovery_set_ids.insert(set_id);
+
             // Deduplicate based on packet hash
             let packet_hash = get_packet_hash(packet);
             seen_hashes.insert(packet_hash)
         })
         .collect();
+
+    // Check for mixed recovery sets (common user error)
+    if recovery_set_ids.len() > 1 {
+        eprintln!("\n⚠️  WARNING: Multiple recovery sets detected!");
+        eprintln!(
+            "Found {} different recovery set IDs in the PAR2 files.",
+            recovery_set_ids.len()
+        );
+        eprintln!(
+            "This usually means you're trying to verify/repair files from different PAR2 sets."
+        );
+        eprintln!("Please specify only PAR2 files that belong to the same recovery set.\n");
+        eprintln!("Hint: Each PAR2 set has a unique base filename (e.g., 'myfile.par2', 'myfile.vol*.par2')");
+        eprintln!(
+            "      Don't mix files like 'file1.par2' and 'file2.par2' in the same operation.\n"
+        );
+    }
 
     // Determine base directory from the first PAR2 file
     let base_dir = par2_files
@@ -480,4 +617,99 @@ fn get_packet_length(header: &[u8; PACKET_HEADER_SIZE]) -> Option<u64> {
         .try_into()
         .ok()
         .map(u64::from_le_bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn par2_base_stem_strips_par2_extension() {
+        assert_eq!(par2_base_stem(Path::new("test.par2")), "test");
+        assert_eq!(par2_base_stem(Path::new("test.PAR2")), "test");
+    }
+
+    #[test]
+    fn par2_base_stem_strips_vol_suffix() {
+        assert_eq!(par2_base_stem(Path::new("test.vol0+1.par2")), "test");
+        assert_eq!(par2_base_stem(Path::new("test.vol000+02.par2")), "test");
+        assert_eq!(par2_base_stem(Path::new("test.vol06+4.par2")), "test");
+        assert_eq!(par2_base_stem(Path::new("test.VOL06+4.PAR2")), "test");
+    }
+
+    #[test]
+    fn par2_base_stem_handles_dots_in_base() {
+        assert_eq!(par2_base_stem(Path::new("my.file.par2")), "my.file");
+        assert_eq!(par2_base_stem(Path::new("my.file.vol0+1.par2")), "my.file");
+    }
+
+    #[test]
+    fn collect_par2_files_excludes_different_base_stem() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+
+        // Create dummy .par2 files
+        std::fs::write(dir.join("file1.par2"), b"").unwrap();
+        std::fs::write(dir.join("file1.vol0+1.par2"), b"").unwrap();
+        std::fs::write(dir.join("file1.vol1+1.PAR2"), b"").unwrap();
+        std::fs::write(dir.join("file2.par2"), b"").unwrap();
+        std::fs::write(dir.join("file2.vol0+1.par2"), b"").unwrap();
+
+        let collected = collect_par2_files(&dir.join("file1.par2"));
+
+        // Should only contain file1's files
+        assert!(
+            collected.iter().all(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.starts_with("file1"))
+                    .unwrap_or(false)
+            }),
+            "Should not include file2's PAR2 files: {:?}",
+            collected
+        );
+        assert_eq!(collected.len(), 3, "Expected file1 PAR2 set files");
+    }
+
+    #[test]
+    fn resolve_par2_file_argument_accepts_explicit_par2_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("file.PAR2");
+        std::fs::write(&path, b"").unwrap();
+
+        assert_eq!(resolve_par2_file_argument(&path), Some(path));
+    }
+
+    #[test]
+    fn resolve_par2_file_argument_accepts_data_filename_companion() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("file.dat");
+        let par2 = temp.path().join("file.dat.par2");
+        std::fs::write(&source, b"").unwrap();
+        std::fs::write(&par2, b"").unwrap();
+
+        assert_eq!(resolve_par2_file_argument(&source), Some(par2));
+    }
+
+    #[test]
+    fn resolve_par2_file_argument_accepts_uppercase_companion() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("file.dat");
+        let par2 = temp.path().join("file.dat.PAR2");
+        std::fs::write(&par2, b"").unwrap();
+
+        assert_eq!(resolve_par2_file_argument(&source), Some(par2));
+    }
+
+    #[test]
+    fn find_par2_files_excludes_bare_filename_in_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        std::fs::write(dir.join("file1.par2"), b"").unwrap();
+        std::fs::write(dir.join("file1.vol0+1.par2"), b"").unwrap();
+
+        let found = find_par2_files_in_directory(dir, Path::new("file1.par2"));
+
+        assert_eq!(found, vec![dir.join("file1.vol0+1.par2")]);
+    }
 }

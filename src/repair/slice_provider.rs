@@ -7,17 +7,18 @@
 //! The design follows par2cmdline's approach of loading data in small chunks
 //! (default 64KB) rather than loading entire slices or files into memory.
 
-mod error;
+pub mod error;
 
 pub use error::{Result, SliceProviderError};
 
+use super::error_helpers::{slice_provider_open, slice_provider_read_exact, slice_provider_seek};
 use crate::domain::Crc32Value;
 use crate::RecoverySliceMetadata;
 use rustc_hash::FxHashMap as HashMap;
 use std::collections::hash_map::Entry;
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, SeekFrom};
 use std::path::{Path, PathBuf};
 
 /// Default chunk size for reading data (64KB, same as par2cmdline)
@@ -196,10 +197,7 @@ impl ChunkedSliceProvider {
         let reader = match self.file_handles.entry(path.to_path_buf()) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                let file = File::open(path).map_err(|e| SliceProviderError::FileOpenError {
-                    path: path.to_path_buf(),
-                    source: e,
-                })?;
+                let file = slice_provider_open(path)?;
                 let reader = BufReader::new(file);
                 entry.insert(reader)
             }
@@ -270,19 +268,12 @@ impl ChunkedSliceProvider {
         let mut buffer = vec![0u8; bytes_to_read];
 
         let reader = self.get_or_create_reader(&location.file_path)?;
-        reader
-            .seek(SeekFrom::Start(location.offset + offset as u64))
-            .map_err(|e| SliceProviderError::FileSeekError {
-                path: location.file_path.clone(),
-                offset: location.offset + offset as u64,
-                source: e,
-            })?;
-        reader
-            .read_exact(&mut buffer)
-            .map_err(|e| SliceProviderError::FileReadError {
-                path: location.file_path.clone(),
-                source: e,
-            })?;
+        slice_provider_seek(
+            reader,
+            SeekFrom::Start(location.offset + offset as u64),
+            &location.file_path,
+        )?;
+        slice_provider_read_exact(reader, &mut buffer, &location.file_path)?;
 
         self.cache_access_counter += 1;
         let cache_key = (slice_index, offset);
@@ -307,19 +298,12 @@ impl ChunkedSliceProvider {
         let mut buffer = crate::reed_solomon::alloc_aligned_vec(bytes_to_read);
 
         let reader = self.get_or_create_reader(&location.file_path)?;
-        reader
-            .seek(SeekFrom::Start(location.offset + chunk_offset as u64))
-            .map_err(|e| SliceProviderError::FileSeekError {
-                path: location.file_path.clone(),
-                offset: location.offset + chunk_offset as u64,
-                source: e,
-            })?;
-        reader
-            .read_exact(&mut buffer)
-            .map_err(|e| SliceProviderError::FileReadError {
-                path: location.file_path.clone(),
-                source: e,
-            })?;
+        slice_provider_seek(
+            reader,
+            SeekFrom::Start(location.offset + chunk_offset as u64),
+            &location.file_path,
+        )?;
+        slice_provider_read_exact(reader, &mut buffer, &location.file_path)?;
 
         // Add zero padding if chunk extends beyond actual data
         let chunk_end = chunk_offset + chunk_size;
@@ -436,13 +420,11 @@ impl SliceProvider for ChunkedSliceProvider {
         // Note: PAR2 spec requires CRC32 on padded data (full logical size)
         let mut buffer = vec![0u8; self.logical_slice_size.as_usize()];
         let reader = self.get_or_create_reader(&location.file_path)?;
-        reader.seek(SeekFrom::Start(location.offset)).map_err(|e| {
-            SliceProviderError::FileSeekError {
-                path: location.file_path.clone(),
-                offset: location.offset,
-                source: e,
-            }
-        })?;
+        slice_provider_seek(
+            reader,
+            SeekFrom::Start(location.offset),
+            &location.file_path,
+        )?;
 
         let bytes_read = reader
             .read(&mut buffer[..location.actual_size.as_usize()])

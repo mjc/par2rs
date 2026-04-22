@@ -2,7 +2,10 @@
 //!
 //! These tests cover the data types used in PAR2 repair operations.
 
-use par2rs::domain::{FileId, GlobalSliceIndex, LocalSliceIndex, Md5Hash, RecoverySetId};
+use par2rs::domain::{
+    BlockCount, BlockSize, FileId, FileSize, GlobalSliceIndex, LocalSliceIndex, Md5Hash,
+    RecoverySetId,
+};
 use par2rs::repair::{
     FileInfo, FileStatus, ReconstructedSlices, RecoverySetInfo, RepairResult, ValidationCache,
     VerificationResult,
@@ -14,10 +17,10 @@ fn test_file_info_local_to_global() {
     let file_info = FileInfo {
         file_id: FileId::new([1u8; 16]),
         file_name: "test.dat".to_string(),
-        file_length: 1024,
+        file_length: FileSize::new(1024),
         md5_hash: Md5Hash::new([0u8; 16]),
         md5_16k: Md5Hash::new([0u8; 16]),
-        slice_count: 10,
+        slice_count: BlockCount::new(10),
         global_slice_offset: GlobalSliceIndex::new(5),
     };
 
@@ -35,10 +38,10 @@ fn test_file_info_global_to_local() {
     let file_info = FileInfo {
         file_id: FileId::new([1u8; 16]),
         file_name: "test.dat".to_string(),
-        file_length: 1024,
+        file_length: FileSize::new(1024),
         md5_hash: Md5Hash::new([0u8; 16]),
         md5_16k: Md5Hash::new([0u8; 16]),
-        slice_count: 10,
+        slice_count: BlockCount::new(10),
         global_slice_offset: GlobalSliceIndex::new(5),
     };
 
@@ -67,24 +70,24 @@ fn test_file_info_global_to_local() {
 fn test_recovery_set_info_total_blocks() {
     let set_info = RecoverySetInfo {
         set_id: RecoverySetId::new([0u8; 16]),
-        slice_size: 1024,
+        slice_size: BlockSize::new(1024),
         files: vec![
             FileInfo {
                 file_id: FileId::new([1u8; 16]),
                 file_name: "file1.dat".to_string(),
-                file_length: 3072,
+                file_length: FileSize::new(3072),
                 md5_hash: Md5Hash::new([0u8; 16]),
                 md5_16k: Md5Hash::new([0u8; 16]),
-                slice_count: 3,
+                slice_count: BlockCount::new(3),
                 global_slice_offset: GlobalSliceIndex::new(0),
             },
             FileInfo {
                 file_id: FileId::new([2u8; 16]),
                 file_name: "file2.dat".to_string(),
-                file_length: 5120,
+                file_length: FileSize::new(5120),
                 md5_hash: Md5Hash::new([0u8; 16]),
                 md5_16k: Md5Hash::new([0u8; 16]),
-                slice_count: 5,
+                slice_count: BlockCount::new(5),
                 global_slice_offset: GlobalSliceIndex::new(3),
             },
         ],
@@ -99,24 +102,24 @@ fn test_recovery_set_info_total_blocks() {
 fn test_recovery_set_info_total_size() {
     let set_info = RecoverySetInfo {
         set_id: RecoverySetId::new([0u8; 16]),
-        slice_size: 1024,
+        slice_size: BlockSize::new(1024),
         files: vec![
             FileInfo {
                 file_id: FileId::new([1u8; 16]),
                 file_name: "file1.dat".to_string(),
-                file_length: 3072,
+                file_length: FileSize::new(3072),
                 md5_hash: Md5Hash::new([0u8; 16]),
                 md5_16k: Md5Hash::new([0u8; 16]),
-                slice_count: 3,
+                slice_count: BlockCount::new(3),
                 global_slice_offset: GlobalSliceIndex::new(0),
             },
             FileInfo {
                 file_id: FileId::new([2u8; 16]),
                 file_name: "file2.dat".to_string(),
-                file_length: 5120,
+                file_length: FileSize::new(5120),
                 md5_hash: Md5Hash::new([0u8; 16]),
                 md5_16k: Md5Hash::new([0u8; 16]),
-                slice_count: 5,
+                slice_count: BlockCount::new(5),
                 global_slice_offset: GlobalSliceIndex::new(3),
             },
         ],
@@ -131,14 +134,14 @@ fn test_recovery_set_info_total_size() {
 fn test_recovery_set_info_print_statistics() {
     let set_info = RecoverySetInfo {
         set_id: RecoverySetId::new([0u8; 16]),
-        slice_size: 1024,
+        slice_size: BlockSize::new(1024),
         files: vec![FileInfo {
             file_id: FileId::new([1u8; 16]),
             file_name: "test.dat".to_string(),
-            file_length: 2048,
+            file_length: FileSize::new(2048),
             md5_hash: Md5Hash::new([0u8; 16]),
             md5_16k: Md5Hash::new([0u8; 16]),
-            slice_count: 2,
+            slice_count: BlockCount::new(2),
             global_slice_offset: GlobalSliceIndex::new(0),
         }],
         recovery_slices_metadata: vec![],
@@ -358,10 +361,10 @@ fn test_file_info_roundtrip() {
     let file_info = FileInfo {
         file_id: FileId::new([1u8; 16]),
         file_name: "roundtrip.dat".to_string(),
-        file_length: 10240,
+        file_length: FileSize::new(10240),
         md5_hash: Md5Hash::new([0u8; 16]),
         md5_16k: Md5Hash::new([0u8; 16]),
-        slice_count: 10,
+        slice_count: BlockCount::new(10),
         global_slice_offset: GlobalSliceIndex::new(100),
     };
 
@@ -397,7 +400,7 @@ fn test_file_status_all_variants() {
 fn test_empty_recovery_set() {
     let set_info = RecoverySetInfo {
         set_id: RecoverySetId::new([0u8; 16]),
-        slice_size: 1024,
+        slice_size: BlockSize::new(1024),
         files: vec![],
         recovery_slices_metadata: vec![],
         file_slice_checksums: Default::default(),
