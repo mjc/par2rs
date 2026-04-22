@@ -16,6 +16,7 @@
 // Core modules used by binaries
 pub mod analysis;
 pub mod args;
+pub mod create;
 pub mod par2_files;
 pub mod repair;
 pub mod verify;
@@ -35,3 +36,10 @@ pub use packets::{
     parse_packets, parse_packets_with_options, InputFileSliceChecksumPacket, Packet,
     RecoverySliceMetadata, RecoverySlicePacket,
 };
+
+pub fn print_long_version() {
+    println!(
+        "par2rs version {}\nA Rust implementation of PAR2 verification, repair, and creation.\n\npar2rs comes with ABSOLUTELY NO WARRANTY.",
+        env!("CARGO_PKG_VERSION")
+    );
+}

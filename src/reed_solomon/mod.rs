@@ -27,6 +27,7 @@
 
 pub mod aligned;
 pub mod codec;
+pub mod encoder;
 pub mod galois;
 #[doc(hidden)]
 pub mod simd; // Public for tests/benchmarks, but hidden from docs // 32-byte aligned buffer allocation
@@ -49,5 +50,8 @@ pub use builder::{HighRedundancy, MinimalConfig, ReedSolomon, ReedSolomonBuilder
 
 // Re-export core error types and internal components needed by other modules
 pub use codec::{build_split_mul_table, ReconstructionEngine, RsError, RsResult, SplitMulTable};
+
+// Re-export encoder for PAR2 creation
+pub use encoder::RecoveryBlockEncoder;
 
 // Don't re-export simd - users shouldn't need direct SIMD access

@@ -19,6 +19,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 // Export rolling CRC32 module for efficient sliding window operations
 pub mod rolling_crc;
 
+// Export MD5 reader for streaming hash computation during reads
+mod md5_reader;
+pub use md5_reader::Md5Reader;
+
 // ============================================================================
 // MD5 Hashing
 // ============================================================================
