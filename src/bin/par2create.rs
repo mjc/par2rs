@@ -2,23 +2,20 @@
 
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
+use par2rs::cli::compat::{
+    init_env_logger, parse_memory_mb, parse_noise_level, parse_positive_usize,
+};
 use par2rs::create::cli::{
     parse_redundancy_option, resolve_create_inputs, validate_recovery_file_count,
     warn_for_high_redundancy, RedundancyOption,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() -> Result<()> {
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("-VV")) {
         par2rs::print_long_version();
         return Ok(());
     }
-
-    env_logger::Builder::from_default_env()
-        .format_timestamp(None)
-        .format_module_path(false)
-        .format_target(false)
-        .init();
 
     let matches = Command::new("par2create")
         .version(env!("CARGO_PKG_VERSION"))
@@ -150,6 +147,10 @@ fn main() -> Result<()> {
         )
         .get_matches();
 
+    let noise_level = parse_noise_level(matches.get_count("verbose"), matches.get_count("quiet"))
+        .map_err(anyhow::Error::msg)?;
+    init_env_logger(noise_level);
+
     let par2_file = matches
         .get_one::<String>("par2_file")
         .expect("par2_file is required");
@@ -169,7 +170,15 @@ fn main() -> Result<()> {
     let recovery_block_count: Option<u32> = parse_optional_u32(&matches, "recovery_block_count")?;
     let recovery_file_count: Option<u32> = parse_optional_u32(&matches, "recovery_file_count")?;
     let first_recovery_block: Option<u32> = parse_optional_u32(&matches, "first_recovery_block")?;
-    let memory_mb: Option<usize> = parse_optional_usize(&matches, "memory")?;
+    let memory_limit = parse_memory_mb(matches.get_one::<String>("memory").map(String::as_str))
+        .map_err(anyhow::Error::msg)?;
+    let file_threads = parse_positive_usize(
+        matches
+            .get_one::<String>("file_threads")
+            .map(String::as_str),
+        "-T",
+    )
+    .map_err(anyhow::Error::msg)?;
     let threads: Option<u32> = parse_optional_u32(&matches, "threads")?;
 
     if let Some(count) = recovery_file_count {
@@ -187,6 +196,7 @@ fn main() -> Result<()> {
         matches.get_flag("recurse"),
     )
     .map_err(anyhow::Error::msg)?;
+    reject_par1_create_target(&output_name)?;
 
     if !quiet_mode {
         println!(
@@ -229,11 +239,14 @@ fn main() -> Result<()> {
     if let Some(exponent) = first_recovery_block {
         context = context.first_recovery_block(exponent);
     }
-    if let Some(limit_mb) = memory_mb {
-        context = context.memory_limit(limit_mb * 1024 * 1024);
+    if let Some(limit) = memory_limit {
+        context = context.memory_limit(limit);
     }
     if let Some(thread_count) = threads {
         context = context.thread_count(thread_count);
+    }
+    if let Some(file_threads) = file_threads {
+        context = context.file_thread_count(file_threads);
     }
     if matches.get_flag("uniform") {
         context = context.recovery_file_scheme(par2rs::create::RecoveryFileScheme::Uniform);
@@ -250,9 +263,13 @@ fn main() -> Result<()> {
     let mut create_context = context
         .build()
         .context("Failed to initialize PAR2 creation context")?;
-    create_context
-        .create()
-        .context("Failed to create PAR2 files")?;
+    if let Err(error) = create_context.create() {
+        if let Some(exit_code) = create_error_exit_code(&error) {
+            eprintln!("Error: Failed to create PAR2 files\n\nCaused by:\n    0: {error}");
+            std::process::exit(exit_code);
+        }
+        return Err(error).context("Failed to create PAR2 files");
+    }
 
     if !quiet_mode {
         println!("\nCreated PAR2 files:");
@@ -265,6 +282,26 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn create_error_exit_code(error: &par2rs::create::CreateError) -> Option<i32> {
+    match error {
+        par2rs::create::CreateError::FileCreateError { source, .. }
+            if source.kind() == std::io::ErrorKind::AlreadyExists =>
+        {
+            Some(3)
+        }
+        _ => None,
+    }
+}
+
+fn reject_par1_create_target(output_name: &str) -> Result<()> {
+    if par2rs::par2_files::detect_recovery_format(Path::new(output_name))
+        == Some(par2rs::par2_files::RecoveryFormat::Par1)
+    {
+        anyhow::bail!("PAR1 create is not supported");
+    }
+    Ok(())
+}
+
 fn parse_optional_u32(matches: &clap::ArgMatches, id: &str) -> Result<Option<u32>> {
     matches
         .get_one::<String>(id)
@@ -274,14 +311,6 @@ fn parse_optional_u32(matches: &clap::ArgMatches, id: &str) -> Result<Option<u32
 }
 
 fn parse_optional_u64(matches: &clap::ArgMatches, id: &str) -> Result<Option<u64>> {
-    matches
-        .get_one::<String>(id)
-        .map(|s| s.parse())
-        .transpose()
-        .with_context(|| format!("Invalid {id} value"))
-}
-
-fn parse_optional_usize(matches: &clap::ArgMatches, id: &str) -> Result<Option<usize>> {
     matches
         .get_one::<String>(id)
         .map(|s| s.parse())

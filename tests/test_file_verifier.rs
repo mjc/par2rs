@@ -71,6 +71,7 @@ fn test_file_verifier_with_config() {
         parallel: false,
         skip_full_file_md5: true,
         threads: 1,
+        ..Default::default()
     };
     let verifier = FileVerifier::with_config(temp.path(), &config);
 
@@ -153,6 +154,7 @@ fn test_determine_file_status_corrupted_full_hash() {
         parallel: false,
         skip_full_file_md5: false, // Must check full hash
         threads: 1,
+        ..Default::default()
     };
     let verifier = FileVerifier::with_config(temp.path(), &config);
 
@@ -199,6 +201,7 @@ fn test_determine_file_status_present_with_skip_full_md5() {
         parallel: false,
         skip_full_file_md5: true, // Skip full MD5 check
         threads: 1,
+        ..Default::default()
     };
     let verifier = FileVerifier::with_config(temp.path(), &config);
 

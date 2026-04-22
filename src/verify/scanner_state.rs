@@ -77,6 +77,11 @@ impl ScannerState {
         self.buffer_position.advance_by(1);
     }
 
+    /// Advance scan position by a caller-specified byte count.
+    pub fn advance_by(&mut self, bytes: usize) {
+        self.buffer_position.advance_by(bytes);
+    }
+
     /// Skip ahead by a full block (after finding a match)
     pub fn skip_block(&mut self, block_size: BlockSize) {
         self.buffer_position.advance_by(block_size.as_usize());

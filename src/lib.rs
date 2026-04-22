@@ -16,7 +16,9 @@
 // Core modules used by binaries
 pub mod analysis;
 pub mod args;
+pub mod cli;
 pub mod create;
+pub mod par1;
 pub mod par2_files;
 pub mod repair;
 pub mod verify;

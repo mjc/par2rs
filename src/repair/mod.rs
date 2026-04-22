@@ -52,6 +52,29 @@ use std::fs;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 
+const MIN_REPAIR_CHUNK_SIZE: usize = 64 * 1024;
+
+pub(crate) fn calculate_repair_chunk_size(
+    slice_size: usize,
+    memory_limit: Option<usize>,
+) -> Result<usize> {
+    let Some(limit) = memory_limit else {
+        return Ok(slice_size);
+    };
+    if limit == 0 {
+        return Err(RepairError::ContextCreation(
+            "Memory limit must be greater than 0".to_string(),
+        ));
+    }
+    if slice_size <= 4 {
+        return Ok(slice_size);
+    }
+
+    let min_chunk = slice_size.min(MIN_REPAIR_CHUNK_SIZE);
+    let capped = limit.min(slice_size).max(min_chunk);
+    Ok((capped & !3).max(4).min(slice_size))
+}
+
 impl RepairContext {
     /// Check the status of all files in the recovery set (in parallel)
     pub fn check_file_status(&self) -> HashMap<String, FileStatus> {
@@ -640,7 +663,10 @@ impl RepairContext {
         //   = 12,500 × 2MB = 25GB total (each slice read exactly once)
         //
         // This reduces I/O from ~126GB to ~50GB (2x file size, not 5x)
-        let optimal_chunk_size = self.recovery_set.slice_size.as_usize();
+        let optimal_chunk_size = calculate_repair_chunk_size(
+            self.recovery_set.slice_size.as_usize(),
+            self.memory_limit,
+        )?;
         let result = reconstruction_engine.reconstruct_missing_slices_chunked(
             &mut input_provider,
             &recovery_provider,
@@ -974,10 +1000,13 @@ pub fn repair_files_with_base_path_and_extra_files(
     // OPTIMIZATION: Skip full file MD5 computation during pre-repair verification.
     // We only need block-level validation here - the full file MD5 will be computed
     // during the streaming write in write_repaired_file(), avoiding redundant I/O.
-    let repair_verify_config = crate::verify::VerificationConfig::for_repair(
+    let mut repair_verify_config = crate::verify::VerificationConfig::for_repair(
         verify_config.threads,
         verify_config.parallel,
     );
+    repair_verify_config.file_threads = verify_config.file_threads;
+    repair_verify_config.data_skipping = verify_config.data_skipping;
+    repair_verify_config.skip_leeway = verify_config.skip_leeway;
     let silent_reporter = crate::reporters::SilentVerificationReporter;
     let verification_results = if extra_files.is_empty() {
         crate::verify::comprehensive_verify_files(
@@ -1001,12 +1030,15 @@ pub fn repair_files_with_base_path_and_extra_files(
     let packet_set = crate::par2_files::load_par2_packets(&par2_files, false, false);
 
     // Create repair context using builder
-    let repair_context = RepairContextBuilder::new()
+    let mut repair_builder = RepairContextBuilder::new()
         .packets(packet_set.packets)
         .metadata(metadata)
         .base_path(base_path)
-        .reporter(reporter)
-        .build()?;
+        .reporter(reporter);
+    if let Some(memory_limit) = verify_config.memory_limit {
+        repair_builder = repair_builder.memory_limit(memory_limit);
+    }
+    let repair_context = repair_builder.build()?;
 
     // Report statistics before starting
     repair_context
@@ -1016,4 +1048,23 @@ pub fn repair_files_with_base_path_and_extra_files(
     let result = repair_context.repair(verification_results)?;
 
     Ok((repair_context, result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repair_chunk_size_respects_memory_limit() {
+        assert_eq!(
+            calculate_repair_chunk_size(1024 * 1024, None).unwrap(),
+            1024 * 1024
+        );
+        assert_eq!(
+            calculate_repair_chunk_size(1024 * 1024, Some(128 * 1024)).unwrap(),
+            128 * 1024
+        );
+        assert_eq!(calculate_repair_chunk_size(1024, Some(1)).unwrap(), 1024);
+        assert!(calculate_repair_chunk_size(1024, Some(0)).is_err());
+    }
 }

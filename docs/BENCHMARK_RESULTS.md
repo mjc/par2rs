@@ -1,5 +1,16 @@
 # Benchmark Results Summary
 
+## April 2026 Parity-Branch Status
+
+The `codex/par2-turbo-parity` branch expands benchmark coverage for the current
+par2cmdline-turbo parity work. In addition to the existing create, verify, MD5,
+SIMD, and reconstruction benchmarks, `benches/repair_benchmark.rs` now includes
+focused GF16 matrix inversion and scalar GF16 arithmetic benchmarks.
+
+No new timing numbers are recorded here yet. Run `cargo bench` on the target
+machine before making performance claims, and use `cargo bench --no-run` as the
+fast compile-only acceptance check.
+
 ⚠️ **Performance Regression Note:** These results (November 2025) show degraded performance compared to previous benchmarks (October 2025) which demonstrated 2-200× speedups. The current implementation maintains correctness and par2cmdline compatibility but has lost most of its performance advantages on Linux x86_64. This regression is under investigation.
 
 Comprehensive end-to-end benchmarking results showing par2rs performance compared to par2cmdline across different platforms.

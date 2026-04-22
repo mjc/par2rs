@@ -3,7 +3,9 @@
 //! Reference: par2cmdline-turbo/src/par2creator.h Par2Creator class
 
 use super::error::{CreateError, CreateResult};
-use super::error_helpers::{create_file, get_metadata, open_for_reading, packet_write_error};
+use super::error_helpers::{
+    create_file, create_new_output_file, get_metadata, open_for_reading, packet_write_error,
+};
 use super::packet_generator::generate_recovery_set_id;
 use super::progress::CreateReporter;
 use super::source_file::{normalize_packet_path, packet_name_from_path, SourceFileInfo};
@@ -920,26 +922,7 @@ impl CreateContext {
             .unwrap_or("output")
             .to_string();
 
-        // Write index file: critical packets only, no recovery data
-        // Reference: par2cmdline-turbo creates base.par2 with no recovery slices
         let index_path = output_dir.join(format!("{}.par2", base_name));
-        let mut index_file = create_file(&index_path)?;
-        index_file
-            .write_all(&critical_bytes)
-            .map_err(|e| CreateError::FileCreateError {
-                file: index_path.to_string_lossy().to_string(),
-                source: e,
-            })?;
-        index_file
-            .flush()
-            .map_err(|e| CreateError::FileCreateError {
-                file: index_path.to_string_lossy().to_string(),
-                source: e,
-            })?;
-        self.output_files
-            .push(index_path.to_string_lossy().to_string());
-
-        // Determine volume file plan
         let largest_file_size = self.source_files.iter().map(|f| f.size).max().unwrap_or(0);
         let file_count = {
             use super::file_naming::default_recovery_file_count_for_scheme;
@@ -961,11 +944,58 @@ impl CreateContext {
             self.block_size.as_u64(),
         );
 
+        let volume_paths: Vec<PathBuf> = plan
+            .iter()
+            .map(|entry| output_dir.join(&entry.filename))
+            .collect();
+        let output_paths: Vec<&Path> = std::iter::once(index_path.as_path())
+            .chain(volume_paths.iter().map(PathBuf::as_path))
+            .collect();
+
+        if !self.config.overwrite_existing {
+            for path in &output_paths {
+                if path.exists() {
+                    return Err(CreateError::FileCreateError {
+                        file: path.to_string_lossy().to_string(),
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::AlreadyExists,
+                            "output file already exists",
+                        ),
+                    });
+                }
+            }
+        }
+
+        let open_output = |path: &Path, overwrite_existing: bool| {
+            if overwrite_existing {
+                create_file(path)
+            } else {
+                create_new_output_file(path)
+            }
+        };
+
+        // Write index file: critical packets only, no recovery data
+        // Reference: par2cmdline-turbo creates base.par2 with no recovery slices
+        let mut index_file = open_output(&index_path, self.config.overwrite_existing)?;
+        index_file
+            .write_all(&critical_bytes)
+            .map_err(|e| CreateError::FileCreateError {
+                file: index_path.to_string_lossy().to_string(),
+                source: e,
+            })?;
+        index_file
+            .flush()
+            .map_err(|e| CreateError::FileCreateError {
+                file: index_path.to_string_lossy().to_string(),
+                source: e,
+            })?;
+        self.output_files
+            .push(index_path.to_string_lossy().to_string());
+
         // Write each volume file: critical packets + its slice of recovery blocks
         // Reference: par2cmdline-turbo/src/par2creator.cpp WriteRecoveryPackets()
-        for entry in &plan {
-            let vol_path = output_dir.join(&entry.filename);
-            let mut vol_file = create_file(&vol_path)?;
+        for (entry, vol_path) in plan.iter().zip(volume_paths) {
+            let mut vol_file = open_output(&vol_path, self.config.overwrite_existing)?;
 
             vol_file
                 .write_all(&critical_bytes)

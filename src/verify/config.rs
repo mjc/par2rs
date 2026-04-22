@@ -1,5 +1,7 @@
 //! Configuration for verification operations
 
+use crate::cli::compat::{parse_memory_mb, parse_positive_usize, parse_skip_options};
+
 /// Configuration for file verification operations
 #[derive(Debug, Clone)]
 pub struct VerificationConfig {
@@ -9,6 +11,14 @@ pub struct VerificationConfig {
     pub parallel: bool,
     /// Skip full file MD5 computation (for pre-repair verification where only block-level validation is needed)
     pub skip_full_file_md5: bool,
+    /// Memory limit for repair/verification work, in bytes.
+    pub memory_limit: Option<usize>,
+    /// Number of file-level worker threads.
+    pub file_threads: Option<usize>,
+    /// Enable turbo-style skip-ahead scanning.
+    pub data_skipping: bool,
+    /// Skip-ahead scan leeway in bytes when data skipping is enabled.
+    pub skip_leeway: usize,
 }
 
 impl Default for VerificationConfig {
@@ -17,6 +27,10 @@ impl Default for VerificationConfig {
             threads: 0, // Auto-detect CPU cores
             parallel: true,
             skip_full_file_md5: false, // Default: compute full file MD5 for thorough verification
+            memory_limit: None,
+            file_threads: None,
+            data_skipping: false,
+            skip_leeway: 0,
         }
     }
 }
@@ -27,6 +41,10 @@ impl VerificationConfig {
             threads,
             parallel,
             skip_full_file_md5: false,
+            memory_limit: None,
+            file_threads: None,
+            data_skipping: false,
+            skip_leeway: 0,
         }
     }
 
@@ -36,18 +54,85 @@ impl VerificationConfig {
             threads,
             parallel,
             skip_full_file_md5: true, // Skip expensive full-file MD5 before repair
+            memory_limit: None,
+            file_threads: None,
+            data_skipping: false,
+            skip_leeway: 0,
         }
     }
 
     pub fn from_args(matches: &clap::ArgMatches) -> Self {
+        Self::try_from_args(matches).unwrap_or_else(|_| {
+            let threads = matches
+                .try_get_one::<String>("threads")
+                .ok()
+                .flatten()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+
+            let parallel = matches
+                .try_get_one::<bool>("no-parallel")
+                .ok()
+                .flatten()
+                .copied()
+                .map(|no_parallel| !no_parallel)
+                .unwrap_or(true);
+
+            Self::new(threads, parallel)
+        })
+    }
+
+    pub fn try_from_args(matches: &clap::ArgMatches) -> Result<Self, String> {
         let threads = matches
-            .get_one::<String>("threads")
-            .and_then(|s| s.parse().ok())
+            .try_get_one::<String>("threads")
+            .map_err(|e| e.to_string())?
+            .map(|s| {
+                s.parse::<usize>()
+                    .map_err(|_| format!("Invalid thread count: {s}"))
+            })
+            .transpose()?
             .unwrap_or(0);
 
-        let parallel = !matches.get_flag("no-parallel");
+        let parallel = !matches
+            .try_get_one::<bool>("no-parallel")
+            .map_err(|e| e.to_string())?
+            .copied()
+            .unwrap_or(false);
 
-        Self::new(threads, parallel)
+        let memory_limit = parse_memory_mb(
+            matches
+                .try_get_one::<String>("memory")
+                .map_err(|e| e.to_string())?
+                .map(String::as_str),
+        )?;
+        let file_threads = parse_positive_usize(
+            matches
+                .try_get_one::<String>("file_threads")
+                .map_err(|e| e.to_string())?
+                .map(String::as_str),
+            "-T",
+        )?;
+        let skip = parse_skip_options(
+            matches
+                .try_get_one::<bool>("data_skipping")
+                .map_err(|e| e.to_string())?
+                .copied()
+                .unwrap_or(false),
+            matches
+                .try_get_one::<String>("skip_leeway")
+                .map_err(|e| e.to_string())?
+                .map(String::as_str),
+        )?;
+
+        Ok(Self {
+            threads,
+            parallel,
+            skip_full_file_md5: false,
+            memory_limit,
+            file_threads,
+            data_skipping: skip.data_skipping,
+            skip_leeway: skip.skip_leeway,
+        })
     }
 
     /// Get effective thread count (auto-detect if 0)

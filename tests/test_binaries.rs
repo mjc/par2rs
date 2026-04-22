@@ -39,6 +39,23 @@ fn create_test_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
     fs::write(path, content)
 }
 
+fn copy_repair_scenario_fixture(temp_dir: &TempDir) -> PathBuf {
+    let fixture_dir = Path::new("tests/fixtures/repair_scenarios");
+    for entry in fs::read_dir(fixture_dir).expect("repair scenario fixture missing") {
+        let entry = entry.expect("failed to read fixture entry");
+        if !entry
+            .file_type()
+            .expect("failed to read fixture type")
+            .is_file()
+        {
+            continue;
+        }
+        fs::copy(entry.path(), temp_dir.path().join(entry.file_name()))
+            .expect("failed to copy repair scenario fixture");
+    }
+    temp_dir.path().join("testfile.par2")
+}
+
 fn assert_repeated_quiet_accepted(output: &std::process::Output) {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -100,6 +117,62 @@ fn create_renamed_file_test_set(temp_dir: &TempDir) -> (PathBuf, PathBuf, PathBu
     fs::rename(&source, &renamed).expect("Failed to rename source file");
 
     (par2_file, source, renamed)
+}
+
+fn create_par1_verify_test_set(temp_dir: &TempDir) -> PathBuf {
+    const PAR1_HEADER_SIZE: usize = 96;
+    const PAR1_ENTRY_FIXED_SIZE: usize = 56;
+
+    let source_name = "source.bin";
+    let source_data = b"intact par1 protected data";
+    let source = temp_dir.path().join(source_name);
+    create_test_file(&source, source_data).expect("Failed to create PAR1 source file");
+
+    let mut name_bytes = Vec::new();
+    for code_unit in source_name.encode_utf16() {
+        name_bytes.extend_from_slice(&code_unit.to_le_bytes());
+    }
+    let entry_size = (PAR1_ENTRY_FIXED_SIZE + name_bytes.len()) as u64;
+    let source_hash = par2rs::checksum::compute_md5(source_data);
+
+    let mut file_list = Vec::new();
+    file_list.extend_from_slice(&entry_size.to_le_bytes());
+    file_list.extend_from_slice(&1u64.to_le_bytes());
+    file_list.extend_from_slice(&(source_data.len() as u64).to_le_bytes());
+    file_list.extend_from_slice(source_hash.as_bytes());
+    file_list.extend_from_slice(source_hash.as_bytes());
+    file_list.extend_from_slice(&name_bytes);
+
+    let mut par1 = Vec::new();
+    par1.extend_from_slice(b"PAR\0\0\0\0\0");
+    par1.extend_from_slice(&0x0001_0000u32.to_le_bytes());
+    par1.extend_from_slice(&0u32.to_le_bytes());
+    par1.extend_from_slice(&[0; 16]);
+    par1.extend_from_slice(&[0x11; 16]);
+    par1.extend_from_slice(&0u64.to_le_bytes());
+    par1.extend_from_slice(&1u64.to_le_bytes());
+    par1.extend_from_slice(&(PAR1_HEADER_SIZE as u64).to_le_bytes());
+    par1.extend_from_slice(&(file_list.len() as u64).to_le_bytes());
+    par1.extend_from_slice(&0u64.to_le_bytes());
+    par1.extend_from_slice(&0u64.to_le_bytes());
+    par1.extend_from_slice(&file_list);
+
+    let control_hash = par2rs::checksum::compute_md5(&par1[32..]);
+    par1[16..32].copy_from_slice(control_hash.as_bytes());
+
+    let par_file = temp_dir.path().join("archive.par");
+    fs::write(&par_file, par1).expect("Failed to create PAR1 file");
+    par_file
+}
+
+fn copy_real_par1_fixture(temp_dir: &TempDir) -> PathBuf {
+    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
+    for entry in fs::read_dir(fixture_dir).expect("PAR1 fixture directory should exist") {
+        let entry = entry.expect("fixture entry should be readable");
+        fs::copy(entry.path(), temp_dir.path().join(entry.file_name()))
+            .expect("fixture file should copy");
+    }
+    temp_dir.path().join("testdata.par")
 }
 
 fn create_purge_test_set(temp_dir: &TempDir) -> (PathBuf, PathBuf) {
@@ -321,6 +394,54 @@ fn test_par2_repair_alias() {
 }
 
 #[test]
+fn test_par2_repair_repairs_missing_par1_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = copy_real_par1_fixture(&temp_dir);
+    let missing_file = temp_dir.path().join("test-4.data");
+    fs::remove_file(&missing_file).unwrap();
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("repair")
+        .arg(&par_file)
+        .output()
+        .expect("Failed to execute par2 repair");
+
+    assert!(
+        output.status.success(),
+        "par2 repair PAR1 failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(missing_file.exists());
+}
+
+#[test]
+fn test_repair_commands_exit_2_when_repair_is_not_possible() {
+    for (binary, subcommand) in [("par2", Some("repair")), ("par2repair", None)] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let par2_file = copy_repair_scenario_fixture(&temp_dir);
+        fs::remove_file(temp_dir.path().join("testfile")).expect("Failed to remove data file");
+
+        let mut command = Command::new(get_binary_path(binary));
+        if let Some(subcommand) = subcommand {
+            command.arg(subcommand);
+        }
+        let output = command
+            .arg(&par2_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{binary} should match turbo's repair-not-possible exit code: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn test_par2_verify_missing_file() {
     let output = Command::new(get_binary_path("par2"))
         .arg("verify")
@@ -334,6 +455,25 @@ fn test_par2_verify_missing_file() {
         stderr.contains("does not exist") || stderr.contains("Error"),
         "Expected error message, got: {}",
         stderr
+    );
+}
+
+#[test]
+fn test_par2_verify_accepts_intact_par1_set() {
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = create_par1_verify_test_set(&temp_dir);
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("verify")
+        .arg(&par_file)
+        .output()
+        .expect("Failed to execute par2 verify");
+
+    assert!(
+        output.status.success(),
+        "par2 verify PAR1 failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -783,7 +923,6 @@ fn test_par2_verify_repair_accept_repeated_verbose_flags() {
     for subcommand in ["verify", "repair"] {
         let output = Command::new(get_binary_path("par2"))
             .arg(subcommand)
-            .arg("-q")
             .arg("-v")
             .arg("-v")
             .arg(par2_file)
@@ -809,7 +948,6 @@ fn test_par2_verify_repair_accept_long_verbose_flag() {
     for subcommand in ["verify", "repair"] {
         let output = Command::new(get_binary_path("par2"))
             .arg(subcommand)
-            .arg("-q")
             .arg("--verbose")
             .arg(par2_file)
             .output()
@@ -860,6 +998,62 @@ fn test_par2verify_missing_file() {
         .expect("Failed to execute par2verify");
 
     assert!(!output.status.success());
+}
+
+#[test]
+fn test_par2verify_accepts_intact_par1_set() {
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = create_par1_verify_test_set(&temp_dir);
+
+    let output = Command::new(get_binary_path("par2verify"))
+        .arg(&par_file)
+        .output()
+        .expect("Failed to execute par2verify");
+
+    assert!(
+        output.status.success(),
+        "par2verify PAR1 failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_par2verify_accepts_uppercase_par1_volume_extension() {
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = create_par1_verify_test_set(&temp_dir);
+    let volume_file = temp_dir.path().join("archive.P01");
+    fs::rename(&par_file, &volume_file).expect("Failed to rename PAR1 fixture");
+
+    let output = Command::new(get_binary_path("par2verify"))
+        .arg(&volume_file)
+        .output()
+        .expect("Failed to execute par2verify");
+
+    assert!(
+        output.status.success(),
+        "par2verify PAR1 .P01 failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_par1_verify_ignores_skip_leeway_without_data_skipping() {
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = create_par1_verify_test_set(&temp_dir);
+
+    let output = Command::new(get_binary_path("par2verify"))
+        .arg("-S10")
+        .arg(&par_file)
+        .output()
+        .expect("Failed to execute par2verify");
+
+    assert!(
+        output.status.success(),
+        "PAR1 verify should ignore -S without -N: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -1058,6 +1252,86 @@ fn test_par2repair_missing_file() {
         .expect("Failed to execute par2repair");
 
     assert!(!output.status.success());
+}
+
+#[test]
+fn test_par2repair_repairs_missing_par1_file_from_volume_input() {
+    let temp_dir = TempDir::new().unwrap();
+    copy_real_par1_fixture(&temp_dir);
+    let volume_file = temp_dir.path().join("testdata.p01");
+    let missing_file = temp_dir.path().join("test-5.data");
+    fs::remove_file(&missing_file).unwrap();
+
+    let output = Command::new(get_binary_path("par2repair"))
+        .arg(&volume_file)
+        .output()
+        .expect("Failed to execute par2repair");
+
+    assert!(
+        output.status.success(),
+        "par2repair PAR1 failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(missing_file.exists());
+}
+
+#[test]
+fn test_par1_repair_honors_memory_flag() {
+    for (binary, subcommand) in [("par2", Some("repair")), ("par2repair", None)] {
+        let temp_dir = TempDir::new().unwrap();
+        let par_file = copy_real_par1_fixture(&temp_dir);
+        let missing_file = temp_dir.path().join("test-6.data");
+        fs::remove_file(&missing_file).unwrap();
+
+        let mut command = Command::new(get_binary_path(binary));
+        if let Some(subcommand) = subcommand {
+            command.arg(subcommand);
+        }
+        let output = command
+            .arg("-m1")
+            .arg(&par_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            output.status.success(),
+            "{binary} PAR1 repair with -m failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(missing_file.exists());
+    }
+}
+
+#[test]
+fn test_par1_repair_rejects_zero_memory_flag() {
+    for (binary, subcommand) in [("par2", Some("repair")), ("par2repair", None)] {
+        let temp_dir = TempDir::new().unwrap();
+        let par_file = copy_real_par1_fixture(&temp_dir);
+
+        let mut command = Command::new(get_binary_path(binary));
+        if let Some(subcommand) = subcommand {
+            command.arg(subcommand);
+        }
+        let output = command
+            .arg("-m0")
+            .arg(&par_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted PAR1 repair -m0: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("must be greater than 0"),
+            "{binary} should explain -m0 rejection: stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
@@ -1299,7 +1573,6 @@ fn test_standalone_verify_repair_accept_repeated_verbose_flags() {
 
     for binary in ["par2verify", "par2repair"] {
         let output = Command::new(get_binary_path(binary))
-            .arg("-q")
             .arg("-v")
             .arg("-v")
             .arg(par2_file)
@@ -1324,7 +1597,6 @@ fn test_standalone_verify_repair_accept_long_verbose_flag() {
 
     for binary in ["par2verify", "par2repair"] {
         let output = Command::new(get_binary_path(binary))
-            .arg("-q")
             .arg("--verbose")
             .arg(par2_file)
             .output()
@@ -1413,20 +1685,98 @@ fn test_par2create_creates_par2_files() {
 }
 
 #[test]
-fn test_create_commands_accept_long_quiet_and_verbose_flags() {
-    for (binary, command) in [("par2create", None), ("par2", Some("create"))] {
+fn test_create_commands_reject_par1_output_names() {
+    for (binary, command, output_name) in [
+        ("par2create", None, "archive.par"),
+        ("par2", Some("create"), "archive.P01"),
+    ] {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let source = temp_dir.path().join("verbose.dat");
-        create_test_file(&source, b"long verbose create").expect("Failed to create source file");
-        let output_base = temp_dir.path().join("verbose.par2");
+        let source = temp_dir.path().join("source.dat");
+        create_test_file(&source, b"par1 create target rejection")
+            .expect("Failed to create source file");
+        let output_base = temp_dir.path().join(output_name);
 
         let mut command_runner = Command::new(get_binary_path(binary));
         if let Some(subcommand) = command {
             command_runner.arg(subcommand);
         }
         let output = command_runner
-            .arg("--quiet")
-            .arg("--verbose")
+            .arg("-q")
+            .arg("-s4")
+            .arg("-c1")
+            .arg(&output_base)
+            .arg(&source)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted PAR1 create output name: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("PAR1 create is not supported"),
+            "{binary} should explain PAR1 create rejection: stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output_base.exists(), "{binary} created a PAR1-named file");
+    }
+}
+
+#[test]
+fn test_create_commands_reject_par1_archive_name() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("source.dat");
+    create_test_file(&source, b"par1 archive name rejection").expect("Failed to create source");
+    let output_base = temp_dir.path().join("archive.par2");
+    let archive_name = temp_dir.path().join("archive.par");
+
+    let output = Command::new(get_binary_path("par2create"))
+        .arg("-q")
+        .arg("-a")
+        .arg(&archive_name)
+        .arg("-s4")
+        .arg("-c1")
+        .arg(&output_base)
+        .arg(&source)
+        .output()
+        .expect("Failed to execute par2create");
+
+    assert!(
+        !output.status.success(),
+        "par2create accepted PAR1 archive name: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("PAR1 create is not supported"),
+        "par2create should explain PAR1 archive name rejection: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !archive_name.exists(),
+        "par2create created a PAR1-named archive"
+    );
+}
+
+#[test]
+fn test_create_commands_accept_long_quiet_and_verbose_flags() {
+    for (binary, command, flag, name) in [
+        ("par2create", None, "--verbose", "verbose"),
+        ("par2", Some("create"), "--quiet", "quiet"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let source = temp_dir.path().join(format!("{name}.dat"));
+        create_test_file(&source, b"long verbosity create").expect("Failed to create source file");
+        let output_base = temp_dir.path().join(format!("{name}.par2"));
+
+        let mut command_runner = Command::new(get_binary_path(binary));
+        if let Some(subcommand) = command {
+            command_runner.arg(subcommand);
+        }
+        let output = command_runner
+            .arg(flag)
             .arg("-s")
             .arg("4")
             .arg("-c")
@@ -1438,7 +1788,65 @@ fn test_create_commands_accept_long_quiet_and_verbose_flags() {
 
         assert!(
             output.status.success(),
-            "{binary} rejected --verbose: stdout={}, stderr={}",
+            "{binary} rejected {flag}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn test_binaries_reject_mixed_verbose_and_quiet() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("source.dat");
+    create_test_file(&source, b"mixed verbosity").expect("Failed to create source file");
+
+    let cases: Vec<(&str, Vec<String>)> = vec![
+        (
+            "par2create",
+            vec![
+                "-v".into(),
+                "-q".into(),
+                temp_dir
+                    .path()
+                    .join("a.par2")
+                    .to_string_lossy()
+                    .into_owned(),
+                source.to_string_lossy().into_owned(),
+            ],
+        ),
+        (
+            "par2",
+            vec![
+                "create".into(),
+                "-v".into(),
+                "-q".into(),
+                temp_dir
+                    .path()
+                    .join("b.par2")
+                    .to_string_lossy()
+                    .into_owned(),
+                source.to_string_lossy().into_owned(),
+            ],
+        ),
+        (
+            "par2verify",
+            vec!["-v".into(), "-q".into(), "missing.par2".into()],
+        ),
+        (
+            "par2repair",
+            vec!["-v".into(), "-q".into(), "missing.par2".into()],
+        ),
+    ];
+
+    for (binary, args) in cases {
+        let output = Command::new(get_binary_path(binary))
+            .args(args)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+        assert!(
+            !output.status.success(),
+            "{binary} accepted mixed -v/-q: stdout={}, stderr={}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -1480,6 +1888,73 @@ fn test_create_commands_accept_long_resource_flags() {
             output.status.success(),
             "{binary} rejected long resource flags: stdout={}, stderr={}",
             String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn test_create_commands_reject_existing_outputs() {
+    for (binary, command) in [("par2create", None), ("par2", Some("create"))] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let source = temp_dir.path().join("overwrite.dat");
+        create_test_file(&source, b"existing output safety").expect("Failed to create source file");
+        let output_base = temp_dir.path().join("overwrite.par2");
+        create_test_file(&output_base, b"existing index").expect("Failed to create index file");
+
+        let mut command_runner = Command::new(get_binary_path(binary));
+        if let Some(subcommand) = command {
+            command_runner.arg(subcommand);
+        }
+        let output = command_runner
+            .arg("-q")
+            .arg("-s")
+            .arg("4")
+            .arg("-c")
+            .arg("1")
+            .arg(&output_base)
+            .arg(&source)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} overwrote an existing output: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(3),
+            "{binary} should match turbo's existing-output exit code: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(&output_base).unwrap(), b"existing index");
+    }
+}
+
+#[test]
+fn test_verify_and_repair_reject_skip_leeway_without_data_skipping() {
+    for (binary, args) in [
+        ("par2verify", vec!["-S10", "missing.par2"]),
+        ("par2repair", vec!["-S10", "missing.par2"]),
+        ("par2", vec!["verify", "-S10", "missing.par2"]),
+        ("par2", vec!["repair", "-S10", "missing.par2"]),
+    ] {
+        let output = Command::new(get_binary_path(binary))
+            .args(args)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+        assert!(
+            !output.status.success(),
+            "{binary} accepted -S without -N: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("only valid when -N"),
+            "{binary} failed for the wrong reason: {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -2029,12 +2504,7 @@ fn test_par2_threads_argument() {
 
 #[test]
 fn test_all_binaries_exist() {
-    let binaries = vec![
-        "par2",
-        "par2verify",
-        "par2repair",
-        "par2create",
-    ];
+    let binaries = vec!["par2", "par2verify", "par2repair", "par2create"];
 
     for binary in binaries {
         let path = get_binary_path(binary);

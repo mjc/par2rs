@@ -91,6 +91,15 @@ const LENGTH_END: usize = 16;
 const TYPE_OFFSET: usize = 48;
 const TYPE_END: usize = 64;
 
+/// Recovery file format identified from a user-supplied recovery path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryFormat {
+    /// PAR1 recovery set (`.par`, `.PAR`, `.pNN`, `.PNN`)
+    Par1,
+    /// PAR2 recovery set (`.par2`, `.PAR2`)
+    Par2,
+}
+
 /// Extract the base stem of a PAR2 filename, stripping `.par2` and any `.volN+M` suffix.
 ///
 /// Examples:
@@ -137,10 +146,50 @@ fn has_par2_extension(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("par2"))
 }
 
+fn has_par1_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("par")
+                || (ext.len() == 3
+                    && ext.as_bytes()[0].eq_ignore_ascii_case(&b'p')
+                    && ext.as_bytes()[1].is_ascii_digit()
+                    && ext.as_bytes()[2].is_ascii_digit())
+        })
+}
+
+/// Detect whether a recovery path names a PAR1 or PAR2 set.
+#[must_use]
+pub fn detect_recovery_format(path: &Path) -> Option<RecoveryFormat> {
+    if has_par2_extension(path) {
+        Some(RecoveryFormat::Par2)
+    } else if has_par1_extension(path) {
+        Some(RecoveryFormat::Par1)
+    } else {
+        None
+    }
+}
+
 fn append_path_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut candidate = path.as_os_str().to_os_string();
     candidate.push(suffix);
     PathBuf::from(candidate)
+}
+
+fn par1_base_stem(path: &Path) -> String {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if let Some(dot_pos) = name.rfind('.') {
+        let ext = &name[dot_pos + 1..];
+        if ext.eq_ignore_ascii_case("par")
+            || (ext.len() == 3
+                && ext.as_bytes()[0].eq_ignore_ascii_case(&b'p')
+                && ext.as_bytes()[1].is_ascii_digit()
+                && ext.as_bytes()[2].is_ascii_digit())
+        {
+            return name[..dot_pos].to_string();
+        }
+    }
+    name.to_string()
 }
 
 /// Resolve a command-line PAR2 argument to an existing `.par2` file.
@@ -213,6 +262,35 @@ pub fn collect_par2_files(file_path: &Path) -> Vec<PathBuf> {
 
     par2_files.sort();
     par2_files
+}
+
+/// Collect all PAR1 files related to the input file (`.par` and `.pNN`).
+#[must_use]
+pub fn collect_par1_files(file_path: &Path) -> Vec<PathBuf> {
+    let folder_path = file_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+
+    let base_stem = par1_base_stem(file_path);
+    let mut par1_files = Vec::new();
+
+    if file_path.exists() {
+        par1_files.push(file_path.to_path_buf());
+    }
+
+    if let Ok(entries) = fs::read_dir(folder_path) {
+        par1_files.extend(
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| has_par1_extension(path) && par1_base_stem(path) == base_stem),
+        );
+    }
+
+    par1_files.sort();
+    par1_files.dedup();
+    par1_files
 }
 
 /// Get a unique hash for a packet to detect duplicates
@@ -644,6 +722,55 @@ mod tests {
     }
 
     #[test]
+    fn par1_base_stem_strips_par_and_volume_extensions() {
+        assert_eq!(par1_base_stem(Path::new("test.par")), "test");
+        assert_eq!(par1_base_stem(Path::new("test.PAR")), "test");
+        assert_eq!(par1_base_stem(Path::new("test.p01")), "test");
+        assert_eq!(par1_base_stem(Path::new("test.P01")), "test");
+        assert_eq!(par1_base_stem(Path::new("my.file.p99")), "my.file");
+    }
+
+    #[test]
+    fn detect_recovery_format_accepts_par2_extensions() {
+        assert_eq!(
+            detect_recovery_format(Path::new("archive.par2")),
+            Some(RecoveryFormat::Par2)
+        );
+        assert_eq!(
+            detect_recovery_format(Path::new("archive.PAR2")),
+            Some(RecoveryFormat::Par2)
+        );
+    }
+
+    #[test]
+    fn detect_recovery_format_accepts_par1_extensions() {
+        assert_eq!(
+            detect_recovery_format(Path::new("archive.par")),
+            Some(RecoveryFormat::Par1)
+        );
+        assert_eq!(
+            detect_recovery_format(Path::new("archive.PAR")),
+            Some(RecoveryFormat::Par1)
+        );
+        assert_eq!(
+            detect_recovery_format(Path::new("archive.p01")),
+            Some(RecoveryFormat::Par1)
+        );
+        assert_eq!(
+            detect_recovery_format(Path::new("archive.P01")),
+            Some(RecoveryFormat::Par1)
+        );
+    }
+
+    #[test]
+    fn detect_recovery_format_rejects_non_recovery_extensions() {
+        assert_eq!(detect_recovery_format(Path::new("archive.par3")), None);
+        assert_eq!(detect_recovery_format(Path::new("archive.p1")), None);
+        assert_eq!(detect_recovery_format(Path::new("archive.p001")), None);
+        assert_eq!(detect_recovery_format(Path::new("archive.dat")), None);
+    }
+
+    #[test]
     fn collect_par2_files_excludes_different_base_stem() {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path();
@@ -669,6 +796,29 @@ mod tests {
             collected
         );
         assert_eq!(collected.len(), 3, "Expected file1 PAR2 set files");
+    }
+
+    #[test]
+    fn collect_par1_files_finds_main_and_volumes_for_volume_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+
+        std::fs::write(dir.join("file1.par"), b"").unwrap();
+        std::fs::write(dir.join("file1.p01"), b"").unwrap();
+        std::fs::write(dir.join("file1.P02"), b"").unwrap();
+        std::fs::write(dir.join("file2.par"), b"").unwrap();
+        std::fs::write(dir.join("file2.p01"), b"").unwrap();
+
+        let collected = collect_par1_files(&dir.join("file1.P02"));
+
+        assert_eq!(
+            collected,
+            vec![
+                dir.join("file1.P02"),
+                dir.join("file1.p01"),
+                dir.join("file1.par"),
+            ]
+        );
     }
 
     #[test]

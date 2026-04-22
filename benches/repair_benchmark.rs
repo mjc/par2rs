@@ -4,6 +4,7 @@ use par2rs::reed_solomon::galois::Galois16;
 use par2rs::reed_solomon::simd::process_slice_multiply_add_portable_simd;
 #[cfg(target_arch = "x86_64")]
 use par2rs::reed_solomon::simd::{process_slice_multiply_add_simd, SimdLevel};
+use par2rs::reed_solomon::Matrix;
 use par2rs::RecoverySlicePacket;
 use std::collections::HashMap;
 use std::hint::black_box;
@@ -240,10 +241,81 @@ fn bench_reed_solomon_reconstruct(c: &mut Criterion) {
     group.finish();
 }
 
+fn matrix_with_pattern<const N: usize>() -> Matrix<N, N> {
+    let mut matrix = Matrix::<N, N>::identity();
+    for row in 0..N {
+        for col in 0..N {
+            if row != col && (row + col) % 7 == 0 {
+                matrix.set(row, col, Galois16::new((row * 257 + col * 17 + 1) as u16));
+            }
+        }
+    }
+    matrix
+}
+
+fn bench_matrix_inversion(c: &mut Criterion) {
+    let mut group = c.benchmark_group("gf16_matrix_inversion");
+    group.measurement_time(std::time::Duration::from_secs(20));
+
+    group.bench_function("invert_4x4", |b| {
+        b.iter(|| {
+            let mut matrix = matrix_with_pattern::<4>();
+            matrix.invert().unwrap();
+            black_box(matrix);
+        });
+    });
+
+    group.bench_function("invert_16x16", |b| {
+        b.iter(|| {
+            let mut matrix = matrix_with_pattern::<16>();
+            matrix.invert().unwrap();
+            black_box(matrix);
+        });
+    });
+
+    group.bench_function("invert_32x32", |b| {
+        b.iter(|| {
+            let mut matrix = matrix_with_pattern::<32>();
+            matrix.invert().unwrap();
+            black_box(matrix);
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_gf16_arithmetic(c: &mut Criterion) {
+    let mut group = c.benchmark_group("gf16_arithmetic");
+
+    group.bench_function("mul_accumulate_4096", |b| {
+        b.iter(|| {
+            let mut acc = Galois16::new(1);
+            for value in 1..=4096 {
+                acc *= Galois16::new(value);
+            }
+            black_box(acc);
+        });
+    });
+
+    group.bench_function("div_chain_4096", |b| {
+        b.iter(|| {
+            let mut acc = Galois16::new(0xBEEF);
+            for value in 1..=4096 {
+                acc /= Galois16::new(value);
+            }
+            black_box(acc);
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_simd_comparison,
     bench_simd_variants_by_size,
-    bench_reed_solomon_reconstruct
+    bench_reed_solomon_reconstruct,
+    bench_matrix_inversion,
+    bench_gf16_arithmetic
 );
 criterion_main!(benches);

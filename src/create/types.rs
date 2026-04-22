@@ -67,6 +67,14 @@ pub struct CreateConfig {
     /// Number of threads for computation (0 = auto-detect)
     pub thread_count: u32,
 
+    /// Number of file-level worker threads.
+    pub file_thread_count: Option<usize>,
+
+    /// Allow existing output PAR2 files to be overwritten.
+    ///
+    /// Defaults to false to match par2cmdline-turbo's output safety behavior.
+    pub overwrite_existing: bool,
+
     /// First recovery block exponent (typically 0)
     /// Advanced option for compatibility
     pub first_recovery_block: u32,
@@ -87,6 +95,8 @@ impl Default for CreateConfig {
             recovery_file_count: None,
             memory_limit: None,
             thread_count: 0, // Auto-detect
+            file_thread_count: None,
+            overwrite_existing: false,
             first_recovery_block: 0,
         }
     }
@@ -193,6 +203,7 @@ mod tests {
         assert!(c.source_files.is_empty());
         assert_eq!(c.redundancy_percentage, Some(5));
         assert_eq!(c.thread_count, 0);
+        assert!(!c.overwrite_existing);
         assert_eq!(c.first_recovery_block, 0);
         assert_eq!(c.recovery_file_scheme, RecoveryFileScheme::Variable);
     }

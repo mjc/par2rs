@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 
 use par2rs::args::parse_repair_args;
+use par2rs::cli::compat::{init_env_logger, parse_memory_mb, parse_noise_level};
+use par2rs::reporters::VerificationReporter;
 use par2rs::verify::VerificationConfig;
 use std::path::{Path, PathBuf};
 
@@ -10,14 +12,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Initialize the logger
-    env_logger::Builder::from_default_env()
-        .format_timestamp(None)
-        .format_module_path(false)
-        .format_target(false)
-        .init();
-
     let matches = parse_repair_args();
+    let noise_level = parse_noise_level(matches.get_count("verbose"), matches.get_count("quiet"))
+        .map_err(anyhow::Error::msg)?;
+    init_env_logger(noise_level);
 
     let par2_file = matches
         .get_one::<String>("par2_file")
@@ -34,8 +32,30 @@ fn main() -> Result<()> {
         })
         .unwrap_or_default();
 
+    if par2rs::par2_files::detect_recovery_format(Path::new(par2_file))
+        == Some(par2rs::par2_files::RecoveryFormat::Par1)
+    {
+        anyhow::ensure!(!purge, "PAR1 purge is not supported");
+        let memory_limit = parse_memory_mb(matches.get_one::<String>("memory").map(String::as_str))
+            .map_err(anyhow::Error::msg)?;
+        let results = par2rs::par1::repair::repair_par1_file_with_memory_limit(
+            Path::new(par2_file),
+            memory_limit,
+        )
+        .context("Failed to repair PAR1 files")?;
+        if !quiet {
+            let reporter = par2rs::reporters::ConsoleVerificationReporter::new();
+            reporter.report_verification_results(&results);
+        }
+        anyhow::ensure!(
+            results.missing_file_count == 0 && results.corrupted_file_count == 0,
+            "PAR1 repair failed"
+        );
+        return Ok(());
+    }
+
     // Create verification config from command line arguments
-    let verify_config = VerificationConfig::from_args(&matches);
+    let verify_config = VerificationConfig::try_from_args(&matches).map_err(anyhow::Error::msg)?;
 
     let resolved_par2_file =
         par2rs::par2_files::resolve_par2_file_argument(Path::new(par2_file))
@@ -66,6 +86,6 @@ fn main() -> Result<()> {
     if result.is_success() {
         Ok(())
     } else {
-        anyhow::bail!("Repair failed");
+        std::process::exit(2);
     }
 }

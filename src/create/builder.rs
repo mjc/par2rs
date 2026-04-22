@@ -150,6 +150,21 @@ impl CreateContextBuilder {
         self
     }
 
+    /// Set number of file-level worker threads.
+    pub fn file_thread_count(mut self, count: usize) -> Self {
+        self.config.file_thread_count = Some(count);
+        self
+    }
+
+    /// Allow overwriting existing PAR2 output files.
+    ///
+    /// CLI entry points intentionally do not expose this; it is only available
+    /// to library callers that opt in explicitly.
+    pub fn overwrite_existing(mut self, overwrite: bool) -> Self {
+        self.config.overwrite_existing = overwrite;
+        self
+    }
+
     /// Set custom progress reporter
     pub fn reporter(mut self, reporter: Box<dyn CreateReporter>) -> Self {
         self.reporter = Some(reporter);
@@ -209,8 +224,10 @@ mod tests {
             .redundancy_percentage(10)
             .recovery_target_size(40 * 1024 * 1024)
             .thread_count(2)
+            .file_thread_count(3)
             .first_recovery_block(5)
             .memory_limit(1024 * 1024)
+            .overwrite_existing(true)
             .base_path(PathBuf::from("/tmp/base"))
             .source_block_count(1000)
             .recovery_block_count(50)
@@ -221,8 +238,10 @@ mod tests {
         assert_eq!(builder.config.redundancy_percentage, None);
         assert_eq!(builder.config.recovery_target_size, Some(40 * 1024 * 1024));
         assert_eq!(builder.config.thread_count, 2);
+        assert_eq!(builder.config.file_thread_count, Some(3));
         assert_eq!(builder.config.first_recovery_block, 5);
         assert_eq!(builder.config.memory_limit, Some(1024 * 1024));
+        assert!(builder.config.overwrite_existing);
         assert_eq!(builder.config.base_path, Some(PathBuf::from("/tmp/base")));
         assert_eq!(builder.config.recovery_block_count, Some(50));
         assert_eq!(builder.config.recovery_file_count, Some(4));

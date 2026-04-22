@@ -14,6 +14,7 @@ use std::path::PathBuf;
 pub struct RepairContext {
     pub recovery_set: RecoverySetInfo,
     pub base_path: PathBuf,
+    pub memory_limit: Option<usize>,
     reporter: Box<dyn ProgressReporter>,
 }
 
@@ -47,6 +48,7 @@ impl RepairContext {
         Ok(RepairContext {
             recovery_set,
             base_path,
+            memory_limit: None,
             reporter,
         })
     }
@@ -63,8 +65,13 @@ impl RepairContext {
         Ok(RepairContext {
             recovery_set,
             base_path,
+            memory_limit: None,
             reporter,
         })
+    }
+
+    pub(super) fn set_memory_limit(&mut self, memory_limit: Option<usize>) {
+        self.memory_limit = memory_limit;
     }
 
     /// Get a reference to the progress reporter

@@ -486,6 +486,12 @@ impl ScanBuffer {
     pub fn slice(&self, range: std::ops::Range<usize>) -> &[u8] {
         &self.0[range]
     }
+
+    /// Get a mutable slice at a specific range (test-only for fixture setup)
+    #[cfg(test)]
+    pub fn slice_mut(&mut self, range: std::ops::Range<usize>) -> &mut [u8] {
+        &mut self.0[range]
+    }
 }
 
 /// Metadata collected during file scanning
@@ -497,6 +503,10 @@ pub struct FileScanMetadata {
     pub blocks_in_sequence: bool,
     /// Actual MD5 hash of the scanned file
     pub actual_file_hash: Option<Md5Hash>,
+    /// Actual MD5 hash of the scanned file's first 16 KiB
+    pub actual_file_hash_16k: Option<Md5Hash>,
+    /// Actual scanned file size
+    pub actual_file_size: Option<u64>,
     /// Blocks found during scan with their file offsets
     pub found_blocks: Vec<(usize, FileId, u32)>, // (file_offset, file_id, block_number)
 }

@@ -35,6 +35,7 @@ fn test_parallel_sequential_equivalence() {
             threads: 2, // Use 2 threads for deterministic testing
             parallel: true,
             skip_full_file_md5: false,
+            ..Default::default()
         };
         let base_dir_parallel = packets_parallel.base_dir.clone();
         let parallel_results = comprehensive_verify_files(
@@ -49,6 +50,7 @@ fn test_parallel_sequential_equivalence() {
             threads: 0, // Threads don't matter in sequential mode
             parallel: false,
             skip_full_file_md5: false,
+            ..Default::default()
         };
         let base_dir_sequential = packets_sequential.base_dir.clone();
         let sequential_results = comprehensive_verify_files(
@@ -205,6 +207,7 @@ fn test_thread_count_consistency() {
             threads: *threads,
             parallel: true,
             skip_full_file_md5: false,
+            ..Default::default()
         };
         let base_dir = packets.base_dir.clone();
         let result =

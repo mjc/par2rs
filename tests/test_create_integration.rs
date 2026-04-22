@@ -330,6 +330,77 @@ fn test_create_then_corrupt_and_repair_with_par2rs_nonzero_first_recovery_block(
     assert_eq!(fs::read(&test_file).unwrap(), original_data);
 }
 
+#[test]
+fn create_rejects_existing_index_without_overwriting() {
+    let temp = tempdir().unwrap();
+    let test_file = temp.path().join("test.dat");
+    let par2_file = temp.path().join("test.par2");
+
+    create_test_file(&test_file, 4096, 0x42).unwrap();
+    fs::write(&par2_file, b"existing index").unwrap();
+
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(par2_file.to_str().unwrap())
+        .source_files(vec![test_file])
+        .recovery_block_count(1)
+        .reporter(reporter)
+        .build()
+        .unwrap();
+
+    let err = context.create().unwrap_err();
+    assert!(format!("{err}").contains("test.par2"));
+    assert_eq!(fs::read(&par2_file).unwrap(), b"existing index");
+}
+
+#[test]
+fn create_rejects_existing_volume_without_creating_index() {
+    let temp = tempdir().unwrap();
+    let test_file = temp.path().join("test.dat");
+    let par2_file = temp.path().join("archive.par2");
+    let volume_file = temp.path().join("archive.vol0+1.par2");
+
+    create_test_file(&test_file, 4096, 0x24).unwrap();
+    fs::write(&volume_file, b"existing volume").unwrap();
+
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(par2_file.to_str().unwrap())
+        .source_files(vec![test_file])
+        .recovery_block_count(1)
+        .reporter(reporter)
+        .build()
+        .unwrap();
+
+    let err = context.create().unwrap_err();
+    assert!(format!("{err}").contains("archive.vol0+1.par2"));
+    assert!(!par2_file.exists(), "index file should not be created");
+    assert_eq!(fs::read(&volume_file).unwrap(), b"existing volume");
+}
+
+#[test]
+fn create_builder_can_opt_into_overwrite() {
+    let temp = tempdir().unwrap();
+    let test_file = temp.path().join("test.dat");
+    let par2_file = temp.path().join("overwrite.par2");
+
+    create_test_file(&test_file, 4096, 0x66).unwrap();
+    fs::write(&par2_file, b"replace me").unwrap();
+
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(par2_file.to_str().unwrap())
+        .source_files(vec![test_file])
+        .recovery_block_count(1)
+        .overwrite_existing(true)
+        .reporter(reporter)
+        .build()
+        .unwrap();
+
+    context.create().unwrap();
+    assert_ne!(fs::read(&par2_file).unwrap(), b"replace me");
+}
+
 /// Test that verifies compatibility by comparing our output structure
 /// with par2cmdline-turbo's output structure
 #[test]
