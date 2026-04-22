@@ -1,0 +1,51 @@
+wing: par2rs
+rooms:
+- name: cli_surface
+  description: par2-compatible command parsing, binaries, reporters, and user-facing behavior
+  keywords:
+  - cli
+  - args
+  - command
+  - reporter
+  - binary
+- name: packet_format
+  description: PAR2 packet parsing, serialization, checksums, and format invariants
+  keywords:
+  - par2
+  - packet
+  - checksum
+  - md5
+  - specification
+- name: create_pipeline
+  description: Recovery set creation, source scanning, packet generation, and volume planning
+  keywords:
+  - create
+  - builder
+  - source
+  - recovery
+  - volume
+- name: verify_repair_pipeline
+  description: Verification, block scanning, recovery loading, and repair execution
+  keywords:
+  - verify
+  - repair
+  - scan
+  - slice
+  - recovery
+- name: reed_solomon_simd
+  description: Reed-Solomon arithmetic, matrix work, SIMD backends, and hash acceleration
+  keywords:
+  - reed
+  - solomon
+  - galois
+  - simd
+  - matrix
+- name: interop_benchmarks
+  description: par2cmdline comparison material, benchmark results, fixtures, scripts, and docs
+  keywords:
+  - interop
+  - par2cmdline
+  - benchmark
+  - fixture
+  - scripts
+  - docs
