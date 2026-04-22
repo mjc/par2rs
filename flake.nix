@@ -96,6 +96,7 @@
               cargo-llvm-cov
               rustfmt
               clippy
+              sccache
               yamllint
               cargo-flamegraph
               bc # for benchmark averaging calculations
@@ -115,6 +116,11 @@
           LIBCLANG_PATH = pkgs.lib.makeLibraryPath [pkgs.llvmPackages_latest.libclang.lib];
 
           shellHook = ''
+            export SCCACHE_DIR=''${SCCACHE_DIR:-$HOME/.cache/sccache}
+            mkdir -p "$SCCACHE_DIR"
+            export SCCACHE_SERVER_UDS=''${SCCACHE_SERVER_UDS:-$SCCACHE_DIR/par2rs.sock}
+            export RUSTC_WRAPPER=${pkgs.sccache}/bin/sccache
+            export CARGO_INCREMENTAL=0
             export PATH=$PATH:''${CARGO_HOME:-~/.cargo}/bin
             export PATH=$PATH:''${RUSTUP_HOME:-~/.rustup}/toolchains/$RUSTC_VERSION-${
               if pkgs.stdenv.isDarwin
