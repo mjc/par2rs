@@ -303,9 +303,6 @@ Repairs corrupted files using PAR2 recovery data.
 - Extra file scanning for renamed or relocated protected files
 - Optional purge of backup and PAR2 files after successful repair
 
-### split_par2 (Utility)
-Development utility to split PAR2 files into individual packets for analysis.
-
 ## Performance
 
 - **Parallel Processing**: Multi-threaded operations using Rayon

@@ -56,8 +56,8 @@
               # which doesn't exist in Nix's sandboxed build environment
               buildFeatures = ["nix-build"];
 
-              # The main binary is 'par2' which provides par2cmdline-compatible interface
-              # Additional utilities: par2verify, par2repair, par2create, split_par2
+              # The main binary is 'par2' which provides par2cmdline-compatible interface.
+              # Additional compatibility binaries: par2verify, par2repair, par2create.
               meta = with pkgs.lib; {
                 description = "High-performance PAR2 file verification and repair utility written in Rust";
                 longDescription = ''

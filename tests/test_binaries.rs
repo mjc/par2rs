@@ -5,7 +5,6 @@
 //! - par2verify
 //! - par2repair
 //! - par2create
-//! - split_par2
 //!
 //! The binary paths come from Cargo when available, with a target/debug fallback
 //! for direct local runs.
@@ -22,7 +21,6 @@ fn get_binary_path(name: &str) -> PathBuf {
         "par2create" => option_env!("CARGO_BIN_EXE_par2create"),
         "par2repair" => option_env!("CARGO_BIN_EXE_par2repair"),
         "par2verify" => option_env!("CARGO_BIN_EXE_par2verify"),
-        "split_par2" => option_env!("CARGO_BIN_EXE_split_par2"),
         _ => None,
     };
     if let Some(path) = cargo_path {
@@ -1935,22 +1933,6 @@ fn test_par2create_n_uses_uniform_file_sizes() {
 }
 
 // =============================================================================
-// split_par2 binary tests
-// =============================================================================
-
-#[test]
-fn test_split_par2_runs() {
-    let output = Command::new(get_binary_path("split_par2"))
-        .output()
-        .expect("Failed to execute split_par2");
-
-    // Should execute without crashing
-    // Note: This binary has hardcoded paths, so it may fail to find files
-    // but should still execute
-    assert!(output.status.success() || output.status.code().is_some());
-}
-
-// =============================================================================
 // Integration tests with temporary files
 // =============================================================================
 
@@ -2052,7 +2034,6 @@ fn test_all_binaries_exist() {
         "par2verify",
         "par2repair",
         "par2create",
-        "split_par2",
     ];
 
     for binary in binaries {
