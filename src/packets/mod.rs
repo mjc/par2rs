@@ -229,9 +229,20 @@ fn scan_for_next_magic<R: Read>(reader: &mut R) -> std::io::Result<Option<[u8; 8
     }
 }
 
-fn rewind_after_invalid_header<R: Seek>(reader: &mut R) -> std::io::Result<()> {
-    reader.seek(SeekFrom::Current(-((MIN_PACKET_SIZE as i64) - 1)))?;
-    Ok(())
+fn resync_to_next_magic<R: Read + Seek>(reader: &mut R, rewind_bytes: i64) -> bool {
+    if rewind_bytes != 0
+        && reader
+            .seek(std::io::SeekFrom::Current(-rewind_bytes))
+            .is_err()
+    {
+        return false;
+    }
+
+    if scan_for_next_magic(reader).ok().flatten().is_none() {
+        return false;
+    }
+
+    reader.seek(std::io::SeekFrom::Current(-8)).is_ok()
 }
 
 /// Parse packets with optional recovery slice inclusion
@@ -266,15 +277,9 @@ pub fn parse_packets_with_options<R: Read + Seek>(
                 break;
             }
             Err(PacketParseError::InvalidMagic(_)) => {
-                // Bad magic - try to find next valid packet by scanning forward
-                if rewind_after_invalid_header(reader).is_err() {
-                    break;
-                }
-                if scan_for_next_magic(reader).ok().flatten().is_some() {
-                    // Found magic, but we need to rewind 8 bytes so the next parse reads the header
-                    if reader.seek(SeekFrom::Current(-8)).is_err() {
-                        break;
-                    }
+                // PacketHeader::parse consumed 64 bytes. Rewind 63 bytes so
+                // resync still checks the byte immediately after the bad start.
+                if resync_to_next_magic(reader, 63) {
                     continue;
                 } else {
                     break;
@@ -293,12 +298,7 @@ pub fn parse_packets_with_options<R: Read + Seek>(
                 }
                 Err(_) => {
                     // Validation failed - try to find next valid packet
-                    if scan_for_next_magic(reader).ok().flatten().is_some() {
-                        // Found magic, rewind 8 bytes
-                        if reader.seek(SeekFrom::Current(-8)).is_err() {
-                            break;
-                        }
-                    } else {
+                    if !resync_to_next_magic(reader, 0) {
                         break;
                     }
                 }
@@ -311,10 +311,7 @@ pub fn parse_packets_with_options<R: Read + Seek>(
             Ok(data) => data,
             Err(_) => {
                 // Failed to read packet body - try to find next valid packet
-                if scan_for_next_magic(reader).ok().flatten().is_some() {
-                    if reader.seek(SeekFrom::Current(-8)).is_err() {
-                        break;
-                    }
+                if resync_to_next_magic(reader, 0) {
                     continue;
                 } else {
                     break;
@@ -745,6 +742,20 @@ mod tests {
             // Should find the real magic at byte 12 (7 + 1 + 4)
             let pos = cursor.position();
             assert_eq!(pos, 20); // 12 bytes before magic + 8 magic bytes
+        }
+
+        #[test]
+        fn invalid_magic_resync_checks_next_byte() {
+            let mut data = vec![0xFF; 64];
+            data[1..9].copy_from_slice(MAGIC_BYTES);
+            let mut cursor = Cursor::new(&data);
+
+            let result = PacketHeader::parse(&mut cursor);
+            assert!(matches!(result, Err(PacketParseError::InvalidMagic(_))));
+            assert_eq!(cursor.position(), 64);
+
+            assert!(resync_to_next_magic(&mut cursor, 63));
+            assert_eq!(cursor.position(), 1);
         }
 
         #[test]

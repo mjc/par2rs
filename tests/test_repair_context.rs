@@ -450,8 +450,10 @@ fn test_repair_context_purge_par_files_keeps_backups() {
 
     let par2_file = dir.path().join("test.par2");
     let par2_vol = dir.path().join("test.vol0+1.par2");
+    let foreign_par2 = dir.path().join("foreign.par2");
     fs::write(&par2_file, b"dummy par2").unwrap();
     fs::write(&par2_vol, b"dummy volume").unwrap();
+    fs::write(&foreign_par2, b"foreign").unwrap();
 
     let packets = vec![
         Packet::Main(create_main_packet(vec![file_id])),
@@ -466,6 +468,7 @@ fn test_repair_context_purge_par_files_keeps_backups() {
     assert!(backup_file.exists());
     assert!(!par2_file.exists());
     assert!(!par2_vol.exists());
+    assert!(foreign_par2.exists());
 }
 
 #[test]
@@ -477,10 +480,12 @@ fn test_repair_context_purge_multiple_par2_files() {
     let par2_main = dir.path().join("test.par2");
     let par2_vol1 = dir.path().join("test.vol01+02.par2");
     let par2_vol2 = dir.path().join("test.vol03+04.par2");
+    let foreign_par2 = dir.path().join("other.par2");
 
     fs::write(&par2_main, b"main").unwrap();
     fs::write(&par2_vol1, b"vol1").unwrap();
     fs::write(&par2_vol2, b"vol2").unwrap();
+    fs::write(&foreign_par2, b"foreign").unwrap();
 
     let packets = vec![
         Packet::Main(create_main_packet(vec![file_id])),
@@ -492,10 +497,11 @@ fn test_repair_context_purge_multiple_par2_files() {
     let result = context.purge_files(par2_main.to_str().unwrap());
     assert!(result.is_ok());
 
-    // All PAR2 files should be deleted
+    // All PAR2 files from the same set should be deleted.
     assert!(!par2_main.exists());
     assert!(!par2_vol1.exists());
     assert!(!par2_vol2.exists());
+    assert!(foreign_par2.exists());
 }
 
 #[test]

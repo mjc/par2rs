@@ -126,7 +126,7 @@ fn allocate_recovery_blocks(
                 };
             }
 
-            if file_number == 0 && blocks > 0 {
+            if blocks == 0 || file_number == 0 {
                 return allocate_recovery_blocks(
                     recovery_file_count,
                     recovery_block_count,
@@ -421,6 +421,17 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].first_exponent, 0);
         assert_eq!(plan[0].block_count, 2);
+    }
+
+    #[test]
+    fn limited_scheme_falls_back_when_cap_exhausts_files() {
+        let allocations = allocate_recovery_blocks(1, 10, 0, RecoveryFileScheme::Limited, 4, 1);
+
+        assert_eq!(allocations.len(), 2);
+        assert_eq!(allocations[0].exponent, 0);
+        assert_eq!(allocations[0].count, 10);
+        assert_eq!(allocations[1].exponent, 10);
+        assert_eq!(allocations[1].count, 0);
     }
 
     /// Test count_digits helper

@@ -42,6 +42,19 @@ fn create_varied_test_file(path: &Path, size: usize) -> std::io::Result<Vec<u8>>
     Ok(data)
 }
 
+/// Helper to create unique 4-byte blocks for tiny-block repair tests.
+///
+/// Repair tests deliberately use tiny 4-byte blocks. A repeated-byte fixture lets
+/// repair tools find duplicate "good" blocks in the damaged source file instead
+/// of exercising recovery slices.
+fn create_indexed_block_file(path: &Path, block_count: u32) -> std::io::Result<()> {
+    let mut data = Vec::with_capacity(block_count as usize * 4);
+    for block in 0..block_count {
+        data.extend_from_slice(&block.to_le_bytes());
+    }
+    fs::write(path, data)
+}
+
 /// Helper to run par2cmdline-turbo verify command
 fn run_par2_verify(par2_file: &Path) -> std::io::Result<bool> {
     let output = Command::new("par2").arg("verify").arg(par2_file).output()?;
@@ -284,8 +297,7 @@ fn test_create_then_corrupt_and_repair_with_par2cmdline() {
     let test_file = temp.path().join("test.dat");
     let par2_file = temp.path().join("test.par2");
 
-    // Create test file
-    create_test_file(&test_file, 4096, 0xDD).unwrap();
+    create_indexed_block_file(&test_file, 1024).unwrap();
 
     // Create PAR2 files using our implementation
     let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true)); // quiet mode
@@ -570,7 +582,7 @@ fn repair_using_only_volume_files_succeeds() {
     let test_file = temp.path().join("test.dat");
     let par2_file = temp.path().join("test.par2");
 
-    create_test_file(&test_file, 4096, 0xEF).unwrap();
+    create_indexed_block_file(&test_file, 1024).unwrap();
 
     let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
     let mut context = par2rs::create::CreateContextBuilder::new()
