@@ -8,7 +8,9 @@ A Rust implementation of PAR2 (Parity Archive) for data recovery and verificatio
 
 ### Performance
 
-par2rs achieves **1.1-2.9x speedup** over par2cmdline through:
+#### Verification/Repair
+
+par2rs achieves **1.1-2.9x speedup** over par2cmdline for verification and repair through:
 - **Optimized I/O patterns** using full slice-size chunks instead of 64KB blocks (eliminates redundant reads)
 - **Parallel Reed-Solomon reconstruction** using Rayon for multi-threaded chunk processing
 - **SIMD-accelerated operations** (PSHUFB on x86_64, NEON on ARM64, portable_simd cross-platform)
@@ -17,7 +19,7 @@ par2rs achieves **1.1-2.9x speedup** over par2cmdline through:
 
 **⚠️ Performance Regression Note:** These results show significantly lower speedups than previous benchmarks (which showed 2-200× improvements). This is considered a **regression** and is under investigation. The current implementation maintains correctness but has lost most of its performance advantages on Linux x86_64.
 
-**Latest benchmark results:**
+**Latest verification/repair benchmark results:**
 
 **Linux x86_64 (AMD Ryzen 9 5950X, 64GB RAM):**
 - 1MB: **1.23x speedup** (0.032s → 0.026s)
@@ -84,7 +86,7 @@ par2 v myfile.par2  # short form
 par2 repair myfile.par2
 par2 r myfile.par2  # short form
 
-# Create recovery files (coming soon)
+# Create recovery files
 par2 create myfile.par2 file1 file2
 par2 c myfile.par2 file1 file2  # short form
 ```
@@ -100,6 +102,17 @@ par2 r -p myfile.par2
 
 # Use specific number of threads
 par2 v -t 8 myfile.par2
+
+# Create with explicit recovery settings
+par2 c -s65536 -r10 myfile.par2 file1 file2
+
+# Store source names relative to a base path
+par2 c -B /data/archive myfile.par2 /data/archive/file1
+par2 v -B /data/archive myfile.par2
+
+# Scan renamed or relocated data while verifying/repairing
+par2 v myfile.par2 renamed-file
+par2 r myfile.par2 renamed-file
 
 # Disable parallel processing (single-threaded)
 par2 v --no-parallel myfile.par2
@@ -265,14 +278,28 @@ Verifies the integrity of files using PAR2 archives.
 **Features:**
 - Complete PAR2 set analysis
 - File integrity verification
+- Byte-by-byte block scanning for renamed or displaced data
 - Progress reporting
 - Detailed statistics
 
-### par2create (Planned)
+### par2create
 Creates PAR2 recovery files for data protection.
 
-### par2repair (Planned)
+**Features:**
+- par2cmdline-style create options for block size/count, redundancy, recovery volume layout, recursion, base paths, and quiet/verbose modes
+- PAR2 index and recovery volume generation
+- Reed-Solomon recovery block generation
+- Compatibility coverage against par2cmdline for generated sets
+
+### par2repair
 Repairs corrupted files using PAR2 recovery data.
+
+**Features:**
+- Recovery set loading from main and volume PAR2 files
+- Corrupt or missing file reconstruction
+- Base path support for relocated data files
+- Extra file scanning for renamed or relocated protected files
+- Optional purge of backup and PAR2 files after successful repair
 
 ### split_par2 (Utility)
 Development utility to split PAR2 files into individual packets for analysis.
@@ -327,18 +354,18 @@ This implementation follows the PAR2 specification and supports:
 
 ### File Scanning Strategy
 
-`par2rs` uses a **block-aligned sequential scanning** approach that differs from `par2cmdline`'s sliding window scanner:
+`par2rs` uses a **global block scanner** modeled after `par2cmdline`:
 
-- **par2cmdline**: Uses a byte-by-byte sliding window with rolling CRC32 that can find blocks at *any offset* in a file, even if displaced by inserted/deleted data. This is more thorough but slower.
+- **Fast path**: Aligned blocks are checked first for the common case where files are present at their expected paths and offsets.
 
-- **par2rs**: Only checks blocks at their expected aligned positions using sequential reads with large buffers (128MB). This is significantly faster for normal verification but cannot find displaced blocks.
+- **Compatibility path**: When needed, verification and repair scan byte-by-byte with rolling CRC32 to find protected data blocks at displaced offsets or inside extra files passed on the command line.
 
 **Practical Impact:**
-- ✅ **par2rs is faster** for standard verification/repair scenarios (files are either intact or corrupted at known positions)
-- ⚠️ **par2cmdline is more robust** for edge cases like files with prepended data or non-aligned block corruption
-- 🎯 For typical use cases (bit rot, transmission errors, filesystem corruption), both tools will perform equivalently
+- ✅ Intact files still take the fast aligned path.
+- ✅ Renamed or relocated files can be supplied as extra arguments to `verify` or `repair`.
+- ✅ Displaced blocks from inserted or deleted bytes are detected by the byte-scanning path.
 
-This design choice optimizes for the common case where files are either intact or have corruption at expected block boundaries, delivering substantial performance improvements while maintaining correctness for standard PAR2 operations.
+This keeps the common case efficient while matching `par2cmdline` behavior for the recovery cases where data is present but not at the protected filename or expected block offset.
 
 ## Known Issues
 
@@ -347,11 +374,15 @@ This design choice optimizes for the common case where files are either intact o
 ## Roadmap
 
 - [x] **Phase 1**: Complete packet parsing and verification
-- [ ] **Phase 2**: PAR2 file creation (`par2create`)
+- [x] **Phase 2**: PAR2 file creation (`par2create`)
 - [x] **Phase 3**: File repair functionality (`par2repair`)
 - [x] **Phase 4**: SIMD optimizations (PSHUFB, NEON, portable_simd)
 - [ ] **Phase 5**: Runtime SIMD dispatch
 - [ ] **Phase 6**: Advanced features (progress callbacks, custom block sizes)
+- [ ] **Performance**: Investigate the Linux x86_64 verification/repair regression and restore prior benchmark speedups
+- [ ] **Create Optimization**: Merge hashing and recovery generation into a single pass to avoid reading source files twice
+- [ ] **Repair Reliability**: Reproduce and fix the repair hang on small files within large multi-file PAR2 sets
+- [ ] **Benchmarks**: Re-test and refresh macOS Apple Silicon results
 
 ## Documentation
 
