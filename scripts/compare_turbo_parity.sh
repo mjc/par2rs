@@ -248,6 +248,14 @@ make_tree_pair() {
   make_tree_source_fixture "$PAR2RS_CASE"
 }
 
+corrupt_pair_file() {
+  local relative_path="$1"
+  if [[ "$HAS_TURBO" = 1 ]]; then
+    dd if=/dev/zero of="$TURBO_CASE/$relative_path" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
+  fi
+  dd if=/dev/zero of="$PAR2RS_CASE/$relative_path" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
+}
+
 run_pair() {
   local name="$1"
   shift
@@ -538,8 +546,7 @@ case_verify_intact_par2() {
 
 case_repair_corrupted_par2_file() {
   copy_fixture_pair par2-repair-corrupt
-  dd if=/dev/zero of="$TURBO_CASE/testfile" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
-  dd if=/dev/zero of="$PAR2RS_CASE/testfile" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
+  corrupt_pair_file testfile
   run_pair par2-repair-corrupt repair testfile.par2
   assert_pair_same_status
   if [[ "$HAS_TURBO" = 1 ]]; then
@@ -569,8 +576,7 @@ case_verify_by_data_file_input() {
 
 case_repair_by_data_file_input() {
   copy_fixture_pair par2-repair-data-input
-  dd if=/dev/zero of="$TURBO_CASE/testfile" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
-  dd if=/dev/zero of="$PAR2RS_CASE/testfile" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
+  corrupt_pair_file testfile
   run_pair par2-repair-data-input repair testfile
   assert_pair_same_status
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
@@ -594,8 +600,7 @@ case_repair_with_basepath() {
   cp "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/base/"
   cp "$ROOT/tests/fixtures/testfile"*.par2 "$TURBO_CASE/work/"
   cp "$ROOT/tests/fixtures/testfile"*.par2 "$PAR2RS_CASE/work/"
-  dd if=/dev/zero of="$TURBO_CASE/base/testfile" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
-  dd if=/dev/zero of="$PAR2RS_CASE/base/testfile" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
+  corrupt_pair_file base/testfile
   run_pair_in_dirs par2-repair-basepath "$TURBO_CASE/work" "$PAR2RS_CASE/work" repair -B../base testfile.par2
   assert_pair_same_status
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/base/testfile"
@@ -615,8 +620,7 @@ case_verify_with_data_skipping_leeway() {
 
 case_repair_with_data_skipping_leeway() {
   copy_fixture_pair par2-repair-NS
-  dd if=/dev/zero of="$TURBO_CASE/testfile" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
-  dd if=/dev/zero of="$PAR2RS_CASE/testfile" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
+  corrupt_pair_file testfile
   run_pair par2-repair-NS repair -N -S64 testfile.par2
   assert_pair_same_status
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
@@ -630,8 +634,7 @@ case_verify_with_file_threads() {
 
 case_repair_with_file_threads() {
   copy_fixture_pair par2-repair-T
-  dd if=/dev/zero of="$TURBO_CASE/testfile" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
-  dd if=/dev/zero of="$PAR2RS_CASE/testfile" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
+  corrupt_pair_file testfile
   run_pair par2-repair-T repair -T1 testfile.par2
   assert_pair_same_status
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
@@ -645,8 +648,7 @@ case_verify_with_memory() {
 
 case_repair_with_memory() {
   copy_fixture_pair par2-repair-memory
-  dd if=/dev/zero of="$TURBO_CASE/testfile" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
-  dd if=/dev/zero of="$PAR2RS_CASE/testfile" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
+  corrupt_pair_file testfile
   run_pair par2-repair-memory repair -m1 testfile.par2
   assert_pair_same_status
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
@@ -725,8 +727,7 @@ case_par2_purge_after_intact_verify() {
 
 case_par2_purge_after_repair() {
   copy_fixture_pair par2-purge-repair
-  dd if=/dev/zero of="$TURBO_CASE/testfile" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
-  dd if=/dev/zero of="$PAR2RS_CASE/testfile" bs=1 count=100 seek=1000 conv=notrunc 2>/dev/null
+  corrupt_pair_file testfile
   run_pair par2-purge-repair repair -p testfile.par2
   assert_pair_same_status
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
