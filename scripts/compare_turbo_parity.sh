@@ -709,12 +709,52 @@ case_verify_by_data_file_input() {
   assert_pair_same_status
 }
 
+case_verify_by_volume_input() {
+  copy_fixture_pair par2-verify-volume-input
+  run_pair par2-verify-volume-input verify testfile.vol00+01.par2
+  assert_pair_same_status
+}
+
+case_verify_uppercase_par2_main_input() {
+  copy_fixture_pair par2-verify-uppercase-main
+  mv "$TURBO_CASE/testfile.par2" "$TURBO_CASE/testfile.PAR2"
+  mv "$PAR2RS_CASE/testfile.par2" "$PAR2RS_CASE/testfile.PAR2"
+  run_pair par2-verify-uppercase-main verify testfile.PAR2
+  assert_pair_same_status
+}
+
+case_verify_uppercase_par2_volume_input() {
+  copy_fixture_pair par2-verify-uppercase-volume
+  mv "$TURBO_CASE/testfile.vol00+01.par2" "$TURBO_CASE/testfile.vol00+01.PAR2"
+  mv "$PAR2RS_CASE/testfile.vol00+01.par2" "$PAR2RS_CASE/testfile.vol00+01.PAR2"
+  run_pair par2-verify-uppercase-volume verify testfile.vol00+01.PAR2
+  assert_pair_same_status
+}
+
 case_repair_by_data_file_input() {
   copy_fixture_pair par2-repair-data-input
   corrupt_pair_file testfile
   run_pair par2-repair-data-input repair testfile
   assert_pair_same_status
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+}
+
+case_repair_by_volume_input() {
+  copy_fixture_pair par2-repair-volume-input
+  corrupt_pair_file testfile
+  run_pair par2-repair-volume-input repair testfile.vol00+01.par2
+  assert_pair_same_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+}
+
+case_repair_renamed_par2_file_from_volume_input() {
+  copy_fixture_pair par2-repair-renamed-volume
+  mv "$TURBO_CASE/testfile" "$TURBO_CASE/wrong-name.bin"
+  mv "$PAR2RS_CASE/testfile" "$PAR2RS_CASE/wrong-name.bin"
+  run_pair par2-repair-renamed-volume repair testfile.vol00+01.par2 wrong-name.bin
+  assert_pair_same_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+  assert_absent "$PAR2RS_CASE/wrong-name.bin"
 }
 
 case_verify_with_basepath() {
@@ -1120,7 +1160,12 @@ run_case "verify and repair PAR2 with v/r aliases" case_verify_repair_aliases
 run_case "verify and repair PAR2 with standalone wrappers" case_standalone_verify_repair_wrappers
 run_case "report unrepairable missing PAR2 file" case_report_unrepairable_missing_par2_file
 run_case "verify PAR2 by data file input" case_verify_by_data_file_input
+run_case "verify PAR2 by volume input" case_verify_by_volume_input
+run_case "verify PAR2 uppercase main input" case_verify_uppercase_par2_main_input
+run_case "verify PAR2 uppercase volume input" case_verify_uppercase_par2_volume_input
 run_case "repair PAR2 by data file input" case_repair_by_data_file_input
+run_case "repair PAR2 by volume input" case_repair_by_volume_input
+run_case "repair renamed PAR2 file from volume input" case_repair_renamed_par2_file_from_volume_input
 run_case "verify PAR2 with -B" case_verify_with_basepath
 run_case "repair PAR2 with -B" case_repair_with_basepath
 run_case "verify PAR2 with -N" case_verify_with_data_skipping
