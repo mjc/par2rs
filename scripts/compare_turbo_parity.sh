@@ -159,6 +159,71 @@ case_report_unrepairable_missing_par2_file() {
   fi
 }
 
+case_repair_renamed_par2_file() {
+  copy_fixture_set "$TURBO_OUT/par2-repair-renamed"
+  copy_fixture_set "$PAR2RS_OUT/par2-repair-renamed"
+  mv "$TURBO_OUT/par2-repair-renamed/testfile" "$TURBO_OUT/par2-repair-renamed/wrong-name.bin"
+  mv "$PAR2RS_OUT/par2-repair-renamed/testfile" "$PAR2RS_OUT/par2-repair-renamed/wrong-name.bin"
+  run_capture "$TURBO_OUT/par2-repair-renamed" "$WORK_DIR/turbo-par2-repair-renamed" "$TURBO_PAR2_CMD" repair testfile.par2 wrong-name.bin
+  run_capture "$PAR2RS_OUT/par2-repair-renamed" "$WORK_DIR/par2rs-par2-repair-renamed" "$PAR2RS_BIN_DIR/par2" repair testfile.par2 wrong-name.bin
+  assert_same_status "$WORK_DIR/turbo-par2-repair-renamed" "$WORK_DIR/par2rs-par2-repair-renamed"
+  assert_hash_equal "$TURBO_OUT/par2-repair-renamed/testfile" "$PAR2RS_OUT/par2-repair-renamed/testfile"
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_OUT/par2-repair-renamed/testfile"
+  assert_absent "$TURBO_OUT/par2-repair-renamed/wrong-name.bin"
+  assert_absent "$PAR2RS_OUT/par2-repair-renamed/wrong-name.bin"
+}
+
+case_repair_renamed_par2_file_rename_only() {
+  copy_fixture_set "$TURBO_OUT/par2-repair-renamed-O"
+  copy_fixture_set "$PAR2RS_OUT/par2-repair-renamed-O"
+  mv "$TURBO_OUT/par2-repair-renamed-O/testfile" "$TURBO_OUT/par2-repair-renamed-O/wrong-name.bin"
+  mv "$PAR2RS_OUT/par2-repair-renamed-O/testfile" "$PAR2RS_OUT/par2-repair-renamed-O/wrong-name.bin"
+  run_capture "$TURBO_OUT/par2-repair-renamed-O" "$WORK_DIR/turbo-par2-repair-renamed-O" "$TURBO_PAR2_CMD" repair -O testfile.par2 wrong-name.bin
+  run_capture "$PAR2RS_OUT/par2-repair-renamed-O" "$WORK_DIR/par2rs-par2-repair-renamed-O" "$PAR2RS_BIN_DIR/par2" repair -O testfile.par2 wrong-name.bin
+  assert_same_status "$WORK_DIR/turbo-par2-repair-renamed-O" "$WORK_DIR/par2rs-par2-repair-renamed-O"
+  assert_hash_equal "$TURBO_OUT/par2-repair-renamed-O/testfile" "$PAR2RS_OUT/par2-repair-renamed-O/testfile"
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_OUT/par2-repair-renamed-O/testfile"
+  assert_absent "$TURBO_OUT/par2-repair-renamed-O/wrong-name.bin"
+  assert_absent "$PAR2RS_OUT/par2-repair-renamed-O/wrong-name.bin"
+}
+
+case_verify_renamed_par2_file_rename_only() {
+  copy_fixture_set "$TURBO_OUT/par2-verify-renamed-O"
+  copy_fixture_set "$PAR2RS_OUT/par2-verify-renamed-O"
+  mv "$TURBO_OUT/par2-verify-renamed-O/testfile" "$TURBO_OUT/par2-verify-renamed-O/wrong-name.bin"
+  mv "$PAR2RS_OUT/par2-verify-renamed-O/testfile" "$PAR2RS_OUT/par2-verify-renamed-O/wrong-name.bin"
+  run_capture "$TURBO_OUT/par2-verify-renamed-O" "$WORK_DIR/turbo-par2-verify-renamed-O" "$TURBO_PAR2_CMD" verify -O testfile.par2 wrong-name.bin
+  run_capture "$PAR2RS_OUT/par2-verify-renamed-O" "$WORK_DIR/par2rs-par2-verify-renamed-O" "$PAR2RS_BIN_DIR/par2" verify -O testfile.par2 wrong-name.bin
+  assert_same_status "$WORK_DIR/turbo-par2-verify-renamed-O" "$WORK_DIR/par2rs-par2-verify-renamed-O"
+}
+
+case_repair_damaged_renamed_par2_file_rename_only() {
+  copy_fixture_set "$TURBO_OUT/par2-repair-damaged-renamed-O"
+  copy_fixture_set "$PAR2RS_OUT/par2-repair-damaged-renamed-O"
+  mv "$TURBO_OUT/par2-repair-damaged-renamed-O/testfile" "$TURBO_OUT/par2-repair-damaged-renamed-O/wrong-name.bin"
+  mv "$PAR2RS_OUT/par2-repair-damaged-renamed-O/testfile" "$PAR2RS_OUT/par2-repair-damaged-renamed-O/wrong-name.bin"
+  printf damaged >"$TURBO_OUT/par2-repair-damaged-renamed-O/wrong-name.bin"
+  printf damaged >"$PAR2RS_OUT/par2-repair-damaged-renamed-O/wrong-name.bin"
+  run_capture "$TURBO_OUT/par2-repair-damaged-renamed-O" "$WORK_DIR/turbo-par2-repair-damaged-renamed-O" "$TURBO_PAR2_CMD" repair -O testfile.par2 wrong-name.bin
+  run_capture "$PAR2RS_OUT/par2-repair-damaged-renamed-O" "$WORK_DIR/par2rs-par2-repair-damaged-renamed-O" "$PAR2RS_BIN_DIR/par2" repair -O testfile.par2 wrong-name.bin
+  assert_same_status "$WORK_DIR/turbo-par2-repair-damaged-renamed-O" "$WORK_DIR/par2rs-par2-repair-damaged-renamed-O"
+  assert_nonzero_status "$WORK_DIR/par2rs-par2-repair-damaged-renamed-O"
+  assert_absent "$PAR2RS_OUT/par2-repair-damaged-renamed-O/testfile"
+  test -e "$PAR2RS_OUT/par2-repair-damaged-renamed-O/wrong-name.bin"
+}
+
+case_reject_create_rename_only() {
+  mkdir -p "$TURBO_OUT/create-reject-O" "$PAR2RS_OUT/create-reject-O"
+  printf source >"$TURBO_OUT/create-reject-O/source.txt"
+  printf source >"$PAR2RS_OUT/create-reject-O/source.txt"
+  run_capture "$TURBO_OUT/create-reject-O" "$WORK_DIR/turbo-create-reject-O" "$TURBO_PAR2_CMD" create -O out.par2 source.txt
+  run_capture "$PAR2RS_OUT/create-reject-O" "$WORK_DIR/par2rs-create-reject-O" "$PAR2RS_BIN_DIR/par2" create -O out.par2 source.txt
+  assert_nonzero_status "$WORK_DIR/turbo-create-reject-O"
+  assert_nonzero_status "$WORK_DIR/par2rs-create-reject-O"
+  assert_absent "$TURBO_OUT/create-reject-O/out.par2"
+  assert_absent "$PAR2RS_OUT/create-reject-O/out.par2"
+}
+
 case_reject_create_overwrite() {
   mkdir -p "$TURBO_OUT/create-overwrite" "$PAR2RS_OUT/create-overwrite"
   printf source >"$TURBO_OUT/create-overwrite/source.txt"
@@ -169,6 +234,49 @@ case_reject_create_overwrite() {
   run_capture "$PAR2RS_OUT/create-overwrite" "$WORK_DIR/par2rs-create-overwrite" "$PAR2RS_BIN_DIR/par2" create out.par2 source.txt
   assert_same_status "$WORK_DIR/turbo-create-overwrite" "$WORK_DIR/par2rs-create-overwrite"
   grep -qx keep "$PAR2RS_OUT/create-overwrite/out.par2"
+}
+
+case_repair_renamed_par2_file_self() {
+  copy_fixture_set "$PAR2RS_OUT/par2-repair-renamed"
+  mv "$PAR2RS_OUT/par2-repair-renamed/testfile" "$PAR2RS_OUT/par2-repair-renamed/wrong-name.bin"
+  run_capture "$PAR2RS_OUT/par2-repair-renamed" "$WORK_DIR/par2rs-par2-repair-renamed" "$PAR2RS_BIN_DIR/par2" repair testfile.par2 wrong-name.bin
+  test "$(cat "$WORK_DIR/par2rs-par2-repair-renamed.status")" = "0"
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_OUT/par2-repair-renamed/testfile"
+  assert_absent "$PAR2RS_OUT/par2-repair-renamed/wrong-name.bin"
+}
+
+case_repair_renamed_par2_file_rename_only_self() {
+  copy_fixture_set "$PAR2RS_OUT/par2-repair-renamed-O"
+  mv "$PAR2RS_OUT/par2-repair-renamed-O/testfile" "$PAR2RS_OUT/par2-repair-renamed-O/wrong-name.bin"
+  run_capture "$PAR2RS_OUT/par2-repair-renamed-O" "$WORK_DIR/par2rs-par2-repair-renamed-O" "$PAR2RS_BIN_DIR/par2" repair -O testfile.par2 wrong-name.bin
+  test "$(cat "$WORK_DIR/par2rs-par2-repair-renamed-O.status")" = "0"
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_OUT/par2-repair-renamed-O/testfile"
+  assert_absent "$PAR2RS_OUT/par2-repair-renamed-O/wrong-name.bin"
+}
+
+case_verify_renamed_par2_file_rename_only_self() {
+  copy_fixture_set "$PAR2RS_OUT/par2-verify-renamed-O"
+  mv "$PAR2RS_OUT/par2-verify-renamed-O/testfile" "$PAR2RS_OUT/par2-verify-renamed-O/wrong-name.bin"
+  run_capture "$PAR2RS_OUT/par2-verify-renamed-O" "$WORK_DIR/par2rs-par2-verify-renamed-O" "$PAR2RS_BIN_DIR/par2" verify -O testfile.par2 wrong-name.bin
+  assert_nonzero_status "$WORK_DIR/par2rs-par2-verify-renamed-O"
+}
+
+case_repair_damaged_renamed_par2_file_rename_only_self() {
+  copy_fixture_set "$PAR2RS_OUT/par2-repair-damaged-renamed-O"
+  mv "$PAR2RS_OUT/par2-repair-damaged-renamed-O/testfile" "$PAR2RS_OUT/par2-repair-damaged-renamed-O/wrong-name.bin"
+  printf damaged >"$PAR2RS_OUT/par2-repair-damaged-renamed-O/wrong-name.bin"
+  run_capture "$PAR2RS_OUT/par2-repair-damaged-renamed-O" "$WORK_DIR/par2rs-par2-repair-damaged-renamed-O" "$PAR2RS_BIN_DIR/par2" repair -O testfile.par2 wrong-name.bin
+  assert_nonzero_status "$WORK_DIR/par2rs-par2-repair-damaged-renamed-O"
+  assert_absent "$PAR2RS_OUT/par2-repair-damaged-renamed-O/testfile"
+  test -e "$PAR2RS_OUT/par2-repair-damaged-renamed-O/wrong-name.bin"
+}
+
+case_reject_create_rename_only_self() {
+  mkdir -p "$PAR2RS_OUT/create-reject-O"
+  printf source >"$PAR2RS_OUT/create-reject-O/source.txt"
+  run_capture "$PAR2RS_OUT/create-reject-O" "$WORK_DIR/par2rs-create-reject-O" "$PAR2RS_BIN_DIR/par2" create -O out.par2 source.txt
+  assert_nonzero_status "$WORK_DIR/par2rs-create-reject-O"
+  assert_absent "$PAR2RS_OUT/create-reject-O/out.par2"
 }
 
 case_verify_intact_par1() {
@@ -270,6 +378,11 @@ if [[ "$HAS_TURBO" = 1 ]]; then
   run_case "verify intact PAR2" case_verify_intact_par2
   run_case "repair corrupted PAR2 file" case_repair_corrupted_par2_file
   run_case "report unrepairable missing PAR2 file" case_report_unrepairable_missing_par2_file
+  run_case "repair renamed PAR2 file" case_repair_renamed_par2_file
+  run_case "repair renamed PAR2 file with -O" case_repair_renamed_par2_file_rename_only
+  run_case "verify renamed PAR2 file with -O" case_verify_renamed_par2_file_rename_only
+  run_case "repair damaged renamed PAR2 file with -O" case_repair_damaged_renamed_par2_file_rename_only
+  run_case "reject create -O" case_reject_create_rename_only
   run_case "reject create overwrite" case_reject_create_overwrite
   run_case "verify intact PAR1" case_verify_intact_par1
   run_case "verify PAR1 from volume input" case_verify_par1_from_volume_input
@@ -279,6 +392,11 @@ if [[ "$HAS_TURBO" = 1 ]]; then
   run_case "reject PAR1 create" case_reject_par1_create_self
 else
   printf 'skipping turbo comparisons: %s is not executable or on PATH\n' "$TURBO_PAR2_CMD"
+  run_case "repair renamed PAR2 file" case_repair_renamed_par2_file_self
+  run_case "repair renamed PAR2 file with -O" case_repair_renamed_par2_file_rename_only_self
+  run_case "verify renamed PAR2 file with -O" case_verify_renamed_par2_file_rename_only_self
+  run_case "repair damaged renamed PAR2 file with -O" case_repair_damaged_renamed_par2_file_rename_only_self
+  run_case "reject create -O" case_reject_create_rename_only_self
   run_case "verify intact PAR1" case_verify_intact_par1_self
   run_case "verify PAR1 from volume input" case_verify_par1_from_volume_input_self
   run_case "repair missing PAR1 file" case_repair_missing_par1_file_self
