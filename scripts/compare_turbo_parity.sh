@@ -1160,6 +1160,9 @@ case_create_invalid_options() {
   run_invalid_create_case T-equals -T=1
   run_invalid_create_case t-equals -t=1
   run_invalid_create_case m-equals -m=1
+  run_invalid_create_case uq-cluster -uq
+  run_invalid_create_case uT-cluster -uT1
+  run_invalid_create_case lT-cluster -lT1 -c3
   run_invalid_create_case s-not-multiple -s5
   run_invalid_create_case r-and-c -r10 -c2
   run_invalid_create_case duplicate-r -r10 -r20
@@ -1204,6 +1207,9 @@ case_standalone_create_invalid_options() {
   run_invalid_standalone_create_case T-equals -T=1
   run_invalid_standalone_create_case t-equals -t=1
   run_invalid_standalone_create_case m-equals -m=1
+  run_invalid_standalone_create_case uq-cluster -uq
+  run_invalid_standalone_create_case uT-cluster -uT1
+  run_invalid_standalone_create_case lT-cluster -lT1 -c3
   run_invalid_standalone_create_case s-not-multiple -s5
   run_invalid_standalone_create_case r-and-c -r10 -c2
   run_invalid_standalone_create_case duplicate-r -r10 -r20
