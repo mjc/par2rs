@@ -49,7 +49,8 @@ Supported create options include `-a`, `-b`, `-s`, `-r`, `-c`, `-f`, `-u`,
 
 Known create differences:
 
-- PAR1 creation is not implemented.
+- PAR1 creation is not implemented. PAR1-named create outputs are rejected with
+  `PAR1 create is not supported`.
 - Exact volume packet ordering and stdout wording are not compatibility
   targets.
 
@@ -79,11 +80,16 @@ Important semantics:
 - Extra files are marked renamed only on exact size/full-MD5/16K-MD5 matches.
 - Repair memory limits cap reconstruction chunk size only when explicitly set.
 - `-T` bounds verify file scanning with a local Rayon pool where applicable.
+- PAR1 verify and repair scan command-line extra files for exact wrong-name
+  matches. Repair renames those files into place before using recovery blocks.
+- PAR1 purge runs only after a successful verify or repair. It deletes only the
+  PAR1 files collected for the input set (`.par`/`.pNN`) and backups created by
+  the same repair-by-rename operation. Data files are never purge targets, and
+  failed verify or repair operations do not purge.
 
 Known verify/repair differences:
 
 - PAR1 ignores file-thread and skip-leeway options.
-- PAR1 purge is rejected.
 - PAR1 output is functional rather than byte-for-byte matched to turbo.
 
 ## PAR1 Status
@@ -95,15 +101,19 @@ Implemented:
 - Native Rust parser for PAR1 headers, file entries, control hash, set hash,
   volume metadata, recovery payloads, and UTF-16LE names.
 - Verify by size, full MD5, and first-16K MD5.
+- Extra-file renamed detection for exact size/full-MD5/16K-MD5 matches, with
+  PAR1 recovery files ignored as extra candidates.
+- Repair by renaming exact wrong-name files into the protected target path,
+  including deterministic numbered backups for corrupted targets.
 - Whole-file repair for missing or corrupted protected files using existing
   Reed-Solomon primitives and PAR1 recovery volumes.
+- Purge after successful verify or repair, limited to collected PAR1 recovery
+  files and backups created during that repair run.
 - Tests using real PAR1 fixtures from the local turbo checkout.
 
 Not implemented:
 
 - PAR1 create.
-- PAR1 purge.
-- PAR1 extra-file renamed detection.
 
 ## Performance Backend Status
 
@@ -146,6 +156,18 @@ come from the project environment rather than the host `PATH`. Set
 `TURBO_PAR2=/path/to/par2` or `TURBO_ROOT=/path/to/turbo` when overriding the
 turbo binary.
 
+Current script coverage includes:
+
+- PAR2 intact verify, corrupted repair, unrepairable missing-file reporting,
+  and create overwrite refusal.
+- PAR1 intact verify from main and volume input.
+- PAR1 repair of a missing protected file.
+- PAR1 repair of a renamed protected file passed as an extra argument.
+- PAR1 purge after intact verify.
+- par2rs self-check for intentional PAR1 create rejection. The Nix turbo binary
+  treats `out.par` as a PAR2 basename and writes `out.par.par2`, so this case is
+  intentionally not a turbo status comparison.
+
 ## Current Acceptance Commands
 
 ```sh
@@ -157,6 +179,7 @@ cargo test --test test_create_integration
 cargo test --test test_global_verification_scanning_bugs
 cargo test --test test_repair_integration
 cargo bench --no-run
+scripts/compare_turbo_parity.sh
 ```
 
 Run the same commands through `nix develop -c` when validating in the Nix
