@@ -416,6 +416,18 @@ run_invalid_verify_repair_case() {
   assert_pair_nonzero_status
 }
 
+run_invalid_standalone_verify_repair_case() {
+  local label="$1"
+  shift
+  copy_fixture_pair "par2verify-invalid-$label"
+  run_standalone_pair "par2verify-invalid-$label" "$TURBO_PAR2VERIFY_CMD" par2verify "$@" testfile.par2
+  assert_pair_nonzero_status
+
+  copy_fixture_pair "par2repair-invalid-$label"
+  run_standalone_pair "par2repair-invalid-$label" "$TURBO_PAR2REPAIR_CMD" par2repair "$@" testfile.par2
+  assert_pair_nonzero_status
+}
+
 run_noise_create_case() {
   local label="$1"
   shift
@@ -1082,6 +1094,34 @@ case_standalone_verify_repair_option_matrix() {
   run_standalone_verify_repair_option_case memory -m1
 }
 
+case_verify_repair_archive_name_noop() {
+  copy_fixture_pair par2-verify-archive-name-noop
+  run_pair par2-verify-archive-name-noop verify -aignored.par2 testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair par2-repair-archive-name-noop
+  corrupt_pair_file testfile
+  run_pair par2-repair-archive-name-noop repair -aignored.par2 testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+}
+
+case_standalone_verify_repair_archive_name_noop() {
+  copy_fixture_pair par2verify-archive-name-noop
+  run_standalone_pair par2verify-archive-name-noop "$TURBO_PAR2VERIFY_CMD" par2verify -aignored.par2 testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair par2repair-archive-name-noop
+  corrupt_pair_file testfile
+  run_standalone_pair par2repair-archive-name-noop "$TURBO_PAR2REPAIR_CMD" par2repair -aignored.par2 testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+}
+
 case_report_unrepairable_missing_par2_file() {
   copy_fixture_pair par2-unrepairable-missing
   rm "$TURBO_CASE/testfile" "$PAR2RS_CASE/testfile"
@@ -1396,13 +1436,19 @@ case_verify_repair_invalid_options() {
 }
 
 case_standalone_verify_repair_invalid_options() {
-  copy_fixture_pair par2verify-invalid-S
-  run_standalone_pair par2verify-invalid-S "$TURBO_PAR2VERIFY_CMD" par2verify -S64 testfile.par2
-  assert_pair_nonzero_status
-
-  copy_fixture_pair par2repair-invalid-S
-  run_standalone_pair par2repair-invalid-S "$TURBO_PAR2REPAIR_CMD" par2repair -S64 testfile.par2
-  assert_pair_nonzero_status
+  run_invalid_standalone_verify_repair_case S-without-N -S64
+  run_invalid_standalone_verify_repair_case S-zero -N -S0
+  run_invalid_standalone_verify_repair_case R-create-only -R
+  run_invalid_standalone_verify_repair_case b-create-only -b8
+  run_invalid_standalone_verify_repair_case s-create-only -s4
+  run_invalid_standalone_verify_repair_case r-create-only -r10
+  run_invalid_standalone_verify_repair_case c-create-only -c2
+  run_invalid_standalone_verify_repair_case f-create-only -f1
+  run_invalid_standalone_verify_repair_case u-create-only -u
+  run_invalid_standalone_verify_repair_case l-create-only -l
+  run_invalid_standalone_verify_repair_case n-create-only -n2
+  run_invalid_standalone_verify_repair_case T-zero -T0
+  run_invalid_standalone_verify_repair_case m-zero -m0
 }
 
 case_verify_intact_par1() {
@@ -1594,6 +1640,8 @@ run_case "verify and repair PAR2 with standalone wrappers" case_standalone_verif
 run_case "standalone verify/repair PAR2 input forms" case_standalone_verify_repair_input_forms
 run_case "standalone verify/repair PAR2 with -B" case_standalone_verify_repair_basepath
 run_case "standalone verify/repair PAR2 option matrix" case_standalone_verify_repair_option_matrix
+run_case "verify/repair PAR2 accepts -a as no-op" case_verify_repair_archive_name_noop
+run_case "standalone verify/repair PAR2 accepts -a as no-op" case_standalone_verify_repair_archive_name_noop
 run_case "report unrepairable missing PAR2 file" case_report_unrepairable_missing_par2_file
 run_case "verify PAR2 by data file input" case_verify_by_data_file_input
 run_case "verify PAR2 by volume input" case_verify_by_volume_input
