@@ -377,6 +377,18 @@ run_invalid_create_case() {
   assert_no_par2_recovery_files "$PAR2RS_CASE" out
 }
 
+run_invalid_standalone_create_case() {
+  local label="$1"
+  shift
+  make_source_pair "par2create-invalid-$label"
+  run_standalone_pair "par2create-invalid-$label" "$TURBO_PAR2CREATE_CMD" par2create "$@" out.par2 source.txt
+  assert_pair_nonzero_status
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_no_par2_recovery_files "$TURBO_CASE" out
+  fi
+  assert_no_par2_recovery_files "$PAR2RS_CASE" out
+}
+
 run_invalid_verify_repair_case() {
   local label="$1"
   shift
@@ -799,21 +811,30 @@ case_create_invalid_options() {
 }
 
 case_standalone_create_invalid_options() {
-  make_source_pair par2create-invalid-duplicate-b
-  run_standalone_pair par2create-invalid-duplicate-b "$TURBO_PAR2CREATE_CMD" par2create -b8 -b9 out.par2 source.txt
-  assert_pair_nonzero_status
-  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
-    assert_no_par2_recovery_files "$TURBO_CASE" out
-  fi
-  assert_no_par2_recovery_files "$PAR2RS_CASE" out
-
-  make_source_pair par2create-invalid-rename-only
-  run_standalone_pair par2create-invalid-rename-only "$TURBO_PAR2CREATE_CMD" par2create -O out.par2 source.txt
-  assert_pair_nonzero_status
-  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
-    assert_no_par2_recovery_files "$TURBO_CASE" out
-  fi
-  assert_no_par2_recovery_files "$PAR2RS_CASE" out
+  run_invalid_standalone_create_case b-and-s -b8 -s4
+  run_invalid_standalone_create_case duplicate-b -b8 -b9
+  run_invalid_standalone_create_case b-zero -b0
+  run_invalid_standalone_create_case b-too-large -b32769
+  run_invalid_standalone_create_case b-nonnumeric -babc
+  run_invalid_standalone_create_case s-not-multiple -s5
+  run_invalid_standalone_create_case r-and-c -r10 -c2
+  run_invalid_standalone_create_case duplicate-r -r10 -r20
+  run_invalid_standalone_create_case invalid-r-suffix -rx1
+  run_invalid_standalone_create_case duplicate-c -c1 -c2
+  run_invalid_standalone_create_case c-too-large -c32769
+  run_invalid_standalone_create_case duplicate-f -f1 -f2 -c2
+  run_invalid_standalone_create_case f-too-large -f32769 -c2
+  run_invalid_standalone_create_case u-and-l -u -l
+  run_invalid_standalone_create_case l-and-n -l -n2
+  run_invalid_standalone_create_case duplicate-n -n2 -n3
+  run_invalid_standalone_create_case n-too-large -n32
+  run_invalid_standalone_create_case duplicate-m -m1 -m2
+  run_invalid_standalone_create_case m-zero -m0
+  run_invalid_standalone_create_case T-zero -T0
+  run_invalid_standalone_create_case create-purge -p
+  run_invalid_standalone_create_case create-rename-only -O
+  run_invalid_standalone_create_case create-data-skipping -N
+  run_invalid_standalone_create_case create-skip-leeway -S64
 }
 
 case_reject_create_overwrite() {
@@ -831,6 +852,23 @@ case_reject_create_volume_overwrite() {
   printf keep >"$TURBO_CASE/out.vol0+1.par2"
   printf keep >"$PAR2RS_CASE/out.vol0+1.par2"
   run_pair create-volume-overwrite create -s4 -c1 out.par2 source.txt
+  assert_pair_nonzero_status
+  grep -qx keep "$PAR2RS_CASE/out.vol0+1.par2"
+}
+
+case_reject_standalone_create_overwrite() {
+  make_source_pair par2create-overwrite
+  printf keep >"$TURBO_CASE/out.par2"
+  printf keep >"$PAR2RS_CASE/out.par2"
+  run_standalone_pair par2create-overwrite "$TURBO_PAR2CREATE_CMD" par2create out.par2 source.txt
+  assert_pair_same_status
+  assert_pair_nonzero_status
+  grep -qx keep "$PAR2RS_CASE/out.par2"
+
+  make_source_pair par2create-volume-overwrite
+  printf keep >"$TURBO_CASE/out.vol0+1.par2"
+  printf keep >"$PAR2RS_CASE/out.vol0+1.par2"
+  run_standalone_pair par2create-volume-overwrite "$TURBO_PAR2CREATE_CMD" par2create -s4 -c1 out.par2 source.txt
   assert_pair_nonzero_status
   grep -qx keep "$PAR2RS_CASE/out.vol0+1.par2"
 }
@@ -1378,6 +1416,7 @@ run_case "reject invalid PAR2 create options" case_create_invalid_options
 run_case "reject invalid standalone PAR2 create options" case_standalone_create_invalid_options
 run_case "reject create overwrite" case_reject_create_overwrite
 run_case "reject create volume overwrite" case_reject_create_volume_overwrite
+run_case "reject standalone create overwrite" case_reject_standalone_create_overwrite
 run_case "verify intact PAR2" case_verify_intact_par2
 run_case "repair corrupted PAR2 file" case_repair_corrupted_par2_file
 run_case "verify and repair PAR2 with v/r aliases" case_verify_repair_aliases

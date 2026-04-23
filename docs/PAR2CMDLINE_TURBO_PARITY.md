@@ -195,8 +195,8 @@ Current script coverage includes:
 - Invalid PAR2 create combinations and ranges, including block count/size
   conflicts, duplicate singleton options, invalid redundancy suffixes,
   recovery-file layout conflicts, verify/repair-only option rejection, and
-  output index/volume overwrite refusal. Representative standalone
-  `par2create` invalid cases are also covered.
+  output index/volume overwrite refusal. Standalone `par2create` covers the
+  same invalid matrix and overwrite refusal cases.
 - PAR2 verify/repair through full commands, `v`/`r` aliases, `par2verify`, and
   `par2repair`, from PAR2 set input and protected data-file input, including
   PAR2 volume input, uppercase `.PAR2` main and volume input, `-B`, `-N`,
