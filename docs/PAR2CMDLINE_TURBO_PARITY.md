@@ -188,6 +188,8 @@ Current script coverage includes:
 - PAR2 create through `create`, `c`, and `par2create`, including `-a`, `-B`,
   `-R`, `--` hyphen-prefixed input, `-b`, `-s`, `-r` percent and size targets,
   `-c`, `-f`, `-u`, `-l`, `-n`, `-T`, `-t`, and `-m`.
+- Exact generated recovery filename layouts for `-u`, `-l`, `-n`, `-f`, and
+  `-c0`, with representative standalone `par2create` layout checks.
 - Standalone `par2create` filesystem effects for basic create, `-a`, `-B`, and
   `--` hyphen-prefixed source names.
 - Invalid PAR2 create combinations and ranges, including block count/size

@@ -206,6 +206,31 @@ assert_par2_set_created() {
   assert_glob_present "$dir/$stem.vol*.par2"
 }
 
+assert_par2_file_list_equals() {
+  local dir="$1"
+  shift
+  local expected actual
+  expected="$WORK_DIR/expected-files-$RANDOM"
+  actual="$WORK_DIR/actual-files-$RANDOM"
+  printf '%s\n' "$@" | LC_ALL=C sort >"$expected"
+  find "$dir" -maxdepth 1 -type f -name '*.par2' -printf '%f\n' | LC_ALL=C sort >"$actual"
+  if ! cmp -s "$expected" "$actual"; then
+    printf 'PAR2 file list mismatch in %s\n' "$dir" >&2
+    printf 'expected:\n' >&2
+    cat "$expected" >&2
+    printf 'actual:\n' >&2
+    cat "$actual" >&2
+    return 1
+  fi
+}
+
+assert_pair_par2_file_list_equals() {
+  if [[ "$HAS_TURBO" = 1 ]]; then
+    assert_par2_file_list_equals "$TURBO_CASE" "$@"
+  fi
+  assert_par2_file_list_equals "$PAR2RS_CASE" "$@"
+}
+
 assert_verify_success_for_created_set() {
   local tool="$1"
   local dir="$2"
@@ -641,24 +666,59 @@ case_create_first_recovery_block() {
   make_source_pair create-first-recovery-block
   run_pair create-first-recovery-block create -f3 -c2 out.par2 source.txt
   assert_create_pair_success out.par2 out.par2
+  assert_pair_par2_file_list_equals out.par2 out.vol3+1.par2 out.vol4+1.par2
 }
 
 case_create_uniform_recovery_files() {
   make_source_pair create-uniform
   run_pair create-uniform create -u -c3 out.par2 source.txt
   assert_create_pair_success out.par2 out.par2
+  assert_pair_par2_file_list_equals out.par2 out.vol0+2.par2 out.vol2+1.par2
 }
 
 case_create_limited_recovery_files() {
   make_source_pair create-limited
   run_pair create-limited create -l -c3 out.par2 source.txt
   assert_create_pair_success out.par2 out.par2
+  assert_pair_par2_file_list_equals out.par2 out.vol0+1.par2 out.vol1+2.par2
 }
 
 case_create_recovery_file_count() {
   make_source_pair create-file-count
   run_pair create-file-count create -n2 -c3 out.par2 source.txt
   assert_create_pair_success out.par2 out.par2
+  assert_pair_par2_file_list_equals out.par2 out.vol0+2.par2 out.vol2+1.par2
+}
+
+case_create_zero_recovery_blocks() {
+  make_source_pair create-zero-recovery-blocks
+  run_pair create-zero-recovery-blocks create -c0 out.par2 source.txt
+  assert_pair_same_status
+  assert_pair_zero_status
+  if [[ "$HAS_TURBO" = 1 ]]; then
+    assert_par2_file_list_equals "$TURBO_CASE" out.par2
+  fi
+  assert_par2_file_list_equals "$PAR2RS_CASE" out.par2
+}
+
+case_standalone_create_layout_shapes() {
+  make_source_pair par2create-layout-uniform
+  run_standalone_pair par2create-layout-uniform "$TURBO_PAR2CREATE_CMD" par2create -u -c3 out.par2 source.txt
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_pair_par2_file_list_equals out.par2 out.vol0+2.par2 out.vol2+1.par2
+
+  make_source_pair par2create-layout-file-count
+  run_standalone_pair par2create-layout-file-count "$TURBO_PAR2CREATE_CMD" par2create -n2 -c3 out.par2 source.txt
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_pair_par2_file_list_equals out.par2 out.vol0+2.par2 out.vol2+1.par2
+
+  make_source_pair par2create-layout-first-block
+  run_standalone_pair par2create-layout-first-block "$TURBO_PAR2CREATE_CMD" par2create -f3 -c2 out.par2 source.txt
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_pair_par2_file_list_equals out.par2 out.vol3+1.par2 out.vol4+1.par2
 }
 
 case_create_file_threads() {
@@ -1305,6 +1365,8 @@ run_case "create PAR2 with -f" case_create_first_recovery_block
 run_case "create PAR2 with -u" case_create_uniform_recovery_files
 run_case "create PAR2 with -l" case_create_limited_recovery_files
 run_case "create PAR2 with -n" case_create_recovery_file_count
+run_case "create PAR2 with -c0" case_create_zero_recovery_blocks
+run_case "standalone create PAR2 layout shapes" case_standalone_create_layout_shapes
 run_case "create PAR2 with -T" case_create_file_threads
 run_case "create PAR2 with -t" case_create_threads
 run_case "create PAR2 with -m" case_create_memory
