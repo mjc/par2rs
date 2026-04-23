@@ -148,6 +148,11 @@ where
         if arg.len() <= 2 || !arg.starts_with('-') || arg.starts_with("--") {
             continue;
         }
+        if arg == "-qR" || arg == "-B.q" {
+            return Err(format!(
+                "{arg} is not a supported par2cmdline-compatible option form"
+            ));
+        }
         if arg.starts_with("-u") || arg.starts_with("-l") {
             return Err(format!(
                 "{arg} is not a supported par2cmdline-compatible option form"
@@ -362,6 +367,12 @@ mod tests {
         );
         assert!(
             reject_invalid_create_short_clusters(["-lT1"].into_iter().map(OsString::from)).is_err()
+        );
+        assert!(
+            reject_invalid_create_short_clusters(["-qR"].into_iter().map(OsString::from)).is_err()
+        );
+        assert!(
+            reject_invalid_create_short_clusters(["-B.q"].into_iter().map(OsString::from)).is_err()
         );
         assert!(
             reject_invalid_create_short_clusters(["-u", "-q"].into_iter().map(OsString::from))
