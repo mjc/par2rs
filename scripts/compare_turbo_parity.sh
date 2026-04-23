@@ -82,6 +82,30 @@ assert_same_file_presence() {
   fi
 }
 
+assert_absent() {
+  local path="$1"
+  if [[ -e "$path" ]]; then
+    printf 'expected absent: %s\n' "$path" >&2
+    return 1
+  fi
+}
+
+assert_nonzero_status() {
+  local result="$1"
+  if [[ "$(cat "$result.status")" = "0" ]]; then
+    printf 'expected nonzero status for %s\n' "$result" >&2
+    sed -n '1,80p' "$result.stderr" >&2
+    return 1
+  fi
+}
+
+assert_no_par1_recovery_files() {
+  local dir="$1"
+  assert_absent "$dir/testdata.par"
+  assert_absent "$dir/testdata.p01"
+  assert_absent "$dir/testdata.p02"
+}
+
 copy_fixture_set() {
   local dir="$1"
   mkdir -p "$dir"
@@ -148,9 +172,98 @@ case_reject_create_overwrite() {
 }
 
 case_verify_intact_par1() {
+  copy_par1_fixture_set "$TURBO_OUT/par1-intact"
+  copy_par1_fixture_set "$PAR2RS_OUT/par1-intact"
+  run_capture "$TURBO_OUT/par1-intact" "$WORK_DIR/turbo-par1-intact" "$TURBO_PAR2_CMD" verify testdata.par
+  run_capture "$PAR2RS_OUT/par1-intact" "$WORK_DIR/par2rs-par1-intact" "$PAR2RS_BIN_DIR/par2" verify testdata.par
+  assert_same_status "$WORK_DIR/turbo-par1-intact" "$WORK_DIR/par2rs-par1-intact"
+}
+
+case_verify_par1_from_volume_input() {
+  copy_par1_fixture_set "$TURBO_OUT/par1-volume-verify"
+  copy_par1_fixture_set "$PAR2RS_OUT/par1-volume-verify"
+  run_capture "$TURBO_OUT/par1-volume-verify" "$WORK_DIR/turbo-par1-volume-verify" "$TURBO_PAR2_CMD" verify testdata.p01
+  run_capture "$PAR2RS_OUT/par1-volume-verify" "$WORK_DIR/par2rs-par1-volume-verify" "$PAR2RS_BIN_DIR/par2" verify testdata.p01
+  assert_same_status "$WORK_DIR/turbo-par1-volume-verify" "$WORK_DIR/par2rs-par1-volume-verify"
+}
+
+case_repair_missing_par1_file() {
+  copy_par1_fixture_set "$TURBO_OUT/par1-repair-missing"
+  copy_par1_fixture_set "$PAR2RS_OUT/par1-repair-missing"
+  rm "$TURBO_OUT/par1-repair-missing/test-3.data" "$PAR2RS_OUT/par1-repair-missing/test-3.data"
+  run_capture "$TURBO_OUT/par1-repair-missing" "$WORK_DIR/turbo-par1-repair-missing" "$TURBO_PAR2_CMD" repair testdata.par
+  run_capture "$PAR2RS_OUT/par1-repair-missing" "$WORK_DIR/par2rs-par1-repair-missing" "$PAR2RS_BIN_DIR/par2" repair testdata.par
+  assert_same_status "$WORK_DIR/turbo-par1-repair-missing" "$WORK_DIR/par2rs-par1-repair-missing"
+  assert_hash_equal "$TURBO_OUT/par1-repair-missing/test-3.data" "$PAR2RS_OUT/par1-repair-missing/test-3.data"
+  assert_hash_equal "$ROOT/tests/fixtures/par1/flatdata/test-3.data" "$PAR2RS_OUT/par1-repair-missing/test-3.data"
+}
+
+case_repair_renamed_par1_file() {
+  copy_par1_fixture_set "$TURBO_OUT/par1-repair-renamed"
+  copy_par1_fixture_set "$PAR2RS_OUT/par1-repair-renamed"
+  mv "$TURBO_OUT/par1-repair-renamed/test-4.data" "$TURBO_OUT/par1-repair-renamed/wrong-name.data"
+  mv "$PAR2RS_OUT/par1-repair-renamed/test-4.data" "$PAR2RS_OUT/par1-repair-renamed/wrong-name.data"
+  run_capture "$TURBO_OUT/par1-repair-renamed" "$WORK_DIR/turbo-par1-repair-renamed" "$TURBO_PAR2_CMD" repair testdata.par wrong-name.data
+  run_capture "$PAR2RS_OUT/par1-repair-renamed" "$WORK_DIR/par2rs-par1-repair-renamed" "$PAR2RS_BIN_DIR/par2" repair testdata.par wrong-name.data
+  assert_same_status "$WORK_DIR/turbo-par1-repair-renamed" "$WORK_DIR/par2rs-par1-repair-renamed"
+  assert_hash_equal "$TURBO_OUT/par1-repair-renamed/test-4.data" "$PAR2RS_OUT/par1-repair-renamed/test-4.data"
+  assert_hash_equal "$ROOT/tests/fixtures/par1/flatdata/test-4.data" "$PAR2RS_OUT/par1-repair-renamed/test-4.data"
+  assert_same_file_presence "$TURBO_OUT/par1-repair-renamed/wrong-name.data" "$PAR2RS_OUT/par1-repair-renamed/wrong-name.data"
+  assert_absent "$PAR2RS_OUT/par1-repair-renamed/wrong-name.data"
+}
+
+case_purge_intact_par1() {
+  copy_par1_fixture_set "$TURBO_OUT/par1-purge-intact"
+  copy_par1_fixture_set "$PAR2RS_OUT/par1-purge-intact"
+  run_capture "$TURBO_OUT/par1-purge-intact" "$WORK_DIR/turbo-par1-purge-intact" "$TURBO_PAR2_CMD" verify -p testdata.par
+  run_capture "$PAR2RS_OUT/par1-purge-intact" "$WORK_DIR/par2rs-par1-purge-intact" "$PAR2RS_BIN_DIR/par2" verify -p testdata.par
+  assert_same_status "$WORK_DIR/turbo-par1-purge-intact" "$WORK_DIR/par2rs-par1-purge-intact"
+  assert_no_par1_recovery_files "$TURBO_OUT/par1-purge-intact"
+  assert_no_par1_recovery_files "$PAR2RS_OUT/par1-purge-intact"
+}
+
+case_verify_intact_par1_self() {
   copy_par1_fixture_set "$PAR2RS_OUT/par1-intact"
   run_capture "$PAR2RS_OUT/par1-intact" "$WORK_DIR/par2rs-par1-intact" "$PAR2RS_BIN_DIR/par2" verify testdata.par
   test "$(cat "$WORK_DIR/par2rs-par1-intact.status")" = "0"
+}
+
+case_verify_par1_from_volume_input_self() {
+  copy_par1_fixture_set "$PAR2RS_OUT/par1-volume-verify"
+  run_capture "$PAR2RS_OUT/par1-volume-verify" "$WORK_DIR/par2rs-par1-volume-verify" "$PAR2RS_BIN_DIR/par2" verify testdata.p01
+  test "$(cat "$WORK_DIR/par2rs-par1-volume-verify.status")" = "0"
+}
+
+case_repair_missing_par1_file_self() {
+  copy_par1_fixture_set "$PAR2RS_OUT/par1-repair-missing"
+  rm "$PAR2RS_OUT/par1-repair-missing/test-3.data"
+  run_capture "$PAR2RS_OUT/par1-repair-missing" "$WORK_DIR/par2rs-par1-repair-missing" "$PAR2RS_BIN_DIR/par2" repair testdata.par
+  test "$(cat "$WORK_DIR/par2rs-par1-repair-missing.status")" = "0"
+  assert_hash_equal "$ROOT/tests/fixtures/par1/flatdata/test-3.data" "$PAR2RS_OUT/par1-repair-missing/test-3.data"
+}
+
+case_repair_renamed_par1_file_self() {
+  copy_par1_fixture_set "$PAR2RS_OUT/par1-repair-renamed"
+  mv "$PAR2RS_OUT/par1-repair-renamed/test-4.data" "$PAR2RS_OUT/par1-repair-renamed/wrong-name.data"
+  run_capture "$PAR2RS_OUT/par1-repair-renamed" "$WORK_DIR/par2rs-par1-repair-renamed" "$PAR2RS_BIN_DIR/par2" repair testdata.par wrong-name.data
+  test "$(cat "$WORK_DIR/par2rs-par1-repair-renamed.status")" = "0"
+  assert_hash_equal "$ROOT/tests/fixtures/par1/flatdata/test-4.data" "$PAR2RS_OUT/par1-repair-renamed/test-4.data"
+  assert_absent "$PAR2RS_OUT/par1-repair-renamed/wrong-name.data"
+}
+
+case_purge_intact_par1_self() {
+  copy_par1_fixture_set "$PAR2RS_OUT/par1-purge-intact"
+  run_capture "$PAR2RS_OUT/par1-purge-intact" "$WORK_DIR/par2rs-par1-purge-intact" "$PAR2RS_BIN_DIR/par2" verify -p testdata.par
+  test "$(cat "$WORK_DIR/par2rs-par1-purge-intact.status")" = "0"
+  assert_no_par1_recovery_files "$PAR2RS_OUT/par1-purge-intact"
+}
+
+case_reject_par1_create_self() {
+  mkdir -p "$PAR2RS_OUT/par1-create-reject"
+  printf source >"$PAR2RS_OUT/par1-create-reject/source.txt"
+  run_capture "$PAR2RS_OUT/par1-create-reject" "$WORK_DIR/par2rs-par1-create-reject" "$PAR2RS_BIN_DIR/par2" create out.par source.txt
+  assert_nonzero_status "$WORK_DIR/par2rs-par1-create-reject"
+  assert_absent "$PAR2RS_OUT/par1-create-reject/out.par"
 }
 
 if [[ "$HAS_TURBO" = 1 ]]; then
@@ -158,9 +271,20 @@ if [[ "$HAS_TURBO" = 1 ]]; then
   run_case "repair corrupted PAR2 file" case_repair_corrupted_par2_file
   run_case "report unrepairable missing PAR2 file" case_report_unrepairable_missing_par2_file
   run_case "reject create overwrite" case_reject_create_overwrite
+  run_case "verify intact PAR1" case_verify_intact_par1
+  run_case "verify PAR1 from volume input" case_verify_par1_from_volume_input
+  run_case "repair missing PAR1 file" case_repair_missing_par1_file
+  run_case "repair renamed PAR1 file" case_repair_renamed_par1_file
+  run_case "purge intact PAR1" case_purge_intact_par1
+  run_case "reject PAR1 create" case_reject_par1_create_self
 else
   printf 'skipping turbo comparisons: %s is not executable or on PATH\n' "$TURBO_PAR2_CMD"
+  run_case "verify intact PAR1" case_verify_intact_par1_self
+  run_case "verify PAR1 from volume input" case_verify_par1_from_volume_input_self
+  run_case "repair missing PAR1 file" case_repair_missing_par1_file_self
+  run_case "repair renamed PAR1 file" case_repair_renamed_par1_file_self
+  run_case "purge intact PAR1" case_purge_intact_par1_self
+  run_case "reject PAR1 create" case_reject_par1_create_self
 fi
-run_case "verify intact PAR1" case_verify_intact_par1
 
 printf 'comparison work dir: %s\n' "$WORK_DIR"
