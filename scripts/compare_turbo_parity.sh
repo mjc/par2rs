@@ -466,6 +466,22 @@ run_standalone_noise_case() {
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
 }
 
+run_standalone_verify_repair_option_case() {
+  local label="$1"
+  shift
+  copy_fixture_pair "par2verify-standalone-option-$label"
+  run_standalone_pair "par2verify-standalone-option-$label" "$TURBO_PAR2VERIFY_CMD" par2verify "$@" testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "par2repair-standalone-option-$label"
+  corrupt_pair_file testfile
+  run_standalone_pair "par2repair-standalone-option-$label" "$TURBO_PAR2REPAIR_CMD" par2repair "$@" testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+}
+
 run_invalid_mixed_noise_create_case() {
   local label="$1"
   shift
@@ -974,6 +990,96 @@ case_standalone_verify_repair_wrappers() {
   run_standalone_pair par2repair-standalone "$TURBO_PAR2REPAIR_CMD" par2repair testfile.par2
   assert_pair_same_status
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+}
+
+case_standalone_verify_repair_input_forms() {
+  copy_fixture_pair par2verify-standalone-data-input
+  run_standalone_pair par2verify-standalone-data-input "$TURBO_PAR2VERIFY_CMD" par2verify testfile
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair par2verify-standalone-volume-input
+  run_standalone_pair par2verify-standalone-volume-input "$TURBO_PAR2VERIFY_CMD" par2verify testfile.vol00+01.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair par2verify-standalone-uppercase-main
+  mv "$TURBO_CASE/testfile.par2" "$TURBO_CASE/testfile.PAR2"
+  mv "$PAR2RS_CASE/testfile.par2" "$PAR2RS_CASE/testfile.PAR2"
+  run_standalone_pair par2verify-standalone-uppercase-main "$TURBO_PAR2VERIFY_CMD" par2verify testfile.PAR2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair par2verify-standalone-uppercase-volume
+  mv "$TURBO_CASE/testfile.vol00+01.par2" "$TURBO_CASE/testfile.vol00+01.PAR2"
+  mv "$PAR2RS_CASE/testfile.vol00+01.par2" "$PAR2RS_CASE/testfile.vol00+01.PAR2"
+  run_standalone_pair par2verify-standalone-uppercase-volume "$TURBO_PAR2VERIFY_CMD" par2verify testfile.vol00+01.PAR2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair par2repair-standalone-data-input
+  corrupt_pair_file testfile
+  run_standalone_pair par2repair-standalone-data-input "$TURBO_PAR2REPAIR_CMD" par2repair testfile
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+
+  copy_fixture_pair par2repair-standalone-volume-input
+  corrupt_pair_file testfile
+  run_standalone_pair par2repair-standalone-volume-input "$TURBO_PAR2REPAIR_CMD" par2repair testfile.vol00+01.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+
+  copy_fixture_pair par2repair-standalone-renamed-volume
+  mv "$TURBO_CASE/testfile" "$TURBO_CASE/wrong-name.bin"
+  mv "$PAR2RS_CASE/testfile" "$PAR2RS_CASE/wrong-name.bin"
+  run_standalone_pair par2repair-standalone-renamed-volume "$TURBO_PAR2REPAIR_CMD" par2repair testfile.vol00+01.par2 wrong-name.bin
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+  assert_absent "$PAR2RS_CASE/wrong-name.bin"
+}
+
+case_standalone_verify_repair_basepath() {
+  pair_dirs par2verify-standalone-basepath
+  mkdir -p "$TURBO_CASE/base" "$TURBO_CASE/work" "$PAR2RS_CASE/base" "$PAR2RS_CASE/work"
+  cp "$ROOT/tests/fixtures/testfile" "$TURBO_CASE/base/"
+  cp "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/base/"
+  cp "$ROOT/tests/fixtures/testfile"*.par2 "$TURBO_CASE/work/"
+  cp "$ROOT/tests/fixtures/testfile"*.par2 "$PAR2RS_CASE/work/"
+  TURBO_RESULT="$WORK_DIR/turbo-par2verify-standalone-basepath"
+  PAR2RS_RESULT="$WORK_DIR/par2rs-par2verify-standalone-basepath"
+  if [[ "$HAS_TURBO" = 1 ]] && command -v "$TURBO_PAR2VERIFY_CMD" >/dev/null 2>&1; then
+    run_capture "$TURBO_CASE/work" "$TURBO_RESULT" "$TURBO_PAR2VERIFY_CMD" -B../base testfile.par2
+  fi
+  run_capture "$PAR2RS_CASE/work" "$PAR2RS_RESULT" "$PAR2RS_BIN_DIR/par2verify" -B../base testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  pair_dirs par2repair-standalone-basepath
+  mkdir -p "$TURBO_CASE/base" "$TURBO_CASE/work" "$PAR2RS_CASE/base" "$PAR2RS_CASE/work"
+  cp "$ROOT/tests/fixtures/testfile" "$TURBO_CASE/base/"
+  cp "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/base/"
+  cp "$ROOT/tests/fixtures/testfile"*.par2 "$TURBO_CASE/work/"
+  cp "$ROOT/tests/fixtures/testfile"*.par2 "$PAR2RS_CASE/work/"
+  corrupt_pair_file base/testfile
+  TURBO_RESULT="$WORK_DIR/turbo-par2repair-standalone-basepath"
+  PAR2RS_RESULT="$WORK_DIR/par2rs-par2repair-standalone-basepath"
+  if [[ "$HAS_TURBO" = 1 ]] && command -v "$TURBO_PAR2REPAIR_CMD" >/dev/null 2>&1; then
+    run_capture "$TURBO_CASE/work" "$TURBO_RESULT" "$TURBO_PAR2REPAIR_CMD" -B../base testfile.par2
+  fi
+  run_capture "$PAR2RS_CASE/work" "$PAR2RS_RESULT" "$PAR2RS_BIN_DIR/par2repair" -B../base testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/base/testfile"
+}
+
+case_standalone_verify_repair_option_matrix() {
+  run_standalone_verify_repair_option_case data-skipping -N
+  run_standalone_verify_repair_option_case data-skipping-leeway -N -S64
+  run_standalone_verify_repair_option_case file-threads -T1
+  run_standalone_verify_repair_option_case memory -m1
 }
 
 case_report_unrepairable_missing_par2_file() {
@@ -1485,6 +1591,9 @@ run_case "verify intact PAR2" case_verify_intact_par2
 run_case "repair corrupted PAR2 file" case_repair_corrupted_par2_file
 run_case "verify and repair PAR2 with v/r aliases" case_verify_repair_aliases
 run_case "verify and repair PAR2 with standalone wrappers" case_standalone_verify_repair_wrappers
+run_case "standalone verify/repair PAR2 input forms" case_standalone_verify_repair_input_forms
+run_case "standalone verify/repair PAR2 with -B" case_standalone_verify_repair_basepath
+run_case "standalone verify/repair PAR2 option matrix" case_standalone_verify_repair_option_matrix
 run_case "report unrepairable missing PAR2 file" case_report_unrepairable_missing_par2_file
 run_case "verify PAR2 by data file input" case_verify_by_data_file_input
 run_case "verify PAR2 by volume input" case_verify_by_volume_input

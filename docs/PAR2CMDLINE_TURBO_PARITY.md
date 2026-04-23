@@ -200,10 +200,12 @@ Current script coverage includes:
 - PAR2 verify/repair through full commands, `v`/`r` aliases, `par2verify`, and
   `par2repair`, from PAR2 set input and protected data-file input, including
   PAR2 volume input, uppercase `.PAR2` main and volume input, `-B`, `-N`,
-  `-N -S`, `-T`, `-m`, `--` hyphen-prefixed extra files, renamed-file repair
-  from main and volume input, standalone rename-only repair, rename-only
-  verify/repair, damaged rename-only failure, unrepairable missing-file
-  reporting, and purge after intact verify or successful repair.
+  `-N -S`, `-T`, `-m`, and `--` hyphen-prefixed extra files. Standalone
+  `par2verify`/`par2repair` now covers the same valid PAR2 input forms,
+  uppercase inputs, base-path behavior, and runtime option matrix.
+- PAR2 renamed-file repair from main and volume input, standalone rename-only
+  repair, rename-only verify/repair, damaged rename-only failure, unrepairable
+  missing-file reporting, and purge after intact verify or successful repair.
 - PAR2 purge effects after repair-by-rename, repair-by-rename with a corrupted
   target backup, and failed repair where recovery files must remain.
 - Invalid PAR2 verify/repair options, including `-S` without `-N`, invalid
