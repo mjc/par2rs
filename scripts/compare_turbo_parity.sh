@@ -975,6 +975,106 @@ case_standalone_thread_option_noise_bundles_valid() {
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
 }
 
+case_verify_repair_thread_option_tail_flags_valid() {
+  copy_fixture_pair "verify-thread-tail-purge"
+  run_pair "verify-thread-tail-purge" verify -t1p testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "verify-file-thread-tail-purge"
+  run_pair "verify-file-thread-tail-purge" verify -T1p testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "verify-thread-tail-skip"
+  run_pair "verify-thread-tail-skip" verify -t1N testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "verify-file-thread-tail-rename"
+  run_pair "verify-file-thread-tail-rename" verify -T1O testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "repair-thread-tail-purge"
+  corrupt_pair_file testfile
+  run_pair "repair-thread-tail-purge" repair -t1p testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+
+  copy_fixture_pair "repair-file-thread-tail-purge"
+  corrupt_pair_file testfile
+  run_pair "repair-file-thread-tail-purge" repair -T1p testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+
+  copy_fixture_pair "repair-thread-tail-skip"
+  corrupt_pair_file testfile
+  run_pair "repair-thread-tail-skip" repair -t1N testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+
+  copy_fixture_pair "repair-file-thread-tail-rename"
+  corrupt_pair_file testfile
+  run_pair "repair-file-thread-tail-rename" repair -T1O testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+}
+
+case_standalone_verify_repair_thread_option_tail_flags_valid() {
+  copy_fixture_pair "par2verify-thread-tail-purge"
+  run_standalone_pair "par2verify-thread-tail-purge" "$TURBO_PAR2VERIFY_CMD" par2verify -t1p testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "par2verify-file-thread-tail-purge"
+  run_standalone_pair "par2verify-file-thread-tail-purge" "$TURBO_PAR2VERIFY_CMD" par2verify -T1p testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "par2verify-thread-tail-skip"
+  run_standalone_pair "par2verify-thread-tail-skip" "$TURBO_PAR2VERIFY_CMD" par2verify -t1N testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "par2verify-file-thread-tail-rename"
+  run_standalone_pair "par2verify-file-thread-tail-rename" "$TURBO_PAR2VERIFY_CMD" par2verify -T1O testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "par2repair-thread-tail-purge"
+  corrupt_pair_file testfile
+  run_standalone_pair "par2repair-thread-tail-purge" "$TURBO_PAR2REPAIR_CMD" par2repair -t1p testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+
+  copy_fixture_pair "par2repair-file-thread-tail-purge"
+  corrupt_pair_file testfile
+  run_standalone_pair "par2repair-file-thread-tail-purge" "$TURBO_PAR2REPAIR_CMD" par2repair -T1p testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+
+  copy_fixture_pair "par2repair-thread-tail-skip"
+  corrupt_pair_file testfile
+  run_standalone_pair "par2repair-thread-tail-skip" "$TURBO_PAR2REPAIR_CMD" par2repair -t1N testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+
+  copy_fixture_pair "par2repair-file-thread-tail-rename"
+  corrupt_pair_file testfile
+  run_standalone_pair "par2repair-file-thread-tail-rename" "$TURBO_PAR2REPAIR_CMD" par2repair -T1O testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+}
+
 case_mixed_noise_rejected() {
   run_invalid_mixed_noise_create_case v-q -v -q
   run_invalid_mixed_noise_create_case vv-qq -vv -qq
@@ -1897,6 +1997,8 @@ run_case "valid bundled mixed noise options" case_mixed_noise_bundles_valid
 run_case "valid bundled mixed standalone noise options" case_standalone_mixed_noise_bundles_valid
 run_case "valid thread option bundles with trailing noise" case_thread_option_noise_bundles_valid
 run_case "valid standalone thread option bundles with trailing noise" case_standalone_thread_option_noise_bundles_valid
+run_case "valid verify repair thread options with trailing flags" case_verify_repair_thread_option_tail_flags_valid
+run_case "valid standalone verify repair thread options with trailing flags" case_standalone_verify_repair_thread_option_tail_flags_valid
 run_case "reject mixed noise options" case_mixed_noise_rejected
 run_case "reject mixed standalone noise options" case_standalone_mixed_noise_rejected
 run_case "reject invalid PAR2 create options" case_create_invalid_options
