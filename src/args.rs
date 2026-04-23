@@ -200,9 +200,10 @@ pub fn parse_repair_args() -> clap::ArgMatches {
 }
 
 fn reject_detached_verify_repair_short_values() {
-    if let Err(message) = crate::cli::compat::reject_detached_short_values(
+    if let Err(message) = crate::cli::compat::reject_short_value_forms(
         std::env::args_os().skip(1),
         &["-a", "-S", "-T", "-m"],
+        &["-B", "-S", "-T", "-m"],
     ) {
         eprintln!("{message}");
         std::process::exit(2);

@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
 use par2rs::cli::compat::{
     init_env_logger, parse_memory_mb, parse_noise_level, parse_positive_usize,
-    reject_detached_short_values,
+    reject_short_value_forms,
 };
 use par2rs::create::cli::{
     parse_redundancy_option, resolve_create_inputs, validate_recovery_file_count,
@@ -378,13 +378,20 @@ fn reject_detached_short_values_for_subcommand() {
         return;
     };
 
-    let attached_only = match command {
-        "create" | "c" => &["-b", "-s", "-r", "-n", "-T", "-t", "-m"][..],
-        "verify" | "v" | "repair" | "r" => &["-a", "-S", "-T", "-m"][..],
+    let (detached_rejected, equals_rejected) = match command {
+        "create" | "c" => (
+            &["-b", "-s", "-r", "-n", "-T", "-t", "-m"][..],
+            &["-B", "-b", "-s", "-r", "-c", "-f", "-n", "-T", "-t", "-m"][..],
+        ),
+        "verify" | "v" | "repair" | "r" => {
+            (&["-a", "-S", "-T", "-m"][..], &["-B", "-S", "-T", "-m"][..])
+        }
         _ => return,
     };
 
-    if let Err(message) = reject_detached_short_values(args.into_iter().skip(2), attached_only) {
+    if let Err(message) =
+        reject_short_value_forms(args.into_iter().skip(2), detached_rejected, equals_rejected)
+    {
         eprintln!("{message}");
         std::process::exit(2);
     }

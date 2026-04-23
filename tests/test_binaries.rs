@@ -1226,8 +1226,7 @@ fn test_par2_verify_repair_accept_scan_compat_flags() {
             .arg(subcommand)
             .arg("-q")
             .arg("-N")
-            .arg("-S")
-            .arg("512")
+            .arg("-S512")
             .arg(par2_file)
             .output()
             .unwrap_or_else(|_| panic!("Failed to execute par2 {subcommand}"));
@@ -1986,8 +1985,7 @@ fn test_standalone_verify_repair_accept_scan_compat_flags() {
         let output = Command::new(get_binary_path(binary))
             .arg("-q")
             .arg("-N")
-            .arg("-S")
-            .arg("512")
+            .arg("-S512")
             .arg(par2_file)
             .output()
             .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
@@ -2119,10 +2117,8 @@ fn test_par2create_creates_par2_files() {
     let output_base = temp_dir.path().join("sample.par2");
     let output = Command::new(get_binary_path("par2create"))
         .arg("-q")
-        .arg("-s")
-        .arg("4")
-        .arg("-c")
-        .arg("1")
+        .arg("-s4")
+        .arg("-c1")
         .arg(&output_base)
         .arg(&source)
         .output()
@@ -2260,10 +2256,8 @@ fn test_create_commands_accept_long_quiet_and_verbose_flags() {
         }
         let output = command_runner
             .arg(flag)
-            .arg("-s")
-            .arg("4")
-            .arg("-c")
-            .arg("1")
+            .arg("-s4")
+            .arg("-c1")
             .arg(&output_base)
             .arg(&source)
             .output()
@@ -2358,10 +2352,8 @@ fn test_create_commands_accept_long_resource_flags() {
             .arg("1")
             .arg("--basepath")
             .arg(temp_dir.path())
-            .arg("-s")
-            .arg("4")
-            .arg("-c")
-            .arg("1")
+            .arg("-s4")
+            .arg("-c1")
             .arg(&output_base)
             .arg(&source)
             .output()
@@ -2391,10 +2383,8 @@ fn test_create_commands_reject_existing_outputs() {
         }
         let output = command_runner
             .arg("-q")
-            .arg("-s")
-            .arg("4")
-            .arg("-c")
-            .arg("1")
+            .arg("-s4")
+            .arg("-c1")
             .arg(&output_base)
             .arg(&source)
             .output()
@@ -2478,7 +2468,7 @@ fn test_verify_and_repair_accept_archive_name_as_noop() {
 }
 
 #[test]
-fn test_detached_short_option_values_match_turbo_rejections() {
+fn test_short_option_value_forms_match_turbo_rejections() {
     for (binary, prefix_args, flag, value) in [
         ("par2create", Vec::<&str>::new(), "-b", "8"),
         ("par2create", Vec::<&str>::new(), "-s", "4"),
@@ -2513,6 +2503,51 @@ fn test_detached_short_option_values_match_turbo_rejections() {
         assert!(
             !output.status.success(),
             "{binary} accepted detached {flag} {value}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output_base.exists(), "{binary} created an output archive");
+    }
+
+    for (binary, prefix_args, option) in [
+        ("par2create", Vec::<&str>::new(), "-B=."),
+        ("par2create", Vec::<&str>::new(), "-b=8"),
+        ("par2create", Vec::<&str>::new(), "-s=4"),
+        ("par2create", Vec::<&str>::new(), "-r=10"),
+        ("par2create", Vec::<&str>::new(), "-c=2"),
+        ("par2create", Vec::<&str>::new(), "-f=3"),
+        ("par2create", Vec::<&str>::new(), "-n=2"),
+        ("par2create", Vec::<&str>::new(), "-T=1"),
+        ("par2create", Vec::<&str>::new(), "-t=1"),
+        ("par2create", Vec::<&str>::new(), "-m=1"),
+        ("par2", vec!["create"], "-B=."),
+        ("par2", vec!["create"], "-b=8"),
+        ("par2", vec!["create"], "-s=4"),
+        ("par2", vec!["create"], "-r=10"),
+        ("par2", vec!["create"], "-c=2"),
+        ("par2", vec!["create"], "-f=3"),
+        ("par2", vec!["create"], "-n=2"),
+        ("par2", vec!["create"], "-T=1"),
+        ("par2", vec!["create"], "-t=1"),
+        ("par2", vec!["create"], "-m=1"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let source = temp_dir.path().join("source.dat");
+        create_test_file(&source, b"equals value rejection").expect("Failed to create source");
+        let output_base = temp_dir.path().join("out.par2");
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(prefix_args);
+        let output = command
+            .arg(option)
+            .arg(&output_base)
+            .arg(&source)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted {option}: stdout={}, stderr={}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -2563,6 +2598,44 @@ fn test_detached_short_option_values_match_turbo_rejections() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    for (binary, prefix_args, extra_args, option) in [
+        ("par2verify", Vec::<&str>::new(), Vec::<&str>::new(), "-B=."),
+        ("par2verify", Vec::new(), vec!["-N"], "-S=64"),
+        ("par2verify", Vec::new(), Vec::new(), "-T=1"),
+        ("par2verify", Vec::new(), Vec::new(), "-m=1"),
+        ("par2repair", Vec::new(), Vec::new(), "-B=."),
+        ("par2repair", Vec::new(), vec!["-N"], "-S=64"),
+        ("par2repair", Vec::new(), Vec::new(), "-T=1"),
+        ("par2repair", Vec::new(), Vec::new(), "-m=1"),
+        ("par2", vec!["verify"], Vec::new(), "-B=."),
+        ("par2", vec!["verify"], vec!["-N"], "-S=64"),
+        ("par2", vec!["verify"], Vec::new(), "-T=1"),
+        ("par2", vec!["verify"], Vec::new(), "-m=1"),
+        ("par2", vec!["repair"], Vec::new(), "-B=."),
+        ("par2", vec!["repair"], vec!["-N"], "-S=64"),
+        ("par2", vec!["repair"], Vec::new(), "-T=1"),
+        ("par2", vec!["repair"], Vec::new(), "-m=1"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let (par2_file, _source) = create_purge_test_set(&temp_dir);
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(prefix_args);
+        command.args(extra_args);
+        let output = command
+            .arg(option)
+            .arg(&par2_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted {option}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
@@ -2574,10 +2647,8 @@ fn test_par2create_uses_single_existing_file_as_source() {
     let output = Command::new(get_binary_path("par2create"))
         .current_dir(temp_dir.path())
         .arg("-q")
-        .arg("-s")
-        .arg("4")
-        .arg("-c")
-        .arg("1")
+        .arg("-s4")
+        .arg("-c1")
         .arg("implicit.dat")
         .output()
         .expect("Failed to execute par2create");
@@ -2614,10 +2685,8 @@ fn test_create_commands_recurse_directories_with_basepath() {
             .arg("-R")
             .arg("--basepath")
             .arg(&root)
-            .arg("-s")
-            .arg("4")
-            .arg("-c")
-            .arg("1")
+            .arg("-s4")
+            .arg("-c1")
             .arg(&output_base)
             .arg(&root)
             .output()
@@ -2653,10 +2722,8 @@ fn test_create_commands_use_archive_name_option() {
             .arg("-q")
             .arg("-a")
             .arg(&archive_base)
-            .arg("-s")
-            .arg("4")
-            .arg("-c")
-            .arg("1")
+            .arg("-s4")
+            .arg("-c1")
             .arg(&positional_base)
             .arg(&source)
             .output()
@@ -2691,12 +2758,9 @@ fn test_create_commands_use_first_recovery_block_option() {
         }
         let output = command_runner
             .arg("-q")
-            .arg("-s")
-            .arg("4")
-            .arg("-c")
-            .arg("1")
-            .arg("-f")
-            .arg("7")
+            .arg("-s4")
+            .arg("-c1")
+            .arg("-f7")
             .arg(&output_base)
             .arg(&source)
             .output()
@@ -2726,10 +2790,8 @@ fn test_par2_create_uses_single_existing_file_as_source() {
         .current_dir(temp_dir.path())
         .arg("create")
         .arg("-q")
-        .arg("-s")
-        .arg("4")
-        .arg("-c")
-        .arg("1")
+        .arg("-s4")
+        .arg("-c1")
         .arg("implicit-unified.dat")
         .output()
         .expect("Failed to execute par2 create");
@@ -2757,12 +2819,9 @@ fn test_par2create_accepts_target_size_redundancy() {
     let output_base = temp_dir.path().join("target-size.par2");
     let output = Command::new(get_binary_path("par2create"))
         .arg("-q")
-        .arg("-s")
-        .arg("4")
-        .arg("-r")
-        .arg("k1")
-        .arg("-n")
-        .arg("1")
+        .arg("-s4")
+        .arg("-rk1")
+        .arg("-n1")
         .arg(&output_base)
         .arg(&source)
         .output()
@@ -2786,10 +2845,8 @@ fn test_par2create_accepts_high_redundancy_with_warning() {
     let output_base = temp_dir.path().join("high-percent.par2");
     let output = Command::new(get_binary_path("par2create"))
         .arg("-q")
-        .arg("-s")
-        .arg("4")
-        .arg("-r")
-        .arg("101")
+        .arg("-s4")
+        .arg("-r101")
         .arg(&output_base)
         .arg(&source)
         .output()
@@ -2814,12 +2871,9 @@ fn test_par2create_rejects_conflicting_create_options() {
     let output_base = temp_dir.path().join("conflict.par2");
 
     let output = Command::new(get_binary_path("par2create"))
-        .arg("-s")
-        .arg("4")
-        .arg("-c")
-        .arg("1")
-        .arg("-r")
-        .arg("5")
+        .arg("-s4")
+        .arg("-c1")
+        .arg("-r5")
         .arg(&output_base)
         .arg(&source)
         .output()
@@ -2840,12 +2894,9 @@ fn test_par2create_rejects_too_many_recovery_files() {
 
     let output = Command::new(get_binary_path("par2create"))
         .arg("-q")
-        .arg("-s")
-        .arg("4")
-        .arg("-c")
-        .arg("1")
-        .arg("-n")
-        .arg("32")
+        .arg("-s4")
+        .arg("-c1")
+        .arg("-n32")
         .arg(&output_base)
         .arg(&source)
         .output()
@@ -2991,12 +3042,9 @@ fn test_par2create_n_uses_uniform_file_sizes() {
 
     let output = Command::new(get_binary_path("par2create"))
         .arg("-q")
-        .arg("-s")
-        .arg("4")
-        .arg("-c")
-        .arg("5")
-        .arg("-n")
-        .arg("2")
+        .arg("-s4")
+        .arg("-c5")
+        .arg("-n2")
         .arg(&output_base)
         .arg(&source)
         .output()

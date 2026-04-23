@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
 use par2rs::cli::compat::{
     init_env_logger, parse_memory_mb, parse_noise_level, parse_positive_usize,
-    reject_detached_short_values,
+    reject_short_value_forms,
 };
 use par2rs::create::cli::{
     parse_redundancy_option, resolve_create_inputs, validate_recovery_file_count,
@@ -18,9 +18,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if let Err(message) = reject_detached_short_values(
+    if let Err(message) = reject_short_value_forms(
         std::env::args_os().skip(1),
         &["-b", "-s", "-r", "-n", "-T", "-t", "-m"],
+        &["-B", "-b", "-s", "-r", "-c", "-f", "-n", "-T", "-t", "-m"],
     ) {
         eprintln!("{message}");
         std::process::exit(2);

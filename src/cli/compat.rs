@@ -100,14 +100,36 @@ pub fn reject_detached_short_values<I>(args: I, attached_only_flags: &[&str]) ->
 where
     I: IntoIterator<Item = OsString>,
 {
+    reject_short_value_forms(args, attached_only_flags, &[])
+}
+
+pub fn reject_short_value_forms<I>(
+    args: I,
+    detached_rejected_flags: &[&str],
+    equals_rejected_flags: &[&str],
+) -> Result<(), String>
+where
+    I: IntoIterator<Item = OsString>,
+{
     for arg in args {
         if arg == "--" {
             break;
         }
         let arg = arg.to_string_lossy();
-        if attached_only_flags.iter().any(|flag| arg.as_ref() == *flag) {
+        if detached_rejected_flags
+            .iter()
+            .any(|flag| arg.as_ref() == *flag)
+        {
             return Err(format!(
                 "{arg} requires an attached value for par2cmdline compatibility"
+            ));
+        }
+        if equals_rejected_flags.iter().any(|flag| {
+            arg.strip_prefix(*flag)
+                .is_some_and(|suffix| suffix.starts_with('='))
+        }) {
+            return Err(format!(
+                "{arg} is not a supported par2cmdline-compatible option form"
             ));
         }
     }

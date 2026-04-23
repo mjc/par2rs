@@ -195,7 +195,7 @@ Current script coverage includes:
   matrix, including recursive input and index-only `-c0` creation.
 - Invalid PAR2 create combinations and ranges, including block count/size
   conflicts, duplicate singleton options, invalid redundancy suffixes,
-  recovery-file layout conflicts, detached short-value forms that turbo
+  recovery-file layout conflicts, detached or equals short-value forms that turbo
   rejects, verify/repair-only option rejection, and output index/volume
   overwrite refusal. Standalone `par2create` covers the same invalid matrix and
   overwrite refusal cases.
@@ -214,7 +214,7 @@ Current script coverage includes:
   recovery files must remain, including standalone `par2verify`/`par2repair`
   purge coverage.
 - Invalid PAR2 verify/repair options, including `-S` without `-N`, invalid
-  `-S`, create-only option rejection, detached short-value forms that turbo
+  `-S`, create-only option rejection, detached or equals short-value forms that turbo
   rejects, invalid `-T`, and invalid `-m`, with the same invalid matrix covered
   for standalone `par2verify`/`par2repair`.
 - PAR1 verify from main and volume input, uppercase `.PAR`/`.PNN` input,
