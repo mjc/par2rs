@@ -200,6 +200,12 @@ fn main() -> Result<()> {
                         .action(ArgAction::SetTrue),
                 )
                 .arg(
+                    Arg::new("rename_only")
+                        .short('O')
+                        .help("Rename-only mode")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
                     Arg::new("threads")
                         .short('t')
                         .long("threads")
@@ -282,6 +288,12 @@ fn main() -> Result<()> {
                         .short('p')
                         .long("purge")
                         .help("Purge backup files after successful repair")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("rename_only")
+                        .short('O')
+                        .help("Rename-only mode")
                         .action(ArgAction::SetTrue),
                 )
                 .arg(
@@ -673,6 +685,13 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
 
     if !quiet {
         reporter.report_verification_results(&results);
+    }
+
+    if verify_config.rename_only && results.renamed_file_count > 0 {
+        anyhow::bail!(
+            "Repair required: {} files are renamed",
+            results.renamed_file_count
+        );
     }
 
     if results.missing_block_count == 0 {

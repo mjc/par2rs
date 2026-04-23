@@ -136,6 +136,11 @@ fn main() -> Result<()> {
 
     // Return success if no repair is needed, error if repair is required
     anyhow::ensure!(
+        !(verify_config.rename_only && verification_results.renamed_file_count > 0),
+        "Repair required: {} files are renamed",
+        verification_results.renamed_file_count
+    );
+    anyhow::ensure!(
         verification_results.missing_block_count == 0,
         "Repair required: {} blocks are missing or damaged",
         verification_results.missing_block_count

@@ -41,6 +41,12 @@ pub fn parse_args() -> clap::ArgMatches {
                 .action(ArgAction::SetTrue),
         )
         .arg(
+            Arg::new("rename_only")
+                .help("Rename-only mode")
+                .short('O')
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
             Arg::new("threads")
                 .help("Number of CPU threads for computation (0 = auto-detect)")
                 .short('t')
@@ -126,6 +132,12 @@ pub fn parse_repair_args() -> clap::ArgMatches {
                 .help("Purge backup files and par files on successful recovery")
                 .short('p')
                 .long("purge")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("rename_only")
+                .help("Rename-only mode")
+                .short('O')
                 .action(ArgAction::SetTrue),
         )
         .arg(

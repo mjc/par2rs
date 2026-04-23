@@ -9,6 +9,7 @@ use crate::packets::{FileDescriptionPacket, Packet, RecoverySliceMetadata};
 use log::debug;
 use rustc_hash::FxHashMap as HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 /// Main repair context containing all necessary information for repair operations
 pub struct RepairContext {
@@ -16,6 +17,7 @@ pub struct RepairContext {
     pub base_path: PathBuf,
     pub memory_limit: Option<usize>,
     reporter: Box<dyn ProgressReporter>,
+    repair_created_backups: Mutex<Vec<PathBuf>>,
 }
 
 impl RepairContext {
@@ -50,6 +52,7 @@ impl RepairContext {
             base_path,
             memory_limit: None,
             reporter,
+            repair_created_backups: Mutex::new(Vec::new()),
         })
     }
 
@@ -67,6 +70,7 @@ impl RepairContext {
             base_path,
             memory_limit: None,
             reporter,
+            repair_created_backups: Mutex::new(Vec::new()),
         })
     }
 
@@ -77,6 +81,12 @@ impl RepairContext {
     /// Get a reference to the progress reporter
     pub(super) fn reporter(&self) -> &dyn ProgressReporter {
         self.reporter.as_ref()
+    }
+
+    pub(super) fn record_repair_created_backup(&self, path: PathBuf) {
+        if let Ok(mut backups) = self.repair_created_backups.lock() {
+            backups.push(path);
+        }
     }
 
     /// Extract recovery set information from packets
@@ -181,19 +191,17 @@ impl RepairContext {
 
         self.reporter.report_purge_backup_files();
 
-        // Remove backup files (.1, .bak, etc.) for all files in the recovery set
-        for file_info in &self.recovery_set.files {
-            let file_path = self.base_path.join(&file_info.file_name);
+        let backups = self
+            .repair_created_backups
+            .lock()
+            .map(|backups| backups.clone())
+            .unwrap_or_default();
+        for backup_path in backups {
+            if backup_path.exists() {
+                delete_file(&backup_path)?;
 
-            // Try common backup file extensions
-            for ext in &["1", "bak"] {
-                let backup_path = file_path.with_extension(ext);
-                if backup_path.exists() {
-                    delete_file(&backup_path)?;
-
-                    self.reporter
-                        .report_purge_remove(&backup_path.file_name().unwrap().to_string_lossy());
-                }
+                self.reporter
+                    .report_purge_remove(&backup_path.file_name().unwrap().to_string_lossy());
             }
         }
 

@@ -134,9 +134,75 @@ impl RepairContext {
         FileStatus::Corrupted
     }
 
-    /// Perform repair operation
-    ///
-    /// NOTE: This method requires verification results. Call
+    /// Move exact wrong-name extra files back to their protected target paths.
+    pub(crate) fn restore_renamed_files(
+        &self,
+        verification_results: &crate::verify::VerificationResults,
+    ) -> Result<Vec<String>> {
+        let mut restored = Vec::new();
+
+        for file_result in &verification_results.files {
+            if file_result.status != crate::verify::FileStatus::Renamed {
+                continue;
+            }
+
+            let Some(matched_path) = &file_result.matched_path else {
+                continue;
+            };
+
+            let Some(file_info) = self
+                .recovery_set
+                .files
+                .iter()
+                .find(|file_info| file_info.file_name == file_result.file_name)
+            else {
+                continue;
+            };
+
+            let target_path = self.base_path.join(&file_info.file_name);
+            if target_path.exists() {
+                let backup_path = Self::next_backup_path(&target_path);
+                fs::rename(&target_path, &backup_path).map_err(|source| {
+                    RepairError::FileRenameError {
+                        temp_path: target_path.clone(),
+                        final_path: backup_path.clone(),
+                        source,
+                    }
+                })?;
+                self.record_repair_created_backup(backup_path);
+            }
+
+            fs::rename(matched_path, &target_path).map_err(|source| {
+                RepairError::FileRenameError {
+                    temp_path: matched_path.clone(),
+                    final_path: target_path.clone(),
+                    source,
+                }
+            })?;
+
+            restored.push(file_info.file_name.clone());
+        }
+
+        Ok(restored)
+    }
+
+    fn next_backup_path(target_path: &Path) -> PathBuf {
+        let parent = target_path.parent().unwrap_or_else(|| Path::new(""));
+        let file_name = target_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| target_path.to_string_lossy().into_owned());
+
+        for suffix in 1usize.. {
+            let candidate = parent.join(format!("{file_name}.{suffix}"));
+            if !candidate.exists() {
+                return candidate;
+            }
+        }
+
+        unreachable!("usize suffix space exhausted")
+    }
+
     /// Perform repair using pre-computed verification results
     ///
     /// This method uses the comprehensive verification results (from byte-by-byte
@@ -978,8 +1044,8 @@ pub fn repair_files_with_base_path_and_extra_files(
     // Load packets WITHOUT recovery slices (use metadata for lazy loading instead)
     // This saves ~1.5GB of memory for large PAR2 sets since recovery data is
     // loaded on-demand during reconstruction via RecoverySliceProvider
-    let packet_set = crate::par2_files::load_par2_packets(&par2_files, false, false);
-    if packet_set.packets.is_empty() {
+    let initial_packet_set = crate::par2_files::load_par2_packets(&par2_files, false, false);
+    if initial_packet_set.packets.is_empty() {
         return Err(RepairError::NoValidPackets);
     }
 
@@ -1007,23 +1073,12 @@ pub fn repair_files_with_base_path_and_extra_files(
     repair_verify_config.file_threads = verify_config.file_threads;
     repair_verify_config.data_skipping = verify_config.data_skipping;
     repair_verify_config.skip_leeway = verify_config.skip_leeway;
-    let silent_reporter = crate::reporters::SilentVerificationReporter;
-    let verification_results = if extra_files.is_empty() {
-        crate::verify::comprehensive_verify_files(
-            packet_set,
-            &repair_verify_config,
-            &silent_reporter,
-            &base_path,
-        )
-    } else {
-        crate::verify::comprehensive_verify_files_with_extra_files(
-            packet_set,
-            &repair_verify_config,
-            &silent_reporter,
-            &base_path,
-            extra_files,
-        )
-    };
+    repair_verify_config.rename_only = verify_config.rename_only;
+    if !extra_files.is_empty() || verify_config.rename_only {
+        repair_verify_config.skip_full_file_md5 = false;
+    }
+    let mut verification_results =
+        run_repair_verification(&par2_files, &repair_verify_config, &base_path, extra_files);
 
     // Re-load packets for repair context (verification consumed them)
     // This is acceptable since packet parsing is fast (no recovery slice data)
@@ -1033,7 +1088,7 @@ pub fn repair_files_with_base_path_and_extra_files(
     let mut repair_builder = RepairContextBuilder::new()
         .packets(packet_set.packets)
         .metadata(metadata)
-        .base_path(base_path)
+        .base_path(base_path.clone())
         .reporter(reporter);
     if let Some(memory_limit) = verify_config.memory_limit {
         repair_builder = repair_builder.memory_limit(memory_limit);
@@ -1045,9 +1100,120 @@ pub fn repair_files_with_base_path_and_extra_files(
         .reporter()
         .report_statistics(&repair_context.recovery_set);
 
+    let renamed_files = repair_context.restore_renamed_files(&verification_results)?;
+    if !renamed_files.is_empty() {
+        verification_results =
+            run_repair_verification(&par2_files, &repair_verify_config, &base_path, extra_files);
+
+        if repair_verification_is_complete(&verification_results) {
+            return Ok((
+                repair_context,
+                RepairResult::Success {
+                    files_repaired: renamed_files.len(),
+                    files_verified: verification_results.present_file_count,
+                    repaired_files: renamed_files.clone(),
+                    verified_files: verification_results
+                        .files
+                        .iter()
+                        .map(|file| file.file_name.clone())
+                        .collect(),
+                    message: format!(
+                        "Successfully restored {} renamed file(s)",
+                        renamed_files.len()
+                    ),
+                },
+            ));
+        }
+    }
+
+    if verify_config.rename_only {
+        return Ok((
+            repair_context,
+            rename_only_repair_result(&verification_results, renamed_files),
+        ));
+    }
+
     let result = repair_context.repair(verification_results)?;
 
     Ok((repair_context, result))
+}
+
+fn run_repair_verification(
+    par2_files: &[PathBuf],
+    repair_verify_config: &crate::verify::VerificationConfig,
+    base_path: &Path,
+    extra_files: &[PathBuf],
+) -> crate::verify::VerificationResults {
+    let packet_set = crate::par2_files::load_par2_packets(par2_files, false, false);
+    let silent_reporter = crate::reporters::SilentVerificationReporter;
+
+    if extra_files.is_empty() {
+        crate::verify::comprehensive_verify_files(
+            packet_set,
+            repair_verify_config,
+            &silent_reporter,
+            base_path,
+        )
+    } else {
+        crate::verify::comprehensive_verify_files_with_extra_files(
+            packet_set,
+            repair_verify_config,
+            &silent_reporter,
+            base_path,
+            extra_files,
+        )
+    }
+}
+
+fn repair_verification_is_complete(results: &crate::verify::VerificationResults) -> bool {
+    results.renamed_file_count == 0
+        && results.corrupted_file_count == 0
+        && results.missing_file_count == 0
+}
+
+fn rename_only_repair_result(
+    results: &crate::verify::VerificationResults,
+    renamed_files: Vec<String>,
+) -> RepairResult {
+    let verified_files: Vec<_> = results
+        .files
+        .iter()
+        .filter(|file| file.status == crate::verify::FileStatus::Present)
+        .map(|file| file.file_name.clone())
+        .collect();
+
+    if repair_verification_is_complete(results) {
+        if renamed_files.is_empty() {
+            RepairResult::NoRepairNeeded {
+                files_verified: verified_files.len(),
+                verified_files,
+                message: "All files are already present and valid.".to_string(),
+            }
+        } else {
+            RepairResult::Success {
+                files_repaired: renamed_files.len(),
+                files_verified: verified_files.len(),
+                repaired_files: renamed_files.clone(),
+                verified_files,
+                message: format!(
+                    "Successfully restored {} renamed file(s)",
+                    renamed_files.len()
+                ),
+            }
+        }
+    } else {
+        RepairResult::Failed {
+            files_failed: results
+                .files
+                .iter()
+                .filter(|file| file.status != crate::verify::FileStatus::Present)
+                .map(|file| file.file_name.clone())
+                .collect(),
+            files_verified: verified_files.len(),
+            verified_files,
+            message: "Rename-only repair could not restore all files.".to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
