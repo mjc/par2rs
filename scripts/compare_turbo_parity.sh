@@ -895,6 +895,86 @@ case_standalone_mixed_noise_bundles_valid() {
   run_standalone_noise_case vq -vq
 }
 
+case_thread_option_noise_bundles_valid() {
+  make_source_pair "create-file-thread-noise-qv"
+  run_pair "create-file-thread-noise-qv" create -T1qv out.par2 source.txt
+  assert_create_pair_success out.par2 out.par2
+
+  make_source_pair "create-thread-noise-qv"
+  run_pair "create-thread-noise-qv" create -t1qv out.par2 source.txt
+  assert_create_pair_success out.par2 out.par2
+
+  copy_fixture_pair "verify-file-thread-noise-qv"
+  run_pair "verify-file-thread-noise-qv" verify -T1qv testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "verify-thread-noise-qv"
+  run_pair "verify-thread-noise-qv" verify -t1qv testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "repair-file-thread-noise-qv"
+  corrupt_pair_file testfile
+  run_pair "repair-file-thread-noise-qv" repair -T1qv testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+
+  copy_fixture_pair "repair-thread-noise-qv"
+  corrupt_pair_file testfile
+  run_pair "repair-thread-noise-qv" repair -t1qv testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+}
+
+case_standalone_thread_option_noise_bundles_valid() {
+  make_source_pair "par2create-file-thread-noise-qv"
+  run_standalone_pair "par2create-file-thread-noise-qv" "$TURBO_PAR2CREATE_CMD" par2create -T1qv out.par2 source.txt
+  assert_pair_zero_status
+  assert_par2_set_created "$PAR2RS_CASE" out.par2
+  assert_verify_success_for_created_set "$PAR2RS_BIN_DIR/par2" "$PAR2RS_CASE" out.par2
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_par2_set_created "$TURBO_CASE" out.par2
+    assert_verify_success_for_created_set "$TURBO_PAR2_CMD" "$TURBO_CASE" out.par2
+  fi
+
+  make_source_pair "par2create-thread-noise-qv"
+  run_standalone_pair "par2create-thread-noise-qv" "$TURBO_PAR2CREATE_CMD" par2create -t1qv out.par2 source.txt
+  assert_pair_zero_status
+  assert_par2_set_created "$PAR2RS_CASE" out.par2
+  assert_verify_success_for_created_set "$PAR2RS_BIN_DIR/par2" "$PAR2RS_CASE" out.par2
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_par2_set_created "$TURBO_CASE" out.par2
+    assert_verify_success_for_created_set "$TURBO_PAR2_CMD" "$TURBO_CASE" out.par2
+  fi
+
+  copy_fixture_pair "par2verify-file-thread-noise-qv"
+  run_standalone_pair "par2verify-file-thread-noise-qv" "$TURBO_PAR2VERIFY_CMD" par2verify -T1qv testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "par2verify-thread-noise-qv"
+  run_standalone_pair "par2verify-thread-noise-qv" "$TURBO_PAR2VERIFY_CMD" par2verify -t1qv testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "par2repair-file-thread-noise-qv"
+  corrupt_pair_file testfile
+  run_standalone_pair "par2repair-file-thread-noise-qv" "$TURBO_PAR2REPAIR_CMD" par2repair -T1qv testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+
+  copy_fixture_pair "par2repair-thread-noise-qv"
+  corrupt_pair_file testfile
+  run_standalone_pair "par2repair-thread-noise-qv" "$TURBO_PAR2REPAIR_CMD" par2repair -t1qv testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+}
+
 case_mixed_noise_rejected() {
   run_invalid_mixed_noise_create_case v-q -v -q
   run_invalid_mixed_noise_create_case vv-qq -vv -qq
@@ -1815,6 +1895,8 @@ run_case "valid noise options" case_noise_options_valid
 run_case "valid standalone noise options" case_standalone_noise_options_valid
 run_case "valid bundled mixed noise options" case_mixed_noise_bundles_valid
 run_case "valid bundled mixed standalone noise options" case_standalone_mixed_noise_bundles_valid
+run_case "valid thread option bundles with trailing noise" case_thread_option_noise_bundles_valid
+run_case "valid standalone thread option bundles with trailing noise" case_standalone_thread_option_noise_bundles_valid
 run_case "reject mixed noise options" case_mixed_noise_rejected
 run_case "reject mixed standalone noise options" case_standalone_mixed_noise_rejected
 run_case "reject invalid PAR2 create options" case_create_invalid_options
