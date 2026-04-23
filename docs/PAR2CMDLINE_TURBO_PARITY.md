@@ -185,7 +185,8 @@ Current script coverage includes:
 - Top-level and standalone `-V`, `-VV`, and `--version` acceptance, plus
   rejection of uppercase command words without requiring exact exit codes.
 - Valid `-q`, `-qq`, `-v`, and `-vv` noise options across create,
-  verify/repair, and standalone wrappers, plus mixed verbose/quiet rejection.
+  verify/repair, and standalone wrappers, bundled mixed `q`/`v` clusters such
+  as `-qv`/`-vq`, plus separate mixed verbose/quiet rejection.
 - PAR2 create through `create`, `c`, and `par2create`, including `-a`, `-B`,
   `-R`, `--` hyphen-prefixed input, `-b`, `-s`, `-r` percent and size targets,
   `-c`, `-f`, `-u`, `-l`, `-n`, `-T`, `-t`, and `-m`.

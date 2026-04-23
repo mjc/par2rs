@@ -2,6 +2,7 @@ use clap::{Arg, ArgAction, Command};
 
 pub fn parse_args() -> clap::ArgMatches {
     reject_detached_verify_repair_short_values();
+    let args = crate::cli::compat::normalize_mixed_noise_option_clusters(std::env::args_os());
 
     Command::new("par2verify")
         .version(env!("CARGO_PKG_VERSION"))
@@ -94,11 +95,12 @@ pub fn parse_args() -> clap::ArgMatches {
                 .short('S')
                 .value_name("N"),
         )
-        .get_matches()
+        .get_matches_from(args)
 }
 
 pub fn parse_repair_args() -> clap::ArgMatches {
     reject_detached_verify_repair_short_values();
+    let args = crate::cli::compat::normalize_mixed_noise_option_clusters(std::env::args_os());
 
     Command::new("par2repair")
         .version(env!("CARGO_PKG_VERSION"))
@@ -196,7 +198,7 @@ pub fn parse_repair_args() -> clap::ArgMatches {
                 .short('S')
                 .value_name("N"),
         )
-        .get_matches()
+        .get_matches_from(args)
 }
 
 fn reject_detached_verify_repair_short_values() {

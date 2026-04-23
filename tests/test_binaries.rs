@@ -2331,6 +2331,69 @@ fn test_binaries_reject_mixed_verbose_and_quiet() {
 }
 
 #[test]
+fn test_binaries_accept_bundled_mixed_verbose_and_quiet() {
+    for (binary, prefix_args, data_arg) in [
+        ("par2create", Vec::<&str>::new(), "source.dat"),
+        ("par2", vec!["create"], "source.dat"),
+    ] {
+        for flag in ["-qv", "-vq"] {
+            let temp_dir = TempDir::new().expect("Failed to create temp dir");
+            let source = temp_dir.path().join("source.dat");
+            create_test_file(&source, b"bundled mixed noise")
+                .expect("Failed to create source file");
+            let output_base = temp_dir.path().join(format!("{binary}-{flag}.par2"));
+
+            let mut command = Command::new(get_binary_path(binary));
+            command.args(&prefix_args);
+            let output = command
+                .current_dir(temp_dir.path())
+                .arg(flag)
+                .arg(&output_base)
+                .arg(data_arg)
+                .output()
+                .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+            assert!(
+                output.status.success(),
+                "{binary} rejected bundled {flag}: stdout={}, stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    let par2_file = Path::new("tests/fixtures/edge_cases/test_valid.par2");
+    if !par2_file.exists() {
+        eprintln!("Skipping verify/repair bundled noise test - fixture not found");
+        return;
+    }
+
+    for (binary, prefix_args) in [
+        ("par2verify", Vec::<&str>::new()),
+        ("par2repair", Vec::<&str>::new()),
+        ("par2", vec!["verify"]),
+        ("par2", vec!["repair"]),
+    ] {
+        for flag in ["-qv", "-vq"] {
+            let mut command = Command::new(get_binary_path(binary));
+            command.args(&prefix_args);
+            let output = command
+                .arg(flag)
+                .arg(par2_file)
+                .output()
+                .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+            assert!(
+                output.status.success(),
+                "{binary} rejected bundled {flag}: stdout={}, stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
 fn test_create_commands_accept_long_resource_flags() {
     for (binary, command) in [("par2create", None), ("par2", Some("create"))] {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");

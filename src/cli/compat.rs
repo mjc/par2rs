@@ -136,6 +136,35 @@ where
     Ok(())
 }
 
+pub fn normalize_mixed_noise_option_clusters<I>(args: I) -> Vec<OsString>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    args.into_iter()
+        .map(|arg| normalize_mixed_noise_option_cluster(&arg).unwrap_or(arg))
+        .collect()
+}
+
+fn normalize_mixed_noise_option_cluster(arg: &OsString) -> Option<OsString> {
+    let arg_text = arg.to_str()?;
+    let cluster = arg_text.strip_prefix('-')?;
+    if cluster.is_empty()
+        || cluster.starts_with('-')
+        || !cluster.chars().all(|ch| ch == 'q' || ch == 'v')
+        || !cluster.contains('q')
+        || !cluster.contains('v')
+    {
+        return None;
+    }
+
+    let first = cluster.chars().next()?;
+    let count = cluster.chars().take_while(|ch| *ch == first).count();
+    Some(OsString::from(format!(
+        "-{}",
+        std::iter::repeat_n(first, count).collect::<String>()
+    )))
+}
+
 pub fn init_env_logger(noise_level: NoiseLevel) {
     let mut builder = env_logger::Builder::from_default_env();
     builder
@@ -211,5 +240,22 @@ mod tests {
             &["-b"]
         )
         .is_ok());
+    }
+
+    #[test]
+    fn mixed_noise_clusters_normalize_to_initial_run() {
+        let normalized = normalize_mixed_noise_option_clusters(
+            ["par2", "create", "-qv", "-vvq", "-qq", "--quiet"]
+                .into_iter()
+                .map(OsString::from),
+        );
+        let as_text: Vec<_> = normalized
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            as_text,
+            vec!["par2", "create", "-q", "-vv", "-qq", "--quiet"]
+        );
     }
 }

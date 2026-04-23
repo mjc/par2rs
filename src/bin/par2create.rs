@@ -3,8 +3,8 @@
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
 use par2rs::cli::compat::{
-    init_env_logger, parse_memory_mb, parse_noise_level, parse_positive_usize,
-    reject_short_value_forms,
+    init_env_logger, normalize_mixed_noise_option_clusters, parse_memory_mb, parse_noise_level,
+    parse_positive_usize, reject_short_value_forms,
 };
 use par2rs::create::cli::{
     parse_redundancy_option, resolve_create_inputs, validate_recovery_file_count,
@@ -26,6 +26,8 @@ fn main() -> Result<()> {
         eprintln!("{message}");
         std::process::exit(2);
     }
+
+    let args = normalize_mixed_noise_option_clusters(std::env::args_os());
 
     let matches = Command::new("par2create")
         .version(env!("CARGO_PKG_VERSION"))
@@ -155,7 +157,7 @@ fn main() -> Result<()> {
                 .num_args(0..)
                 .index(2),
         )
-        .get_matches();
+        .get_matches_from(args);
 
     let noise_level = parse_noise_level(matches.get_count("verbose"), matches.get_count("quiet"))
         .map_err(anyhow::Error::msg)?;

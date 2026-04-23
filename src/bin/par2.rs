@@ -5,8 +5,8 @@
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
 use par2rs::cli::compat::{
-    init_env_logger, parse_memory_mb, parse_noise_level, parse_positive_usize,
-    reject_short_value_forms,
+    init_env_logger, normalize_mixed_noise_option_clusters, parse_memory_mb, parse_noise_level,
+    parse_positive_usize, reject_short_value_forms,
 };
 use par2rs::create::cli::{
     parse_redundancy_option, resolve_create_inputs, validate_recovery_file_count,
@@ -22,6 +22,7 @@ fn main() -> Result<()> {
     }
 
     reject_detached_short_values_for_subcommand();
+    let args = normalize_mixed_noise_option_clusters(std::env::args_os());
 
     let matches = Command::new("par2")
         .version(env!("CARGO_PKG_VERSION"))
@@ -352,7 +353,7 @@ fn main() -> Result<()> {
                         .value_name("N"),
                 ),
         )
-        .get_matches();
+        .get_matches_from(args);
 
     // Handle subcommands
     match matches.subcommand() {
