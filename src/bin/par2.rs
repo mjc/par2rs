@@ -578,19 +578,23 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
     if par2rs::par2_files::detect_recovery_format(Path::new(par2_file))
         == Some(par2rs::par2_files::RecoveryFormat::Par1)
     {
-        anyhow::ensure!(!purge, "PAR1 purge is not supported");
-        let results = par2rs::par1::verify::verify_par1_file(Path::new(par2_file))
-            .context("Failed to verify PAR1 file")?;
+        let options = par2rs::par1::verify::Par1VerifyOptions { extra_files, purge };
+        let results =
+            par2rs::par1::verify::verify_par1_file_with_options(Path::new(par2_file), &options)
+                .context("Failed to verify PAR1 file")?;
         let reporter = par2rs::reporters::ConsoleVerificationReporter::new();
         if !quiet {
             reporter.report_verification_results(&results);
         }
-        if results.missing_block_count == 0 {
+        if results.renamed_file_count == 0
+            && results.missing_file_count == 0
+            && results.corrupted_file_count == 0
+        {
             return Ok(());
         }
         anyhow::bail!(
             "Repair required: {} files are missing or damaged",
-            results.missing_file_count + results.corrupted_file_count
+            results.renamed_file_count + results.missing_file_count + results.corrupted_file_count
         );
     }
 
@@ -719,20 +723,24 @@ fn handle_repair(matches: &clap::ArgMatches) -> Result<()> {
     if par2rs::par2_files::detect_recovery_format(Path::new(par2_file))
         == Some(par2rs::par2_files::RecoveryFormat::Par1)
     {
-        anyhow::ensure!(!purge, "PAR1 purge is not supported");
         let memory_limit = parse_memory_mb(matches.get_one::<String>("memory").map(String::as_str))
             .map_err(anyhow::Error::msg)?;
-        let results = par2rs::par1::repair::repair_par1_file_with_memory_limit(
-            Path::new(par2_file),
+        let options = par2rs::par1::repair::Par1RepairOptions {
             memory_limit,
-        )
-        .context("Failed to repair PAR1 files")?;
+            extra_files,
+            purge,
+        };
+        let results =
+            par2rs::par1::repair::repair_par1_file_with_options(Path::new(par2_file), &options)
+                .context("Failed to repair PAR1 files")?;
         if !quiet {
             let reporter = par2rs::reporters::ConsoleVerificationReporter::new();
             reporter.report_verification_results(&results);
         }
         anyhow::ensure!(
-            results.missing_file_count == 0 && results.corrupted_file_count == 0,
+            results.renamed_file_count == 0
+                && results.missing_file_count == 0
+                && results.corrupted_file_count == 0,
             "PAR1 repair failed"
         );
         return Ok(());

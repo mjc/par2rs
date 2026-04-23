@@ -46,17 +46,22 @@ fn main() -> Result<()> {
     if par2_files::detect_recovery_format(Path::new(input_file))
         == Some(par2_files::RecoveryFormat::Par1)
     {
-        anyhow::ensure!(!purge, "PAR1 purge is not supported");
-        let verification_results = par2rs::par1::verify::verify_par1_file(Path::new(input_file))
-            .context("Failed to verify PAR1 file")?;
+        let options = par2rs::par1::verify::Par1VerifyOptions { extra_files, purge };
+        let verification_results =
+            par2rs::par1::verify::verify_par1_file_with_options(Path::new(input_file), &options)
+                .context("Failed to verify PAR1 file")?;
         let reporter = par2rs::reporters::ConsoleVerificationReporter::new();
         if !quiet {
             reporter.report_verification_results(&verification_results);
         }
         anyhow::ensure!(
-            verification_results.missing_block_count == 0,
+            verification_results.renamed_file_count == 0
+                && verification_results.missing_file_count == 0
+                && verification_results.corrupted_file_count == 0,
             "Repair required: {} files are missing or damaged",
-            verification_results.missing_file_count + verification_results.corrupted_file_count
+            verification_results.renamed_file_count
+                + verification_results.missing_file_count
+                + verification_results.corrupted_file_count
         );
         return Ok(());
     }

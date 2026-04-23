@@ -1,6 +1,9 @@
 use super::parser::{parse_par1_bytes, Par1ParseError};
 use super::types::{Par1FileEntry, Par1Set};
-use super::verify::{local_file_name, verify_entry};
+use super::verify::{
+    local_file_name, par1_results_all_present, scan_par1_files, verify_entry, Par1ScanResult,
+    Par1VerifyError,
+};
 use crate::domain::{Md5Hash, RecoverySetId};
 use crate::packets::RecoverySlicePacket;
 use crate::reed_solomon::codec::ReconstructionEngine;
@@ -49,13 +52,42 @@ impl From<Par1ParseError> for Par1RepairError {
     }
 }
 
+impl From<Par1VerifyError> for Par1RepairError {
+    fn from(error: Par1VerifyError) -> Self {
+        match error {
+            Par1VerifyError::Io(error) => Self::Io(error),
+            Par1VerifyError::Parse(error) => Self::Parse(error),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Par1RepairOptions {
+    pub memory_limit: Option<usize>,
+    pub extra_files: Vec<PathBuf>,
+    pub purge: bool,
+}
+
 pub fn repair_par1_file(path: &Path) -> Result<VerificationResults, Par1RepairError> {
-    repair_par1_file_with_memory_limit(path, None)
+    repair_par1_file_with_options(path, &Par1RepairOptions::default())
 }
 
 pub fn repair_par1_file_with_memory_limit(
     path: &Path,
     memory_limit: Option<usize>,
+) -> Result<VerificationResults, Par1RepairError> {
+    repair_par1_file_with_options(
+        path,
+        &Par1RepairOptions {
+            memory_limit,
+            ..Par1RepairOptions::default()
+        },
+    )
+}
+
+pub fn repair_par1_file_with_options(
+    path: &Path,
+    options: &Par1RepairOptions,
 ) -> Result<VerificationResults, Par1RepairError> {
     let par1_files = crate::par2_files::collect_par1_files(path);
     let base_dir = par1_files
@@ -73,22 +105,39 @@ pub fn repair_par1_file_with_memory_limit(
         .filter(|entry| entry.is_protected_file())
         .cloned()
         .collect();
+    let source_refs: Vec<_> = source_files.iter().collect();
     let block_size = source_files
         .iter()
         .map(|entry| entry.file_size as usize)
         .max()
         .unwrap_or(0);
 
-    let initial_results = verify_entries(&base_dir, &source_files);
-    let missing_indices: Vec<_> = initial_results
+    let mut backups = Vec::new();
+    let initial_scan = scan_par1_files(&base_dir, &source_refs, &options.extra_files)?;
+    if par1_results_all_present(&initial_scan.results) {
+        if options.purge {
+            super::purge::purge_par1_files(&par1_files)?;
+        }
+        return Ok(initial_scan.results);
+    }
+
+    rename_matched_extra_files(&initial_scan, &mut backups)?;
+    let after_rename_scan = scan_par1_files(&base_dir, &source_refs, &options.extra_files)?;
+    if par1_results_all_present(&after_rename_scan.results) {
+        if options.purge {
+            super::purge::purge_par1_backups(&backups)?;
+            super::purge::purge_par1_files(&par1_files)?;
+        }
+        return Ok(after_rename_scan.results);
+    }
+
+    let missing_indices: Vec<_> = after_rename_scan
+        .results
         .files
         .iter()
         .enumerate()
         .filter_map(|(index, file)| (file.status != FileStatus::Present).then_some(index))
         .collect();
-    if missing_indices.is_empty() {
-        return Ok(initial_results);
-    }
 
     let recovery_packets = recovery_packets_from_sets(&sets, block_size, main_set.set_hash)?;
     if recovery_packets.len() < missing_indices.len() {
@@ -102,7 +151,7 @@ pub fn repair_par1_file_with_memory_limit(
         &recovery_packets,
         &existing_slices,
         &missing_indices,
-        memory_limit,
+        options.memory_limit,
     )?;
 
     for missing_index in missing_indices {
@@ -116,7 +165,51 @@ pub fn repair_par1_file_with_memory_limit(
         std::fs::write(&output_path, &data[..entry.file_size as usize])?;
     }
 
-    Ok(verify_entries(&base_dir, &source_files))
+    let final_scan = scan_par1_files(&base_dir, &source_refs, &[])?;
+    if !par1_results_all_present(&final_scan.results) {
+        return Err(Par1RepairError::ReconstructionFailed(
+            "final verification still reports missing or damaged files".to_string(),
+        ));
+    }
+    if options.purge {
+        super::purge::purge_par1_backups(&backups)?;
+        super::purge::purge_par1_files(&par1_files)?;
+    }
+    Ok(final_scan.results)
+}
+
+fn rename_matched_extra_files(
+    scan: &Par1ScanResult,
+    backups: &mut Vec<PathBuf>,
+) -> Result<(), Par1RepairError> {
+    for file_match in scan
+        .matches
+        .iter()
+        .filter(|file_match| file_match.status == FileStatus::Renamed)
+    {
+        let Some(matched_path) = &file_match.matched_path else {
+            continue;
+        };
+        if file_match.target_path.exists() {
+            let backup_path = next_backup_path(&file_match.target_path);
+            std::fs::rename(&file_match.target_path, &backup_path)?;
+            backups.push(backup_path);
+        }
+        std::fs::rename(matched_path, &file_match.target_path)?;
+    }
+    Ok(())
+}
+
+fn next_backup_path(target_path: &Path) -> PathBuf {
+    for suffix in 1usize.. {
+        let mut candidate = target_path.as_os_str().to_os_string();
+        candidate.push(format!(".{suffix}"));
+        let candidate = PathBuf::from(candidate);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!("usize suffix iteration should not terminate")
 }
 
 fn reconstruct_missing_slices(
@@ -224,24 +317,6 @@ fn load_sets(paths: &[PathBuf]) -> Result<Vec<Par1Set>, Par1RepairError> {
     Ok(sets)
 }
 
-fn verify_entries(base_dir: &Path, entries: &[Par1FileEntry]) -> VerificationResults {
-    let file_results: Vec<_> = entries
-        .iter()
-        .map(|entry| verify_entry(base_dir, entry))
-        .collect();
-    let block_results = file_results
-        .iter()
-        .map(|file| crate::verify::BlockVerificationResult {
-            block_number: 0,
-            file_id: file.file_id,
-            is_valid: file.status == FileStatus::Present,
-            expected_hash: None,
-            expected_crc: None,
-        })
-        .collect();
-    VerificationResults::from_file_results(file_results, block_results, 0)
-}
-
 fn recovery_packets_from_sets(
     sets: &[Par1Set],
     block_size: usize,
@@ -291,14 +366,23 @@ fn read_existing_slices(
 mod tests {
     use super::*;
 
-    #[test]
-    fn repairs_missing_file_from_real_par1_fixture() {
+    fn copy_par1_fixture(temp: &tempfile::TempDir) {
         let source_dir = Path::new("tests/fixtures/par1/flatdata");
-        let temp = tempfile::tempdir().unwrap();
         for entry in std::fs::read_dir(source_dir).unwrap() {
             let entry = entry.unwrap();
             std::fs::copy(entry.path(), temp.path().join(entry.file_name())).unwrap();
         }
+    }
+
+    fn remove_par1_volumes(temp: &tempfile::TempDir) {
+        std::fs::remove_file(temp.path().join("testdata.p01")).unwrap();
+        std::fs::remove_file(temp.path().join("testdata.p02")).unwrap();
+    }
+
+    #[test]
+    fn repairs_missing_file_from_real_par1_fixture() {
+        let temp = tempfile::tempdir().unwrap();
+        copy_par1_fixture(&temp);
 
         std::fs::remove_file(temp.path().join("test-3.data")).unwrap();
 
@@ -313,10 +397,7 @@ mod tests {
     fn repairs_missing_file_from_real_par1_fixture_with_memory_limit() {
         let source_dir = Path::new("tests/fixtures/par1/flatdata");
         let temp = tempfile::tempdir().unwrap();
-        for entry in std::fs::read_dir(source_dir).unwrap() {
-            let entry = entry.unwrap();
-            std::fs::copy(entry.path(), temp.path().join(entry.file_name())).unwrap();
-        }
+        copy_par1_fixture(&temp);
 
         std::fs::remove_file(temp.path().join("test-3.data")).unwrap();
 
@@ -334,12 +415,8 @@ mod tests {
 
     #[test]
     fn repair_rejects_zero_memory_limit() {
-        let source_dir = Path::new("tests/fixtures/par1/flatdata");
         let temp = tempfile::tempdir().unwrap();
-        for entry in std::fs::read_dir(source_dir).unwrap() {
-            let entry = entry.unwrap();
-            std::fs::copy(entry.path(), temp.path().join(entry.file_name())).unwrap();
-        }
+        copy_par1_fixture(&temp);
 
         std::fs::remove_file(temp.path().join("test-3.data")).unwrap();
 
@@ -353,10 +430,7 @@ mod tests {
     fn repairs_corrupted_file_from_real_par1_fixture() {
         let source_dir = Path::new("tests/fixtures/par1/flatdata");
         let temp = tempfile::tempdir().unwrap();
-        for entry in std::fs::read_dir(source_dir).unwrap() {
-            let entry = entry.unwrap();
-            std::fs::copy(entry.path(), temp.path().join(entry.file_name())).unwrap();
-        }
+        copy_par1_fixture(&temp);
 
         std::fs::write(temp.path().join("test-2.data"), b"corrupted").unwrap();
 
@@ -372,18 +446,125 @@ mod tests {
 
     #[test]
     fn repair_fails_when_not_enough_par1_recovery_blocks() {
-        let source_dir = Path::new("tests/fixtures/par1/flatdata");
         let temp = tempfile::tempdir().unwrap();
-        for entry in std::fs::read_dir(source_dir).unwrap() {
-            let entry = entry.unwrap();
-            std::fs::copy(entry.path(), temp.path().join(entry.file_name())).unwrap();
-        }
+        copy_par1_fixture(&temp);
 
         std::fs::remove_file(temp.path().join("test-1.data")).unwrap();
         std::fs::remove_file(temp.path().join("test-2.data")).unwrap();
         std::fs::remove_file(temp.path().join("test-3.data")).unwrap();
 
         let error = repair_par1_file(&temp.path().join("testdata.par")).unwrap_err();
+
+        assert!(matches!(error, Par1RepairError::NotEnoughRecoveryBlocks));
+    }
+
+    #[test]
+    fn repair_renames_exact_extra_for_missing_target_without_recovery_blocks() {
+        let source_dir = Path::new("tests/fixtures/par1/flatdata");
+        let temp = tempfile::tempdir().unwrap();
+        copy_par1_fixture(&temp);
+        remove_par1_volumes(&temp);
+        let target = temp.path().join("test-3.data");
+        let extra = temp.path().join("renamed.data");
+        std::fs::rename(&target, &extra).unwrap();
+
+        let results = repair_par1_file_with_options(
+            &temp.path().join("testdata.par"),
+            &Par1RepairOptions {
+                extra_files: vec![extra.clone()],
+                ..Par1RepairOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(results.present_file_count, 10);
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            std::fs::read(source_dir.join("test-3.data")).unwrap()
+        );
+        assert!(!extra.exists());
+    }
+
+    #[test]
+    fn repair_backs_up_corrupted_target_before_renaming_exact_extra() {
+        let source_dir = Path::new("tests/fixtures/par1/flatdata");
+        let temp = tempfile::tempdir().unwrap();
+        copy_par1_fixture(&temp);
+        remove_par1_volumes(&temp);
+        let target = temp.path().join("test-2.data");
+        let extra = temp.path().join("renamed.data");
+        std::fs::copy(source_dir.join("test-2.data"), &extra).unwrap();
+        std::fs::write(&target, b"corrupted").unwrap();
+
+        let results = repair_par1_file_with_options(
+            &temp.path().join("testdata.par"),
+            &Par1RepairOptions {
+                extra_files: vec![extra.clone()],
+                ..Par1RepairOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(results.present_file_count, 10);
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            std::fs::read(source_dir.join("test-2.data")).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("test-2.data.1")).unwrap(),
+            b"corrupted"
+        );
+        assert!(!extra.exists());
+    }
+
+    #[test]
+    fn repair_uses_first_free_numbered_backup_suffix() {
+        let source_dir = Path::new("tests/fixtures/par1/flatdata");
+        let temp = tempfile::tempdir().unwrap();
+        copy_par1_fixture(&temp);
+        remove_par1_volumes(&temp);
+        let target = temp.path().join("test-2.data");
+        let extra = temp.path().join("renamed.data");
+        std::fs::copy(source_dir.join("test-2.data"), &extra).unwrap();
+        std::fs::write(&target, b"corrupted").unwrap();
+        std::fs::write(temp.path().join("test-2.data.1"), b"existing backup").unwrap();
+
+        repair_par1_file_with_options(
+            &temp.path().join("testdata.par"),
+            &Par1RepairOptions {
+                extra_files: vec![extra],
+                ..Par1RepairOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(temp.path().join("test-2.data.1")).unwrap(),
+            b"existing backup"
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("test-2.data.2")).unwrap(),
+            b"corrupted"
+        );
+    }
+
+    #[test]
+    fn wrong_extra_file_does_not_mask_missing_target() {
+        let temp = tempfile::tempdir().unwrap();
+        copy_par1_fixture(&temp);
+        remove_par1_volumes(&temp);
+        std::fs::remove_file(temp.path().join("test-1.data")).unwrap();
+        let extra = temp.path().join("renamed.data");
+        std::fs::write(&extra, b"wrong same size data").unwrap();
+
+        let error = repair_par1_file_with_options(
+            &temp.path().join("testdata.par"),
+            &Par1RepairOptions {
+                extra_files: vec![extra],
+                ..Par1RepairOptions::default()
+            },
+        )
+        .unwrap_err();
 
         assert!(matches!(error, Par1RepairError::NotEnoughRecoveryBlocks));
     }

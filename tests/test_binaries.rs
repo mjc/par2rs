@@ -416,6 +416,35 @@ fn test_par2_repair_repairs_missing_par1_file() {
 }
 
 #[test]
+fn test_par2_repair_repairs_renamed_par1_file() {
+    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = copy_real_par1_fixture(&temp_dir);
+    let target = temp_dir.path().join("test-4.data");
+    let renamed = temp_dir.path().join("renamed.data");
+    fs::rename(&target, &renamed).unwrap();
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("repair")
+        .arg(&par_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2 repair");
+
+    assert!(
+        output.status.success(),
+        "par2 repair PAR1 renamed file failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        fs::read(fixture_dir.join("test-4.data")).unwrap()
+    );
+    assert!(!renamed.exists());
+}
+
+#[test]
 fn test_repair_commands_exit_2_when_repair_is_not_possible() {
     for (binary, subcommand) in [("par2", Some("repair")), ("par2repair", None)] {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -473,6 +502,67 @@ fn test_par2_verify_accepts_intact_par1_set() {
         output.status.success(),
         "par2 verify PAR1 failed: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_par2_verify_reports_repair_required_for_renamed_par1_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = copy_real_par1_fixture(&temp_dir);
+    let target = temp_dir.path().join("test-3.data");
+    let renamed = temp_dir.path().join("renamed.data");
+    fs::rename(&target, &renamed).unwrap();
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("verify")
+        .arg(&par_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2 verify");
+
+    assert!(
+        !output.status.success(),
+        "par2 verify PAR1 renamed file should require repair: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Repair required"),
+        "par2 verify should report repair required: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_par2_verify_uppercase_par1_volume_supports_renamed_detection() {
+    let temp_dir = TempDir::new().unwrap();
+    copy_real_par1_fixture(&temp_dir);
+    fs::rename(
+        temp_dir.path().join("testdata.p01"),
+        temp_dir.path().join("testdata.P01"),
+    )
+    .unwrap();
+    let target = temp_dir.path().join("test-2.data");
+    let renamed = temp_dir.path().join("renamed.data");
+    fs::rename(&target, &renamed).unwrap();
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("verify")
+        .arg(temp_dir.path().join("testdata.P01"))
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2 verify");
+
+    assert!(
+        !output.status.success(),
+        "par2 verify PAR1 .P01 renamed file should require repair: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Repair required"),
+        "par2 verify should report repair required: stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
 }
@@ -1039,6 +1129,33 @@ fn test_par2verify_accepts_uppercase_par1_volume_extension() {
 }
 
 #[test]
+fn test_par2verify_reports_repair_required_for_renamed_par1_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = copy_real_par1_fixture(&temp_dir);
+    let target = temp_dir.path().join("test-1.data");
+    let renamed = temp_dir.path().join("renamed.data");
+    fs::rename(&target, &renamed).unwrap();
+
+    let output = Command::new(get_binary_path("par2verify"))
+        .arg(&par_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2verify");
+
+    assert!(
+        !output.status.success(),
+        "par2verify PAR1 renamed file should require repair: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Repair required"),
+        "par2verify should report repair required: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn test_par1_verify_ignores_skip_leeway_without_data_skipping() {
     let temp_dir = TempDir::new().unwrap();
     let par_file = create_par1_verify_test_set(&temp_dir);
@@ -1274,6 +1391,63 @@ fn test_par2repair_repairs_missing_par1_file_from_volume_input() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(missing_file.exists());
+}
+
+#[test]
+fn test_par2repair_repairs_renamed_par1_file() {
+    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = copy_real_par1_fixture(&temp_dir);
+    let target = temp_dir.path().join("test-5.data");
+    let renamed = temp_dir.path().join("renamed.data");
+    fs::rename(&target, &renamed).unwrap();
+
+    let output = Command::new(get_binary_path("par2repair"))
+        .arg(&par_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2repair");
+
+    assert!(
+        output.status.success(),
+        "par2repair PAR1 renamed file failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        fs::read(fixture_dir.join("test-5.data")).unwrap()
+    );
+    assert!(!renamed.exists());
+}
+
+#[test]
+fn test_par2repair_repairs_renamed_par1_file_from_volume_input() {
+    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
+    let temp_dir = TempDir::new().unwrap();
+    copy_real_par1_fixture(&temp_dir);
+    let volume_file = temp_dir.path().join("testdata.p01");
+    let target = temp_dir.path().join("test-6.data");
+    let renamed = temp_dir.path().join("renamed.data");
+    fs::rename(&target, &renamed).unwrap();
+
+    let output = Command::new(get_binary_path("par2repair"))
+        .arg(&volume_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2repair");
+
+    assert!(
+        output.status.success(),
+        "par2repair PAR1 volume renamed file failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        fs::read(fixture_dir.join("test-6.data")).unwrap()
+    );
+    assert!(!renamed.exists());
 }
 
 #[test]
