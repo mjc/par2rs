@@ -364,6 +364,100 @@ run_invalid_verify_repair_case() {
   assert_pair_nonzero_status
 }
 
+run_noise_create_case() {
+  local label="$1"
+  shift
+  make_source_pair "create-noise-$label"
+  run_pair "create-noise-$label" create "$@" out.par2 source.txt
+  assert_create_pair_success out.par2 out.par2
+}
+
+run_noise_verify_repair_case() {
+  local label="$1"
+  shift
+  copy_fixture_pair "verify-noise-$label"
+  run_pair "verify-noise-$label" verify "$@" testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "repair-noise-$label"
+  corrupt_pair_file testfile
+  run_pair "repair-noise-$label" repair "$@" testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+}
+
+run_standalone_noise_case() {
+  local label="$1"
+  shift
+  make_source_pair "par2create-noise-$label"
+  run_standalone_pair "par2create-noise-$label" "$TURBO_PAR2CREATE_CMD" par2create "$@" out.par2 source.txt
+  assert_pair_zero_status
+  assert_par2_set_created "$PAR2RS_CASE" out.par2
+  assert_verify_success_for_created_set "$PAR2RS_BIN_DIR/par2" "$PAR2RS_CASE" out.par2
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_par2_set_created "$TURBO_CASE" out.par2
+    assert_verify_success_for_created_set "$TURBO_PAR2_CMD" "$TURBO_CASE" out.par2
+  fi
+
+  copy_fixture_pair "par2verify-noise-$label"
+  run_standalone_pair "par2verify-noise-$label" "$TURBO_PAR2VERIFY_CMD" par2verify "$@" testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "par2repair-noise-$label"
+  corrupt_pair_file testfile
+  run_standalone_pair "par2repair-noise-$label" "$TURBO_PAR2REPAIR_CMD" par2repair "$@" testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+}
+
+run_invalid_mixed_noise_create_case() {
+  local label="$1"
+  shift
+  make_source_pair "create-mixed-noise-$label"
+  run_pair "create-mixed-noise-$label" create "$@" out.par2 source.txt
+  assert_pair_nonzero_status
+  if [[ "$HAS_TURBO" = 1 ]]; then
+    assert_no_par2_recovery_files "$TURBO_CASE" out
+  fi
+  assert_no_par2_recovery_files "$PAR2RS_CASE" out
+}
+
+run_invalid_mixed_noise_verify_repair_case() {
+  local label="$1"
+  shift
+  copy_fixture_pair "verify-mixed-noise-$label"
+  run_pair "verify-mixed-noise-$label" verify "$@" testfile.par2
+  assert_pair_nonzero_status
+
+  copy_fixture_pair "repair-mixed-noise-$label"
+  run_pair "repair-mixed-noise-$label" repair "$@" testfile.par2
+  assert_pair_nonzero_status
+}
+
+run_invalid_standalone_mixed_noise_case() {
+  local label="$1"
+  shift
+  make_source_pair "par2create-mixed-noise-$label"
+  run_standalone_pair "par2create-mixed-noise-$label" "$TURBO_PAR2CREATE_CMD" par2create "$@" out.par2 source.txt
+  assert_pair_nonzero_status
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_no_par2_recovery_files "$TURBO_CASE" out
+  fi
+  assert_no_par2_recovery_files "$PAR2RS_CASE" out
+
+  copy_fixture_pair "par2verify-mixed-noise-$label"
+  run_standalone_pair "par2verify-mixed-noise-$label" "$TURBO_PAR2VERIFY_CMD" par2verify "$@" testfile.par2
+  assert_pair_nonzero_status
+
+  copy_fixture_pair "par2repair-mixed-noise-$label"
+  run_standalone_pair "par2repair-mixed-noise-$label" "$TURBO_PAR2REPAIR_CMD" par2repair "$@" testfile.par2
+  assert_pair_nonzero_status
+}
+
 printf 'building par2rs release binaries\n'
 (cd "$ROOT" && cargo build --release --bins >/dev/null)
 
@@ -583,6 +677,38 @@ case_create_memory() {
   make_source_pair create-memory
   run_pair create-memory create -m1 out.par2 source.txt
   assert_create_pair_success out.par2 out.par2
+}
+
+case_noise_options_valid() {
+  run_noise_create_case q -q
+  run_noise_create_case qq -qq
+  run_noise_create_case v -v
+  run_noise_create_case vv -vv
+
+  run_noise_verify_repair_case q -q
+  run_noise_verify_repair_case qq -qq
+  run_noise_verify_repair_case v -v
+  run_noise_verify_repair_case vv -vv
+}
+
+case_standalone_noise_options_valid() {
+  run_standalone_noise_case q -q
+  run_standalone_noise_case qq -qq
+  run_standalone_noise_case v -v
+  run_standalone_noise_case vv -vv
+}
+
+case_mixed_noise_rejected() {
+  run_invalid_mixed_noise_create_case v-q -v -q
+  run_invalid_mixed_noise_create_case vv-qq -vv -qq
+
+  run_invalid_mixed_noise_verify_repair_case v-q -v -q
+  run_invalid_mixed_noise_verify_repair_case vv-qq -vv -qq
+}
+
+case_standalone_mixed_noise_rejected() {
+  run_invalid_standalone_mixed_noise_case v-q -v -q
+  run_invalid_standalone_mixed_noise_case vv-qq -vv -qq
 }
 
 case_create_invalid_options() {
@@ -1182,6 +1308,10 @@ run_case "create PAR2 with -n" case_create_recovery_file_count
 run_case "create PAR2 with -T" case_create_file_threads
 run_case "create PAR2 with -t" case_create_threads
 run_case "create PAR2 with -m" case_create_memory
+run_case "valid noise options" case_noise_options_valid
+run_case "valid standalone noise options" case_standalone_noise_options_valid
+run_case "reject mixed noise options" case_mixed_noise_rejected
+run_case "reject mixed standalone noise options" case_standalone_mixed_noise_rejected
 run_case "reject invalid PAR2 create options" case_create_invalid_options
 run_case "reject invalid standalone PAR2 create options" case_standalone_create_invalid_options
 run_case "reject create overwrite" case_reject_create_overwrite

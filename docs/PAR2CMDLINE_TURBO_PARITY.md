@@ -183,6 +183,8 @@ turbo binary.
 Current script coverage includes:
 
 - Top-level `par2 -V`/`-VV` acceptance.
+- Valid `-q`, `-qq`, `-v`, and `-vv` noise options across create,
+  verify/repair, and standalone wrappers, plus mixed verbose/quiet rejection.
 - PAR2 create through `create`, `c`, and `par2create`, including `-a`, `-B`,
   `-R`, `--` hyphen-prefixed input, `-b`, `-s`, `-r` percent and size targets,
   `-c`, `-f`, `-u`, `-l`, `-n`, `-T`, `-t`, and `-m`.
