@@ -975,6 +975,66 @@ case_standalone_thread_option_noise_bundles_valid() {
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
 }
 
+case_create_thread_option_tail_flags_valid() {
+  make_source_pair "create-thread-tail-uniform"
+  run_pair "create-thread-tail-uniform" create -t1u out.par2 source.txt
+  assert_create_pair_success out.par2 out.par2
+
+  make_source_pair "create-file-thread-tail-uniform"
+  run_pair "create-file-thread-tail-uniform" create -T1u out.par2 source.txt
+  assert_create_pair_success out.par2 out.par2
+
+  make_source_pair "create-thread-tail-limited"
+  run_pair "create-thread-tail-limited" create -t1l -c3 out.par2 source.txt
+  assert_create_pair_success out.par2 out.par2
+
+  make_source_pair "create-file-thread-tail-limited"
+  run_pair "create-file-thread-tail-limited" create -T1l -c3 out.par2 source.txt
+  assert_create_pair_success out.par2 out.par2
+}
+
+case_standalone_create_thread_option_tail_flags_valid() {
+  make_source_pair "par2create-thread-tail-uniform"
+  run_standalone_pair "par2create-thread-tail-uniform" "$TURBO_PAR2CREATE_CMD" par2create -t1u out.par2 source.txt
+  assert_pair_zero_status
+  assert_par2_set_created "$PAR2RS_CASE" out.par2
+  assert_verify_success_for_created_set "$PAR2RS_BIN_DIR/par2" "$PAR2RS_CASE" out.par2
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_par2_set_created "$TURBO_CASE" out.par2
+    assert_verify_success_for_created_set "$TURBO_PAR2_CMD" "$TURBO_CASE" out.par2
+  fi
+
+  make_source_pair "par2create-file-thread-tail-uniform"
+  run_standalone_pair "par2create-file-thread-tail-uniform" "$TURBO_PAR2CREATE_CMD" par2create -T1u out.par2 source.txt
+  assert_pair_zero_status
+  assert_par2_set_created "$PAR2RS_CASE" out.par2
+  assert_verify_success_for_created_set "$PAR2RS_BIN_DIR/par2" "$PAR2RS_CASE" out.par2
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_par2_set_created "$TURBO_CASE" out.par2
+    assert_verify_success_for_created_set "$TURBO_PAR2_CMD" "$TURBO_CASE" out.par2
+  fi
+
+  make_source_pair "par2create-thread-tail-limited"
+  run_standalone_pair "par2create-thread-tail-limited" "$TURBO_PAR2CREATE_CMD" par2create -t1l -c3 out.par2 source.txt
+  assert_pair_zero_status
+  assert_par2_set_created "$PAR2RS_CASE" out.par2
+  assert_verify_success_for_created_set "$PAR2RS_BIN_DIR/par2" "$PAR2RS_CASE" out.par2
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_par2_set_created "$TURBO_CASE" out.par2
+    assert_verify_success_for_created_set "$TURBO_PAR2_CMD" "$TURBO_CASE" out.par2
+  fi
+
+  make_source_pair "par2create-file-thread-tail-limited"
+  run_standalone_pair "par2create-file-thread-tail-limited" "$TURBO_PAR2CREATE_CMD" par2create -T1l -c3 out.par2 source.txt
+  assert_pair_zero_status
+  assert_par2_set_created "$PAR2RS_CASE" out.par2
+  assert_verify_success_for_created_set "$PAR2RS_BIN_DIR/par2" "$PAR2RS_CASE" out.par2
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_par2_set_created "$TURBO_CASE" out.par2
+    assert_verify_success_for_created_set "$TURBO_PAR2_CMD" "$TURBO_CASE" out.par2
+  fi
+}
+
 case_verify_repair_thread_option_tail_flags_valid() {
   copy_fixture_pair "verify-thread-tail-purge"
   run_pair "verify-thread-tail-purge" verify -t1p testfile.par2
@@ -1993,6 +2053,8 @@ run_case "valid bundled mixed noise options" case_mixed_noise_bundles_valid
 run_case "valid bundled mixed standalone noise options" case_standalone_mixed_noise_bundles_valid
 run_case "valid thread option bundles with trailing noise" case_thread_option_noise_bundles_valid
 run_case "valid standalone thread option bundles with trailing noise" case_standalone_thread_option_noise_bundles_valid
+run_case "valid create thread options with trailing flags" case_create_thread_option_tail_flags_valid
+run_case "valid standalone create thread options with trailing flags" case_standalone_create_thread_option_tail_flags_valid
 run_case "valid verify repair thread options with trailing flags" case_verify_repair_thread_option_tail_flags_valid
 run_case "valid standalone verify repair thread options with trailing flags" case_standalone_verify_repair_thread_option_tail_flags_valid
 run_case "reject mixed noise options" case_mixed_noise_rejected
