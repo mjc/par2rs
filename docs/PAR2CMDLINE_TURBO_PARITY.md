@@ -208,7 +208,9 @@ Current script coverage includes:
 - PAR1 verify from main and volume input, uppercase `.PAR`/`.PNN` input,
   missing-file repair, repair from volume input, renamed-file repair from main
   and volume input, purge after verify and repair, failed repair with purge
-  preserving recovery files, and `-O` acceptance.
+  preserving recovery files, and `-O` acceptance. Standalone `par2verify` and
+  `par2repair` PAR1 dispatch is covered for verify, repair, renamed-file
+  repair, and `-O` acceptance.
 - par2rs self-check for intentional PAR1 create rejection. The Nix turbo binary
   treats `out.par` as a PAR2 basename and writes `out.par.par2`, so this case is
   intentionally not a turbo status comparison.

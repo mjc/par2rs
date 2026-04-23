@@ -1117,6 +1117,38 @@ case_par1_rename_only_acceptance() {
   assert_pair_same_status
 }
 
+case_standalone_par1_verify_repair() {
+  copy_par1_fixture_pair par1-standalone-verify
+  run_standalone_pair par1-standalone-verify "$TURBO_PAR2VERIFY_CMD" par2verify testdata.par
+  assert_pair_same_status
+
+  copy_par1_fixture_pair par1-standalone-repair
+  rm "$TURBO_CASE/test-3.data" "$PAR2RS_CASE/test-3.data"
+  run_standalone_pair par1-standalone-repair "$TURBO_PAR2REPAIR_CMD" par2repair testdata.par
+  assert_pair_same_status
+  assert_hash_equal "$ROOT/tests/fixtures/par1/flatdata/test-3.data" "$PAR2RS_CASE/test-3.data"
+}
+
+case_standalone_par1_repair_renamed() {
+  copy_par1_fixture_pair par1-standalone-repair-renamed
+  mv "$TURBO_CASE/test-4.data" "$TURBO_CASE/wrong-name.data"
+  mv "$PAR2RS_CASE/test-4.data" "$PAR2RS_CASE/wrong-name.data"
+  run_standalone_pair par1-standalone-repair-renamed "$TURBO_PAR2REPAIR_CMD" par2repair testdata.par wrong-name.data
+  assert_pair_same_status
+  assert_hash_equal "$ROOT/tests/fixtures/par1/flatdata/test-4.data" "$PAR2RS_CASE/test-4.data"
+  assert_absent "$PAR2RS_CASE/wrong-name.data"
+}
+
+case_standalone_par1_rename_only_acceptance() {
+  copy_par1_fixture_pair par1-standalone-verify-O
+  run_standalone_pair par1-standalone-verify-O "$TURBO_PAR2VERIFY_CMD" par2verify -O testdata.par
+  assert_pair_same_status
+
+  copy_par1_fixture_pair par1-standalone-repair-O
+  run_standalone_pair par1-standalone-repair-O "$TURBO_PAR2REPAIR_CMD" par2repair -O testdata.par
+  assert_pair_same_status
+}
+
 case_reject_par1_create_self() {
   pair_dirs par1-create-reject
   printf source >"$PAR2RS_CASE/source.txt"
@@ -1201,6 +1233,9 @@ run_case "purge intact PAR1" case_purge_intact_par1
 run_case "purge repaired PAR1" case_purge_after_par1_repair
 run_case "failed PAR1 repair with purge keeps recovery files" case_failed_par1_repair_with_purge_keeps_recovery
 run_case "PAR1 accepts -O" case_par1_rename_only_acceptance
+run_case "standalone PAR1 verify and repair" case_standalone_par1_verify_repair
+run_case "standalone PAR1 repair renamed file" case_standalone_par1_repair_renamed
+run_case "standalone PAR1 accepts -O" case_standalone_par1_rename_only_acceptance
 run_case "reject PAR1 create" case_reject_par1_create_self
 
 printf 'comparison work dir: %s\n' "$WORK_DIR"
