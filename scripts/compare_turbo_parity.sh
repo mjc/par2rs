@@ -46,6 +46,7 @@ else
 fi
 TURBO_PAR2VERIFY_CMD="$(resolve_turbo_wrapper "${TURBO_PAR2VERIFY:-}" par2verify "$TURBO_PAR2_PATH")"
 TURBO_PAR2REPAIR_CMD="$(resolve_turbo_wrapper "${TURBO_PAR2REPAIR:-}" par2repair "$TURBO_PAR2_PATH")"
+TURBO_PAR2CREATE_CMD="$(resolve_turbo_wrapper "${TURBO_PAR2CREATE:-}" par2create "$TURBO_PAR2_PATH")"
 
 cleanup() {
   if [[ -z "${KEEP_WORK_DIR:-}" ]]; then
@@ -397,16 +398,63 @@ case_top_level_version_flags() {
 
 case_create_standalone_wrapper() {
   make_source_pair create-standalone
-  if [[ "$HAS_TURBO" = 1 ]]; then
-    TURBO_RESULT="$WORK_DIR/turbo-create-standalone"
-    run_capture "$TURBO_CASE" "$TURBO_RESULT" "$TURBO_PAR2_CMD" create out.par2 source.txt
-    assert_zero_status "$TURBO_RESULT"
+  run_standalone_pair create-standalone "$TURBO_PAR2CREATE_CMD" par2create out.par2 source.txt
+  assert_pair_zero_status
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
     assert_par2_set_created "$TURBO_CASE" out.par2
     assert_verify_success_for_created_set "$TURBO_PAR2_CMD" "$TURBO_CASE" out.par2
   fi
-  PAR2RS_RESULT="$WORK_DIR/par2rs-create-standalone"
-  run_capture "$PAR2RS_CASE" "$PAR2RS_RESULT" "$PAR2RS_BIN_DIR/par2create" out.par2 source.txt
-  assert_zero_status "$PAR2RS_RESULT"
+  assert_par2_set_created "$PAR2RS_CASE" out.par2
+  assert_verify_success_for_created_set "$PAR2RS_BIN_DIR/par2" "$PAR2RS_CASE" out.par2
+}
+
+case_standalone_create_archive_name() {
+  make_source_pair par2create-archive-name
+  run_standalone_pair par2create-archive-name "$TURBO_PAR2CREATE_CMD" par2create -amain.par2 out.par2 source.txt
+  assert_pair_same_status
+  assert_pair_zero_status
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_par2_set_created "$TURBO_CASE" main.par2
+    assert_absent "$TURBO_CASE/out.par2"
+    assert_verify_success_for_created_set "$TURBO_PAR2_CMD" "$TURBO_CASE" main.par2
+  fi
+  assert_par2_set_created "$PAR2RS_CASE" main.par2
+  assert_absent "$PAR2RS_CASE/out.par2"
+  assert_verify_success_for_created_set "$PAR2RS_BIN_DIR/par2" "$PAR2RS_CASE" main.par2
+}
+
+case_standalone_create_basepath() {
+  pair_dirs par2create-basepath
+  mkdir -p "$TURBO_CASE/base/data" "$TURBO_CASE/work" "$PAR2RS_CASE/base/data" "$PAR2RS_CASE/work"
+  printf 'standalone base path source fixture\n' >"$TURBO_CASE/base/data/source.txt"
+  printf 'standalone base path source fixture\n' >"$PAR2RS_CASE/base/data/source.txt"
+  TURBO_RESULT="$WORK_DIR/turbo-par2create-basepath"
+  PAR2RS_RESULT="$WORK_DIR/par2rs-par2create-basepath"
+  if [[ "$HAS_TURBO" = 1 ]] && command -v "$TURBO_PAR2CREATE_CMD" >/dev/null 2>&1; then
+    run_capture "$TURBO_CASE/work" "$TURBO_RESULT" "$TURBO_PAR2CREATE_CMD" -B../base out.par2 ../base/data/source.txt
+  fi
+  run_capture "$PAR2RS_CASE/work" "$PAR2RS_RESULT" "$PAR2RS_BIN_DIR/par2create" -B../base out.par2 ../base/data/source.txt
+  assert_pair_same_status
+  assert_pair_zero_status
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_par2_set_created "$TURBO_CASE/work" out.par2
+    assert_verify_success_for_created_set "$TURBO_PAR2_CMD" "$TURBO_CASE/work" out.par2 -B../base
+  fi
+  assert_par2_set_created "$PAR2RS_CASE/work" out.par2
+  assert_verify_success_for_created_set "$PAR2RS_BIN_DIR/par2" "$PAR2RS_CASE/work" out.par2 -B../base
+}
+
+case_standalone_create_terminator_hyphen_file() {
+  pair_dirs par2create-terminator
+  printf 'standalone dash source fixture\n' >"$TURBO_CASE/-dash.txt"
+  printf 'standalone dash source fixture\n' >"$PAR2RS_CASE/-dash.txt"
+  run_standalone_pair par2create-terminator "$TURBO_PAR2CREATE_CMD" par2create out.par2 -- -dash.txt
+  assert_pair_same_status
+  assert_pair_zero_status
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_par2_set_created "$TURBO_CASE" out.par2
+    assert_verify_success_for_created_set "$TURBO_PAR2_CMD" "$TURBO_CASE" out.par2
+  fi
   assert_par2_set_created "$PAR2RS_CASE" out.par2
   assert_verify_success_for_created_set "$PAR2RS_BIN_DIR/par2" "$PAR2RS_CASE" out.par2
 }
@@ -562,6 +610,24 @@ case_create_invalid_options() {
   run_invalid_create_case create-rename-only -O
   run_invalid_create_case create-data-skipping -N
   run_invalid_create_case create-skip-leeway -S64
+}
+
+case_standalone_create_invalid_options() {
+  make_source_pair par2create-invalid-duplicate-b
+  run_standalone_pair par2create-invalid-duplicate-b "$TURBO_PAR2CREATE_CMD" par2create -b8 -b9 out.par2 source.txt
+  assert_pair_nonzero_status
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_no_par2_recovery_files "$TURBO_CASE" out
+  fi
+  assert_no_par2_recovery_files "$PAR2RS_CASE" out
+
+  make_source_pair par2create-invalid-rename-only
+  run_standalone_pair par2create-invalid-rename-only "$TURBO_PAR2CREATE_CMD" par2create -O out.par2 source.txt
+  assert_pair_nonzero_status
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_no_par2_recovery_files "$TURBO_CASE" out
+  fi
+  assert_no_par2_recovery_files "$PAR2RS_CASE" out
 }
 
 case_reject_create_overwrite() {
@@ -974,6 +1040,9 @@ run_case "create basic PAR2" case_create_basic
 run_case "create PAR2 with c alias" case_create_alias
 run_case "top-level version flags" case_top_level_version_flags
 run_case "create PAR2 with standalone wrapper" case_create_standalone_wrapper
+run_case "standalone create PAR2 with -a archive name" case_standalone_create_archive_name
+run_case "standalone create PAR2 with -B basepath" case_standalone_create_basepath
+run_case "standalone create PAR2 with -- hyphen filename" case_standalone_create_terminator_hyphen_file
 run_case "create PAR2 with -a archive name" case_create_archive_name
 run_case "create PAR2 with -B basepath" case_create_basepath
 run_case "create PAR2 recursively" case_create_recursive
@@ -992,6 +1061,7 @@ run_case "create PAR2 with -T" case_create_file_threads
 run_case "create PAR2 with -t" case_create_threads
 run_case "create PAR2 with -m" case_create_memory
 run_case "reject invalid PAR2 create options" case_create_invalid_options
+run_case "reject invalid standalone PAR2 create options" case_standalone_create_invalid_options
 run_case "reject create overwrite" case_reject_create_overwrite
 run_case "reject create volume overwrite" case_reject_create_volume_overwrite
 run_case "verify intact PAR2" case_verify_intact_par2

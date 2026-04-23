@@ -186,10 +186,13 @@ Current script coverage includes:
 - PAR2 create through `create`, `c`, and `par2create`, including `-a`, `-B`,
   `-R`, `--` hyphen-prefixed input, `-b`, `-s`, `-r` percent and size targets,
   `-c`, `-f`, `-u`, `-l`, `-n`, `-T`, `-t`, and `-m`.
+- Standalone `par2create` filesystem effects for basic create, `-a`, `-B`, and
+  `--` hyphen-prefixed source names.
 - Invalid PAR2 create combinations and ranges, including block count/size
   conflicts, duplicate singleton options, invalid redundancy suffixes,
   recovery-file layout conflicts, verify/repair-only option rejection, and
-  output index/volume overwrite refusal.
+  output index/volume overwrite refusal. Representative standalone
+  `par2create` invalid cases are also covered.
 - PAR2 verify/repair through full commands, `v`/`r` aliases, `par2verify`, and
   `par2repair`, from PAR2 set input and protected data-file input, including
   `-B`, `-N`, `-N -S`, `-T`, `-m`, `--` hyphen-prefixed extra files,
