@@ -2394,6 +2394,71 @@ fn test_binaries_accept_bundled_mixed_verbose_and_quiet() {
 }
 
 #[test]
+fn test_binaries_accept_thread_option_clusters_with_trailing_noise() {
+    for (binary, prefix_args, thread_flag) in [
+        ("par2create", Vec::<&str>::new(), "-T1qv"),
+        ("par2create", Vec::<&str>::new(), "-t1qv"),
+        ("par2", vec!["create"], "-T1qv"),
+        ("par2", vec!["create"], "-t1qv"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let source = temp_dir.path().join("source.dat");
+        create_test_file(&source, b"thread option noise bundle")
+            .expect("Failed to create source file");
+        let output_base = temp_dir.path().join(format!("{binary}-{thread_flag}.par2"));
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(&prefix_args);
+        let output = command
+            .current_dir(temp_dir.path())
+            .arg(thread_flag)
+            .arg(&output_base)
+            .arg("source.dat")
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            output.status.success(),
+            "{binary} rejected bundled {thread_flag}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let par2_file = Path::new("tests/fixtures/testfile.par2");
+    if !par2_file.exists() {
+        eprintln!("Skipping thread option bundle test - fixture not found");
+        return;
+    }
+
+    for (binary, prefix_args, thread_flag) in [
+        ("par2verify", Vec::<&str>::new(), "-T1qv"),
+        ("par2verify", Vec::<&str>::new(), "-t1qv"),
+        ("par2repair", Vec::<&str>::new(), "-T1qv"),
+        ("par2repair", Vec::<&str>::new(), "-t1qv"),
+        ("par2", vec!["verify"], "-T1qv"),
+        ("par2", vec!["verify"], "-t1qv"),
+        ("par2", vec!["repair"], "-T1qv"),
+        ("par2", vec!["repair"], "-t1qv"),
+    ] {
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(&prefix_args);
+        let output = command
+            .arg(thread_flag)
+            .arg(par2_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            output.status.success(),
+            "{binary} rejected bundled {thread_flag}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn test_create_commands_accept_long_resource_flags() {
     for (binary, command) in [("par2create", None), ("par2", Some("create"))] {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");

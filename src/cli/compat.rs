@@ -140,9 +140,53 @@ pub fn normalize_mixed_noise_option_clusters<I>(args: I) -> Vec<OsString>
 where
     I: IntoIterator<Item = OsString>,
 {
-    args.into_iter()
+    let expanded = args
+        .into_iter()
+        .flat_map(expand_thread_option_noise_cluster)
+        .collect::<Vec<_>>();
+
+    expanded
+        .into_iter()
         .map(|arg| normalize_mixed_noise_option_cluster(&arg).unwrap_or(arg))
         .collect()
+}
+
+fn expand_thread_option_noise_cluster(arg: OsString) -> Vec<OsString> {
+    split_thread_option_noise_cluster(&arg)
+        .map(|(thread_arg, noise_arg)| vec![thread_arg, noise_arg])
+        .unwrap_or_else(|| vec![arg])
+}
+
+fn split_thread_option_noise_cluster(arg: &OsString) -> Option<(OsString, OsString)> {
+    let arg_text = arg.to_str()?;
+    let cluster = arg_text.strip_prefix('-')?;
+    if cluster.is_empty() || cluster.starts_with('-') {
+        return None;
+    }
+
+    let option = cluster.chars().next()?;
+    if option != 't' && option != 'T' {
+        return None;
+    }
+
+    let remainder = &cluster[option.len_utf8()..];
+    let digit_count = remainder
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .count();
+    if digit_count == 0 || digit_count == remainder.len() {
+        return None;
+    }
+
+    let (value, noise_cluster) = remainder.split_at(digit_count);
+    if !noise_cluster.chars().all(|ch| ch == 'q' || ch == 'v') {
+        return None;
+    }
+
+    Some((
+        OsString::from(format!("-{option}{value}")),
+        OsString::from(format!("-{noise_cluster}")),
+    ))
 }
 
 fn normalize_mixed_noise_option_cluster(arg: &OsString) -> Option<OsString> {
@@ -256,6 +300,31 @@ mod tests {
         assert_eq!(
             as_text,
             vec!["par2", "create", "-q", "-vv", "-qq", "--quiet"]
+        );
+    }
+
+    #[test]
+    fn thread_option_clusters_split_trailing_noise() {
+        let normalized = normalize_mixed_noise_option_clusters(
+            ["par2", "verify", "-T12qv", "-t1qq", "testfile.par2"]
+                .into_iter()
+                .map(OsString::from),
+        );
+        let as_text: Vec<_> = normalized
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            as_text,
+            vec![
+                "par2",
+                "verify",
+                "-T12",
+                "-q",
+                "-t1",
+                "-qq",
+                "testfile.par2"
+            ]
         );
     }
 }
