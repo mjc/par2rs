@@ -1155,6 +1155,54 @@ case_standalone_verify_repair_thread_option_tail_flags_valid() {
   assert_pair_zero_status
 }
 
+case_verify_repair_prefixed_thread_option_tail_flags_valid() {
+  copy_fixture_pair "verify-prefixed-thread-tail-skip"
+  run_pair "verify-prefixed-thread-tail-skip" verify -qt1N testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "verify-prefixed-file-thread-tail-rename"
+  run_pair "verify-prefixed-file-thread-tail-rename" verify -qT1O testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "repair-prefixed-thread-tail-skip"
+  corrupt_pair_file testfile
+  run_pair "repair-prefixed-thread-tail-skip" repair -qt1N testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+
+  copy_fixture_pair "repair-prefixed-file-thread-tail-rename"
+  run_pair "repair-prefixed-file-thread-tail-rename" repair -qT1O testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+}
+
+case_standalone_verify_repair_prefixed_thread_option_tail_flags_valid() {
+  copy_fixture_pair "par2verify-prefixed-thread-tail-skip"
+  run_standalone_pair "par2verify-prefixed-thread-tail-skip" "$TURBO_PAR2VERIFY_CMD" par2verify -qt1N testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "par2verify-prefixed-file-thread-tail-rename"
+  run_standalone_pair "par2verify-prefixed-file-thread-tail-rename" "$TURBO_PAR2VERIFY_CMD" par2verify -qT1O testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+
+  copy_fixture_pair "par2repair-prefixed-thread-tail-skip"
+  corrupt_pair_file testfile
+  run_standalone_pair "par2repair-prefixed-thread-tail-skip" "$TURBO_PAR2REPAIR_CMD" par2repair -qt1N testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+
+  copy_fixture_pair "par2repair-prefixed-file-thread-tail-rename"
+  run_standalone_pair "par2repair-prefixed-file-thread-tail-rename" "$TURBO_PAR2REPAIR_CMD" par2repair -qT1O testfile.par2
+  assert_pair_same_status
+  assert_pair_zero_status
+}
+
 case_mixed_noise_rejected() {
   run_invalid_mixed_noise_create_case v-q -v -q
   run_invalid_mixed_noise_create_case vv-qq -vv -qq
@@ -2091,6 +2139,8 @@ run_case "valid create thread options with trailing flags" case_create_thread_op
 run_case "valid standalone create thread options with trailing flags" case_standalone_create_thread_option_tail_flags_valid
 run_case "valid verify repair thread options with trailing flags" case_verify_repair_thread_option_tail_flags_valid
 run_case "valid standalone verify repair thread options with trailing flags" case_standalone_verify_repair_thread_option_tail_flags_valid
+run_case "valid prefixed verify repair thread options with trailing flags" case_verify_repair_prefixed_thread_option_tail_flags_valid
+run_case "valid standalone prefixed verify repair thread options with trailing flags" case_standalone_verify_repair_prefixed_thread_option_tail_flags_valid
 run_case "reject mixed noise options" case_mixed_noise_rejected
 run_case "reject mixed standalone noise options" case_standalone_mixed_noise_rejected
 run_case "reject invalid PAR2 create options" case_create_invalid_options
