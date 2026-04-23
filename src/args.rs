@@ -20,6 +20,12 @@ pub fn parse_args() -> clap::ArgMatches {
                 .value_name("PATH"),
         )
         .arg(
+            Arg::new("archive_name")
+                .help("Accepted for par2cmdline compatibility")
+                .short('a')
+                .value_name("FILE"),
+        )
+        .arg(
             Arg::new("verbose")
                 .help("Be more verbose")
                 .short('v')
@@ -112,6 +118,12 @@ pub fn parse_repair_args() -> clap::ArgMatches {
                 .short('B')
                 .long("basepath")
                 .value_name("PATH"),
+        )
+        .arg(
+            Arg::new("archive_name")
+                .help("Accepted for par2cmdline compatibility")
+                .short('a')
+                .value_name("FILE"),
         )
         .arg(
             Arg::new("verbose")

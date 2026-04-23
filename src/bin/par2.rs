@@ -179,6 +179,12 @@ fn main() -> Result<()> {
                         .value_name("PATH"),
                 )
                 .arg(
+                    Arg::new("archive_name")
+                        .short('a')
+                        .help("Accepted for par2cmdline compatibility")
+                        .value_name("FILE"),
+                )
+                .arg(
                     Arg::new("verbose")
                         .short('v')
                         .long("verbose")
@@ -268,6 +274,12 @@ fn main() -> Result<()> {
                         .long("basepath")
                         .help("Set the basepath to use as reference for the datafiles")
                         .value_name("PATH"),
+                )
+                .arg(
+                    Arg::new("archive_name")
+                        .short('a')
+                        .help("Accepted for par2cmdline compatibility")
+                        .value_name("FILE"),
                 )
                 .arg(
                     Arg::new("verbose")

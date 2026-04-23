@@ -2444,6 +2444,40 @@ fn test_verify_and_repair_reject_skip_leeway_without_data_skipping() {
 }
 
 #[test]
+fn test_verify_and_repair_accept_archive_name_as_noop() {
+    for (binary, prefix_args) in [
+        ("par2verify", Vec::<&str>::new()),
+        ("par2repair", Vec::<&str>::new()),
+        ("par2", vec!["verify"]),
+        ("par2", vec!["repair"]),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let (par2_file, _source) = create_purge_test_set(&temp_dir);
+        let ignored_archive = temp_dir.path().join("ignored.par2");
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(prefix_args);
+        let output = command
+            .arg("-q")
+            .arg("-aignored.par2")
+            .arg(&par2_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            output.status.success(),
+            "{binary} rejected verify/repair -a no-op: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !ignored_archive.exists(),
+            "{binary} should ignore -a during verify/repair"
+        );
+    }
+}
+
+#[test]
 fn test_par2create_uses_single_existing_file_as_source() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let source = temp_dir.path().join("implicit.dat");
