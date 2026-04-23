@@ -122,6 +122,7 @@ fn test_file_verification_result_creation() {
         total_blocks: 10,
         damaged_blocks: vec![],
         block_positions: Default::default(),
+        matched_path: None,
     };
 
     assert_eq!(result.file_name, "test.txt");
@@ -143,6 +144,7 @@ fn test_file_verification_result_damaged() {
         total_blocks: 10,
         damaged_blocks: vec![3, 7],
         block_positions: Default::default(),
+        matched_path: None,
     };
 
     assert_eq!(result.status, FileStatus::Corrupted);
@@ -162,6 +164,7 @@ fn test_file_verification_result_clone() {
         total_blocks: 5,
         damaged_blocks: vec![0, 1, 2, 3, 4],
         block_positions: Default::default(),
+        matched_path: None,
     };
 
     let result2 = result1.clone();
@@ -365,6 +368,7 @@ fn test_verification_results_with_file_data() {
         total_blocks: 5,
         damaged_blocks: vec![],
         block_positions: Default::default(),
+        matched_path: None,
     };
 
     let block_result = BlockVerificationResult {

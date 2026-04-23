@@ -17,6 +17,7 @@ use crate::packets::FileDescriptionPacket;
 use crate::reporters::VerificationReporter;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashSet as HashSet;
 use smallvec::SmallVec;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -25,6 +26,8 @@ use std::sync::Mutex;
 type AvailableBlocksMap = HashMap<(Md5Hash, Crc32Value), Vec<(FileId, u32)>>;
 /// Map of file IDs to their determined status
 type FileStatusMap = HashMap<FileId, FileStatus>;
+/// Map of file IDs to wrong-name paths that exactly matched them.
+type RenamedFileMatches = HashMap<FileId, PathBuf>;
 
 /// Result of attempting to match a block against the global table
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +84,8 @@ pub struct GlobalVerificationEngine {
     block_table: GlobalBlockTable,
     /// File descriptions for all files in the recovery set
     file_descriptions: HashMap<FileId, FileDescriptionPacket>,
+    /// Deterministic protected-file order from the main packet.
+    file_order: Vec<FileId>,
     /// Base directory for file operations
     base_dir: std::path::PathBuf,
     /// Number of recovery blocks available
@@ -91,6 +96,8 @@ pub struct GlobalVerificationEngine {
     data_skipping: bool,
     /// Leeway in bytes on either side of expected block positions when skipping.
     skip_leeway: usize,
+    /// Only scan extra files that can be exact renamed matches.
+    rename_only: bool,
 }
 
 /// Result of verifying a single file using global block table
@@ -124,9 +131,10 @@ impl GlobalVerificationEngine {
         config: &super::VerificationConfig,
     ) -> Result<Self, String> {
         // Extract packet information
-        let block_size = crate::packets::processing::extract_main_packet(packets)
-            .map(|m| m.slice_size)
+        let main_packet = crate::packets::processing::extract_main_packet(packets)
             .ok_or("No main packet found")?;
+        let block_size = main_packet.slice_size;
+        let file_order = main_packet.file_ids.clone();
 
         let file_descriptions = crate::packets::processing::extract_file_descriptions(packets);
         let slice_checksums = crate::packets::processing::extract_slice_checksums(packets);
@@ -160,11 +168,13 @@ impl GlobalVerificationEngine {
         Ok(Self {
             block_table,
             file_descriptions: file_lookup,
+            file_order,
             base_dir: base_dir.as_ref().to_path_buf(),
             recovery_block_count,
             skip_full_md5: config.skip_full_file_md5,
             data_skipping: config.data_skipping,
             skip_leeway: config.skip_leeway,
+            rename_only: config.rename_only,
         })
     }
 
@@ -201,12 +211,16 @@ impl GlobalVerificationEngine {
         // Note: report_verification_start and report_files_found should be called by the caller
 
         // Step 1: Scan all available files to build availability map
-        let (available_blocks, file_statuses, scan_metadatas) =
+        let (available_blocks, file_statuses, scan_metadatas, renamed_matches) =
             self.scan_available_blocks_with_extra_files(reporter, parallel, extra_files);
 
         // Step 2: Create aggregate results (individual file reporting already done in scan_available_blocks)
-        let file_results =
-            self.create_file_results(&available_blocks, &file_statuses, &scan_metadatas);
+        let file_results = self.create_file_results(
+            &available_blocks,
+            &file_statuses,
+            &scan_metadatas,
+            &renamed_matches,
+        );
         let block_results = self.create_block_verification_results(&available_blocks);
 
         // Count recovery blocks available from recovery packets
@@ -232,6 +246,7 @@ impl GlobalVerificationEngine {
         AvailableBlocksMap,
         FileStatusMap,
         HashMap<FileId, FileScanMetadata>,
+        RenamedFileMatches,
     ) {
         // Wrap reporter in Mutex for thread-safe output (like par2cmdline-turbo's output_lock)
         let reporter_lock = Mutex::new(reporter);
@@ -281,29 +296,39 @@ impl GlobalVerificationEngine {
             }
         }
 
+        let deduped_extra_files = Self::dedupe_extra_files(extra_files);
         let extra_results: Vec<_> = if parallel {
-            extra_files
+            deduped_extra_files
                 .par_iter()
-                .filter_map(|path| self.process_extra_file(path, &reporter_lock))
+                .filter_map(|path| self.process_extra_file(path, &reporter_lock, &file_statuses))
                 .collect()
         } else {
-            extra_files
+            deduped_extra_files
                 .iter()
-                .filter_map(|path| self.process_extra_file(path, &reporter_lock))
+                .filter_map(|path| self.process_extra_file(path, &reporter_lock, &file_statuses))
                 .collect()
         };
 
-        for (local_map, metadata) in extra_results {
-            for file_description in self.file_descriptions.values() {
-                let file_name = extract_file_name(file_description);
-                let file_path = self.base_dir.join(&file_name);
+        let mut renamed_matches = HashMap::default();
+        let mut used_extra_paths = HashSet::default();
 
-                if !file_path.exists()
-                    && self.extra_file_matches_description(&metadata, file_description)
-                {
-                    file_statuses
-                        .entry(file_description.file_id)
-                        .or_insert(FileStatus::Renamed);
+        for (extra_path, extra_key, local_map, metadata) in extra_results {
+            if !used_extra_paths.contains(&extra_key) {
+                for file_description in self.ordered_file_descriptions() {
+                    let file_id = file_description.file_id;
+                    if renamed_matches.contains_key(&file_id)
+                        || !self
+                            .protected_file_can_use_renamed_extra(file_description, &file_statuses)
+                    {
+                        continue;
+                    }
+
+                    if self.extra_file_matches_description(&metadata, file_description) {
+                        file_statuses.insert(file_id, FileStatus::Renamed);
+                        renamed_matches.insert(file_id, extra_path.clone());
+                        used_extra_paths.insert(extra_key.clone());
+                        break;
+                    }
                 }
             }
 
@@ -322,21 +347,50 @@ impl GlobalVerificationEngine {
             }
         }
 
-        (global_block_map, file_statuses, scan_metadatas)
+        (
+            global_block_map,
+            file_statuses,
+            scan_metadatas,
+            renamed_matches,
+        )
     }
 
     fn process_extra_file<R: VerificationReporter>(
         &self,
         file_path: &Path,
         reporter_lock: &Mutex<&R>,
-    ) -> Option<(LocalBlockMap, FileScanMetadata)> {
+        file_statuses: &FileStatusMap,
+    ) -> Option<(PathBuf, PathBuf, LocalBlockMap, FileScanMetadata)> {
+        if Self::is_par2_path(file_path) {
+            return None;
+        }
+
         let metadata = std::fs::metadata(file_path).ok()?;
         if !metadata.is_file() {
             return None;
         }
 
+        if self.rename_only
+            && !self.rename_only_extra_can_match(file_path, metadata.len(), file_statuses)
+        {
+            return None;
+        }
+
         let file_size = FileSize::new(metadata.len());
-        Some(self.scan_single_file_with_progress(file_path, file_size, reporter_lock))
+        let (local_map, mut scan_metadata) =
+            self.scan_single_file_with_progress(file_path, file_size, reporter_lock);
+
+        if self.skip_full_md5 && scan_metadata.actual_file_hash.is_none() {
+            Self::record_file_hashes(
+                file_path,
+                super::types::BlockSize::new(self.block_table.block_size() as usize),
+                false,
+                &mut scan_metadata,
+            );
+        }
+
+        let key = Self::canonical_key(file_path);
+        Some((file_path.to_path_buf(), key, local_map, scan_metadata))
     }
 
     /// Process a single file: scan blocks and report status
@@ -633,13 +687,133 @@ impl GlobalVerificationEngine {
         metadata: &FileScanMetadata,
         file_description: &FileDescriptionPacket,
     ) -> bool {
-        if self.skip_full_md5 {
-            return false;
-        }
-
         metadata.actual_file_size == Some(file_description.file_length)
             && metadata.actual_file_hash.as_ref() == Some(&file_description.md5_hash)
             && metadata.actual_file_hash_16k.as_ref() == Some(&file_description.md5_16k)
+    }
+
+    fn ordered_file_descriptions(&self) -> Vec<&FileDescriptionPacket> {
+        let mut ordered = Vec::with_capacity(self.file_descriptions.len());
+        let mut seen = HashSet::default();
+
+        for file_id in &self.file_order {
+            if let Some(description) = self.file_descriptions.get(file_id) {
+                ordered.push(description);
+                seen.insert(*file_id);
+            }
+        }
+
+        let mut leftovers: Vec<_> = self
+            .file_descriptions
+            .iter()
+            .filter(|(file_id, _)| !seen.contains(file_id))
+            .map(|(_, description)| description)
+            .collect();
+        leftovers.sort_by_key(|description| extract_file_name(description));
+        ordered.extend(leftovers);
+        ordered
+    }
+
+    fn protected_file_can_use_renamed_extra(
+        &self,
+        file_description: &FileDescriptionPacket,
+        file_statuses: &FileStatusMap,
+    ) -> bool {
+        let file_name = extract_file_name(file_description);
+        let file_path = self.base_dir.join(&file_name);
+
+        match file_statuses.get(&file_description.file_id) {
+            Some(FileStatus::Present) => false,
+            Some(FileStatus::Renamed) => false,
+            Some(FileStatus::Corrupted | FileStatus::Missing) => true,
+            None => !file_path.exists(),
+        }
+    }
+
+    fn dedupe_extra_files(extra_files: &[PathBuf]) -> Vec<PathBuf> {
+        let mut seen = HashSet::default();
+        let mut deduped = Vec::new();
+
+        for path in extra_files {
+            let key = Self::canonical_key(path);
+            if seen.insert(key) {
+                deduped.push(path.clone());
+            }
+        }
+
+        deduped
+    }
+
+    fn canonical_key(path: &Path) -> PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    fn is_par2_path(path: &Path) -> bool {
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("par2"))
+    }
+
+    fn rename_only_extra_can_match(
+        &self,
+        file_path: &Path,
+        actual_size: u64,
+        file_statuses: &FileStatusMap,
+    ) -> bool {
+        let mut file = match std::fs::File::open(file_path) {
+            Ok(file) => file,
+            Err(_) => return false,
+        };
+
+        for file_description in self.ordered_file_descriptions() {
+            if file_description.file_length != actual_size
+                || !self.protected_file_can_use_renamed_extra(file_description, file_statuses)
+            {
+                continue;
+            }
+
+            if self.first_block_matches_description(&mut file, file_description) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn first_block_matches_description(
+        &self,
+        file: &mut std::fs::File,
+        file_description: &FileDescriptionPacket,
+    ) -> bool {
+        use crate::checksum::{compute_block_checksums_padded, compute_crc32, compute_md5_only};
+        use std::io::{Read, Seek};
+
+        let file_blocks = self.block_table.get_file_blocks(file_description.file_id);
+        let Some(first_block) = file_blocks
+            .into_iter()
+            .find(|entry| entry.position.block_number == 0)
+        else {
+            return file_description.file_length == 0;
+        };
+
+        if file.rewind().is_err() {
+            return false;
+        }
+
+        let block_size = self.block_table.block_size() as usize;
+        let bytes_to_read = block_size.min(file_description.file_length as usize);
+        let mut buffer = vec![0u8; bytes_to_read];
+        if file.read_exact(&mut buffer).is_err() {
+            return false;
+        }
+
+        let (md5_hash, crc32) = if bytes_to_read < block_size {
+            compute_block_checksums_padded(&buffer, block_size)
+        } else {
+            (compute_md5_only(&buffer), compute_crc32(&buffer))
+        };
+
+        first_block.checksums.md5_hash == md5_hash && first_block.checksums.crc32 == crc32
     }
 
     /// Insert all matching blocks from the global table into the local block map
@@ -1027,10 +1201,11 @@ impl GlobalVerificationEngine {
         available_blocks: &AvailableBlocksMap,
         file_statuses: &FileStatusMap,
         scan_metadatas: &HashMap<FileId, FileScanMetadata>,
+        renamed_matches: &RenamedFileMatches,
     ) -> Vec<FileVerificationResult> {
         let mut file_results = Vec::new();
 
-        for file_description in self.file_descriptions.values() {
+        for file_description in self.ordered_file_descriptions() {
             let file_name = extract_file_name(file_description);
             let file_size = FileSize::new(file_description.file_length);
             let total_blocks = self.calculate_total_blocks(file_size);
@@ -1073,11 +1248,6 @@ impl GlobalVerificationEngine {
                         let file_path = self.base_dir.join(&file_name);
                         if file_path.exists() {
                             FileStatus::Present
-                        } else if self.skip_full_md5 {
-                            // Pre-repair verification skips final file-hash validation, but still
-                            // needs full block availability from extra files to avoid recreating a
-                            // protected file that is already present under another name.
-                            FileStatus::Renamed
                         } else {
                             FileStatus::Missing
                         }
@@ -1111,6 +1281,9 @@ impl GlobalVerificationEngine {
                 total_blocks: total_blocks.as_usize(),
                 damaged_blocks,
                 block_positions,
+                matched_path: (status == FileStatus::Renamed)
+                    .then(|| renamed_matches.get(&file_description.file_id).cloned())
+                    .flatten(),
             });
         }
 
@@ -1252,6 +1425,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let mut local_map = HashMap::default();
@@ -1330,6 +1505,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let mut local_map = HashMap::default();
@@ -1385,6 +1562,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let mut local_map = HashMap::default();
@@ -1447,6 +1626,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         // Test 1: Direct insertion
@@ -1819,6 +2000,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         // Case 1: All blocks available
@@ -1966,6 +2149,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         // Create a buffer with the matching block
@@ -2030,6 +2215,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let block_size = BlockSize::new(1024);
@@ -2090,6 +2277,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let block_size = BlockSize::new(1024);
@@ -2140,6 +2329,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let block_size = BlockSize::new(1024);
@@ -2192,6 +2383,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let block_size = BlockSize::new(1024);
@@ -2245,6 +2438,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         // Create a buffer with 2MB worth of data
@@ -2365,6 +2560,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let block_size = BlockSize::new(1024);
@@ -2427,6 +2624,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let mut state = ScannerState::new(3072);
@@ -2504,6 +2703,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let mut local_map = HashMap::default();
@@ -2572,6 +2773,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let block_size = BlockSize::new(1024);
@@ -2620,6 +2823,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         // Simulate finding only 2 of 3 blocks
@@ -2691,6 +2896,8 @@ mod tests {
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let mut local_map = HashMap::default();
@@ -2868,6 +3075,8 @@ mod tests {
             block_table: builder.build(),
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let mut state = ScannerState::new(64);
@@ -2921,6 +3130,8 @@ mod tests {
             block_table: builder.build(),
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let mut state = ScannerState::new(64);
@@ -3321,11 +3532,15 @@ mod tests {
         let results = engine.verify_recovery_set_with_extra_files(&reporter, false, &[extra_path]);
 
         assert_eq!(results.files[0].status, FileStatus::Renamed);
+        assert_eq!(
+            results.files[0].matched_path.as_deref(),
+            Some(base_path.join("renamed.bin").as_path())
+        );
         assert_eq!(results.renamed_file_count, 1);
     }
 
     #[test]
-    fn test_extra_file_with_matching_block_but_wrong_hash_is_not_renamed() {
+    fn test_extra_file_with_same_size_but_wrong_hash_is_not_renamed() {
         use crate::checksum::{compute_block_checksums, compute_md5};
         use std::fs::File;
         use std::io::Write;
@@ -3336,8 +3551,9 @@ mod tests {
         let protected_data = vec![0x42; 1024];
         let extra_path = base_path.join("not_exact.bin");
         let mut extra_file = File::create(&extra_path).unwrap();
-        extra_file.write_all(&protected_data).unwrap();
-        extra_file.write_all(&[0xFF]).unwrap();
+        let mut wrong_data = protected_data.clone();
+        wrong_data[0] = 0xFF;
+        extra_file.write_all(&wrong_data).unwrap();
         extra_file.flush().unwrap();
         drop(extra_file);
 
@@ -3373,8 +3589,62 @@ mod tests {
         let reporter = crate::reporters::ConsoleVerificationReporter::new();
         let results = engine.verify_recovery_set_with_extra_files(&reporter, false, &[extra_path]);
 
-        assert_eq!(results.files[0].blocks_available, 1);
+        assert_eq!(results.files[0].blocks_available, 0);
         assert_eq!(results.files[0].status, FileStatus::Missing);
+        assert_eq!(results.files[0].matched_path, None);
+        assert_eq!(results.renamed_file_count, 0);
+    }
+
+    #[test]
+    fn test_par2_extra_inputs_are_ignored_as_renamed_data() {
+        use crate::checksum::{compute_block_checksums, compute_md5};
+        use std::fs::File;
+        use std::io::Write;
+
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let base_path = temporary_directory.path();
+        let file_id = FileId::new([6; 16]);
+        let protected_data = vec![0x42; 1024];
+        let extra_path = base_path.join("renamed.PAR2");
+        let mut extra_file = File::create(&extra_path).unwrap();
+        extra_file.write_all(&protected_data).unwrap();
+        extra_file.flush().unwrap();
+        drop(extra_file);
+
+        let (md5_hash, crc32) = compute_block_checksums(&protected_data);
+        let mut file_description = create_test_file_desc(file_id, protected_data.len() as u64);
+        file_description.file_name = b"original.bin".to_vec();
+        file_description.md5_hash = compute_md5(&protected_data);
+        file_description.md5_16k = compute_md5(&protected_data);
+
+        let main_packet = crate::packets::MainPacket {
+            length: 92,
+            md5: Md5Hash::new([0; 16]),
+            set_id: crate::domain::RecoverySetId::new([1; 16]),
+            slice_size: 1024,
+            file_count: 1,
+            file_ids: vec![file_id],
+            non_recovery_file_ids: vec![],
+        };
+
+        let packets = vec![
+            crate::Packet::Main(main_packet),
+            crate::Packet::FileDescription(file_description),
+            crate::Packet::InputFileSliceChecksum(crate::packets::InputFileSliceChecksumPacket {
+                length: 64 + 16 + 20,
+                md5: Md5Hash::new([0; 16]),
+                set_id: crate::domain::RecoverySetId::new([1; 16]),
+                file_id,
+                slice_checksums: vec![(md5_hash, crc32)],
+            }),
+        ];
+
+        let engine = GlobalVerificationEngine::from_packets(&packets, base_path).unwrap();
+        let reporter = crate::reporters::ConsoleVerificationReporter::new();
+        let results = engine.verify_recovery_set_with_extra_files(&reporter, false, &[extra_path]);
+
+        assert_eq!(results.files[0].status, FileStatus::Missing);
+        assert_eq!(results.files[0].matched_path, None);
         assert_eq!(results.renamed_file_count, 0);
     }
 }

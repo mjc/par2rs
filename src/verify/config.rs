@@ -19,6 +19,8 @@ pub struct VerificationConfig {
     pub data_skipping: bool,
     /// Skip-ahead scan leeway in bytes when data skipping is enabled.
     pub skip_leeway: usize,
+    /// Turbo-compatible rename-only mode for verify/repair.
+    pub rename_only: bool,
 }
 
 impl Default for VerificationConfig {
@@ -31,6 +33,7 @@ impl Default for VerificationConfig {
             file_threads: None,
             data_skipping: false,
             skip_leeway: 0,
+            rename_only: false,
         }
     }
 }
@@ -45,6 +48,7 @@ impl VerificationConfig {
             file_threads: None,
             data_skipping: false,
             skip_leeway: 0,
+            rename_only: false,
         }
     }
 
@@ -58,6 +62,7 @@ impl VerificationConfig {
             file_threads: None,
             data_skipping: false,
             skip_leeway: 0,
+            rename_only: false,
         }
     }
 
@@ -132,6 +137,12 @@ impl VerificationConfig {
             file_threads,
             data_skipping: skip.data_skipping,
             skip_leeway: skip.skip_leeway,
+            rename_only: matches
+                .try_get_one::<bool>("rename_only")
+                .ok()
+                .flatten()
+                .copied()
+                .unwrap_or(false),
         })
     }
 

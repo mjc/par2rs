@@ -2,6 +2,7 @@
 
 use crate::domain::{Crc32Value, FileId, Md5Hash};
 use std::fmt;
+use std::path::PathBuf;
 
 /// Position within a file buffer (in bytes)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -404,6 +405,11 @@ pub struct FileVerificationResult {
     /// Positions where blocks were found during scanning
     /// Maps block_number -> file_offset where that block was found
     pub block_positions: rustc_hash::FxHashMap<u32, usize>,
+    /// Wrong-name path that exactly matched this protected file.
+    ///
+    /// This is populated only for exact extra-file rename matches where
+    /// `status == FileStatus::Renamed`.
+    pub matched_path: Option<PathBuf>,
 }
 
 /// Buffer for scanning file data
