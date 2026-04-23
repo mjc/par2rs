@@ -80,6 +80,9 @@ Important semantics:
 - Final PAR2 file status validates full MD5, first-16K MD5, and size. A file
   with all block hashes found but a mismatched whole-file hash is corrupted.
 - Extra files are marked renamed only on exact size/full-MD5/16K-MD5 matches.
+- PAR2 verify is non-mutating. Exact renamed extra files count as available
+  data in the report, but verify exits with repair-required status until repair
+  moves them into the protected target path.
 - PAR2 repair consumes exact renamed extra files by moving them into the
   expected protected path before Reed-Solomon reconstruction is attempted.
 - If a corrupted protected target already exists, PAR2 repair first moves it to
@@ -108,6 +111,9 @@ Known verify/repair differences:
 
 - PAR1 ignores file-thread and skip-leeway options.
 - PAR1 output is functional rather than byte-for-byte matched to turbo.
+- Exact numeric failure codes for invalid syntax or failed repair are not a
+  compatibility target; parity checks require matching success/failure outcome
+  and filesystem effects.
 - Byte-for-byte stdout/help parity remains outside the target.
 
 ## PAR1 Status
@@ -176,14 +182,24 @@ turbo binary.
 
 Current script coverage includes:
 
-- PAR2 intact verify, corrupted repair, unrepairable missing-file reporting,
-  renamed-file repair, renamed-file `-O` repair, renamed-file `-O` verify,
-  damaged renamed-file `-O` failure, create `-O` rejection, and create
-  overwrite refusal.
-- PAR1 intact verify from main and volume input.
-- PAR1 repair of a missing protected file.
-- PAR1 repair of a renamed protected file passed as an extra argument.
-- PAR1 purge after intact verify.
+- PAR2 create through `create`, `c`, and `par2create`, including `-a`, `-B`,
+  `-R`, `--` hyphen-prefixed input, `-b`, `-s`, `-r` percent and size targets,
+  `-c`, `-f`, `-u`, `-l`, `-n`, `-T`, `-t`, and `-m`.
+- Invalid PAR2 create combinations and ranges, including block count/size
+  conflicts, duplicate singleton options, invalid redundancy suffixes,
+  recovery-file layout conflicts, verify/repair-only option rejection, and
+  output index/volume overwrite refusal.
+- PAR2 verify/repair from PAR2 set input and protected data-file input,
+  including `-B`, `-N`, `-N -S`, `-T`, `-m`, `--` hyphen-prefixed extra files,
+  renamed-file repair, rename-only verify/repair, damaged rename-only failure,
+  unrepairable missing-file reporting, and purge after intact verify or
+  successful repair.
+- Invalid PAR2 verify/repair options, including `-S` without `-N`, invalid
+  `-S`, create-only option rejection, invalid `-T`, and invalid `-m`.
+- PAR1 verify from main and volume input, uppercase `.PAR`/`.PNN` input,
+  missing-file repair, repair from volume input, renamed-file repair from main
+  and volume input, purge after verify and repair, failed repair with purge
+  preserving recovery files, and `-O` acceptance.
 - par2rs self-check for intentional PAR1 create rejection. The Nix turbo binary
   treats `out.par` as a PAR2 basename and writes `out.par.par2`, so this case is
   intentionally not a turbo status comparison.
