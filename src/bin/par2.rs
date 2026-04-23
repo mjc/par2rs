@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
 use par2rs::cli::compat::{
     init_env_logger, normalize_mixed_noise_option_clusters, parse_memory_mb, parse_noise_level,
-    parse_positive_usize, reject_short_value_forms,
+    parse_positive_usize, reject_invalid_create_short_clusters, reject_short_value_forms,
 };
 use par2rs::create::cli::{
     parse_redundancy_option, resolve_create_inputs, validate_recovery_file_count,
@@ -390,11 +390,20 @@ fn reject_detached_short_values_for_subcommand() {
         _ => return,
     };
 
-    if let Err(message) =
-        reject_short_value_forms(args.into_iter().skip(2), detached_rejected, equals_rejected)
-    {
+    if let Err(message) = reject_short_value_forms(
+        args.iter().skip(2).cloned(),
+        detached_rejected,
+        equals_rejected,
+    ) {
         eprintln!("{message}");
         std::process::exit(2);
+    }
+
+    if matches!(command, "create" | "c") {
+        if let Err(message) = reject_invalid_create_short_clusters(args.iter().skip(2).cloned()) {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
     }
 }
 

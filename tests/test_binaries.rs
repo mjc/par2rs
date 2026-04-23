@@ -2552,6 +2552,41 @@ fn test_binaries_accept_create_thread_option_clusters_with_trailing_flags() {
 }
 
 #[test]
+fn test_create_commands_reject_invalid_short_clusters() {
+    for (binary, prefix_args, extra_args) in [
+        ("par2create", Vec::<&str>::new(), vec!["-uq"]),
+        ("par2create", Vec::<&str>::new(), vec!["-uT1"]),
+        ("par2create", Vec::<&str>::new(), vec!["-lT1", "-c3"]),
+        ("par2", vec!["create"], vec!["-uq"]),
+        ("par2", vec!["create"], vec!["-uT1"]),
+        ("par2", vec!["create"], vec!["-lT1", "-c3"]),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let source = temp_dir.path().join("source.dat");
+        create_test_file(&source, b"invalid short cluster").expect("Failed to create source file");
+        let output_base = temp_dir.path().join("invalid.par2");
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(&prefix_args);
+        let output = command
+            .current_dir(temp_dir.path())
+            .args(&extra_args)
+            .arg(&output_base)
+            .arg("source.dat")
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted invalid cluster {:?}: stdout={}, stderr={}",
+            extra_args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn test_create_commands_accept_long_resource_flags() {
     for (binary, command) in [("par2create", None), ("par2", Some("create"))] {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");

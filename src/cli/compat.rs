@@ -136,6 +136,27 @@ where
     Ok(())
 }
 
+pub fn reject_invalid_create_short_clusters<I>(args: I) -> Result<(), String>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    for arg in args {
+        if arg == "--" {
+            break;
+        }
+        let arg = arg.to_string_lossy();
+        if arg.len() <= 2 || !arg.starts_with('-') || arg.starts_with("--") {
+            continue;
+        }
+        if arg.starts_with("-u") || arg.starts_with("-l") {
+            return Err(format!(
+                "{arg} is not a supported par2cmdline-compatible option form"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn normalize_mixed_noise_option_clusters<I>(args: I) -> Vec<OsString>
 where
     I: IntoIterator<Item = OsString>,
@@ -328,6 +349,26 @@ mod tests {
                 "-Np",
                 "testfile.par2"
             ]
+        );
+    }
+
+    #[test]
+    fn invalid_create_short_clusters_are_rejected() {
+        assert!(
+            reject_invalid_create_short_clusters(["-uq"].into_iter().map(OsString::from)).is_err()
+        );
+        assert!(
+            reject_invalid_create_short_clusters(["-uT1"].into_iter().map(OsString::from)).is_err()
+        );
+        assert!(
+            reject_invalid_create_short_clusters(["-lT1"].into_iter().map(OsString::from)).is_err()
+        );
+        assert!(
+            reject_invalid_create_short_clusters(["-u", "-q"].into_iter().map(OsString::from))
+                .is_ok()
+        );
+        assert!(
+            reject_invalid_create_short_clusters(["-T1l"].into_iter().map(OsString::from)).is_ok()
         );
     }
 }
