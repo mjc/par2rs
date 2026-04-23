@@ -46,6 +46,7 @@ Important semantics:
 
 Supported create options include `-a`, `-b`, `-s`, `-r`, `-c`, `-f`, `-u`,
 `-l`, `-n`, `-R`, `-B`, `-m`, `-t`, `-T`, `-v`, `-q`, and `--force-scalar`.
+`-O` is rejected for create commands.
 
 Known create differences:
 
@@ -72,16 +73,32 @@ Important semantics:
 
 - `-S` is valid only with `-N` for PAR2 verify/repair.
 - `-N` with no `-S` defaults skip leeway to `64`.
+- `-O` rename-only mode is supported for PAR2 verify and repair.
 - Without `-N`, byte scanning remains exhaustive.
 - With `-N`, scan skip-ahead follows the turbo-style
   `min(skip_leeway * 2, block_size)` scan distance.
 - Final PAR2 file status validates full MD5, first-16K MD5, and size. A file
   with all block hashes found but a mismatched whole-file hash is corrupted.
 - Extra files are marked renamed only on exact size/full-MD5/16K-MD5 matches.
+- PAR2 repair consumes exact renamed extra files by moving them into the
+  expected protected path before Reed-Solomon reconstruction is attempted.
+- If a corrupted protected target already exists, PAR2 repair first moves it to
+  the first free `filename.N` backup path, then moves the exact renamed extra
+  into place.
+- PAR2 `-O` repair performs rename moves only. It does not reconstruct from
+  recovery blocks and fails if any protected file remains missing or corrupted.
+- PAR2 verify with `-O` is non-mutating and considers extra files only as
+  perfect renamed matches.
 - Repair memory limits cap reconstruction chunk size only when explicitly set.
 - `-T` bounds verify file scanning with a local Rayon pool where applicable.
+- PAR1 verify and repair accept `-O` for command-line compatibility but ignore
+  it internally.
 - PAR1 verify and repair scan command-line extra files for exact wrong-name
   matches. Repair renames those files into place before using recovery blocks.
+- PAR2 purge after repair-by-rename deletes collected PAR2 recovery files and
+  backups created by that repair operation when repair succeeds. Failed repair
+  does not purge. Data files are never deleted except wrong-name extras moved
+  into the correct protected target path.
 - PAR1 purge runs only after a successful verify or repair. It deletes only the
   PAR1 files collected for the input set (`.par`/`.pNN`) and backups created by
   the same repair-by-rename operation. Data files are never purge targets, and
@@ -91,6 +108,7 @@ Known verify/repair differences:
 
 - PAR1 ignores file-thread and skip-leeway options.
 - PAR1 output is functional rather than byte-for-byte matched to turbo.
+- Byte-for-byte stdout/help parity remains outside the target.
 
 ## PAR1 Status
 
@@ -159,7 +177,9 @@ turbo binary.
 Current script coverage includes:
 
 - PAR2 intact verify, corrupted repair, unrepairable missing-file reporting,
-  and create overwrite refusal.
+  renamed-file repair, renamed-file `-O` repair, renamed-file `-O` verify,
+  damaged renamed-file `-O` failure, create `-O` rejection, and create
+  overwrite refusal.
 - PAR1 intact verify from main and volume input.
 - PAR1 repair of a missing protected file.
 - PAR1 repair of a renamed protected file passed as an extra argument.
