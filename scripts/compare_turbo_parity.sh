@@ -17,11 +17,35 @@ elif [[ -x "$TURBO_ROOT/par2" ]]; then
 else
   TURBO_PAR2_CMD="${TURBO_PAR2:-par2}"
 fi
+
+resolve_turbo_wrapper() {
+  local explicit="$1"
+  local binary="$2"
+  local par2_path="$3"
+  if [[ -x "$explicit" ]]; then
+    printf '%s' "$explicit"
+    return
+  fi
+  if [[ -n "$par2_path" ]]; then
+    local par2_dir
+    par2_dir="$(dirname "$par2_path")"
+    if [[ -x "$par2_dir/$binary" ]]; then
+      printf '%s' "$par2_dir/$binary"
+      return
+    fi
+  fi
+  printf '%s' "$binary"
+}
+
+TURBO_PAR2_PATH=""
 if command -v "$TURBO_PAR2_CMD" >/dev/null 2>&1; then
   HAS_TURBO=1
+  TURBO_PAR2_PATH="$(command -v "$TURBO_PAR2_CMD")"
 else
   HAS_TURBO=0
 fi
+TURBO_PAR2VERIFY_CMD="$(resolve_turbo_wrapper "${TURBO_PAR2VERIFY:-}" par2verify "$TURBO_PAR2_PATH")"
+TURBO_PAR2REPAIR_CMD="$(resolve_turbo_wrapper "${TURBO_PAR2REPAIR:-}" par2repair "$TURBO_PAR2_PATH")"
 
 cleanup() {
   if [[ -z "${KEEP_WORK_DIR:-}" ]]; then
@@ -86,20 +110,20 @@ assert_nonzero_status() {
 }
 
 assert_pair_same_status() {
-  if [[ "$HAS_TURBO" = 1 ]]; then
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
     assert_same_status "$TURBO_RESULT" "$PAR2RS_RESULT"
   fi
 }
 
 assert_pair_nonzero_status() {
-  if [[ "$HAS_TURBO" = 1 ]]; then
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
     assert_nonzero_status "$TURBO_RESULT"
   fi
   assert_nonzero_status "$PAR2RS_RESULT"
 }
 
 assert_pair_zero_status() {
-  if [[ "$HAS_TURBO" = 1 ]]; then
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
     assert_zero_status "$TURBO_RESULT"
   fi
   assert_zero_status "$PAR2RS_RESULT"
@@ -280,6 +304,19 @@ run_pair_in_dirs() {
   run_capture "$par2rs_dir" "$PAR2RS_RESULT" "$PAR2RS_BIN_DIR/par2" "$@"
 }
 
+run_standalone_pair() {
+  local name="$1"
+  local turbo_tool="$2"
+  local par2rs_tool="$3"
+  shift 3
+  TURBO_RESULT="$WORK_DIR/turbo-$name"
+  PAR2RS_RESULT="$WORK_DIR/par2rs-$name"
+  if [[ "$HAS_TURBO" = 1 ]] && command -v "$turbo_tool" >/dev/null 2>&1; then
+    run_capture "$TURBO_CASE" "$TURBO_RESULT" "$turbo_tool" "$@"
+  fi
+  run_capture "$PAR2RS_CASE" "$PAR2RS_RESULT" "$PAR2RS_BIN_DIR/$par2rs_tool" "$@"
+}
+
 verify_created_pair() {
   local par2_file="$1"
   shift
@@ -348,6 +385,14 @@ case_create_alias() {
   make_source_pair create-alias
   run_pair create-alias c out.par2 source.txt
   assert_create_pair_success out.par2 out.par2
+}
+
+case_top_level_version_flags() {
+  pair_dirs version-flags
+  run_pair version-short -V
+  assert_pair_zero_status
+  run_pair version-long -VV
+  assert_pair_zero_status
 }
 
 case_create_standalone_wrapper() {
@@ -555,6 +600,30 @@ case_repair_corrupted_par2_file() {
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
 }
 
+case_verify_repair_aliases() {
+  copy_fixture_pair par2-verify-alias
+  run_pair par2-verify-alias v testfile.par2
+  assert_pair_same_status
+
+  copy_fixture_pair par2-repair-alias
+  corrupt_pair_file testfile
+  run_pair par2-repair-alias r testfile.par2
+  assert_pair_same_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+}
+
+case_standalone_verify_repair_wrappers() {
+  copy_fixture_pair par2verify-standalone
+  run_standalone_pair par2verify-standalone "$TURBO_PAR2VERIFY_CMD" par2verify testfile.par2
+  assert_pair_same_status
+
+  copy_fixture_pair par2repair-standalone
+  corrupt_pair_file testfile
+  run_standalone_pair par2repair-standalone "$TURBO_PAR2REPAIR_CMD" par2repair testfile.par2
+  assert_pair_same_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+}
+
 case_report_unrepairable_missing_par2_file() {
   copy_fixture_pair par2-unrepairable-missing
   rm "$TURBO_CASE/testfile" "$PAR2RS_CASE/testfile"
@@ -672,6 +741,24 @@ case_verify_repair_hyphen_extra() {
   assert_absent "$PAR2RS_CASE/-renamed.bin"
 }
 
+case_standalone_verify_repair_hyphen_extra() {
+  copy_fixture_pair par2verify-hyphen-extra
+  mv "$TURBO_CASE/testfile" "$TURBO_CASE/-renamed.bin"
+  mv "$PAR2RS_CASE/testfile" "$PAR2RS_CASE/-renamed.bin"
+  run_standalone_pair par2verify-hyphen-extra "$TURBO_PAR2VERIFY_CMD" par2verify testfile.par2 -- -renamed.bin
+  assert_pair_same_status
+  assert_file_exists "$PAR2RS_CASE/-renamed.bin"
+  assert_absent "$PAR2RS_CASE/testfile"
+
+  copy_fixture_pair par2repair-hyphen-extra
+  mv "$TURBO_CASE/testfile" "$TURBO_CASE/-renamed.bin"
+  mv "$PAR2RS_CASE/testfile" "$PAR2RS_CASE/-renamed.bin"
+  run_standalone_pair par2repair-hyphen-extra "$TURBO_PAR2REPAIR_CMD" par2repair testfile.par2 -- -renamed.bin
+  assert_pair_same_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+  assert_absent "$PAR2RS_CASE/-renamed.bin"
+}
+
 case_repair_renamed_par2_file() {
   copy_fixture_pair par2-repair-renamed
   mv "$TURBO_CASE/testfile" "$TURBO_CASE/wrong-name.bin"
@@ -687,6 +774,16 @@ case_repair_renamed_par2_file_rename_only() {
   mv "$TURBO_CASE/testfile" "$TURBO_CASE/wrong-name.bin"
   mv "$PAR2RS_CASE/testfile" "$PAR2RS_CASE/wrong-name.bin"
   run_pair par2-repair-renamed-O repair -O testfile.par2 wrong-name.bin
+  assert_pair_same_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+  assert_absent "$PAR2RS_CASE/wrong-name.bin"
+}
+
+case_standalone_repair_renamed_par2_file_rename_only() {
+  copy_fixture_pair par2repair-renamed-O
+  mv "$TURBO_CASE/testfile" "$TURBO_CASE/wrong-name.bin"
+  mv "$PAR2RS_CASE/testfile" "$PAR2RS_CASE/wrong-name.bin"
+  run_standalone_pair par2repair-renamed-O "$TURBO_PAR2REPAIR_CMD" par2repair -O testfile.par2 wrong-name.bin
   assert_pair_same_status
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
   assert_absent "$PAR2RS_CASE/wrong-name.bin"
@@ -748,6 +845,16 @@ case_verify_repair_invalid_options() {
   run_invalid_verify_repair_case n-create-only -n2
   run_invalid_verify_repair_case T-zero -T0
   run_invalid_verify_repair_case m-zero -m0
+}
+
+case_standalone_verify_repair_invalid_options() {
+  copy_fixture_pair par2verify-invalid-S
+  run_standalone_pair par2verify-invalid-S "$TURBO_PAR2VERIFY_CMD" par2verify -S64 testfile.par2
+  assert_pair_nonzero_status
+
+  copy_fixture_pair par2repair-invalid-S
+  run_standalone_pair par2repair-invalid-S "$TURBO_PAR2REPAIR_CMD" par2repair -S64 testfile.par2
+  assert_pair_nonzero_status
 }
 
 case_verify_intact_par1() {
@@ -865,6 +972,7 @@ case_reject_par1_create_self() {
 
 run_case "create basic PAR2" case_create_basic
 run_case "create PAR2 with c alias" case_create_alias
+run_case "top-level version flags" case_top_level_version_flags
 run_case "create PAR2 with standalone wrapper" case_create_standalone_wrapper
 run_case "create PAR2 with -a archive name" case_create_archive_name
 run_case "create PAR2 with -B basepath" case_create_basepath
@@ -888,6 +996,8 @@ run_case "reject create overwrite" case_reject_create_overwrite
 run_case "reject create volume overwrite" case_reject_create_volume_overwrite
 run_case "verify intact PAR2" case_verify_intact_par2
 run_case "repair corrupted PAR2 file" case_repair_corrupted_par2_file
+run_case "verify and repair PAR2 with v/r aliases" case_verify_repair_aliases
+run_case "verify and repair PAR2 with standalone wrappers" case_standalone_verify_repair_wrappers
 run_case "report unrepairable missing PAR2 file" case_report_unrepairable_missing_par2_file
 run_case "verify PAR2 by data file input" case_verify_by_data_file_input
 run_case "repair PAR2 by data file input" case_repair_by_data_file_input
@@ -901,13 +1011,16 @@ run_case "repair PAR2 with -T" case_repair_with_file_threads
 run_case "verify PAR2 with -m" case_verify_with_memory
 run_case "repair PAR2 with -m" case_repair_with_memory
 run_case "verify and repair PAR2 with -- hyphen extra" case_verify_repair_hyphen_extra
+run_case "standalone verify and repair PAR2 with -- hyphen extra" case_standalone_verify_repair_hyphen_extra
 run_case "repair renamed PAR2 file" case_repair_renamed_par2_file
 run_case "repair renamed PAR2 file with -O" case_repair_renamed_par2_file_rename_only
+run_case "standalone repair renamed PAR2 file with -O" case_standalone_repair_renamed_par2_file_rename_only
 run_case "verify renamed PAR2 file with -O" case_verify_renamed_par2_file_rename_only
 run_case "repair damaged renamed PAR2 file with -O" case_repair_damaged_renamed_par2_file_rename_only
 run_case "purge intact PAR2" case_par2_purge_after_intact_verify
 run_case "purge repaired PAR2" case_par2_purge_after_repair
 run_case "reject invalid PAR2 verify/repair options" case_verify_repair_invalid_options
+run_case "reject invalid standalone PAR2 verify/repair options" case_standalone_verify_repair_invalid_options
 run_case "verify intact PAR1" case_verify_intact_par1
 run_case "verify PAR1 from volume input" case_verify_par1_from_volume_input
 run_case "verify PAR1 uppercase main input" case_verify_par1_uppercase_main

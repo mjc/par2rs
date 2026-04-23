@@ -182,6 +182,7 @@ turbo binary.
 
 Current script coverage includes:
 
+- Top-level `par2 -V`/`-VV` acceptance.
 - PAR2 create through `create`, `c`, and `par2create`, including `-a`, `-B`,
   `-R`, `--` hyphen-prefixed input, `-b`, `-s`, `-r` percent and size targets,
   `-c`, `-f`, `-u`, `-l`, `-n`, `-T`, `-t`, and `-m`.
@@ -189,13 +190,15 @@ Current script coverage includes:
   conflicts, duplicate singleton options, invalid redundancy suffixes,
   recovery-file layout conflicts, verify/repair-only option rejection, and
   output index/volume overwrite refusal.
-- PAR2 verify/repair from PAR2 set input and protected data-file input,
-  including `-B`, `-N`, `-N -S`, `-T`, `-m`, `--` hyphen-prefixed extra files,
-  renamed-file repair, rename-only verify/repair, damaged rename-only failure,
-  unrepairable missing-file reporting, and purge after intact verify or
-  successful repair.
+- PAR2 verify/repair through full commands, `v`/`r` aliases, `par2verify`, and
+  `par2repair`, from PAR2 set input and protected data-file input, including
+  `-B`, `-N`, `-N -S`, `-T`, `-m`, `--` hyphen-prefixed extra files,
+  renamed-file repair, standalone rename-only repair, rename-only
+  verify/repair, damaged rename-only failure, unrepairable missing-file
+  reporting, and purge after intact verify or successful repair.
 - Invalid PAR2 verify/repair options, including `-S` without `-N`, invalid
-  `-S`, create-only option rejection, invalid `-T`, and invalid `-m`.
+  `-S`, standalone `-S` rejection, create-only option rejection, invalid `-T`,
+  and invalid `-m`.
 - PAR1 verify from main and volume input, uppercase `.PAR`/`.PNN` input,
   missing-file repair, repair from volume input, renamed-file repair from main
   and volume input, purge after verify and repair, failed repair with purge
