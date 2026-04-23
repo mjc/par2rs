@@ -1,6 +1,8 @@
 use clap::{Arg, ArgAction, Command};
 
 pub fn parse_args() -> clap::ArgMatches {
+    reject_detached_verify_repair_short_values();
+
     Command::new("par2verify")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Mika Cohen <mjc@kernel.org>")
@@ -96,6 +98,8 @@ pub fn parse_args() -> clap::ArgMatches {
 }
 
 pub fn parse_repair_args() -> clap::ArgMatches {
+    reject_detached_verify_repair_short_values();
+
     Command::new("par2repair")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Mika Cohen <mjc@kernel.org>")
@@ -193,4 +197,14 @@ pub fn parse_repair_args() -> clap::ArgMatches {
                 .value_name("N"),
         )
         .get_matches()
+}
+
+fn reject_detached_verify_repair_short_values() {
+    if let Err(message) = crate::cli::compat::reject_detached_short_values(
+        std::env::args_os().skip(1),
+        &["-a", "-S", "-T", "-m"],
+    ) {
+        eprintln!("{message}");
+        std::process::exit(2);
+    }
 }

@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
 use par2rs::cli::compat::{
     init_env_logger, parse_memory_mb, parse_noise_level, parse_positive_usize,
+    reject_detached_short_values,
 };
 use par2rs::create::cli::{
     parse_redundancy_option, resolve_create_inputs, validate_recovery_file_count,
@@ -19,6 +20,8 @@ fn main() -> Result<()> {
         par2rs::print_long_version();
         return Ok(());
     }
+
+    reject_detached_short_values_for_subcommand();
 
     let matches = Command::new("par2")
         .version(env!("CARGO_PKG_VERSION"))
@@ -366,6 +369,24 @@ fn main() -> Result<()> {
             eprintln!("\nUse 'par2 --help' for usage information");
             std::process::exit(1);
         }
+    }
+}
+
+fn reject_detached_short_values_for_subcommand() {
+    let args: Vec<_> = std::env::args_os().collect();
+    let Some(command) = args.get(1).and_then(|arg| arg.to_str()) else {
+        return;
+    };
+
+    let attached_only = match command {
+        "create" | "c" => &["-b", "-s", "-r", "-n", "-T", "-t", "-m"][..],
+        "verify" | "v" | "repair" | "r" => &["-a", "-S", "-T", "-m"][..],
+        _ => return,
+    };
+
+    if let Err(message) = reject_detached_short_values(args.into_iter().skip(2), attached_only) {
+        eprintln!("{message}");
+        std::process::exit(2);
     }
 }
 

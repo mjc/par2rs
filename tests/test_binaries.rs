@@ -2478,6 +2478,94 @@ fn test_verify_and_repair_accept_archive_name_as_noop() {
 }
 
 #[test]
+fn test_detached_short_option_values_match_turbo_rejections() {
+    for (binary, prefix_args, flag, value) in [
+        ("par2create", Vec::<&str>::new(), "-b", "8"),
+        ("par2create", Vec::<&str>::new(), "-s", "4"),
+        ("par2create", Vec::<&str>::new(), "-r", "10"),
+        ("par2create", Vec::<&str>::new(), "-n", "2"),
+        ("par2create", Vec::<&str>::new(), "-T", "1"),
+        ("par2create", Vec::<&str>::new(), "-t", "1"),
+        ("par2create", Vec::<&str>::new(), "-m", "1"),
+        ("par2", vec!["create"], "-b", "8"),
+        ("par2", vec!["create"], "-s", "4"),
+        ("par2", vec!["create"], "-r", "10"),
+        ("par2", vec!["create"], "-n", "2"),
+        ("par2", vec!["create"], "-T", "1"),
+        ("par2", vec!["create"], "-t", "1"),
+        ("par2", vec!["create"], "-m", "1"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let source = temp_dir.path().join("source.dat");
+        create_test_file(&source, b"detached value rejection").expect("Failed to create source");
+        let output_base = temp_dir.path().join("out.par2");
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(prefix_args);
+        let output = command
+            .arg(flag)
+            .arg(value)
+            .arg(&output_base)
+            .arg(&source)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted detached {flag} {value}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output_base.exists(), "{binary} created an output archive");
+    }
+
+    for (binary, prefix_args, extra_args, flag, value) in [
+        (
+            "par2verify",
+            Vec::<&str>::new(),
+            Vec::<&str>::new(),
+            "-a",
+            "ignored.par2",
+        ),
+        ("par2verify", Vec::new(), vec!["-N"], "-S", "64"),
+        ("par2verify", Vec::new(), Vec::new(), "-T", "1"),
+        ("par2verify", Vec::new(), Vec::new(), "-m", "1"),
+        ("par2repair", Vec::new(), Vec::new(), "-a", "ignored.par2"),
+        ("par2repair", Vec::new(), vec!["-N"], "-S", "64"),
+        ("par2repair", Vec::new(), Vec::new(), "-T", "1"),
+        ("par2repair", Vec::new(), Vec::new(), "-m", "1"),
+        ("par2", vec!["verify"], Vec::new(), "-a", "ignored.par2"),
+        ("par2", vec!["verify"], vec!["-N"], "-S", "64"),
+        ("par2", vec!["verify"], Vec::new(), "-T", "1"),
+        ("par2", vec!["verify"], Vec::new(), "-m", "1"),
+        ("par2", vec!["repair"], Vec::new(), "-a", "ignored.par2"),
+        ("par2", vec!["repair"], vec!["-N"], "-S", "64"),
+        ("par2", vec!["repair"], Vec::new(), "-T", "1"),
+        ("par2", vec!["repair"], Vec::new(), "-m", "1"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let (par2_file, _source) = create_purge_test_set(&temp_dir);
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(prefix_args);
+        command.args(extra_args);
+        let output = command
+            .arg(flag)
+            .arg(value)
+            .arg(&par2_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted detached {flag} {value}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn test_par2create_uses_single_existing_file_as_source() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let source = temp_dir.path().join("implicit.dat");

@@ -1,6 +1,7 @@
 //! Shared command-line compatibility parsing.
 
 use log::LevelFilter;
+use std::ffi::OsString;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoiseLevel {
@@ -95,6 +96,24 @@ pub fn parse_skip_options(
     })
 }
 
+pub fn reject_detached_short_values<I>(args: I, attached_only_flags: &[&str]) -> Result<(), String>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    for arg in args {
+        if arg == "--" {
+            break;
+        }
+        let arg = arg.to_string_lossy();
+        if attached_only_flags.iter().any(|flag| arg.as_ref() == *flag) {
+            return Err(format!(
+                "{arg} requires an attached value for par2cmdline compatibility"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn init_env_logger(noise_level: NoiseLevel) {
     let mut builder = env_logger::Builder::from_default_env();
     builder
@@ -154,5 +173,21 @@ mod tests {
             }
         );
         assert!(parse_skip_options(false, Some("10")).is_err());
+    }
+
+    #[test]
+    fn detached_short_value_rejection_stops_at_terminator() {
+        assert!(
+            reject_detached_short_values(["-b", "8"].into_iter().map(OsString::from), &["-b"])
+                .is_err()
+        );
+        assert!(
+            reject_detached_short_values(["-b8"].into_iter().map(OsString::from), &["-b"]).is_ok()
+        );
+        assert!(reject_detached_short_values(
+            ["--", "-b"].into_iter().map(OsString::from),
+            &["-b"]
+        )
+        .is_ok());
     }
 }

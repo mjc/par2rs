@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
 use par2rs::cli::compat::{
     init_env_logger, parse_memory_mb, parse_noise_level, parse_positive_usize,
+    reject_detached_short_values,
 };
 use par2rs::create::cli::{
     parse_redundancy_option, resolve_create_inputs, validate_recovery_file_count,
@@ -15,6 +16,14 @@ fn main() -> Result<()> {
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("-VV")) {
         par2rs::print_long_version();
         return Ok(());
+    }
+
+    if let Err(message) = reject_detached_short_values(
+        std::env::args_os().skip(1),
+        &["-b", "-s", "-r", "-n", "-T", "-t", "-m"],
+    ) {
+        eprintln!("{message}");
+        std::process::exit(2);
     }
 
     let matches = Command::new("par2create")
