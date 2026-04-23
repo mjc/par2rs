@@ -901,6 +901,16 @@ case_create_invalid_options() {
   run_invalid_create_case b-zero -b0
   run_invalid_create_case b-too-large -b32769
   run_invalid_create_case b-nonnumeric -babc
+  run_invalid_create_case B-equals -B=.
+  run_invalid_create_case b-equals -b=8
+  run_invalid_create_case s-equals -s=4
+  run_invalid_create_case r-equals -r=10
+  run_invalid_create_case c-equals -c=2
+  run_invalid_create_case f-equals -f=3 -c2
+  run_invalid_create_case n-equals -n=2
+  run_invalid_create_case T-equals -T=1
+  run_invalid_create_case t-equals -t=1
+  run_invalid_create_case m-equals -m=1
   run_invalid_create_case s-not-multiple -s5
   run_invalid_create_case r-and-c -r10 -c2
   run_invalid_create_case duplicate-r -r10 -r20
@@ -935,6 +945,16 @@ case_standalone_create_invalid_options() {
   run_invalid_standalone_create_case b-zero -b0
   run_invalid_standalone_create_case b-too-large -b32769
   run_invalid_standalone_create_case b-nonnumeric -babc
+  run_invalid_standalone_create_case B-equals -B=.
+  run_invalid_standalone_create_case b-equals -b=8
+  run_invalid_standalone_create_case s-equals -s=4
+  run_invalid_standalone_create_case r-equals -r=10
+  run_invalid_standalone_create_case c-equals -c=2
+  run_invalid_standalone_create_case f-equals -f=3 -c2
+  run_invalid_standalone_create_case n-equals -n=2
+  run_invalid_standalone_create_case T-equals -T=1
+  run_invalid_standalone_create_case t-equals -t=1
+  run_invalid_standalone_create_case m-equals -m=1
   run_invalid_standalone_create_case s-not-multiple -s5
   run_invalid_standalone_create_case r-and-c -r10 -c2
   run_invalid_standalone_create_case duplicate-r -r10 -r20
@@ -1513,6 +1533,10 @@ case_verify_repair_invalid_options() {
   run_invalid_verify_repair_case separated-S -N -S 64
   run_invalid_verify_repair_case separated-T -T 1
   run_invalid_verify_repair_case separated-m -m 1
+  run_invalid_verify_repair_case B-equals -B=.
+  run_invalid_verify_repair_case S-equals -N -S=64
+  run_invalid_verify_repair_case T-equals -T=1
+  run_invalid_verify_repair_case m-equals -m=1
 }
 
 case_standalone_verify_repair_invalid_options() {
@@ -1533,6 +1557,10 @@ case_standalone_verify_repair_invalid_options() {
   run_invalid_standalone_verify_repair_case separated-S -N -S 64
   run_invalid_standalone_verify_repair_case separated-T -T 1
   run_invalid_standalone_verify_repair_case separated-m -m 1
+  run_invalid_standalone_verify_repair_case B-equals -B=.
+  run_invalid_standalone_verify_repair_case S-equals -N -S=64
+  run_invalid_standalone_verify_repair_case T-equals -T=1
+  run_invalid_standalone_verify_repair_case m-equals -m=1
 }
 
 case_verify_intact_par1() {
