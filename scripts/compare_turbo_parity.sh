@@ -1607,6 +1607,38 @@ case_standalone_par1_verify_repair() {
   assert_hash_equal "$ROOT/tests/fixtures/par1/flatdata/test-3.data" "$PAR2RS_CASE/test-3.data"
 }
 
+case_standalone_par1_input_forms() {
+  copy_par1_fixture_pair par1-standalone-volume-verify
+  run_standalone_pair par1-standalone-volume-verify "$TURBO_PAR2VERIFY_CMD" par2verify testdata.p01
+  assert_pair_same_status
+
+  copy_par1_fixture_pair par1-standalone-uppercase-main
+  mv "$TURBO_CASE/testdata.par" "$TURBO_CASE/testdata.PAR"
+  mv "$PAR2RS_CASE/testdata.par" "$PAR2RS_CASE/testdata.PAR"
+  run_standalone_pair par1-standalone-uppercase-main "$TURBO_PAR2VERIFY_CMD" par2verify testdata.PAR
+  assert_pair_same_status
+
+  copy_par1_fixture_pair par1-standalone-uppercase-volume
+  mv "$TURBO_CASE/testdata.p01" "$TURBO_CASE/testdata.P01"
+  mv "$PAR2RS_CASE/testdata.p01" "$PAR2RS_CASE/testdata.P01"
+  run_standalone_pair par1-standalone-uppercase-volume "$TURBO_PAR2VERIFY_CMD" par2verify testdata.P01
+  assert_pair_same_status
+
+  copy_par1_fixture_pair par1-standalone-repair-volume
+  rm "$TURBO_CASE/test-3.data" "$PAR2RS_CASE/test-3.data"
+  run_standalone_pair par1-standalone-repair-volume "$TURBO_PAR2REPAIR_CMD" par2repair testdata.p01
+  assert_pair_same_status
+  assert_hash_equal "$ROOT/tests/fixtures/par1/flatdata/test-3.data" "$PAR2RS_CASE/test-3.data"
+
+  copy_par1_fixture_pair par1-standalone-repair-renamed-volume
+  mv "$TURBO_CASE/test-4.data" "$TURBO_CASE/wrong-name.data"
+  mv "$PAR2RS_CASE/test-4.data" "$PAR2RS_CASE/wrong-name.data"
+  run_standalone_pair par1-standalone-repair-renamed-volume "$TURBO_PAR2REPAIR_CMD" par2repair testdata.p01 wrong-name.data
+  assert_pair_same_status
+  assert_hash_equal "$ROOT/tests/fixtures/par1/flatdata/test-4.data" "$PAR2RS_CASE/test-4.data"
+  assert_absent "$PAR2RS_CASE/wrong-name.data"
+}
+
 case_standalone_par1_repair_renamed() {
   copy_par1_fixture_pair par1-standalone-repair-renamed
   mv "$TURBO_CASE/test-4.data" "$TURBO_CASE/wrong-name.data"
@@ -1615,6 +1647,34 @@ case_standalone_par1_repair_renamed() {
   assert_pair_same_status
   assert_hash_equal "$ROOT/tests/fixtures/par1/flatdata/test-4.data" "$PAR2RS_CASE/test-4.data"
   assert_absent "$PAR2RS_CASE/wrong-name.data"
+}
+
+case_standalone_par1_purge() {
+  copy_par1_fixture_pair par1-standalone-purge-intact
+  run_standalone_pair par1-standalone-purge-intact "$TURBO_PAR2VERIFY_CMD" par2verify -p testdata.par
+  assert_pair_same_status
+  assert_no_par1_recovery_files "$PAR2RS_CASE"
+  assert_file_exists "$PAR2RS_CASE/test-0.data"
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_no_par1_recovery_files "$TURBO_CASE"
+    assert_file_exists "$TURBO_CASE/test-0.data"
+  fi
+
+  copy_par1_fixture_pair par1-standalone-purge-repair
+  rm "$TURBO_CASE/test-3.data" "$PAR2RS_CASE/test-3.data"
+  run_standalone_pair par1-standalone-purge-repair "$TURBO_PAR2REPAIR_CMD" par2repair -p testdata.par
+  assert_pair_same_status
+  assert_hash_equal "$ROOT/tests/fixtures/par1/flatdata/test-3.data" "$PAR2RS_CASE/test-3.data"
+  assert_no_par1_recovery_files "$PAR2RS_CASE"
+
+  copy_par1_fixture_pair par1-standalone-purge-failed
+  rm "$TURBO_CASE/test-0.data" "$TURBO_CASE/test-1.data" "$TURBO_CASE/test-2.data" "$TURBO_CASE/test-3.data"
+  rm "$PAR2RS_CASE/test-0.data" "$PAR2RS_CASE/test-1.data" "$PAR2RS_CASE/test-2.data" "$PAR2RS_CASE/test-3.data"
+  run_standalone_pair par1-standalone-purge-failed "$TURBO_PAR2REPAIR_CMD" par2repair -p testdata.par
+  assert_pair_nonzero_status
+  assert_file_exists "$PAR2RS_CASE/testdata.par"
+  assert_file_exists "$PAR2RS_CASE/testdata.p01"
+  assert_file_exists "$PAR2RS_CASE/testdata.p02"
 }
 
 case_standalone_par1_rename_only_acceptance() {
@@ -1729,7 +1789,9 @@ run_case "purge repaired PAR1" case_purge_after_par1_repair
 run_case "failed PAR1 repair with purge keeps recovery files" case_failed_par1_repair_with_purge_keeps_recovery
 run_case "PAR1 accepts -O" case_par1_rename_only_acceptance
 run_case "standalone PAR1 verify and repair" case_standalone_par1_verify_repair
+run_case "standalone PAR1 input forms" case_standalone_par1_input_forms
 run_case "standalone PAR1 repair renamed file" case_standalone_par1_repair_renamed
+run_case "standalone PAR1 purge" case_standalone_par1_purge
 run_case "standalone PAR1 accepts -O" case_standalone_par1_rename_only_acceptance
 run_case "reject PAR1 create" case_reject_par1_create_self
 
