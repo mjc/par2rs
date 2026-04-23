@@ -199,6 +199,8 @@ Current script coverage includes:
   renamed-file repair, standalone rename-only repair, rename-only
   verify/repair, damaged rename-only failure, unrepairable missing-file
   reporting, and purge after intact verify or successful repair.
+- PAR2 purge effects after repair-by-rename, repair-by-rename with a corrupted
+  target backup, and failed repair where recovery files must remain.
 - Invalid PAR2 verify/repair options, including `-S` without `-N`, invalid
   `-S`, standalone `-S` rejection, create-only option rejection, invalid `-T`,
   and invalid `-m`.

@@ -897,6 +897,56 @@ case_par2_purge_after_repair() {
   assert_no_par2_recovery_files "$PAR2RS_CASE" testfile
 }
 
+case_par2_purge_after_rename_repair() {
+  copy_fixture_pair par2-purge-rename-repair
+  mv "$TURBO_CASE/testfile" "$TURBO_CASE/wrong-name.bin"
+  mv "$PAR2RS_CASE/testfile" "$PAR2RS_CASE/wrong-name.bin"
+  run_pair par2-purge-rename-repair repair -p testfile.par2 wrong-name.bin
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+  assert_absent "$PAR2RS_CASE/wrong-name.bin"
+  assert_no_par2_recovery_files "$PAR2RS_CASE" testfile
+  if [[ "$HAS_TURBO" = 1 ]]; then
+    assert_hash_equal "$ROOT/tests/fixtures/testfile" "$TURBO_CASE/testfile"
+    assert_absent "$TURBO_CASE/wrong-name.bin"
+    assert_no_par2_recovery_files "$TURBO_CASE" testfile
+  fi
+}
+
+case_par2_purge_after_rename_backup_repair() {
+  copy_fixture_pair par2-purge-rename-backup-repair
+  cp "$TURBO_CASE/testfile" "$TURBO_CASE/wrong-name.bin"
+  cp "$PAR2RS_CASE/testfile" "$PAR2RS_CASE/wrong-name.bin"
+  corrupt_pair_file testfile
+  run_pair par2-purge-rename-backup-repair repair -p testfile.par2 wrong-name.bin
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
+  assert_absent "$PAR2RS_CASE/wrong-name.bin"
+  assert_absent "$PAR2RS_CASE/testfile.1"
+  assert_no_par2_recovery_files "$PAR2RS_CASE" testfile
+  if [[ "$HAS_TURBO" = 1 ]]; then
+    assert_hash_equal "$ROOT/tests/fixtures/testfile" "$TURBO_CASE/testfile"
+    assert_absent "$TURBO_CASE/wrong-name.bin"
+    assert_absent "$TURBO_CASE/testfile.1"
+    assert_no_par2_recovery_files "$TURBO_CASE" testfile
+  fi
+}
+
+case_failed_par2_repair_with_purge_keeps_recovery() {
+  copy_fixture_pair par2-purge-failed
+  rm "$TURBO_CASE/testfile" "$PAR2RS_CASE/testfile"
+  run_pair par2-purge-failed repair -p testfile.par2
+  assert_pair_nonzero_status
+  assert_file_exists "$PAR2RS_CASE/testfile.par2"
+  assert_glob_present "$PAR2RS_CASE/testfile.vol*.par2"
+  if [[ "$HAS_TURBO" = 1 ]]; then
+    assert_file_exists "$TURBO_CASE/testfile.par2"
+    assert_glob_present "$TURBO_CASE/testfile.vol*.par2"
+  fi
+}
+
 case_verify_repair_invalid_options() {
   run_invalid_verify_repair_case S-without-N -S64
   run_invalid_verify_repair_case S-zero -N -S0
@@ -1089,6 +1139,9 @@ run_case "verify renamed PAR2 file with -O" case_verify_renamed_par2_file_rename
 run_case "repair damaged renamed PAR2 file with -O" case_repair_damaged_renamed_par2_file_rename_only
 run_case "purge intact PAR2" case_par2_purge_after_intact_verify
 run_case "purge repaired PAR2" case_par2_purge_after_repair
+run_case "purge PAR2 after repair by rename" case_par2_purge_after_rename_repair
+run_case "purge PAR2 after repair by rename with backup" case_par2_purge_after_rename_backup_repair
+run_case "failed PAR2 repair with purge keeps recovery files" case_failed_par2_repair_with_purge_keeps_recovery
 run_case "reject invalid PAR2 verify/repair options" case_verify_repair_invalid_options
 run_case "reject invalid standalone PAR2 verify/repair options" case_standalone_verify_repair_invalid_options
 run_case "verify intact PAR1" case_verify_intact_par1
