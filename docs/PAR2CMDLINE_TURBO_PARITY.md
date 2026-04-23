@@ -190,8 +190,8 @@ Current script coverage includes:
   `-c`, `-f`, `-u`, `-l`, `-n`, `-T`, `-t`, and `-m`.
 - Exact generated recovery filename layouts for `-u`, `-l`, `-n`, `-f`, and
   `-c0`, with representative standalone `par2create` layout checks.
-- Standalone `par2create` filesystem effects for basic create, `-a`, `-B`, and
-  `--` hyphen-prefixed source names.
+- Standalone `par2create` filesystem effects for the valid create option
+  matrix, including recursive input and index-only `-c0` creation.
 - Invalid PAR2 create combinations and ranges, including block count/size
   conflicts, duplicate singleton options, invalid redundancy suffixes,
   recovery-file layout conflicts, verify/repair-only option rejection, and

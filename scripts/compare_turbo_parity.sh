@@ -389,6 +389,21 @@ run_invalid_standalone_create_case() {
   assert_no_par2_recovery_files "$PAR2RS_CASE" out
 }
 
+run_standalone_create_case() {
+  local label="$1"
+  shift
+  make_source_pair "par2create-$label"
+  run_standalone_pair "par2create-$label" "$TURBO_PAR2CREATE_CMD" par2create "$@" out.par2 source.txt
+  assert_pair_same_status
+  assert_pair_zero_status
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_par2_set_created "$TURBO_CASE" out.par2
+    assert_verify_success_for_created_set "$TURBO_PAR2_CMD" "$TURBO_CASE" out.par2
+  fi
+  assert_par2_set_created "$PAR2RS_CASE" out.par2
+  assert_verify_success_for_created_set "$PAR2RS_BIN_DIR/par2" "$PAR2RS_CASE" out.par2
+}
+
 run_invalid_verify_repair_case() {
   local label="$1"
   shift
@@ -590,6 +605,47 @@ case_standalone_create_terminator_hyphen_file() {
   assert_verify_success_for_created_set "$PAR2RS_BIN_DIR/par2" "$PAR2RS_CASE" out.par2
 }
 
+case_standalone_create_recursive() {
+  make_tree_pair par2create-recursive
+  run_standalone_pair par2create-recursive "$TURBO_PAR2CREATE_CMD" par2create -R -Btree out.par2 tree
+  assert_pair_same_status
+  assert_pair_zero_status
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_par2_set_created "$TURBO_CASE" out.par2
+    assert_verify_success_for_created_set "$TURBO_PAR2_CMD" "$TURBO_CASE" out.par2 -Btree
+    rm "$TURBO_CASE/tree/nested/child.txt"
+    run_capture "$TURBO_CASE" "$WORK_DIR/turbo-par2create-recursive-missing" "$TURBO_PAR2_CMD" verify -Btree out.par2
+    assert_nonzero_status "$WORK_DIR/turbo-par2create-recursive-missing"
+  fi
+  assert_par2_set_created "$PAR2RS_CASE" out.par2
+  assert_verify_success_for_created_set "$PAR2RS_BIN_DIR/par2" "$PAR2RS_CASE" out.par2 -Btree
+  rm "$PAR2RS_CASE/tree/nested/child.txt"
+  run_capture "$PAR2RS_CASE" "$WORK_DIR/par2rs-par2create-recursive-missing" "$PAR2RS_BIN_DIR/par2" verify -Btree out.par2
+  assert_nonzero_status "$WORK_DIR/par2rs-par2create-recursive-missing"
+}
+
+case_standalone_create_option_matrix() {
+  run_standalone_create_case block-count -b8
+  run_standalone_create_case block-size -s4
+  run_standalone_create_case redundancy-percent -r10
+  run_standalone_create_case redundancy-target-k -rk1
+  run_standalone_create_case redundancy-target-m -rm1
+  run_standalone_create_case recovery-block-count -c2
+  run_standalone_create_case limited -l -c3
+  run_standalone_create_case file-threads -T1
+  run_standalone_create_case threads -t1
+  run_standalone_create_case memory -m1
+
+  make_source_pair par2create-zero-recovery-blocks
+  run_standalone_pair par2create-zero-recovery-blocks "$TURBO_PAR2CREATE_CMD" par2create -c0 out.par2 source.txt
+  assert_pair_same_status
+  assert_pair_zero_status
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_par2_file_list_equals "$TURBO_CASE" out.par2
+  fi
+  assert_par2_file_list_equals "$PAR2RS_CASE" out.par2
+}
+
 case_create_archive_name() {
   make_source_pair create-archive-name
   run_pair create-archive-name create -amain.par2 out.par2 source.txt
@@ -719,6 +775,12 @@ case_standalone_create_layout_shapes() {
   assert_pair_same_status
   assert_pair_zero_status
   assert_pair_par2_file_list_equals out.par2 out.vol0+2.par2 out.vol2+1.par2
+
+  make_source_pair par2create-layout-limited
+  run_standalone_pair par2create-layout-limited "$TURBO_PAR2CREATE_CMD" par2create -l -c3 out.par2 source.txt
+  assert_pair_same_status
+  assert_pair_zero_status
+  assert_pair_par2_file_list_equals out.par2 out.vol0+1.par2 out.vol1+2.par2
 
   make_source_pair par2create-layout-file-count
   run_standalone_pair par2create-layout-file-count "$TURBO_PAR2CREATE_CMD" par2create -n2 -c3 out.par2 source.txt
@@ -1389,6 +1451,8 @@ run_case "create PAR2 with standalone wrapper" case_create_standalone_wrapper
 run_case "standalone create PAR2 with -a archive name" case_standalone_create_archive_name
 run_case "standalone create PAR2 with -B basepath" case_standalone_create_basepath
 run_case "standalone create PAR2 with -- hyphen filename" case_standalone_create_terminator_hyphen_file
+run_case "standalone create PAR2 recursively" case_standalone_create_recursive
+run_case "standalone create PAR2 valid option matrix" case_standalone_create_option_matrix
 run_case "create PAR2 with -a archive name" case_create_archive_name
 run_case "create PAR2 with -B basepath" case_create_basepath
 run_case "create PAR2 recursively" case_create_recursive
