@@ -916,6 +916,13 @@ case_create_invalid_options() {
   run_invalid_create_case duplicate-m -m1 -m2
   run_invalid_create_case m-zero -m0
   run_invalid_create_case T-zero -T0
+  run_invalid_create_case separated-b -b 8
+  run_invalid_create_case separated-s -s 4
+  run_invalid_create_case separated-r -r 10
+  run_invalid_create_case separated-n -n 2
+  run_invalid_create_case separated-T -T 1
+  run_invalid_create_case separated-t -t 1
+  run_invalid_create_case separated-m -m 1
   run_invalid_create_case create-purge -p
   run_invalid_create_case create-rename-only -O
   run_invalid_create_case create-data-skipping -N
@@ -943,6 +950,13 @@ case_standalone_create_invalid_options() {
   run_invalid_standalone_create_case duplicate-m -m1 -m2
   run_invalid_standalone_create_case m-zero -m0
   run_invalid_standalone_create_case T-zero -T0
+  run_invalid_standalone_create_case separated-b -b 8
+  run_invalid_standalone_create_case separated-s -s 4
+  run_invalid_standalone_create_case separated-r -r 10
+  run_invalid_standalone_create_case separated-n -n 2
+  run_invalid_standalone_create_case separated-T -T 1
+  run_invalid_standalone_create_case separated-t -t 1
+  run_invalid_standalone_create_case separated-m -m 1
   run_invalid_standalone_create_case create-purge -p
   run_invalid_standalone_create_case create-rename-only -O
   run_invalid_standalone_create_case create-data-skipping -N
@@ -1495,6 +1509,10 @@ case_verify_repair_invalid_options() {
   run_invalid_verify_repair_case n-create-only -n2
   run_invalid_verify_repair_case T-zero -T0
   run_invalid_verify_repair_case m-zero -m0
+  run_invalid_verify_repair_case separated-a -a ignored.par2
+  run_invalid_verify_repair_case separated-S -N -S 64
+  run_invalid_verify_repair_case separated-T -T 1
+  run_invalid_verify_repair_case separated-m -m 1
 }
 
 case_standalone_verify_repair_invalid_options() {
@@ -1511,6 +1529,10 @@ case_standalone_verify_repair_invalid_options() {
   run_invalid_standalone_verify_repair_case n-create-only -n2
   run_invalid_standalone_verify_repair_case T-zero -T0
   run_invalid_standalone_verify_repair_case m-zero -m0
+  run_invalid_standalone_verify_repair_case separated-a -a ignored.par2
+  run_invalid_standalone_verify_repair_case separated-S -N -S 64
+  run_invalid_standalone_verify_repair_case separated-T -T 1
+  run_invalid_standalone_verify_repair_case separated-m -m 1
 }
 
 case_verify_intact_par1() {
