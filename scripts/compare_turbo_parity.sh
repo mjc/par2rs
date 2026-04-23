@@ -568,6 +568,28 @@ case_top_level_version_flags() {
   assert_pair_zero_status
   run_pair version-long -VV
   assert_pair_zero_status
+  run_pair version-long-option --version
+  assert_pair_zero_status
+}
+
+case_standalone_version_flags() {
+  pair_dirs standalone-version-flags
+  for flag in -V -VV --version; do
+    run_standalone_pair "par2create-version-$flag" "$TURBO_PAR2CREATE_CMD" par2create "$flag"
+    assert_pair_zero_status
+    run_standalone_pair "par2verify-version-$flag" "$TURBO_PAR2VERIFY_CMD" par2verify "$flag"
+    assert_pair_zero_status
+    run_standalone_pair "par2repair-version-$flag" "$TURBO_PAR2REPAIR_CMD" par2repair "$flag"
+    assert_pair_zero_status
+  done
+}
+
+case_reject_uppercase_command_words() {
+  pair_dirs uppercase-command-words
+  for command in C V R CREATE VERIFY REPAIR; do
+    run_pair "uppercase-command-$command" "$command"
+    assert_pair_nonzero_status
+  done
 }
 
 case_create_standalone_wrapper() {
@@ -1699,6 +1721,8 @@ case_reject_par1_create_self() {
 run_case "create basic PAR2" case_create_basic
 run_case "create PAR2 with c alias" case_create_alias
 run_case "top-level version flags" case_top_level_version_flags
+run_case "standalone version flags" case_standalone_version_flags
+run_case "reject uppercase command words" case_reject_uppercase_command_words
 run_case "create PAR2 with standalone wrapper" case_create_standalone_wrapper
 run_case "standalone create PAR2 with -a archive name" case_standalone_create_archive_name
 run_case "standalone create PAR2 with -B basepath" case_standalone_create_basepath
