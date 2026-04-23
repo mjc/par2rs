@@ -691,10 +691,10 @@ fn test_par2_verify_scans_extra_file_arguments() {
         .expect("Failed to execute par2 verify");
 
     assert!(
-        output.status.success(),
-        "verify with extra file failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "verify with renamed extra should report repair required"
     );
+    assert!(renamed.exists(), "verify must remain non-mutating");
 }
 
 #[test]
@@ -1546,10 +1546,10 @@ fn test_par2verify_scans_extra_file_arguments() {
         .expect("Failed to execute par2verify");
 
     assert!(
-        output.status.success(),
-        "par2verify with extra file failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "par2verify with renamed extra should report repair required"
     );
+    assert!(renamed.exists(), "par2verify must remain non-mutating");
 }
 
 #[test]

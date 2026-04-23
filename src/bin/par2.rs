@@ -687,7 +687,7 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         reporter.report_verification_results(&results);
     }
 
-    if verify_config.rename_only && results.renamed_file_count > 0 {
+    if results.renamed_file_count > 0 {
         anyhow::bail!(
             "Repair required: {} files are renamed",
             results.renamed_file_count

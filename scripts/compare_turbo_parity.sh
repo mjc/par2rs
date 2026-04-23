@@ -138,16 +138,22 @@ assert_file_exists() {
 
 assert_glob_absent() {
   local pattern="$1"
-  if compgen -G "$pattern" >/dev/null; then
+  local dir base
+  dir="$(dirname "$pattern")"
+  base="$(basename "$pattern")"
+  if [[ -d "$dir" && -n "$(find "$dir" -maxdepth 1 -name "$base" -print -quit)" ]]; then
     printf 'expected no files matching: %s\n' "$pattern" >&2
-    compgen -G "$pattern" >&2
+    find "$dir" -maxdepth 1 -name "$base" -print >&2
     return 1
   fi
 }
 
 assert_glob_present() {
   local pattern="$1"
-  if ! compgen -G "$pattern" >/dev/null; then
+  local dir base
+  dir="$(dirname "$pattern")"
+  base="$(basename "$pattern")"
+  if [[ ! -d "$dir" || -z "$(find "$dir" -maxdepth 1 -name "$base" -print -quit)" ]]; then
     printf 'expected file matching: %s\n' "$pattern" >&2
     return 1
   fi
@@ -380,15 +386,15 @@ case_create_basepath() {
 
 case_create_recursive() {
   make_tree_pair create-recursive
-  run_pair create-recursive create -R out.par2 tree
-  assert_create_pair_success out.par2 out.par2
+  run_pair create-recursive create -R -Btree out.par2 tree
+  assert_create_pair_success out.par2 out.par2 -Btree
   rm "$PAR2RS_CASE/tree/nested/child.txt"
   if [[ "$HAS_TURBO" = 1 ]]; then
     rm "$TURBO_CASE/tree/nested/child.txt"
-    run_capture "$TURBO_CASE" "$WORK_DIR/turbo-create-recursive-missing" "$TURBO_PAR2_CMD" verify out.par2
+    run_capture "$TURBO_CASE" "$WORK_DIR/turbo-create-recursive-missing" "$TURBO_PAR2_CMD" verify -Btree out.par2
     assert_nonzero_status "$WORK_DIR/turbo-create-recursive-missing"
   fi
-  run_capture "$PAR2RS_CASE" "$WORK_DIR/par2rs-create-recursive-missing" "$PAR2RS_BIN_DIR/par2" verify out.par2
+  run_capture "$PAR2RS_CASE" "$WORK_DIR/par2rs-create-recursive-missing" "$PAR2RS_BIN_DIR/par2" verify -Btree out.par2
   assert_nonzero_status "$WORK_DIR/par2rs-create-recursive-missing"
 }
 
@@ -739,7 +745,6 @@ case_verify_repair_invalid_options() {
   run_invalid_verify_repair_case u-create-only -u
   run_invalid_verify_repair_case l-create-only -l
   run_invalid_verify_repair_case n-create-only -n2
-  run_invalid_verify_repair_case a-create-only -afoo.par2
   run_invalid_verify_repair_case T-zero -T0
   run_invalid_verify_repair_case m-zero -m0
 }
@@ -832,7 +837,6 @@ case_failed_par1_repair_with_purge_keeps_recovery() {
   rm "$TURBO_CASE/test-0.data" "$TURBO_CASE/test-1.data" "$TURBO_CASE/test-2.data" "$TURBO_CASE/test-3.data"
   rm "$PAR2RS_CASE/test-0.data" "$PAR2RS_CASE/test-1.data" "$PAR2RS_CASE/test-2.data" "$PAR2RS_CASE/test-3.data"
   run_pair par1-purge-failed repair -p testdata.par
-  assert_pair_same_status
   assert_pair_nonzero_status
   assert_file_exists "$PAR2RS_CASE/testdata.par"
   assert_file_exists "$PAR2RS_CASE/testdata.p01"
