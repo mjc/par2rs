@@ -882,6 +882,19 @@ case_standalone_noise_options_valid() {
   run_standalone_noise_case vv -vv
 }
 
+case_mixed_noise_bundles_valid() {
+  run_noise_create_case qv -qv
+  run_noise_create_case vq -vq
+
+  run_noise_verify_repair_case qv -qv
+  run_noise_verify_repair_case vq -vq
+}
+
+case_standalone_mixed_noise_bundles_valid() {
+  run_standalone_noise_case qv -qv
+  run_standalone_noise_case vq -vq
+}
+
 case_mixed_noise_rejected() {
   run_invalid_mixed_noise_create_case v-q -v -q
   run_invalid_mixed_noise_create_case vv-qq -vv -qq
@@ -1800,6 +1813,8 @@ run_case "create PAR2 with -t" case_create_threads
 run_case "create PAR2 with -m" case_create_memory
 run_case "valid noise options" case_noise_options_valid
 run_case "valid standalone noise options" case_standalone_noise_options_valid
+run_case "valid bundled mixed noise options" case_mixed_noise_bundles_valid
+run_case "valid bundled mixed standalone noise options" case_standalone_mixed_noise_bundles_valid
 run_case "reject mixed noise options" case_mixed_noise_rejected
 run_case "reject mixed standalone noise options" case_standalone_mixed_noise_rejected
 run_case "reject invalid PAR2 create options" case_create_invalid_options
