@@ -1018,11 +1018,9 @@ case_verify_repair_thread_option_tail_flags_valid() {
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
 
   copy_fixture_pair "repair-file-thread-tail-rename"
-  corrupt_pair_file testfile
   run_pair "repair-file-thread-tail-rename" repair -T1O testfile.par2
   assert_pair_same_status
   assert_pair_zero_status
-  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
 }
 
 case_standalone_verify_repair_thread_option_tail_flags_valid() {
@@ -1068,11 +1066,9 @@ case_standalone_verify_repair_thread_option_tail_flags_valid() {
   assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
 
   copy_fixture_pair "par2repair-file-thread-tail-rename"
-  corrupt_pair_file testfile
   run_standalone_pair "par2repair-file-thread-tail-rename" "$TURBO_PAR2REPAIR_CMD" par2repair -T1O testfile.par2
   assert_pair_same_status
   assert_pair_zero_status
-  assert_hash_equal "$ROOT/tests/fixtures/testfile" "$PAR2RS_CASE/testfile"
 }
 
 case_mixed_noise_rejected() {

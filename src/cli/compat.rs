@@ -178,14 +178,17 @@ fn split_thread_option_noise_cluster(arg: &OsString) -> Option<(OsString, OsStri
         return None;
     }
 
-    let (value, noise_cluster) = remainder.split_at(digit_count);
-    if !noise_cluster.chars().all(|ch| ch == 'q' || ch == 'v') {
+    let (value, tail_cluster) = remainder.split_at(digit_count);
+    if !tail_cluster
+        .chars()
+        .all(|ch| matches!(ch, 'q' | 'v' | 'p' | 'O' | 'N'))
+    {
         return None;
     }
 
     Some((
         OsString::from(format!("-{option}{value}")),
-        OsString::from(format!("-{noise_cluster}")),
+        OsString::from(format!("-{tail_cluster}")),
     ))
 }
 
@@ -304,9 +307,9 @@ mod tests {
     }
 
     #[test]
-    fn thread_option_clusters_split_trailing_noise() {
+    fn thread_option_clusters_split_trailing_flags() {
         let normalized = normalize_mixed_noise_option_clusters(
-            ["par2", "verify", "-T12qv", "-t1qq", "testfile.par2"]
+            ["par2", "verify", "-T12qv", "-t1Np", "testfile.par2"]
                 .into_iter()
                 .map(OsString::from),
         );
@@ -322,7 +325,7 @@ mod tests {
                 "-T12",
                 "-q",
                 "-t1",
-                "-qq",
+                "-Np",
                 "testfile.par2"
             ]
         );

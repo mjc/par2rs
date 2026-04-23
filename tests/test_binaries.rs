@@ -2459,6 +2459,61 @@ fn test_binaries_accept_thread_option_clusters_with_trailing_noise() {
 }
 
 #[test]
+fn test_binaries_accept_verify_repair_thread_option_clusters_with_trailing_flags() {
+    let fixture_dir = Path::new("tests/fixtures");
+    if !fixture_dir.join("testfile.par2").exists() {
+        eprintln!("Skipping verify/repair trailing thread flag test - fixture not found");
+        return;
+    }
+
+    for (binary, prefix_args, thread_flag) in [
+        ("par2verify", Vec::<&str>::new(), "-t1p"),
+        ("par2verify", Vec::<&str>::new(), "-T1p"),
+        ("par2verify", Vec::<&str>::new(), "-t1N"),
+        ("par2verify", Vec::<&str>::new(), "-T1O"),
+        ("par2repair", Vec::<&str>::new(), "-t1p"),
+        ("par2repair", Vec::<&str>::new(), "-T1p"),
+        ("par2repair", Vec::<&str>::new(), "-t1N"),
+        ("par2repair", Vec::<&str>::new(), "-T1O"),
+        ("par2", vec!["verify"], "-t1p"),
+        ("par2", vec!["verify"], "-T1p"),
+        ("par2", vec!["verify"], "-t1N"),
+        ("par2", vec!["verify"], "-T1O"),
+        ("par2", vec!["repair"], "-t1p"),
+        ("par2", vec!["repair"], "-T1p"),
+        ("par2", vec!["repair"], "-t1N"),
+        ("par2", vec!["repair"], "-T1O"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        for name in [
+            "testfile",
+            "testfile.par2",
+            "testfile.vol00+01.par2",
+            "testfile.vol01+02.par2",
+        ] {
+            fs::copy(fixture_dir.join(name), temp_dir.path().join(name))
+                .unwrap_or_else(|_| panic!("Failed to copy fixture {name}"));
+        }
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(&prefix_args);
+        let output = command
+            .current_dir(temp_dir.path())
+            .arg(thread_flag)
+            .arg("testfile.par2")
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            output.status.success(),
+            "{binary} rejected bundled {thread_flag}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn test_create_commands_accept_long_resource_flags() {
     for (binary, command) in [("par2create", None), ("par2", Some("create"))] {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
