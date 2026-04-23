@@ -2514,6 +2514,44 @@ fn test_binaries_accept_verify_repair_thread_option_clusters_with_trailing_flags
 }
 
 #[test]
+fn test_binaries_accept_create_thread_option_clusters_with_trailing_flags() {
+    for (binary, prefix_args, thread_flag, extra_args) in [
+        ("par2create", Vec::<&str>::new(), "-t1u", Vec::<&str>::new()),
+        ("par2create", Vec::<&str>::new(), "-T1u", Vec::<&str>::new()),
+        ("par2create", Vec::<&str>::new(), "-t1l", vec!["-c3"]),
+        ("par2create", Vec::<&str>::new(), "-T1l", vec!["-c3"]),
+        ("par2", vec!["create"], "-t1u", Vec::<&str>::new()),
+        ("par2", vec!["create"], "-T1u", Vec::<&str>::new()),
+        ("par2", vec!["create"], "-t1l", vec!["-c3"]),
+        ("par2", vec!["create"], "-T1l", vec!["-c3"]),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let source = temp_dir.path().join("source.dat");
+        create_test_file(&source, b"thread option tail flags")
+            .expect("Failed to create source file");
+        let output_base = temp_dir.path().join(format!("{binary}-{thread_flag}.par2"));
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(&prefix_args);
+        let output = command
+            .current_dir(temp_dir.path())
+            .arg(thread_flag)
+            .args(&extra_args)
+            .arg(&output_base)
+            .arg("source.dat")
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            output.status.success(),
+            "{binary} rejected bundled {thread_flag}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn test_create_commands_accept_long_resource_flags() {
     for (binary, command) in [("par2create", None), ("par2", Some("create"))] {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");

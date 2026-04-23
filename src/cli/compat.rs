@@ -181,7 +181,7 @@ fn split_thread_option_noise_cluster(arg: &OsString) -> Option<(OsString, OsStri
     let (value, tail_cluster) = remainder.split_at(digit_count);
     if !tail_cluster
         .chars()
-        .all(|ch| matches!(ch, 'q' | 'v' | 'p' | 'O' | 'N'))
+        .all(|ch| matches!(ch, 'q' | 'v' | 'p' | 'O' | 'N' | 'u' | 'l'))
     {
         return None;
     }
