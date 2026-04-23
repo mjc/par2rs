@@ -389,6 +389,30 @@ run_invalid_standalone_create_case() {
   assert_no_par2_recovery_files "$PAR2RS_CASE" out
 }
 
+run_invalid_tree_create_case() {
+  local label="$1"
+  shift
+  make_tree_pair "create-invalid-tree-$label"
+  run_pair "create-invalid-tree-$label" create "$@" out.par2 tree
+  assert_pair_nonzero_status
+  if [[ "$HAS_TURBO" = 1 ]]; then
+    assert_no_par2_recovery_files "$TURBO_CASE" out
+  fi
+  assert_no_par2_recovery_files "$PAR2RS_CASE" out
+}
+
+run_invalid_standalone_tree_create_case() {
+  local label="$1"
+  shift
+  make_tree_pair "par2create-invalid-tree-$label"
+  run_standalone_pair "par2create-invalid-tree-$label" "$TURBO_PAR2CREATE_CMD" par2create "$@" out.par2 tree
+  assert_pair_nonzero_status
+  if [[ "$HAS_TURBO" = 1 && -e "$TURBO_RESULT.status" ]]; then
+    assert_no_par2_recovery_files "$TURBO_CASE" out
+  fi
+  assert_no_par2_recovery_files "$PAR2RS_CASE" out
+}
+
 run_standalone_create_case() {
   local label="$1"
   shift
@@ -1151,6 +1175,7 @@ case_create_invalid_options() {
   run_invalid_create_case b-too-large -b32769
   run_invalid_create_case b-nonnumeric -babc
   run_invalid_create_case B-equals -B=.
+  run_invalid_create_case B-dot-q -B.q
   run_invalid_create_case b-equals -b=8
   run_invalid_create_case s-equals -s=4
   run_invalid_create_case r-equals -r=10
@@ -1160,6 +1185,7 @@ case_create_invalid_options() {
   run_invalid_create_case T-equals -T=1
   run_invalid_create_case t-equals -t=1
   run_invalid_create_case m-equals -m=1
+  run_invalid_tree_create_case qR-cluster -qR
   run_invalid_create_case uq-cluster -uq
   run_invalid_create_case uT-cluster -uT1
   run_invalid_create_case lT-cluster -lT1 -c3
@@ -1198,6 +1224,7 @@ case_standalone_create_invalid_options() {
   run_invalid_standalone_create_case b-too-large -b32769
   run_invalid_standalone_create_case b-nonnumeric -babc
   run_invalid_standalone_create_case B-equals -B=.
+  run_invalid_standalone_create_case B-dot-q -B.q
   run_invalid_standalone_create_case b-equals -b=8
   run_invalid_standalone_create_case s-equals -s=4
   run_invalid_standalone_create_case r-equals -r=10
@@ -1207,6 +1234,7 @@ case_standalone_create_invalid_options() {
   run_invalid_standalone_create_case T-equals -T=1
   run_invalid_standalone_create_case t-equals -t=1
   run_invalid_standalone_create_case m-equals -m=1
+  run_invalid_standalone_tree_create_case qR-cluster -qR
   run_invalid_standalone_create_case uq-cluster -uq
   run_invalid_standalone_create_case uT-cluster -uT1
   run_invalid_standalone_create_case lT-cluster -lT1 -c3
