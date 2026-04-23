@@ -168,6 +168,7 @@ where
 {
     let expanded = args
         .into_iter()
+        .flat_map(expand_noise_prefixed_thread_option_cluster)
         .flat_map(expand_thread_option_noise_cluster)
         .collect::<Vec<_>>();
 
@@ -175,6 +176,39 @@ where
         .into_iter()
         .map(|arg| normalize_mixed_noise_option_cluster(&arg).unwrap_or(arg))
         .collect()
+}
+
+fn expand_noise_prefixed_thread_option_cluster(arg: OsString) -> Vec<OsString> {
+    split_noise_prefixed_thread_option_cluster(&arg)
+        .map(|(noise_arg, thread_arg)| vec![noise_arg, thread_arg])
+        .unwrap_or_else(|| vec![arg])
+}
+
+fn split_noise_prefixed_thread_option_cluster(arg: &OsString) -> Option<(OsString, OsString)> {
+    let arg_text = arg.to_str()?;
+    let cluster = arg_text.strip_prefix('-')?;
+    if cluster.is_empty() || cluster.starts_with('-') {
+        return None;
+    }
+
+    let prefix_len = cluster
+        .chars()
+        .take_while(|ch| *ch == 'q' || *ch == 'v')
+        .count();
+    if prefix_len == 0 || prefix_len == cluster.len() {
+        return None;
+    }
+
+    let (noise_prefix, remainder) = cluster.split_at(prefix_len);
+    let option = remainder.chars().next()?;
+    if option != 't' && option != 'T' {
+        return None;
+    }
+
+    Some((
+        OsString::from(format!("-{noise_prefix}")),
+        OsString::from(format!("-{remainder}")),
+    ))
 }
 
 fn expand_thread_option_noise_cluster(arg: OsString) -> Vec<OsString> {
@@ -353,6 +387,33 @@ mod tests {
                 "-t1",
                 "-Np",
                 "testfile.par2"
+            ]
+        );
+    }
+
+    #[test]
+    fn noise_prefixed_thread_option_clusters_split() {
+        let normalized = normalize_mixed_noise_option_clusters(
+            ["par2", "verify", "-qvt1N", "-qT1O", "testfile.par2"]
+                .into_iter()
+                .map(OsString::from),
+        );
+        let as_text: Vec<_> = normalized
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            as_text,
+            vec![
+                "par2",
+                "verify",
+                "-q",
+                "-t1",
+                "-N",
+                "-q",
+                "-T1",
+                "-O",
+                "testfile.par2",
             ]
         );
     }
