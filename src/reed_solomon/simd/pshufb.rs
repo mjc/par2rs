@@ -78,6 +78,87 @@ pub fn prepare_avx2_coeff(tables: &SplitMulTable) -> Avx2PreparedCoeff {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+struct Avx2CoeffVectors {
+    low_lo_nib_lo: __m256i,
+    low_lo_nib_hi: __m256i,
+    low_hi_nib_lo: __m256i,
+    low_hi_nib_hi: __m256i,
+    high_lo_nib_lo: __m256i,
+    high_lo_nib_hi: __m256i,
+    high_hi_nib_lo: __m256i,
+    high_hi_nib_hi: __m256i,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "ssse3")]
+unsafe fn load_coeff_vectors(prepared: &Avx2PreparedCoeff) -> Avx2CoeffVectors {
+    Avx2CoeffVectors {
+        low_lo_nib_lo: _mm256_broadcastsi128_si256(_mm_loadu_si128(
+            prepared.low.lo_nib_lo_byte.as_ptr() as *const __m128i,
+        )),
+        low_lo_nib_hi: _mm256_broadcastsi128_si256(_mm_loadu_si128(
+            prepared.low.lo_nib_hi_byte.as_ptr() as *const __m128i,
+        )),
+        low_hi_nib_lo: _mm256_broadcastsi128_si256(_mm_loadu_si128(
+            prepared.low.hi_nib_lo_byte.as_ptr() as *const __m128i,
+        )),
+        low_hi_nib_hi: _mm256_broadcastsi128_si256(_mm_loadu_si128(
+            prepared.low.hi_nib_hi_byte.as_ptr() as *const __m128i,
+        )),
+        high_lo_nib_lo: _mm256_broadcastsi128_si256(_mm_loadu_si128(
+            prepared.high.lo_nib_lo_byte.as_ptr() as *const __m128i,
+        )),
+        high_lo_nib_hi: _mm256_broadcastsi128_si256(_mm_loadu_si128(
+            prepared.high.lo_nib_hi_byte.as_ptr() as *const __m128i,
+        )),
+        high_hi_nib_lo: _mm256_broadcastsi128_si256(_mm_loadu_si128(
+            prepared.high.hi_nib_lo_byte.as_ptr() as *const __m128i,
+        )),
+        high_hi_nib_hi: _mm256_broadcastsi128_si256(_mm_loadu_si128(
+            prepared.high.hi_nib_hi_byte.as_ptr() as *const __m128i,
+        )),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "ssse3")]
+unsafe fn multiply_vec_pshufb(
+    in_vec: __m256i,
+    tables: &Avx2CoeffVectors,
+    mask_0x0f: __m256i,
+) -> __m256i {
+    let low_bytes = _mm256_and_si256(in_vec, _mm256_set1_epi16(0x00FF));
+    let high_bytes = _mm256_srli_epi16(in_vec, 8);
+
+    let low_lo_nib = _mm256_and_si256(low_bytes, mask_0x0f);
+    let low_hi_nib = _mm256_and_si256(_mm256_srli_epi16(low_bytes, 4), mask_0x0f);
+
+    let low_lo_nib_result_lo = _mm256_shuffle_epi8(tables.low_lo_nib_lo, low_lo_nib);
+    let low_lo_nib_result_hi = _mm256_shuffle_epi8(tables.low_lo_nib_hi, low_lo_nib);
+    let low_hi_nib_result_lo = _mm256_shuffle_epi8(tables.low_hi_nib_lo, low_hi_nib);
+    let low_hi_nib_result_hi = _mm256_shuffle_epi8(tables.low_hi_nib_hi, low_hi_nib);
+
+    let low_byte_result_lo = _mm256_xor_si256(low_lo_nib_result_lo, low_hi_nib_result_lo);
+    let low_byte_result_hi = _mm256_xor_si256(low_lo_nib_result_hi, low_hi_nib_result_hi);
+
+    let high_lo_nib = _mm256_and_si256(high_bytes, mask_0x0f);
+    let high_hi_nib = _mm256_and_si256(_mm256_srli_epi16(high_bytes, 4), mask_0x0f);
+
+    let high_lo_nib_result_lo = _mm256_shuffle_epi8(tables.high_lo_nib_lo, high_lo_nib);
+    let high_lo_nib_result_hi = _mm256_shuffle_epi8(tables.high_lo_nib_hi, high_lo_nib);
+    let high_hi_nib_result_lo = _mm256_shuffle_epi8(tables.high_hi_nib_lo, high_hi_nib);
+    let high_hi_nib_result_hi = _mm256_shuffle_epi8(tables.high_hi_nib_hi, high_hi_nib);
+
+    let high_byte_result_lo = _mm256_xor_si256(high_lo_nib_result_lo, high_hi_nib_result_lo);
+    let high_byte_result_hi = _mm256_xor_si256(high_lo_nib_result_hi, high_hi_nib_result_hi);
+
+    let result_lo = _mm256_xor_si256(low_byte_result_lo, high_byte_result_lo);
+    let result_hi = _mm256_xor_si256(low_byte_result_hi, high_byte_result_hi);
+
+    _mm256_or_si256(result_lo, _mm256_slli_epi16(result_hi, 8))
+}
+
 /// Build nibble lookup tables for PSHUFB
 ///
 /// Wrapper around common build_nibble_tables() for backwards compatibility.
@@ -138,33 +219,7 @@ pub unsafe fn process_slice_multiply_add_prepared_avx2(
         return;
     }
 
-    // Load tables into AVX2 registers (broadcast 128-bit to 256-bit for both lanes)
-    let low_lo_nib_lo_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
-        prepared.low.lo_nib_lo_byte.as_ptr() as *const __m128i,
-    ));
-    let low_lo_nib_hi_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
-        prepared.low.lo_nib_hi_byte.as_ptr() as *const __m128i,
-    ));
-    let low_hi_nib_lo_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
-        prepared.low.hi_nib_lo_byte.as_ptr() as *const __m128i,
-    ));
-    let low_hi_nib_hi_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
-        prepared.low.hi_nib_hi_byte.as_ptr() as *const __m128i,
-    ));
-
-    let high_lo_nib_lo_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
-        prepared.high.lo_nib_lo_byte.as_ptr() as *const __m128i,
-    ));
-    let high_lo_nib_hi_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
-        prepared.high.lo_nib_hi_byte.as_ptr() as *const __m128i,
-    ));
-    let high_hi_nib_lo_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
-        prepared.high.hi_nib_lo_byte.as_ptr() as *const __m128i,
-    ));
-    let high_hi_nib_hi_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
-        prepared.high.hi_nib_hi_byte.as_ptr() as *const __m128i,
-    ));
-
+    let table_vectors = load_coeff_vectors(prepared);
     let mask_0x0f = _mm256_set1_epi8(0x0F);
 
     // Process 32 bytes at a time
@@ -193,56 +248,7 @@ pub unsafe fn process_slice_multiply_add_prepared_avx2(
             _mm256_loadu_si256(output_ptr.add(pos) as *const __m256i)
         };
 
-        // Separate even bytes (low bytes of u16 words) and odd bytes (high bytes of u16 words)
-        // Even bytes: indices 0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30
-        // Odd bytes:  indices 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31
-
-        // Extract low bytes (even indices) - these are the low bytes of each u16 word
-        let low_bytes = _mm256_and_si256(
-            in_vec,
-            _mm256_set1_epi16(0x00FF), // Mask to keep only low byte of each word
-        );
-
-        // Extract high bytes (odd indices) - shift right by 8 to get high bytes
-        let high_bytes = _mm256_srli_epi16(in_vec, 8);
-
-        // Process low bytes: split into nibbles and lookup
-        let low_lo_nib = _mm256_and_si256(low_bytes, mask_0x0f);
-        let low_hi_nib = _mm256_and_si256(_mm256_srli_epi16(low_bytes, 4), mask_0x0f);
-
-        // PSHUFB lookups for low byte
-        let low_lo_nib_result_lo = _mm256_shuffle_epi8(low_lo_nib_lo_vec, low_lo_nib);
-        let low_lo_nib_result_hi = _mm256_shuffle_epi8(low_lo_nib_hi_vec, low_lo_nib);
-        let low_hi_nib_result_lo = _mm256_shuffle_epi8(low_hi_nib_lo_vec, low_hi_nib);
-        let low_hi_nib_result_hi = _mm256_shuffle_epi8(low_hi_nib_hi_vec, low_hi_nib);
-
-        // XOR low nibble and high nibble results for low byte
-        let low_byte_result_lo = _mm256_xor_si256(low_lo_nib_result_lo, low_hi_nib_result_lo);
-        let low_byte_result_hi = _mm256_xor_si256(low_lo_nib_result_hi, low_hi_nib_result_hi);
-
-        // Process high bytes: split into nibbles and lookup
-        let high_lo_nib = _mm256_and_si256(high_bytes, mask_0x0f);
-        let high_hi_nib = _mm256_and_si256(_mm256_srli_epi16(high_bytes, 4), mask_0x0f);
-
-        // PSHUFB lookups for high byte
-        let high_lo_nib_result_lo = _mm256_shuffle_epi8(high_lo_nib_lo_vec, high_lo_nib);
-        let high_lo_nib_result_hi = _mm256_shuffle_epi8(high_lo_nib_hi_vec, high_lo_nib);
-        let high_hi_nib_result_lo = _mm256_shuffle_epi8(high_hi_nib_lo_vec, high_hi_nib);
-        let high_hi_nib_result_hi = _mm256_shuffle_epi8(high_hi_nib_hi_vec, high_hi_nib);
-
-        // XOR low nibble and high nibble results for high byte
-        let high_byte_result_lo = _mm256_xor_si256(high_lo_nib_result_lo, high_hi_nib_result_lo);
-        let high_byte_result_hi = _mm256_xor_si256(high_lo_nib_result_hi, high_hi_nib_result_hi);
-
-        // Combine low_byte_result and high_byte_result into final 16-bit results
-        // XOR the contributions from both bytes
-        let result_lo = _mm256_xor_si256(low_byte_result_lo, high_byte_result_lo);
-        let result_hi = _mm256_xor_si256(low_byte_result_hi, high_byte_result_hi);
-
-        // Combine lo and hi bytes back into 16-bit words
-        let result = _mm256_or_si256(result_lo, _mm256_slli_epi16(result_hi, 8));
-
-        // XOR with output (multiply-add operation)
+        let result = multiply_vec_pshufb(in_vec, &table_vectors, mask_0x0f);
         let final_result = _mm256_xor_si256(out_vec, result);
 
         // Store result using aligned store when possible (fast path for reconstruction)
@@ -265,14 +271,88 @@ pub unsafe fn process_slice_multiply_add_prepared_avx2(
     }
 }
 
+/// PSHUFB-accelerated multiply-add for two inputs into one output.
+///
+/// This is the first packed create kernel: it loads/stores the output once for
+/// two staged source inputs.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "ssse3")]
+pub unsafe fn process_slices_multiply_add_prepared_avx2_x2(
+    input_a: &[u8],
+    prepared_a: &Avx2PreparedCoeff,
+    scalar_a: &SplitMulTable,
+    input_b: &[u8],
+    prepared_b: &Avx2PreparedCoeff,
+    scalar_b: &SplitMulTable,
+    output: &mut [u8],
+) {
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    if len < 32 {
+        process_slice_multiply_add_scalar(input_a, output, scalar_a);
+        process_slice_multiply_add_scalar(input_b, output, scalar_b);
+        return;
+    }
+
+    let table_a = load_coeff_vectors(prepared_a);
+    let table_b = load_coeff_vectors(prepared_b);
+    let mask_0x0f = _mm256_set1_epi8(0x0F);
+
+    let mut pos = 0;
+    let avx_end = (len / 32) * 32;
+    let input_a_ptr = input_a.as_ptr();
+    let input_b_ptr = input_b.as_ptr();
+    let output_ptr = output.as_mut_ptr();
+    let all_aligned = (input_a_ptr as usize).is_multiple_of(32)
+        && (input_b_ptr as usize).is_multiple_of(32)
+        && (output_ptr as usize).is_multiple_of(32);
+
+    while pos < avx_end {
+        let in_a = if all_aligned {
+            _mm256_load_si256(input_a_ptr.add(pos) as *const __m256i)
+        } else {
+            _mm256_loadu_si256(input_a_ptr.add(pos) as *const __m256i)
+        };
+        let in_b = if all_aligned {
+            _mm256_load_si256(input_b_ptr.add(pos) as *const __m256i)
+        } else {
+            _mm256_loadu_si256(input_b_ptr.add(pos) as *const __m256i)
+        };
+        let out_vec = if all_aligned {
+            _mm256_load_si256(output_ptr.add(pos) as *const __m256i)
+        } else {
+            _mm256_loadu_si256(output_ptr.add(pos) as *const __m256i)
+        };
+
+        let result_a = multiply_vec_pshufb(in_a, &table_a, mask_0x0f);
+        let result_b = multiply_vec_pshufb(in_b, &table_b, mask_0x0f);
+        let final_result = _mm256_xor_si256(out_vec, _mm256_xor_si256(result_a, result_b));
+
+        if all_aligned {
+            _mm256_store_si256(output_ptr.add(pos) as *mut __m256i, final_result);
+        } else {
+            _mm256_storeu_si256(output_ptr.add(pos) as *mut __m256i, final_result);
+        }
+
+        pos += 32;
+    }
+
+    if pos < len {
+        process_slice_multiply_add_scalar(&input_a[pos..], &mut output[pos..], scalar_a);
+        process_slice_multiply_add_scalar(&input_b[pos..], &mut output[pos..], scalar_b);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(target_arch = "x86_64")]
-    use super::{build_pshufb_tables, process_slice_multiply_add_pshufb};
+    use super::{
+        build_pshufb_tables, prepare_avx2_coeff, process_slice_multiply_add_pshufb,
+        process_slices_multiply_add_prepared_avx2_x2,
+    };
 
     // These are only used in x86_64 tests
     #[cfg(target_arch = "x86_64")]
-    use crate::reed_solomon::codec::build_split_mul_table;
+    use crate::reed_solomon::codec::{build_split_mul_table, process_slice_multiply_add};
     #[cfg(target_arch = "x86_64")]
     use crate::reed_solomon::galois::Galois16;
 
@@ -345,5 +425,40 @@ mod tests {
 
         // Output should be modified by scalar fallback
         assert_ne!(output, original_output);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn process_slices_multiply_add_prepared_avx2_x2_matches_separate_adds() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("ssse3") {
+            eprintln!("Skipping PSHUFB x2 test - AVX2/SSSE3 not supported");
+            return;
+        }
+
+        let input_a = (0..257).map(|idx| (idx * 3) as u8).collect::<Vec<_>>();
+        let input_b = (0..257).map(|idx| (idx * 5 + 11) as u8).collect::<Vec<_>>();
+        let table_a = build_split_mul_table(Galois16::new(7));
+        let table_b = build_split_mul_table(Galois16::new(29));
+        let prepared_a = prepare_avx2_coeff(&table_a);
+        let prepared_b = prepare_avx2_coeff(&table_b);
+
+        let mut expected = vec![0xA5; input_a.len()];
+        process_slice_multiply_add(&input_a, &mut expected, &table_a);
+        process_slice_multiply_add(&input_b, &mut expected, &table_b);
+
+        let mut actual = vec![0xA5; input_a.len()];
+        unsafe {
+            process_slices_multiply_add_prepared_avx2_x2(
+                &input_a,
+                &prepared_a,
+                &table_a,
+                &input_b,
+                &prepared_b,
+                &table_b,
+                &mut actual,
+            );
+        }
+
+        assert_eq!(actual, expected);
     }
 }

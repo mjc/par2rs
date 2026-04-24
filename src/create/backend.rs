@@ -9,7 +9,7 @@ use crate::reed_solomon::AlignedVec;
 #[cfg(target_arch = "x86_64")]
 use crate::reed_solomon::simd::{
     detect_simd_support, prepare_avx2_coeff, process_slice_multiply_add_prepared_avx2,
-    Avx2PreparedCoeff, SimdLevel,
+    process_slices_multiply_add_prepared_avx2_x2, Avx2PreparedCoeff, SimdLevel,
 };
 
 const DEFAULT_INPUT_BATCH_SIZE: usize = 12;
@@ -216,6 +216,20 @@ impl CreateRecoveryBackend {
             .enumerate()
             .for_each(|(recovery_idx, output_chunk)| {
                 let output = &mut output_chunk[..chunk_len];
+                #[cfg(target_arch = "x86_64")]
+                if matches!(simd_level, SimdLevel::Avx2) {
+                    Self::process_batch_add_avx2_x2(
+                        recovery_idx,
+                        source_count,
+                        batch_len,
+                        input_staging,
+                        source_indices,
+                        coeffs,
+                        output,
+                    );
+                    return;
+                }
+
                 (0..batch_len).for_each(|batch_idx| {
                     let source_idx = source_indices[batch_idx];
                     let coeff = &coeffs[gf_coeff_index(recovery_idx, source_idx, source_count)];
@@ -228,6 +242,67 @@ impl CreateRecoveryBackend {
             });
 
         self.batch_len = 0;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn process_batch_add_avx2_x2(
+        recovery_idx: usize,
+        source_count: usize,
+        batch_len: usize,
+        input_staging: &[AlignedVec],
+        source_indices: &[usize],
+        coeffs: &[Gf16Coeff],
+        output: &mut [u8],
+    ) {
+        let mut batch_idx = 0;
+        while batch_idx + 1 < batch_len {
+            let source_a = source_indices[batch_idx];
+            let source_b = source_indices[batch_idx + 1];
+            let coeff_a = &coeffs[gf_coeff_index(recovery_idx, source_a, source_count)];
+            let coeff_b = &coeffs[gf_coeff_index(recovery_idx, source_b, source_count)];
+
+            match (&coeff_a.avx2, &coeff_b.avx2) {
+                (Some(prepared_a), Some(prepared_b)) => unsafe {
+                    process_slices_multiply_add_prepared_avx2_x2(
+                        &input_staging[batch_idx][..output.len()],
+                        prepared_a,
+                        &coeff_a.split,
+                        &input_staging[batch_idx + 1][..output.len()],
+                        prepared_b,
+                        &coeff_b.split,
+                        output,
+                    );
+                },
+                _ => {
+                    Self::process_input_add(
+                        &input_staging[batch_idx][..output.len()],
+                        output,
+                        coeff_a,
+                        SimdLevel::None,
+                    );
+                    Self::process_input_add(
+                        &input_staging[batch_idx + 1][..output.len()],
+                        output,
+                        coeff_b,
+                        SimdLevel::None,
+                    );
+                }
+            }
+
+            batch_idx += 2;
+        }
+
+        if batch_idx < batch_len {
+            let source_idx = source_indices[batch_idx];
+            let coeff = &coeffs[gf_coeff_index(recovery_idx, source_idx, source_count)];
+            Self::process_input_add(
+                &input_staging[batch_idx][..output.len()],
+                output,
+                coeff,
+                SimdLevel::Avx2,
+            );
+        }
     }
 
     #[cfg(target_arch = "x86_64")]
