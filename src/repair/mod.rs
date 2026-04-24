@@ -317,6 +317,7 @@ impl RepairContext {
                 files_failed: file_status.keys().cloned().collect(),
                 files_verified: 0,
                 verified_files: Vec::new(),
+                exit_code: 2,
                 message: format!(
                     "Insufficient recovery data: need {} blocks but only have {}",
                     total_damaged_blocks,
@@ -503,6 +504,7 @@ impl RepairContext {
                 files_failed,
                 files_verified: files_verified_count,
                 verified_files,
+                exit_code: 1,
                 message,
             });
         }
@@ -1347,6 +1349,7 @@ fn rename_only_repair_result(
                 .collect(),
             files_verified: verified_files.len(),
             verified_files,
+            exit_code: 1,
             message: "Rename-only repair could not restore all files.".to_string(),
         }
     }

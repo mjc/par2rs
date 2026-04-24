@@ -216,10 +216,12 @@ fn test_repair_result_failed() {
         files_failed: vec!["file1.dat".to_string(), "file2.dat".to_string()],
         files_verified: 1,
         verified_files: vec!["file3.dat".to_string()],
+        exit_code: 2,
         message: "Insufficient recovery blocks".to_string(),
     };
 
     assert!(!result.is_success());
+    assert_eq!(result.exit_code(), 2);
     assert_eq!(result.repaired_files().len(), 0);
     assert_eq!(result.failed_files().len(), 2);
     assert_eq!(result.failed_files()[0], "file1.dat");
@@ -248,6 +250,7 @@ fn test_repair_result_print() {
         files_failed: vec!["file1.dat".to_string()],
         files_verified: 0,
         verified_files: vec![],
+        exit_code: 1,
         message: "Not enough blocks".to_string(),
     };
     failed.print_result();

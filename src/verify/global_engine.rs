@@ -199,7 +199,7 @@ impl GlobalVerificationEngine {
         reporter: &R,
         parallel: bool,
     ) -> VerificationResults {
-        self.verify_recovery_set_with_extra_files(reporter, parallel, &self.extra_files)
+        self.verify_recovery_set_with_extra_files(reporter, parallel, &[])
     }
 
     /// Verify the recovery set while also scanning user-supplied extra files.
@@ -214,7 +214,7 @@ impl GlobalVerificationEngine {
         extra_files: &[PathBuf],
     ) -> VerificationResults {
         // Note: report_verification_start and report_files_found should be called by the caller
-        let combined_extra_files;
+        let mut combined_extra_files;
         let scan_extra_files = if self.extra_files.is_empty() {
             extra_files
         } else if extra_files.is_empty() {
@@ -226,6 +226,7 @@ impl GlobalVerificationEngine {
                 .chain(extra_files.iter())
                 .cloned()
                 .collect::<Vec<_>>();
+            combined_extra_files = Self::dedupe_extra_files(&combined_extra_files);
             &combined_extra_files
         };
 
@@ -1316,11 +1317,15 @@ impl GlobalVerificationEngine {
                 })
                 .unwrap_or_default();
             let mut block_sources = HashMap::default();
-            for block_num in 0..total_blocks.as_usize() {
-                let block_number = block_num as u32;
-                if let Some(source) = block_locations.get(&(file_description.file_id, block_number))
+            if let Some(metadata) = scan_metadatas.get(&file_description.file_id) {
+                for (_, fid, block_number) in metadata
+                    .found_blocks
+                    .iter()
+                    .filter(|(_, fid, _)| *fid == file_description.file_id)
                 {
-                    block_sources.insert(block_number, source.clone());
+                    if let Some(source) = block_locations.get(&(*fid, *block_number)) {
+                        block_sources.insert(*block_number, source.clone());
+                    }
                 }
             }
 

@@ -128,6 +128,7 @@ pub enum RepairResult {
         files_failed: Vec<String>,
         files_verified: usize,
         verified_files: Vec<String>,
+        exit_code: i32,
         message: String,
     },
 }
@@ -145,12 +146,7 @@ impl RepairResult {
     pub fn exit_code(&self) -> i32 {
         match self {
             RepairResult::Success { .. } | RepairResult::NoRepairNeeded { .. } => 0,
-            RepairResult::Failed { message, .. }
-                if message.starts_with("Insufficient recovery data") =>
-            {
-                2
-            }
-            RepairResult::Failed { .. } => 1,
+            RepairResult::Failed { exit_code, .. } => *exit_code,
         }
     }
 
