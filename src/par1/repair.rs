@@ -7,6 +7,7 @@ use super::verify::{
 use crate::domain::{Md5Hash, RecoverySetId};
 use crate::packets::RecoverySlicePacket;
 use crate::reed_solomon::codec::ReconstructionEngine;
+use crate::repair::error_helpers::move_file_into_place;
 use crate::verify::{FileStatus, VerificationResults};
 use rustc_hash::FxHashMap as HashMap;
 use std::fmt;
@@ -192,10 +193,10 @@ fn rename_matched_extra_files(
         };
         if file_match.target_path.exists() {
             let backup_path = next_backup_path(&file_match.target_path);
-            std::fs::rename(&file_match.target_path, &backup_path)?;
+            move_file_into_place(&file_match.target_path, &backup_path)?;
             backups.push(backup_path);
         }
-        std::fs::rename(matched_path, &file_match.target_path)?;
+        move_file_into_place(matched_path, &file_match.target_path)?;
     }
     Ok(())
 }

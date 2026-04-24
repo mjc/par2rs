@@ -49,45 +49,45 @@ pub fn create_file(path: impl AsRef<Path>) -> RepairResult<File> {
 ///
 /// # Example
 /// ```no_run
-/// use par2rs::repair::error_helpers::rename_file;
+/// use par2rs::repair::error_helpers::move_file_into_place;
 /// use std::path::Path;
 ///
-/// rename_file(Path::new("temp.dat"), Path::new("final.dat"))?;
-/// # Ok::<(), par2rs::repair::RepairError>(())
+/// move_file_into_place(Path::new("temp.dat"), Path::new("final.dat"))?;
+/// # Ok::<(), std::io::Error>(())
 /// ```
-pub fn rename_file(temp_path: impl AsRef<Path>, final_path: impl AsRef<Path>) -> RepairResult<()> {
+pub fn move_file_into_place(
+    temp_path: impl AsRef<Path>,
+    final_path: impl AsRef<Path>,
+) -> io::Result<()> {
     let temp_path = temp_path.as_ref();
     let final_path = final_path.as_ref();
-    rename_file_impl(temp_path, final_path, |source, dest| {
+    move_file_into_place_impl(temp_path, final_path, |source, dest| {
         std::fs::rename(source, dest)
     })
 }
 
-fn rename_file_impl<F>(temp_path: &Path, final_path: &Path, rename_fn: F) -> RepairResult<()>
+/// Rename a file, wrapping I/O errors with repair path context.
+pub fn rename_file(temp_path: impl AsRef<Path>, final_path: impl AsRef<Path>) -> RepairResult<()> {
+    let temp_path = temp_path.as_ref();
+    let final_path = final_path.as_ref();
+    move_file_into_place(temp_path, final_path).map_err(|source| RepairError::FileRenameError {
+        temp_path: temp_path.to_path_buf(),
+        final_path: final_path.to_path_buf(),
+        source,
+    })
+}
+
+fn move_file_into_place_impl<F>(temp_path: &Path, final_path: &Path, rename_fn: F) -> io::Result<()>
 where
     F: Fn(&Path, &Path) -> io::Result<()>,
 {
     match rename_fn(temp_path, final_path) {
         Ok(()) => Ok(()),
         Err(source) if is_cross_device_rename(&source) => {
-            copy_file_for_cross_device_move(temp_path, final_path).map_err(|copy_error| {
-                RepairError::FileRenameError {
-                    temp_path: temp_path.to_path_buf(),
-                    final_path: final_path.to_path_buf(),
-                    source: copy_error,
-                }
-            })?;
-            std::fs::remove_file(temp_path).map_err(|delete_error| RepairError::FileRenameError {
-                temp_path: temp_path.to_path_buf(),
-                final_path: final_path.to_path_buf(),
-                source: delete_error,
-            })
+            copy_file_for_cross_device_move(temp_path, final_path)?;
+            std::fs::remove_file(temp_path)
         }
-        Err(source) => Err(RepairError::FileRenameError {
-            temp_path: temp_path.to_path_buf(),
-            final_path: final_path.to_path_buf(),
-            source,
-        }),
+        Err(source) => Err(source),
     }
 }
 
@@ -312,7 +312,7 @@ mod cross_device_tests {
         let dest = dir.path().join("dest.bin");
         std::fs::write(&source, b"repair data").unwrap();
 
-        rename_file_impl(&source, &dest, |_src, _dest| {
+        move_file_into_place_impl(&source, &dest, |_src, _dest| {
             Err(io::Error::from(io::ErrorKind::CrossesDevices))
         })
         .unwrap();
@@ -329,12 +329,12 @@ mod cross_device_tests {
         std::fs::write(&source, b"repair data").unwrap();
         std::fs::write(&dest, b"existing").unwrap();
 
-        let error = rename_file_impl(&source, &dest, |_src, _dest| {
+        let error = move_file_into_place_impl(&source, &dest, |_src, _dest| {
             Err(io::Error::from(io::ErrorKind::CrossesDevices))
         })
         .unwrap_err();
 
-        assert!(matches!(error, RepairError::FileRenameError { .. }));
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert!(source.exists());
         assert_eq!(std::fs::read(&dest).unwrap(), b"existing");
     }

@@ -1,8 +1,10 @@
 # par2cmdline-turbo Parity
 
-This document tracks pragmatic compatibility with the local
-`/home/mjc/projects/par2cmdline-turbo` checkout. The goal is compatible command
-behavior and filesystem effects, not byte-for-byte stdout or PAR packet layout.
+This document tracks pragmatic compatibility with a local
+`par2cmdline-turbo` checkout; configure the reference checkout via the
+`TURBO_ROOT` and `TURBO_PAR2` environment variables. The goal is compatible
+command behavior and filesystem effects, not byte-for-byte stdout or PAR packet
+layout.
 
 ## Supported Binaries
 
