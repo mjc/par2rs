@@ -6,7 +6,7 @@ use super::progress::{ConsoleReporter, ProgressReporter};
 use super::types::{FileInfo, RecoverySetInfo};
 use crate::domain::{BlockCount, BlockSize, FileId, FileSize, GlobalSliceIndex};
 use crate::packets::{FileDescriptionPacket, Packet, RecoverySliceMetadata};
-use log::debug;
+use log::{debug, warn};
 use rustc_hash::FxHashMap as HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -84,9 +84,14 @@ impl RepairContext {
     }
 
     pub(super) fn record_repair_created_backup(&self, path: PathBuf) {
-        if let Ok(mut backups) = self.repair_created_backups.lock() {
-            backups.push(path);
-        }
+        let mut backups = self
+            .repair_created_backups
+            .lock()
+            .unwrap_or_else(|poisoned| {
+                warn!("repair backup tracking mutex was poisoned; recovering state");
+                poisoned.into_inner()
+            });
+        backups.push(path);
     }
 
     /// Extract recovery set information from packets
@@ -194,8 +199,11 @@ impl RepairContext {
         let backups = self
             .repair_created_backups
             .lock()
-            .map(|backups| backups.clone())
-            .unwrap_or_default();
+            .unwrap_or_else(|poisoned| {
+                warn!("repair backup tracking mutex was poisoned during purge; recovering state");
+                poisoned.into_inner()
+            })
+            .clone();
         for backup_path in backups {
             if backup_path.exists() {
                 delete_file(&backup_path)?;
@@ -230,5 +238,66 @@ impl RepairContext {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::FileId;
+    use crate::packets::{MainPacket, Packet};
+    use tempfile::TempDir;
+
+    fn create_main_packet(file_ids: Vec<FileId>) -> MainPacket {
+        MainPacket {
+            length: 72 + (file_ids.len() as u64 * 16),
+            md5: crate::domain::Md5Hash::new([0; 16]),
+            slice_size: 1024,
+            set_id: crate::domain::RecoverySetId::new([1; 16]),
+            file_count: file_ids.len() as u32,
+            file_ids,
+            non_recovery_file_ids: Vec::new(),
+        }
+    }
+
+    fn create_file_desc(file_id: FileId, file_name: &str) -> FileDescriptionPacket {
+        FileDescriptionPacket {
+            length: 120 + file_name.len() as u64,
+            md5: crate::domain::Md5Hash::new([0; 16]),
+            set_id: crate::domain::RecoverySetId::new([1; 16]),
+            packet_type: *b"PAR 2.0\0FileDesc",
+            file_id,
+            file_length: 1024,
+            md5_hash: crate::domain::Md5Hash::new([2; 16]),
+            md5_16k: crate::domain::Md5Hash::new([3; 16]),
+            file_name: file_name.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn poisoned_backup_tracking_still_records_and_purges_backups() {
+        let dir = TempDir::new().unwrap();
+        let file_id = FileId::new([4; 16]);
+        let packets = vec![
+            Packet::Main(create_main_packet(vec![file_id])),
+            Packet::FileDescription(create_file_desc(file_id, "test.txt")),
+        ];
+        let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = context.repair_created_backups.lock().unwrap();
+            panic!("poison backup tracking mutex");
+        }));
+
+        let backup = dir.path().join("test.1");
+        let par2_file = dir.path().join("test.par2");
+        std::fs::write(&backup, b"backup").unwrap();
+        std::fs::write(&par2_file, b"par2").unwrap();
+
+        context.record_repair_created_backup(backup.clone());
+        context.purge_files(par2_file.to_str().unwrap()).unwrap();
+
+        assert!(!backup.exists());
+        assert!(!par2_file.exists());
     }
 }

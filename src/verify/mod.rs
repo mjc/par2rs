@@ -114,8 +114,8 @@ pub fn comprehensive_verify_files_with_extra_files<R: VerificationReporter>(
     // Perform verification using global table. When -T/--file-threads is set,
     // use a local Rayon pool so file-level scanning is bounded independently
     // of the process-wide CPU pool.
-    let mut results = if config.should_parallelize() {
-        if let Some(file_threads) = config.file_threads {
+    let mut results = if config.should_parallelize_file_scans() {
+        if let Some(file_threads) = config.file_threads.filter(|threads| *threads > 1) {
             match rayon::ThreadPoolBuilder::new()
                 .num_threads(file_threads)
                 .build()

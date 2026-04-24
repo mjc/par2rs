@@ -161,4 +161,37 @@ impl VerificationConfig {
     pub fn should_parallelize(&self) -> bool {
         self.parallel && self.effective_threads() > 1
     }
+
+    pub(crate) fn should_parallelize_file_scans(&self) -> bool {
+        self.parallel
+            && self
+                .file_threads
+                .map_or_else(|| self.effective_threads() > 1, |threads| threads > 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VerificationConfig;
+
+    #[test]
+    fn file_scans_can_parallelize_from_file_threads_alone() {
+        let mut config = VerificationConfig::new(1, true);
+        config.file_threads = Some(8);
+        assert!(config.should_parallelize_file_scans());
+    }
+
+    #[test]
+    fn file_scans_respect_no_parallel_even_with_file_threads() {
+        let mut config = VerificationConfig::new(1, false);
+        config.file_threads = Some(8);
+        assert!(!config.should_parallelize_file_scans());
+    }
+
+    #[test]
+    fn explicit_single_file_thread_disables_file_scan_parallelism() {
+        let mut config = VerificationConfig::new(8, true);
+        config.file_threads = Some(1);
+        assert!(!config.should_parallelize_file_scans());
+    }
 }
