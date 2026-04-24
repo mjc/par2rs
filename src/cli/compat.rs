@@ -166,16 +166,31 @@ pub fn normalize_mixed_noise_option_clusters<I>(args: I) -> Vec<OsString>
 where
     I: IntoIterator<Item = OsString>,
 {
-    let expanded = args
-        .into_iter()
-        .flat_map(expand_noise_prefixed_thread_option_cluster)
-        .flat_map(expand_thread_option_noise_cluster)
-        .collect::<Vec<_>>();
+    let mut normalized = Vec::new();
+    let mut after_terminator = false;
 
-    expanded
-        .into_iter()
-        .map(|arg| normalize_mixed_noise_option_cluster(&arg).unwrap_or(arg))
-        .collect()
+    for arg in args {
+        if after_terminator {
+            normalized.push(arg);
+            continue;
+        }
+
+        if arg == "--" {
+            after_terminator = true;
+            normalized.push(arg);
+            continue;
+        }
+
+        for expanded_arg in expand_noise_prefixed_thread_option_cluster(arg)
+            .into_iter()
+            .flat_map(expand_thread_option_noise_cluster)
+        {
+            normalized
+                .push(normalize_mixed_noise_option_cluster(&expanded_arg).unwrap_or(expanded_arg));
+        }
+    }
+
+    normalized
 }
 
 fn expand_noise_prefixed_thread_option_cluster(arg: OsString) -> Vec<OsString> {
@@ -364,6 +379,20 @@ mod tests {
             as_text,
             vec!["par2", "create", "-q", "-vv", "-qq", "--quiet"]
         );
+    }
+
+    #[test]
+    fn mixed_noise_cluster_normalization_stops_at_terminator() {
+        let normalized = normalize_mixed_noise_option_clusters(
+            ["par2", "create", "out.par2", "--", "-qvfile"]
+                .into_iter()
+                .map(OsString::from),
+        );
+        let as_text: Vec<_> = normalized
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(as_text, vec!["par2", "create", "out.par2", "--", "-qvfile"]);
     }
 
     #[test]
