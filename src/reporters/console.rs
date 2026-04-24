@@ -37,6 +37,16 @@ impl ConciseVerificationReporter {
             reported_files: Mutex::new(HashSet::new()),
         }
     }
+
+    fn repair_required(results: &VerificationResults) -> bool {
+        results.missing_block_count > 0
+            || results.files.iter().any(|file| {
+                matches!(
+                    file.status,
+                    FileStatus::Missing | FileStatus::Corrupted | FileStatus::Renamed
+                )
+            })
+    }
 }
 
 impl Default for ConsoleVerificationReporter {
@@ -256,20 +266,20 @@ impl VerificationReporter for ConciseVerificationReporter {
 
         println!();
 
-        match (results.missing_block_count, results.repair_possible) {
-            (0, _) => println!("All files are correct, repair is not required."),
-            (_, true) => {
-                println!("Repair is required.");
-                println!("Repair is possible.");
-            }
-            (missing, false) => {
-                println!("Repair is required.");
-                println!("Repair is not possible.");
-                println!(
-                    "You need {} more recovery blocks to be able to repair.",
-                    missing - results.recovery_blocks_available
-                );
-            }
+        if !Self::repair_required(results) {
+            println!("All files are correct, repair is not required.");
+        } else if results.repair_possible {
+            println!("Repair is required.");
+            println!("Repair is possible.");
+        } else {
+            println!("Repair is required.");
+            println!("Repair is not possible.");
+            println!(
+                "You need {} more recovery blocks to be able to repair.",
+                results
+                    .missing_block_count
+                    .saturating_sub(results.recovery_blocks_available)
+            );
         }
     }
 
@@ -335,8 +345,55 @@ impl RepairReporter for ConsoleRepairReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::FileId;
+    use crate::verify::FileVerificationResult;
     use std::sync::Arc;
     use std::thread;
+
+    fn verification_results(status: FileStatus, missing_block_count: usize) -> VerificationResults {
+        let file = FileVerificationResult {
+            file_name: "data.bin".to_string(),
+            file_id: FileId::new([1; 16]),
+            status,
+            blocks_available: 1,
+            total_blocks: 1,
+            damaged_blocks: Vec::new(),
+            block_positions: Default::default(),
+            matched_path: None,
+            block_sources: Default::default(),
+        };
+
+        VerificationResults {
+            files: vec![file],
+            blocks: Vec::new(),
+            present_file_count: usize::from(status == FileStatus::Present),
+            renamed_file_count: usize::from(status == FileStatus::Renamed),
+            corrupted_file_count: usize::from(status == FileStatus::Corrupted),
+            missing_file_count: usize::from(status == FileStatus::Missing),
+            available_block_count: 1,
+            missing_block_count,
+            total_block_count: 1,
+            recovery_blocks_available: 1,
+            repair_possible: true,
+            blocks_needed_for_repair: missing_block_count,
+        }
+    }
+
+    #[test]
+    fn concise_summary_requires_repair_for_non_present_file_with_no_missing_blocks() {
+        let corrupted = verification_results(FileStatus::Corrupted, 0);
+        let renamed = verification_results(FileStatus::Renamed, 0);
+
+        assert!(ConciseVerificationReporter::repair_required(&corrupted));
+        assert!(ConciseVerificationReporter::repair_required(&renamed));
+    }
+
+    #[test]
+    fn concise_summary_does_not_require_repair_for_present_file_with_no_missing_blocks() {
+        let present = verification_results(FileStatus::Present, 0);
+
+        assert!(!ConciseVerificationReporter::repair_required(&present));
+    }
 
     #[test]
     fn test_console_reporter_thread_safe() {
