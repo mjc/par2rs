@@ -797,19 +797,63 @@ fn align_down(value: usize, alignment: usize) -> usize {
 mod tests {
     use super::*;
     use crate::reed_solomon::RecoveryBlockEncoder;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn deterministic_inputs(source_count: usize, block_size: usize) -> Vec<Vec<u8>> {
+        (0..source_count)
+            .map(|src| {
+                (0..block_size)
+                    .map(|byte| (src * 31 + byte * 17 + (byte / 7)) as u8)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    }
+
+    fn assert_forced_backend_matches_encoder(method: &str, expected_method: CreateGf16Method) {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("PAR2RS_CREATE_GF16", method);
+
+        let block_size = 1024;
+        let source_count = 12;
+        let recovery_count = 5;
+        let encoder = RecoveryBlockEncoder::new(block_size, source_count);
+        let inputs = deterministic_inputs(source_count, block_size);
+        let mut backend =
+            CreateRecoveryBackend::new(encoder.base_values(), 3, recovery_count, block_size, 4);
+        std::env::remove_var("PAR2RS_CREATE_GF16");
+
+        if backend.selected_method() != expected_method {
+            return;
+        }
+
+        let mut recovery_blocks = backend.recovery_blocks(block_size);
+        backend.begin_chunk(block_size);
+        inputs
+            .iter()
+            .enumerate()
+            .for_each(|(idx, input)| backend.add_input(idx, input));
+        backend.finish_chunk(&mut recovery_blocks, block_size);
+
+        recovery_blocks
+            .iter()
+            .for_each(|(exponent, recovery_data)| {
+                let refs = inputs.iter().map(Vec::as_slice).collect::<Vec<_>>();
+                let expected = encoder.encode_recovery_block(*exponent, &refs).unwrap();
+                assert_eq!(recovery_data, &expected);
+            });
+    }
 
     #[test]
     fn backend_output_matches_encoder_for_partial_batch() {
         let block_size = 64;
         let source_count = 5;
         let encoder = RecoveryBlockEncoder::new(block_size, source_count);
-        let inputs = (0..source_count)
-            .map(|src| {
-                (0..block_size)
-                    .map(|byte| (src * 17 + byte) as u8)
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
+        let inputs = deterministic_inputs(source_count, block_size);
 
         let mut backend = CreateRecoveryBackend::new(encoder.base_values(), 0, 3, block_size, 2);
         let mut recovery_blocks = backend.recovery_blocks(block_size);
@@ -830,6 +874,16 @@ mod tests {
     }
 
     #[test]
+    fn forced_pshufb_backend_matches_encoder_for_full_batch() {
+        assert_forced_backend_matches_encoder("pshufb", CreateGf16Method::Avx2PshufbPrepared);
+    }
+
+    #[test]
+    fn forced_xor_jit_backend_matches_encoder_for_full_batch() {
+        assert_forced_backend_matches_encoder("xor-jit", CreateGf16Method::Avx2XorJit);
+    }
+
+    #[test]
     fn backend_reuses_fixed_transfer_buffers() {
         let encoder = RecoveryBlockEncoder::new(64, 2);
         let mut backend = CreateRecoveryBackend::new(encoder.base_values(), 7, 1, 64, 1);
@@ -846,6 +900,7 @@ mod tests {
 
     #[test]
     fn env_method_override_selects_scalar() {
+        let _guard = env_lock().lock().unwrap();
         std::env::set_var("PAR2RS_CREATE_GF16", "scalar");
         let encoder = RecoveryBlockEncoder::new(64, 2);
         let backend = CreateRecoveryBackend::new(encoder.base_values(), 0, 1, 64, 1);
