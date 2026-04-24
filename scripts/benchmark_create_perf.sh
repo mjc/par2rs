@@ -82,6 +82,8 @@ RUN_ROOT="$RESULTS_ROOT/run-$TIMESTAMP"
 WORK_ROOT="$RUN_ROOT/work"
 RAW_CSV="$RUN_ROOT/raw.csv"
 SUMMARY_MD="$RUN_ROOT/summary.md"
+SMOKE_CSV="$RUN_ROOT/smoke.csv"
+SMOKE_SUMMARY_MD="$RUN_ROOT/smoke-summary.md"
 mkdir -p "$WORK_ROOT"
 
 cleanup() {
@@ -101,7 +103,13 @@ echo
 echo "Building par2rs release binary..."
 (cd "$PROJECT_ROOT" && cargo build --release --bin par2 --quiet)
 
-printf 'case,tool,run,status,validation_status,instructions,cycles,branches,branch_misses,cache_references,cache_misses,task_clock_msec,context_switches,cpu_migrations,page_faults,wall_seconds\n' > "$RAW_CSV"
+write_csv_header() {
+    local csv_file="$1"
+    printf 'case,tool,run,status,validation_status,instructions,cycles,branches,branch_misses,cache_references,cache_misses,task_clock_msec,context_switches,cpu_migrations,page_faults,wall_seconds\n' > "$csv_file"
+}
+
+write_csv_header "$RAW_CSV"
+write_csv_header "$SMOKE_CSV"
 
 split_cases() {
     tr ',' '\n' <<< "$CASES"
@@ -118,7 +126,21 @@ make_corpus() {
         local file
         file="$case_dir/corpus/file_$(printf '%04d' "$i").bin"
         if [[ ! -f "$file" ]]; then
-            dd if=/dev/zero of="$file" bs=1M count="$file_size_mib" status=none
+            python3 - "$file" "$i" "$file_size_mib" <<'PY'
+import sys
+
+path = sys.argv[1]
+file_index = int(sys.argv[2])
+size_mib = int(sys.argv[3])
+chunk_size = 1024 * 1024
+
+with open(path, "wb") as f:
+    for chunk_index in range(size_mib):
+        value = (file_index * 131 + chunk_index * 17) & 0xFF
+        chunk = bytearray(bytes([value]) * chunk_size)
+        chunk[:16] = file_index.to_bytes(8, "little") + chunk_index.to_bytes(8, "little")
+        f.write(chunk)
+PY
         fi
     done
 }
@@ -162,6 +184,7 @@ run_create() {
     local block_size="$4"
     local corpus_dir="$5"
     local measured="$6"
+    local output_csv="${7:-$RAW_CSV}"
 
     local run_dir="$WORK_ROOT/$case_label/$tool-$run_number"
     local perf_file="$RUN_ROOT/perf-$case_label-$tool-$run_number.csv"
@@ -200,14 +223,26 @@ run_create() {
         if [[ "$tool" == "par2rs" ]]; then
             (cd "$run_dir" && "$PAR2CMD_BIN" v -q -q out.par2 >"$verifier_stdout" 2>"$verifier_stderr")
         else
-            (cd "$run_dir" && "$PAR2RS_BIN" v -q -q out.par2 >"$verifier_stdout" 2>"$verifier_stderr")
+            (cd "$run_dir" && "$PAR2RS_BIN" verify -q -q out.par2 >"$verifier_stdout" 2>"$verifier_stderr")
         fi
         validation_status="$?"
         set -e
         if [[ "$validation_status" != "0" ]]; then
+            {
+                echo
+                echo "quiet validation failed with status $validation_status; rerunning verbosely"
+            } >> "$verifier_stderr"
+            set +e
+            if [[ "$tool" == "par2rs" ]]; then
+                (cd "$run_dir" && "$PAR2CMD_BIN" v out.par2 >>"$verifier_stdout" 2>>"$verifier_stderr")
+            else
+                (cd "$run_dir" && "$PAR2RS_BIN" verify out.par2 >>"$verifier_stdout" 2>>"$verifier_stderr")
+            fi
+            set -e
             echo "error: cross-tool verification failed for $case_label/$tool run $run_number" >&2
             echo "stdout: $verifier_stdout" >&2
             echo "stderr: $verifier_stderr" >&2
+            echo "work dir: $run_dir" >&2
         else
             rm -f "$verifier_stdout" "$verifier_stderr"
         fi
@@ -230,10 +265,14 @@ run_create() {
             "$case_label" "$tool" "$run_number" "$status" "$validation_status" \
             "$instructions" "$cycles" "$branches" "$branch_misses" \
             "$cache_references" "$cache_misses" "$task_clock" \
-            "$context_switches" "$cpu_migrations" "$page_faults" "$wall_seconds" >> "$RAW_CSV"
+            "$context_switches" "$cpu_migrations" "$page_faults" "$wall_seconds" >> "$output_csv"
     fi
 
-    rm -rf "$run_dir"
+    if [[ "$status" == "0" && "$validation_status" == "0" ]]; then
+        rm -rf "$run_dir"
+    elif [[ "$KEEP_WORK" != "1" ]]; then
+        echo "preserving failed run directory: $run_dir" >&2
+    fi
     if [[ "$status" != "0" ]]; then
         return "$status"
     fi
@@ -241,14 +280,20 @@ run_create() {
 }
 
 summarize_results() {
-    python3 - "$RAW_CSV" "$SUMMARY_MD" "$ITERATIONS" "$WARMUP_RUNS" "$THREADS" "$REDUNDANCY" "$RECOVERY_FILES" <<'PY'
+    local raw_csv="${1:-$RAW_CSV}"
+    local summary_md="${2:-$SUMMARY_MD}"
+    local iterations="${3:-$ITERATIONS}"
+    local warmups="${4:-$WARMUP_RUNS}"
+    local title="${5:-PAR2 Create Perf Benchmark}"
+
+    python3 - "$raw_csv" "$summary_md" "$iterations" "$warmups" "$THREADS" "$REDUNDANCY" "$RECOVERY_FILES" "$title" <<'PY'
 import csv
 import math
 import statistics
 import sys
 from collections import defaultdict
 
-raw_csv, summary_md, iterations, warmups, threads, redundancy, recovery_files = sys.argv[1:]
+raw_csv, summary_md, iterations, warmups, threads, redundancy, recovery_files, title = sys.argv[1:]
 metrics = [
     ("instructions", "instructions"),
     ("cycles", "cycles"),
@@ -298,7 +343,7 @@ def fmt(value):
 cases = sorted({row["case"] for row in rows})
 
 with open(summary_md, "w") as out:
-    out.write("# PAR2 Create Perf Benchmark\n\n")
+    out.write(f"# {title}\n\n")
     out.write(f"- measured runs per tool/case: {iterations}\n")
     out.write(f"- warmup runs per tool/case: {warmups}\n")
     out.write(f"- threads: {threads}\n")
@@ -342,6 +387,35 @@ with open(summary_md, "w") as out:
                 mean, stdev, cv, min_v, max_v, n = s
                 out.write(f"| {case} | {tool} | {label} | {n} | {fmt(mean)} | {fmt(stdev)} | {cv:.2f} | {fmt(min_v)} | {fmt(max_v)} |\n")
 PY
+}
+
+run_smoke_benchmarks() {
+    echo
+    echo "Smoke benchmark: one measured, cross-validated run for each configured case/tool"
+    while IFS= read -r case_spec; do
+        [[ -z "$case_spec" ]] && continue
+        IFS=: read -r label file_count file_size_mib block_size <<< "$case_spec"
+        if [[ -z "${label:-}" || -z "${file_count:-}" || -z "${file_size_mib:-}" || -z "${block_size:-}" ]]; then
+            echo "error: invalid CASES entry: $case_spec" >&2
+            exit 1
+        fi
+
+        local case_dir="$WORK_ROOT/$label"
+        local corpus_dir="$case_dir/corpus"
+        echo "Smoke preparing '$label': ${file_count}x${file_size_mib}MiB, block size ${block_size}"
+        make_corpus "$case_dir" "$file_count" "$file_size_mib"
+
+        echo "Smoke measured: $label / par2rs"
+        run_create "$label" "par2rs" "smoke" "$block_size" "$corpus_dir" 1 "$SMOKE_CSV"
+
+        echo "Smoke measured: $label / turbo"
+        run_create "$label" "turbo" "smoke" "$block_size" "$corpus_dir" 1 "$SMOKE_CSV"
+    done < <(split_cases)
+
+    summarize_results "$SMOKE_CSV" "$SMOKE_SUMMARY_MD" 1 0 "PAR2 Create Perf Smoke Benchmark"
+    echo "smoke raw data: $SMOKE_CSV"
+    echo "smoke summary:  $SMOKE_SUMMARY_MD"
+    echo
 }
 
 summarize_perf_script() {
@@ -469,6 +543,8 @@ generate_flamegraph() {
 }
 
 last_case=""
+run_smoke_benchmarks
+
 while IFS= read -r case_spec; do
     [[ -z "$case_spec" ]] && continue
     IFS=: read -r label file_count file_size_mib block_size <<< "$case_spec"
