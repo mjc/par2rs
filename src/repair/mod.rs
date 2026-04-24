@@ -52,8 +52,6 @@ use std::fs;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 
-const MIN_REPAIR_CHUNK_SIZE: usize = 64 * 1024;
-
 pub(crate) fn calculate_repair_chunk_size(
     slice_size: usize,
     memory_limit: Option<usize>,
@@ -66,13 +64,22 @@ pub(crate) fn calculate_repair_chunk_size(
             "Memory limit must be greater than 0".to_string(),
         ));
     }
-    if slice_size <= 4 {
-        return Ok(slice_size);
+
+    let capped = limit.min(slice_size);
+    if capped < 4 {
+        if slice_size <= 4 {
+            return Ok(capped);
+        }
+        return Err(RepairError::ContextCreation(format!(
+            "Memory limit {} bytes is too small; repair requires at least 4 bytes",
+            limit
+        )));
+    }
+    if capped == 4 {
+        return Ok(capped);
     }
 
-    let min_chunk = slice_size.min(MIN_REPAIR_CHUNK_SIZE);
-    let capped = limit.min(slice_size).max(min_chunk);
-    Ok((capped & !3).max(4).min(slice_size))
+    Ok(capped & !3)
 }
 
 impl RepairContext {
@@ -162,23 +169,11 @@ impl RepairContext {
             let target_path = self.base_path.join(&file_info.file_name);
             if target_path.exists() {
                 let backup_path = Self::next_backup_path(&target_path);
-                fs::rename(&target_path, &backup_path).map_err(|source| {
-                    RepairError::FileRenameError {
-                        temp_path: target_path.clone(),
-                        final_path: backup_path.clone(),
-                        source,
-                    }
-                })?;
+                rename_file(&target_path, &backup_path)?;
                 self.record_repair_created_backup(backup_path);
             }
 
-            fs::rename(matched_path, &target_path).map_err(|source| {
-                RepairError::FileRenameError {
-                    temp_path: matched_path.clone(),
-                    final_path: target_path.clone(),
-                    source,
-                }
-            })?;
+            rename_file(matched_path, &target_path)?;
 
             restored.push(file_info.file_name.clone());
         }
@@ -1230,7 +1225,18 @@ mod tests {
             calculate_repair_chunk_size(1024 * 1024, Some(128 * 1024)).unwrap(),
             128 * 1024
         );
-        assert_eq!(calculate_repair_chunk_size(1024, Some(1)).unwrap(), 1024);
         assert!(calculate_repair_chunk_size(1024, Some(0)).is_err());
+        assert!(calculate_repair_chunk_size(1024, Some(1)).is_err());
+        assert_eq!(calculate_repair_chunk_size(1024, Some(7)).unwrap(), 4);
+        assert_eq!(
+            calculate_repair_chunk_size(1024 * 1024, Some(32 * 1024)).unwrap(),
+            32 * 1024
+        );
+    }
+
+    #[test]
+    fn repair_chunk_size_never_exceeds_small_slice_limit() {
+        assert_eq!(calculate_repair_chunk_size(1024, Some(1023)).unwrap(), 1020);
+        assert_eq!(calculate_repair_chunk_size(3, Some(3)).unwrap(), 3);
     }
 }
