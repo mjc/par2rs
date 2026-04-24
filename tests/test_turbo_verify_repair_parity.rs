@@ -75,7 +75,7 @@ fn repair_accepts_complete_extra_file_without_consuming_it() {
     .unwrap();
 
     assert!(result.is_success(), "{result:?}");
-    assert!(!target.exists());
+    assert_eq!(fs::read(target).unwrap(), b"abcdefghijkl");
     assert_eq!(fs::read(misplaced).unwrap(), b"abcdefghijkl");
 }
 

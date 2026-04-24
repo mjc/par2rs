@@ -254,12 +254,10 @@ impl RepairContext {
             };
             block_sources_map.insert(file_result.file_id, block_sources);
 
-            // Convert verify::FileStatus to repair::FileStatus. A renamed file
-            // supplied as an extra scan target is already available for reads;
-            // repair should not recreate or consume that user-supplied file.
             let status = match file_result.status {
                 crate::verify::FileStatus::Present => FileStatus::Present,
-                crate::verify::FileStatus::Renamed => FileStatus::Present,
+                crate::verify::FileStatus::Renamed if target_path.exists() => FileStatus::Corrupted,
+                crate::verify::FileStatus::Renamed => FileStatus::Missing,
                 crate::verify::FileStatus::Corrupted => FileStatus::Corrupted,
                 crate::verify::FileStatus::Missing => FileStatus::Missing,
             };
@@ -402,11 +400,11 @@ impl RepairContext {
                 .collect();
 
             if missing_slices.is_empty() {
-                if *status == FileStatus::Corrupted
+                if *status != FileStatus::Present
                     && self.has_noncanonical_block_sources(file_info, block_sources_map)
                 {
                     debug!(
-                        "File {} has all valid slices but MD5 doesn't match; rewriting",
+                        "File {} has all valid slices from noncanonical sources; rewriting",
                         file_info.file_name
                     );
                     files_to_repair.push((file_info, missing_slices));
@@ -1223,7 +1221,7 @@ pub fn repair_files_with_verification_reporter_and_loading_progress(
     );
     verification_reporter.report_verification_results(&verification_results);
 
-    let renamed_files = if verify_config.rename_only || !extra_files.is_empty() {
+    let renamed_files = if verify_config.rename_only {
         repair_context.restore_renamed_files(&verification_results)?
     } else {
         Vec::new()

@@ -148,8 +148,9 @@ fn main() -> Result<()> {
         reporter.report_verification_results(&verification_results);
     }
 
-    let repair_required =
-        verification_results.renamed_file_count > 0 || verification_results.missing_block_count > 0;
+    let repair_required = verification_results.renamed_file_count > 0
+        || verification_results.corrupted_file_count > 0
+        || verification_results.missing_block_count > 0;
     if !repair_required {
         if purge {
             par2rs::repair::RepairContext::purge_par_files_for(&file_name.to_string_lossy())?;

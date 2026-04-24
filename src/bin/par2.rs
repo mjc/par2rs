@@ -757,7 +757,11 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         );
     }
 
-    if results.missing_block_count == 0 {
+    let repair_required = results.renamed_file_count > 0
+        || results.corrupted_file_count > 0
+        || results.missing_block_count > 0;
+
+    if !repair_required {
         if purge {
             par2rs::repair::RepairContext::purge_par_files_for(&file_name.to_string_lossy())?;
         }
