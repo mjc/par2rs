@@ -51,16 +51,39 @@
 #[cfg(target_arch = "x86_64")]
 use super::super::codec::SplitMulTable;
 #[cfg(target_arch = "x86_64")]
-use super::common::{build_nibble_tables, process_slice_multiply_add_scalar};
+use super::common::{build_nibble_tables, process_slice_multiply_add_scalar, NibbleTables};
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
+
+/// Prepared AVX2 PSHUFB tables for one GF(2^16) coefficient.
+///
+/// Building these tables is pure setup work. Create hot paths keep one prepared
+/// value per `(recovery output, source input)` coefficient and reuse it for all
+/// chunks.
+#[derive(Debug, Clone)]
+#[cfg(target_arch = "x86_64")]
+pub struct Avx2PreparedCoeff {
+    low: NibbleTables,
+    high: NibbleTables,
+}
+
+/// Prepare AVX2 PSHUFB tables for a split multiplication table.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn prepare_avx2_coeff(tables: &SplitMulTable) -> Avx2PreparedCoeff {
+    Avx2PreparedCoeff {
+        low: build_nibble_tables(&tables.low),
+        high: build_nibble_tables(&tables.high),
+    }
+}
 
 /// Build nibble lookup tables for PSHUFB
 ///
 /// Wrapper around common build_nibble_tables() for backwards compatibility.
 /// Returns tables as a tuple for use with PSHUFB implementation.
 #[cfg(target_arch = "x86_64")]
+#[cfg(test)]
 fn build_pshufb_tables(table: &[u16; 256]) -> ([u8; 16], [u8; 16], [u8; 16], [u8; 16]) {
     let nibbles = build_nibble_tables(table);
     (
@@ -90,39 +113,57 @@ pub unsafe fn process_slice_multiply_add_pshufb(
     output: &mut [u8],
     tables: &SplitMulTable,
 ) {
+    let prepared = prepare_avx2_coeff(tables);
+    process_slice_multiply_add_prepared_avx2(input, output, &prepared, tables);
+}
+
+/// PSHUFB-accelerated GF(2^16) multiply-add using precomputed nibble tables.
+///
+/// # Safety
+/// Requires AVX2 and SSSE3 CPU support.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "ssse3")]
+pub unsafe fn process_slice_multiply_add_prepared_avx2(
+    input: &[u8],
+    output: &mut [u8],
+    prepared: &Avx2PreparedCoeff,
+    scalar_tables: &SplitMulTable,
+) {
     let len = input.len().min(output.len());
 
     // Need at least 32 bytes for AVX2 processing
     if len < 32 {
         // Fall back to scalar for small buffers
-        process_slice_multiply_add_scalar(input, output, tables);
+        process_slice_multiply_add_scalar(input, output, scalar_tables);
         return;
     }
 
-    // Build PSHUFB lookup tables (8 tables × 16 bytes = 128 bytes total vs 512 bytes for full tables)
-    let (low_lo_nib_lo, low_lo_nib_hi, low_hi_nib_lo, low_hi_nib_hi) =
-        build_pshufb_tables(&tables.low);
-    let (high_lo_nib_lo, high_lo_nib_hi, high_hi_nib_lo, high_hi_nib_hi) =
-        build_pshufb_tables(&tables.high);
-
     // Load tables into AVX2 registers (broadcast 128-bit to 256-bit for both lanes)
-    let low_lo_nib_lo_vec =
-        _mm256_broadcastsi128_si256(_mm_loadu_si128(low_lo_nib_lo.as_ptr() as *const __m128i));
-    let low_lo_nib_hi_vec =
-        _mm256_broadcastsi128_si256(_mm_loadu_si128(low_lo_nib_hi.as_ptr() as *const __m128i));
-    let low_hi_nib_lo_vec =
-        _mm256_broadcastsi128_si256(_mm_loadu_si128(low_hi_nib_lo.as_ptr() as *const __m128i));
-    let low_hi_nib_hi_vec =
-        _mm256_broadcastsi128_si256(_mm_loadu_si128(low_hi_nib_hi.as_ptr() as *const __m128i));
+    let low_lo_nib_lo_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
+        prepared.low.lo_nib_lo_byte.as_ptr() as *const __m128i,
+    ));
+    let low_lo_nib_hi_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
+        prepared.low.lo_nib_hi_byte.as_ptr() as *const __m128i,
+    ));
+    let low_hi_nib_lo_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
+        prepared.low.hi_nib_lo_byte.as_ptr() as *const __m128i,
+    ));
+    let low_hi_nib_hi_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
+        prepared.low.hi_nib_hi_byte.as_ptr() as *const __m128i,
+    ));
 
-    let high_lo_nib_lo_vec =
-        _mm256_broadcastsi128_si256(_mm_loadu_si128(high_lo_nib_lo.as_ptr() as *const __m128i));
-    let high_lo_nib_hi_vec =
-        _mm256_broadcastsi128_si256(_mm_loadu_si128(high_lo_nib_hi.as_ptr() as *const __m128i));
-    let high_hi_nib_lo_vec =
-        _mm256_broadcastsi128_si256(_mm_loadu_si128(high_hi_nib_lo.as_ptr() as *const __m128i));
-    let high_hi_nib_hi_vec =
-        _mm256_broadcastsi128_si256(_mm_loadu_si128(high_hi_nib_hi.as_ptr() as *const __m128i));
+    let high_lo_nib_lo_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
+        prepared.high.lo_nib_lo_byte.as_ptr() as *const __m128i,
+    ));
+    let high_lo_nib_hi_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
+        prepared.high.lo_nib_hi_byte.as_ptr() as *const __m128i,
+    ));
+    let high_hi_nib_lo_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
+        prepared.high.hi_nib_lo_byte.as_ptr() as *const __m128i,
+    ));
+    let high_hi_nib_hi_vec = _mm256_broadcastsi128_si256(_mm_loadu_si128(
+        prepared.high.hi_nib_hi_byte.as_ptr() as *const __m128i,
+    ));
 
     let mask_0x0f = _mm256_set1_epi8(0x0F);
 
@@ -220,7 +261,7 @@ pub unsafe fn process_slice_multiply_add_pshufb(
     if pos < len {
         let _remaining = len - pos;
 
-        process_slice_multiply_add_scalar(&input[pos..], &mut output[pos..], tables);
+        process_slice_multiply_add_scalar(&input[pos..], &mut output[pos..], scalar_tables);
     }
 }
 

@@ -38,7 +38,7 @@ pub mod matrix; // Type-safe matrices with const generic dimensions // Compile-t
 pub use galois::*;
 
 // Re-export aligned allocation function
-pub use aligned::alloc_aligned_vec;
+pub use aligned::{alloc_aligned_vec, AlignedVec};
 
 // Re-export type-safe matrix operations
 pub use matrix::{

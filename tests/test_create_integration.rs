@@ -209,6 +209,37 @@ fn test_create_large_file_verify_with_par2cmdline() {
 }
 
 #[test]
+fn forced_chunked_create_verifies_with_par2cmdline() {
+    if !par2_available() {
+        eprintln!("Skipping test: par2cmdline-turbo not available");
+        return;
+    }
+
+    let temp = tempdir().unwrap();
+    let test_file = temp.path().join("chunked.dat");
+    let par2_file = temp.path().join("chunked.par2");
+    create_varied_test_file(&test_file, 4096).unwrap();
+
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(par2_file.to_str().unwrap())
+        .source_files(vec![test_file])
+        .block_size(1024)
+        .recovery_block_count(2)
+        .memory_limit(64)
+        .reporter(reporter)
+        .build()
+        .unwrap();
+
+    context.create().unwrap();
+
+    assert!(
+        run_par2_verify(&par2_file).unwrap(),
+        "par2cmdline-turbo failed to verify forced chunked create"
+    );
+}
+
+#[test]
 fn test_create_with_explicit_block_size() {
     if !par2_available() {
         eprintln!("Skipping test: par2cmdline-turbo not available");

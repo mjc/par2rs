@@ -10,12 +10,13 @@ use super::packet_generator::generate_recovery_set_id;
 use super::progress::CreateReporter;
 use super::source_file::{normalize_packet_path, packet_name_from_path, SourceFileInfo};
 use super::types::CreateConfig;
+use crate::create::backend::CreateRecoveryBackend;
 use crate::domain::{BlockSize, ChunkSize, RecoverySetId, SourceBlockCount};
-use crate::reed_solomon::codec::SplitMulTable;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_MEMORY_LIMIT: usize = 1024 * 1024 * 1024; // 1 GiB
+const MAX_CREATE_CHUNK_SIZE: usize = 32 * 1024 * 1024;
 const RECOVERY_PACKET_TYPE: &[u8; 16] = b"PAR 2.0\0RecvSlic";
 
 fn default_output_base_path(output_name: &str) -> PathBuf {
@@ -70,41 +71,14 @@ fn calculate_chunk_size_impl(
     recovery_block_count: usize,
     memory_limit: usize,
 ) -> usize {
-    let block_overhead = source_block_count;
+    let block_overhead = 2 + (source_block_count + 1).min(24);
     let full_block_memory = block_size * (recovery_block_count + block_overhead);
     if full_block_memory <= memory_limit {
-        return block_size;
+        return block_size.min(MAX_CREATE_CHUNK_SIZE);
     }
     let chunk_size = memory_limit / (recovery_block_count + block_overhead);
     let aligned = chunk_size & !3;
-    aligned.clamp(4, block_size)
-}
-
-/// Pre-compute GF(2^16) multiplication tables for Reed-Solomon encoding.
-///
-/// Returns flattened tables where `index = recovery_idx * source_count + source_idx`.
-///
-/// Reference: parpar/gf16 coefficient tables
-fn compute_gf_tables(
-    base_values: &[u16],
-    first_recovery_block: u32,
-    recovery_count: usize,
-) -> Vec<SplitMulTable> {
-    use crate::reed_solomon::codec::build_split_mul_table;
-    use crate::reed_solomon::galois::Galois16;
-    (0..recovery_count)
-        .flat_map(|exp| {
-            let exponent = (first_recovery_block + exp as u32) as u16;
-            base_values
-                .iter()
-                .map(move |&b| build_split_mul_table(Galois16::new(b).pow(exponent)))
-        })
-        .collect()
-}
-
-#[inline]
-fn gf_table_index(recovery_idx: usize, source_idx: usize, source_count: usize) -> usize {
-    recovery_idx * source_count + source_idx
+    aligned.clamp(4, block_size.min(MAX_CREATE_CHUNK_SIZE))
 }
 
 /// Per-file hash data computed during `encode_and_hash_files`.
@@ -120,48 +94,6 @@ struct FileHashState {
 /// Recovery blocks paired with their exponents, as returned by `encode_and_hash_files`.
 type RecoveryBlockVec = Vec<(u16, Vec<u8>)>;
 
-struct CreateWorkBuffers {
-    input_chunks: Vec<Vec<u8>>,
-    temp_buffers: Vec<Vec<u8>>,
-    zero_padding: Vec<u8>,
-}
-
-impl CreateWorkBuffers {
-    fn new(
-        source_block_count: usize,
-        recovery_count: usize,
-        chunk_size: usize,
-        block_size: usize,
-    ) -> Self {
-        let input_chunks = (0..source_block_count)
-            .map(|_| vec![0u8; chunk_size])
-            .collect();
-        let temp_buffers = (0..recovery_count).map(|_| vec![0u8; chunk_size]).collect();
-        Self {
-            input_chunks,
-            temp_buffers,
-            zero_padding: vec![0u8; block_size],
-        }
-    }
-
-    fn prepare_input_chunk(&mut self, index: usize, len: usize) -> &mut [u8] {
-        let chunk = &mut self.input_chunks[index][..len];
-        chunk.fill(0);
-        chunk
-    }
-
-    #[cfg(test)]
-    fn temp_chunk(&mut self, index: usize, len: usize) -> &mut [u8] {
-        let chunk = &mut self.temp_buffers[index][..len];
-        chunk.fill(0);
-        chunk
-    }
-
-    fn zero_padding(&self, len: usize) -> &[u8] {
-        &self.zero_padding[..len]
-    }
-}
-
 /// Encode all source files into recovery blocks while simultaneously computing
 /// file/block hashes in a single pass.
 ///
@@ -174,38 +106,29 @@ fn encode_and_hash_files(
     block_size: u64,
     chunk_size: usize,
     source_block_count: u32,
-    gf_tables: &[SplitMulTable],
+    base_values: &[u16],
     first_recovery_block: u32,
     recovery_count: usize,
-    thread_count: u32,
     reporter: &dyn CreateReporter,
 ) -> CreateResult<(RecoveryBlockVec, Vec<FileHashState>)> {
-    use crate::checksum::{calculate_file_md5_16k, compute_file_id};
+    use crate::checksum::compute_file_id;
     use crate::create::source_file::BlockChecksum;
     use crc32fast::Hasher as Crc32Hasher;
     use md5::{Digest, Md5};
     use std::fs::File;
     use std::io::{Read, Seek};
 
-    use crate::reed_solomon::codec::{process_slice_multiply_add, process_slice_multiply_direct};
-
-    let exponents: Vec<u16> = (0..recovery_count)
-        .map(|offset| (first_recovery_block + offset as u32) as u16)
-        .collect();
-    let mut recovery_blocks: Vec<(u16, Vec<u8>)> = exponents
-        .iter()
-        .map(|&e| (e, Vec::with_capacity(block_size as usize)))
-        .collect();
-    let mut work_buffers = CreateWorkBuffers::new(
-        source_block_count as usize,
+    let mut backend = CreateRecoveryBackend::new(
+        base_values,
+        first_recovery_block,
         recovery_count,
         chunk_size,
-        block_size as usize,
     );
+    let mut recovery_blocks = backend.recovery_blocks(block_size as usize);
 
     let mut file_handles: Vec<File> = Vec::with_capacity(source_files.len());
     let mut file_md5_states: Vec<Md5> = Vec::with_capacity(source_files.len());
-    let mut file_16k_hashes: Vec<crate::domain::Md5Hash> = Vec::with_capacity(source_files.len());
+    let mut file_16k_buffers: Vec<Vec<u8>> = Vec::with_capacity(source_files.len());
 
     let mut block_md5_states: Vec<Md5> = Vec::with_capacity(source_block_count as usize);
     let mut block_crc32_states: Vec<Crc32Hasher> = Vec::with_capacity(source_block_count as usize);
@@ -215,14 +138,9 @@ fn encode_and_hash_files(
     let mut global_block_offset = 0u32;
 
     for file in source_files {
-        let hash_16k =
-            calculate_file_md5_16k(&file.path).map_err(|e| CreateError::FileReadError {
-                file: file.path.to_string_lossy().to_string(),
-                source: e,
-            })?;
-        file_16k_hashes.push(hash_16k);
         file_handles.push(open_for_reading(&file.path)?);
         file_md5_states.push(Md5::new());
+        file_16k_buffers.push(vec![0u8; (file.size as usize).min(16 * 1024)]);
 
         let block_count = file.calculate_block_count(block_size);
         file_block_meta.push((block_count, global_block_offset));
@@ -237,6 +155,7 @@ fn encode_and_hash_files(
     let mut block_offset = 0u64;
     while block_offset < block_size {
         let chunk_len = ((block_size - block_offset) as usize).min(chunk_size);
+        backend.begin_chunk(chunk_len);
 
         let mut file_block_idx = 0usize;
 
@@ -255,82 +174,40 @@ fn encode_and_hash_files(
                     block_actual - block_offset as usize
                 };
                 let bytes_to_read = bytes_available.min(chunk_len);
-                let chunk = work_buffers.prepare_input_chunk(file_block_idx, chunk_len);
-                if bytes_to_read > 0 {
-                    let file_pos = block_idx as u64 * block_size + block_offset;
-                    file_handles[file_idx]
-                        .seek(std::io::SeekFrom::Start(file_pos))
-                        .map_err(|e| CreateError::FileReadError {
-                            file: file.path.to_string_lossy().to_string(),
-                            source: e,
-                        })?;
-                    file_handles[file_idx]
-                        .read_exact(&mut chunk[..bytes_to_read])
-                        .map_err(|e| CreateError::FileReadError {
-                            file: file.path.to_string_lossy().to_string(),
-                            source: e,
-                        })?;
-                    file_md5_states[file_idx].update(&chunk[..bytes_to_read]);
+                {
+                    let chunk = backend.prepare_transfer_buffer(file_block_idx);
+                    if bytes_to_read > 0 {
+                        let file_pos = block_idx as u64 * block_size + block_offset;
+                        file_handles[file_idx]
+                            .seek(std::io::SeekFrom::Start(file_pos))
+                            .map_err(|e| CreateError::FileReadError {
+                                file: file.path.to_string_lossy().to_string(),
+                                source: e,
+                            })?;
+                        file_handles[file_idx]
+                            .read_exact(&mut chunk[..bytes_to_read])
+                            .map_err(|e| CreateError::FileReadError {
+                                file: file.path.to_string_lossy().to_string(),
+                                source: e,
+                            })?;
+                        if file_pos < 16 * 1024 {
+                            let capture_start = file_pos as usize;
+                            let capture_end = (capture_start + bytes_to_read).min(16 * 1024);
+                            let capture_len = capture_end - capture_start;
+                            file_16k_buffers[file_idx][capture_start..capture_end]
+                                .copy_from_slice(&chunk[..capture_len]);
+                        }
+                        file_md5_states[file_idx].update(&chunk[..bytes_to_read]);
+                    }
+                    block_md5_states[file_block_idx].update(&chunk[..chunk_len]);
+                    block_crc32_states[file_block_idx].update(&chunk[..chunk_len]);
                 }
-                block_md5_states[file_block_idx].update(&chunk[..bytes_to_read]);
-                block_crc32_states[file_block_idx].update(&chunk[..bytes_to_read]);
+                backend.add_transfer_input(file_block_idx, file_block_idx);
                 file_block_idx += 1;
             }
         }
 
-        // RS encode this chunk
-        if thread_count == 1 {
-            let input_chunks = &work_buffers.input_chunks;
-            let temp_buffers = &mut work_buffers.temp_buffers;
-            for (recovery_idx, (_exp, recovery_data)) in recovery_blocks.iter_mut().enumerate() {
-                let temp_buffer = &mut temp_buffers[recovery_idx][..chunk_len];
-                temp_buffer.fill(0);
-                for src_idx in 0..source_block_count as usize {
-                    let input_chunk = &input_chunks[src_idx][..chunk_len];
-                    let mul_table = &gf_tables
-                        [gf_table_index(recovery_idx, src_idx, source_block_count as usize)];
-                    if src_idx == 0 {
-                        process_slice_multiply_direct(input_chunk, temp_buffer, mul_table);
-                        recovery_data.extend_from_slice(temp_buffer);
-                    } else {
-                        let start = recovery_data.len() - chunk_len;
-                        process_slice_multiply_add(
-                            input_chunk,
-                            &mut recovery_data[start..],
-                            mul_table,
-                        );
-                    }
-                }
-            }
-        } else {
-            use rayon::prelude::*;
-            let input_chunks = &work_buffers.input_chunks;
-            let temp_buffers = &mut work_buffers.temp_buffers;
-            recovery_blocks
-                .par_iter_mut()
-                .zip(temp_buffers.par_iter_mut())
-                .enumerate()
-                .for_each(|(recovery_idx, ((_, recovery_data), temp_buffer))| {
-                    let temp_buffer = &mut temp_buffer[..chunk_len];
-                    temp_buffer.fill(0);
-                    for src_idx in 0..source_block_count as usize {
-                        let input_chunk = &input_chunks[src_idx][..chunk_len];
-                        let mul_table = &gf_tables
-                            [gf_table_index(recovery_idx, src_idx, source_block_count as usize)];
-                        if src_idx == 0 {
-                            process_slice_multiply_direct(input_chunk, temp_buffer, mul_table);
-                            recovery_data.extend_from_slice(temp_buffer);
-                        } else {
-                            let start = recovery_data.len() - chunk_len;
-                            process_slice_multiply_add(
-                                input_chunk,
-                                &mut recovery_data[start..],
-                                mul_table,
-                            );
-                        }
-                    }
-                });
-        }
+        backend.finish_chunk(&mut recovery_blocks, block_size as usize);
 
         block_offset += chunk_len as u64;
         let progress = ((block_offset as f64 / block_size as f64) * recovery_count as f64) as u32;
@@ -349,6 +226,11 @@ fn encode_and_hash_files(
         })
         .collect();
 
+    let file_16k_hashes = file_16k_buffers
+        .iter()
+        .map(|bytes| crate::domain::Md5Hash::new(Md5::digest(bytes).into()))
+        .collect::<Vec<_>>();
+
     let mut hash_states: Vec<FileHashState> = Vec::with_capacity(source_files.len());
     let mut global_block_idx = 0usize;
 
@@ -361,14 +243,6 @@ fn encode_and_hash_files(
 
         let mut checksums = Vec::with_capacity(block_count as usize);
         for block_idx in 0..block_count {
-            let is_last = block_idx == block_count - 1;
-            if is_last && file.size % block_size != 0 {
-                let actual = (file.size % block_size) as usize;
-                let padding = block_size as usize - actual;
-                let zeros = work_buffers.zero_padding(padding);
-                block_md5_states[global_block_idx].update(zeros);
-                block_crc32_states[global_block_idx].update(zeros);
-            }
             let md5_raw = block_md5_states[global_block_idx].clone().finalize();
             let mut md5_bytes = [0u8; 16];
             md5_bytes.copy_from_slice(&md5_raw);
@@ -815,21 +689,14 @@ impl CreateContext {
             ),
         );
 
-        let gf_tables = compute_gf_tables(
-            encoder.base_values(),
-            self.config.first_recovery_block,
-            self.recovery_block_count as usize,
-        );
-
         let (recovery_blocks, hash_states) = encode_and_hash_files(
             &self.source_files,
             self.block_size.as_u64(),
             chunk_size.as_usize(),
             self.source_block_count,
-            &gf_tables,
+            encoder.base_values(),
             self.config.first_recovery_block,
             self.recovery_block_count as usize,
-            self.config.thread_count,
             self.reporter.as_ref(),
         )?;
 
@@ -1091,82 +958,24 @@ mod tests {
         assert_eq!(result % 4, 0);
     }
 
-    // --- compute_gf_tables ---
-
     #[test]
-    fn gf_tables_zero_recovery_blocks_returns_empty() {
-        let base_values = vec![1u16, 2u16, 3u16];
-        let result = compute_gf_tables(&base_values, 0, 0);
-        assert!(result.is_empty());
-    }
+    fn chunk_size_uses_turbo_style_bounded_overhead() {
+        let block_size = 8 * 1024 * 1024;
+        let recovery_count = 2;
+        let source_count = 1_000;
+        let memory_limit = block_size * (recovery_count + 26);
 
-    #[test]
-    fn gf_tables_one_recovery_block_exp0_gives_identity_tables() {
-        let base_values = vec![3u16, 7u16, 255u16];
-        let result = compute_gf_tables(&base_values, 0, 1);
-        assert_eq!(result.len(), base_values.len());
-        for table in &result {
-            assert_eq!(table.low[1], 1, "x^0 table should multiply by 1");
-            assert_eq!(table.low[2], 2, "x^0 table should multiply by 1");
-        }
-    }
+        let result =
+            calculate_chunk_size_impl(block_size, source_count, recovery_count, memory_limit);
 
-    #[test]
-    fn gf_tables_shape_is_flattened_recovery_x_source() {
-        let base_values = vec![1u16, 2u16, 3u16, 4u16];
-        let recovery_count = 5;
-        let result = compute_gf_tables(&base_values, 0, recovery_count);
-        assert_eq!(result.len(), recovery_count * base_values.len());
-        assert_eq!(gf_table_index(4, 3, base_values.len()), 19);
-    }
-
-    #[test]
-    fn gf_tables_exp1_matches_base_values() {
-        let base_values = vec![2u16, 5u16, 10u16];
-        let result = compute_gf_tables(&base_values, 0, 2);
-        // exp=1: base^1 = base
-        for (i, &base) in base_values.iter().enumerate() {
-            let table = &result[gf_table_index(1, i, base_values.len())];
-            assert_eq!(table.low[1], base);
-        }
-    }
-
-    #[test]
-    fn gf_tables_respect_first_recovery_block_offset() {
-        let base_values = vec![2u16, 5u16, 10u16];
-        let result = compute_gf_tables(&base_values, 7, 1);
-
-        for (i, &base) in base_values.iter().enumerate() {
-            let expected = crate::reed_solomon::galois::Galois16::new(base)
-                .pow(7)
-                .value();
-            let table = &result[gf_table_index(0, i, base_values.len())];
-            assert_eq!(table.low[1], expected);
-        }
-    }
-
-    #[test]
-    fn work_buffers_reuse_allocated_chunk_storage() {
-        let mut buffers = CreateWorkBuffers::new(2, 1, 16, 32);
-        let input_ptr = buffers.input_chunks[0].as_ptr();
-        let temp_ptr = buffers.temp_buffers[0].as_ptr();
-
-        buffers.prepare_input_chunk(0, 16)[0] = 7;
-        buffers.temp_chunk(0, 16)[0] = 9;
-        buffers.prepare_input_chunk(0, 8);
-        buffers.temp_chunk(0, 8);
-
-        assert_eq!(buffers.input_chunks[0].as_ptr(), input_ptr);
-        assert_eq!(buffers.temp_buffers[0].as_ptr(), temp_ptr);
-        assert_eq!(buffers.input_chunks[0][0], 0);
-        assert_eq!(buffers.temp_buffers[0][0], 0);
+        assert_eq!(result, block_size);
     }
 
     #[test]
     fn chunk_size_respects_explicit_memory_limit() {
         let block_size = 1024;
         let result = calculate_chunk_size_impl(block_size, 2, 2, 128);
-        assert_eq!(result, 32);
+        assert_eq!(result, 16);
     }
 
     #[test]

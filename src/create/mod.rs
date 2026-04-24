@@ -28,6 +28,7 @@
 //! # Ok::<(), anyhow::Error>(())
 //! ```
 
+pub mod backend;
 pub mod builder;
 pub mod cli;
 pub mod context;
