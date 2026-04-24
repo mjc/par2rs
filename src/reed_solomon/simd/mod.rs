@@ -26,7 +26,7 @@ pub use portable::process_slice_multiply_add_portable_simd;
 pub use pshufb::{
     prepare_avx2_coeff, process_slice_multiply_add_prepared_avx2,
     process_slice_multiply_add_pshufb, process_slices_multiply_add_prepared_avx2_x2,
-    Avx2PreparedCoeff,
+    process_slices_multiply_add_prepared_avx2_x4, Avx2PreparedCoeff,
 };
 
 /// SIMD implementation to use for the current platform

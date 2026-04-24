@@ -155,6 +155,7 @@ fn encode_and_hash_files(
             first_recovery_block,
             recovery_count,
             chunk_size,
+            thread_count,
         );
         let mut recovery_blocks = backend.recovery_blocks(block_size as usize);
 

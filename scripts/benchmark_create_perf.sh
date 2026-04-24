@@ -84,10 +84,11 @@ RAW_CSV="$RUN_ROOT/raw.csv"
 SUMMARY_MD="$RUN_ROOT/summary.md"
 SMOKE_CSV="$RUN_ROOT/smoke.csv"
 SMOKE_SUMMARY_MD="$RUN_ROOT/smoke-summary.md"
+PRESERVE_WORK=0
 mkdir -p "$WORK_ROOT"
 
 cleanup() {
-    if [[ "$KEEP_WORK" != "1" ]]; then
+    if [[ "$KEEP_WORK" != "1" && "$PRESERVE_WORK" != "1" ]]; then
         rm -rf "$WORK_ROOT"
     fi
 }
@@ -105,7 +106,7 @@ echo "Building par2rs release binary..."
 
 write_csv_header() {
     local csv_file="$1"
-    printf 'case,tool,run,status,validation_status,instructions,cycles,branches,branch_misses,cache_references,cache_misses,task_clock_msec,context_switches,cpu_migrations,page_faults,wall_seconds\n' > "$csv_file"
+    printf 'case,tool,selected_method,run,status,validation_status,instructions,cycles,branches,branch_misses,cache_references,cache_misses,task_clock_msec,context_switches,cpu_migrations,page_faults,wall_seconds\n' > "$csv_file"
 }
 
 write_csv_header "$RAW_CSV"
@@ -192,9 +193,26 @@ run_create() {
     link_corpus "$corpus_dir" "$run_dir"
 
     local -a cmd
-    if [[ "$tool" == "par2rs" ]]; then
+    local selected_method="$tool"
+    local -a env_prefix=()
+    if [[ "$tool" == par2rs-* ]]; then
+        case "$tool" in
+            par2rs-pshufb)
+                selected_method="pshufb"
+                env_prefix=(env PAR2RS_CREATE_GF16=pshufb)
+                ;;
+            par2rs-xor-jit)
+                selected_method="xor-jit"
+                env_prefix=(env PAR2RS_CREATE_GF16=xor-jit)
+                ;;
+            *)
+                echo "error: unknown par2rs variant: $tool" >&2
+                return 2
+                ;;
+        esac
         cmd=("$PAR2RS_BIN" c -q -q "-s$block_size" "-r$REDUNDANCY" "-n$RECOVERY_FILES")
     else
+        selected_method="auto"
         cmd=("$PAR2CMD_BIN" c -q -q "-s$block_size" "-r$REDUNDANCY" "-n$RECOVERY_FILES")
     fi
     if [[ "$THREADS" != "0" ]]; then
@@ -207,7 +225,7 @@ run_create() {
     (
         cd "$run_dir"
         sources=(./*.bin)
-        perf stat -x, -o "$perf_file" -e "$PERF_EVENTS" -- "${cmd[@]}" out.par2 "${sources[@]}" >/dev/null
+        perf stat -x, -o "$perf_file" -e "$PERF_EVENTS" -- "${env_prefix[@]}" "${cmd[@]}" out.par2 "${sources[@]}" >/dev/null
     )
     status="$?"
     set -e
@@ -220,7 +238,7 @@ run_create() {
         verifier_stdout="$RUN_ROOT/verify-$case_label-$tool-$run_number.stdout"
         verifier_stderr="$RUN_ROOT/verify-$case_label-$tool-$run_number.stderr"
         set +e
-        if [[ "$tool" == "par2rs" ]]; then
+        if [[ "$tool" == par2rs-* ]]; then
             (cd "$run_dir" && "$PAR2CMD_BIN" v -q -q out.par2 >"$verifier_stdout" 2>"$verifier_stderr")
         else
             (cd "$run_dir" && "$PAR2RS_BIN" verify -q -q out.par2 >"$verifier_stdout" 2>"$verifier_stderr")
@@ -233,7 +251,7 @@ run_create() {
                 echo "quiet validation failed with status $validation_status; rerunning verbosely"
             } >> "$verifier_stderr"
             set +e
-            if [[ "$tool" == "par2rs" ]]; then
+            if [[ "$tool" == par2rs-* ]]; then
                 (cd "$run_dir" && "$PAR2CMD_BIN" v out.par2 >>"$verifier_stdout" 2>>"$verifier_stderr")
             else
                 (cd "$run_dir" && "$PAR2RS_BIN" verify out.par2 >>"$verifier_stdout" 2>>"$verifier_stderr")
@@ -261,8 +279,8 @@ run_create() {
         context_switches="$(perf_value "$perf_file" context-switches)"
         cpu_migrations="$(perf_value "$perf_file" cpu-migrations)"
         page_faults="$(perf_value "$perf_file" page-faults)"
-        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-            "$case_label" "$tool" "$run_number" "$status" "$validation_status" \
+        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+            "$case_label" "$tool" "$selected_method" "$run_number" "$status" "$validation_status" \
             "$instructions" "$cycles" "$branches" "$branch_misses" \
             "$cache_references" "$cache_misses" "$task_clock" \
             "$context_switches" "$cpu_migrations" "$page_faults" "$wall_seconds" >> "$output_csv"
@@ -271,6 +289,7 @@ run_create() {
     if [[ "$status" == "0" && "$validation_status" == "0" ]]; then
         rm -rf "$run_dir"
     elif [[ "$KEEP_WORK" != "1" ]]; then
+        PRESERVE_WORK=1
         echo "preserving failed run directory: $run_dir" >&2
     fi
     if [[ "$status" != "0" ]]; then
@@ -353,25 +372,28 @@ with open(summary_md, "w") as out:
     out.write("- primary signal: Linux perf `instructions`\n\n")
 
     out.write("## Relative Summary\n\n")
-    out.write("| case | par2rs instructions | turbo instructions | par2rs/turbo | par2rs cycles | turbo cycles | par2rs/turbo cycles |\n")
-    out.write("|---|---:|---:|---:|---:|---:|---:|\n")
+    out.write("| case | tool | method | instructions | cycles | wall seconds | effective CPU |\n")
+    out.write("|---|---|---|---:|---:|---:|---:|\n")
     for case in cases:
-        p_instr = stats(number(r, "instructions") for r in groups[(case, "par2rs")])
-        t_instr = stats(number(r, "instructions") for r in groups[(case, "turbo")])
-        p_cycles = stats(number(r, "cycles") for r in groups[(case, "par2rs")])
-        t_cycles = stats(number(r, "cycles") for r in groups[(case, "turbo")])
-        instr_ratio = p_instr[0] / t_instr[0] if p_instr and t_instr and t_instr[0] else None
-        cycle_ratio = p_cycles[0] / t_cycles[0] if p_cycles and t_cycles and t_cycles[0] else None
-        out.write(
-            f"| {case} | {fmt(p_instr[0] if p_instr else None)} | {fmt(t_instr[0] if t_instr else None)} | "
-            f"{fmt(instr_ratio)} | {fmt(p_cycles[0] if p_cycles else None)} | {fmt(t_cycles[0] if t_cycles else None)} | {fmt(cycle_ratio)} |\n"
-        )
+        case_tools = sorted({row["tool"] for row in rows if row["case"] == case})
+        for tool in case_tools:
+            group = groups[(case, tool)]
+            method = group[0].get("selected_method", tool) if group else tool
+            instr = stats(number(r, "instructions") for r in group)
+            cycles = stats(number(r, "cycles") for r in group)
+            wall = stats(number(r, "wall_seconds") for r in group)
+            task_clock = stats(number(r, "task_clock_msec") for r in group)
+            effective_cpu = task_clock[0] / (wall[0] * 1000) if task_clock and wall and wall[0] else None
+            out.write(
+                f"| {case} | {tool} | {method} | {fmt(instr[0] if instr else None)} | "
+                f"{fmt(cycles[0] if cycles else None)} | {fmt(wall[0] if wall else None)} | {fmt(effective_cpu)} |\n"
+            )
 
     out.write("\n## Detailed Stats\n\n")
     out.write("| case | tool | metric | n | mean | stddev | cv % | min | max |\n")
     out.write("|---|---|---|---:|---:|---:|---:|---:|---:|\n")
     for case in cases:
-        for tool in ("par2rs", "turbo"):
+        for tool in sorted({row["tool"] for row in rows if row["case"] == case}):
             group = groups[(case, tool)]
             failures = [r for r in group if r["status"] != "0"]
             validation_failures = [r for r in group if r.get("validation_status", "0") != "0"]
@@ -405,11 +427,14 @@ run_smoke_benchmarks() {
         echo "Smoke preparing '$label': ${file_count}x${file_size_mib}MiB, block size ${block_size}"
         make_corpus "$case_dir" "$file_count" "$file_size_mib"
 
-        echo "Smoke measured: $label / par2rs"
-        run_create "$label" "par2rs" "smoke" "$block_size" "$corpus_dir" 1 "$SMOKE_CSV"
+        echo "Smoke measured: $label / par2rs-pshufb"
+        run_create "$label" "par2rs-pshufb" "smoke" "$block_size" "$corpus_dir" 1 "$SMOKE_CSV"
 
-        echo "Smoke measured: $label / turbo"
-        run_create "$label" "turbo" "smoke" "$block_size" "$corpus_dir" 1 "$SMOKE_CSV"
+        echo "Smoke measured: $label / par2rs-xor-jit"
+        run_create "$label" "par2rs-xor-jit" "smoke" "$block_size" "$corpus_dir" 1 "$SMOKE_CSV"
+
+        echo "Smoke measured: $label / turbo-auto"
+        run_create "$label" "turbo-auto" "smoke" "$block_size" "$corpus_dir" 1 "$SMOKE_CSV"
     done < <(split_cases)
 
     summarize_results "$SMOKE_CSV" "$SMOKE_SUMMARY_MD" 1 0 "PAR2 Create Perf Smoke Benchmark"
@@ -559,7 +584,7 @@ while IFS= read -r case_spec; do
     echo "Preparing case '$label': ${file_count}x${file_size_mib}MiB, block size ${block_size}"
     make_corpus "$case_dir" "$file_count" "$file_size_mib"
 
-    for tool in par2rs turbo; do
+    for tool in par2rs-pshufb par2rs-xor-jit turbo-auto; do
         echo "Warmup: $label / $tool"
         for run in $(seq 1 "$WARMUP_RUNS"); do
             run_create "$label" "$tool" "warmup-$run" "$block_size" "$corpus_dir" 0

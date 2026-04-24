@@ -5,31 +5,109 @@ use crate::reed_solomon::codec::{
 };
 use crate::reed_solomon::galois::Galois16;
 use crate::reed_solomon::AlignedVec;
-use rayon::prelude::*;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
 
 #[cfg(target_arch = "x86_64")]
 use crate::reed_solomon::simd::{
     detect_simd_support, prepare_avx2_coeff, process_slice_multiply_add_prepared_avx2,
-    process_slices_multiply_add_prepared_avx2_x2, Avx2PreparedCoeff, SimdLevel,
+    process_slices_multiply_add_prepared_avx2_x2, process_slices_multiply_add_prepared_avx2_x4,
+    Avx2PreparedCoeff, SimdLevel,
 };
 
-const DEFAULT_INPUT_BATCH_SIZE: usize = 12;
+const DEFAULT_INPUT_GROUPING: usize = 12;
 const TRANSFER_BUFFER_COUNT: usize = 2;
+const CREATE_SEGMENT_SIZE: usize = 1024 * 1024;
+const AVX2_ALIGNMENT: usize = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateGf16Method {
+    Auto,
+    Avx2PshufbPrepared,
+    Avx2XorJit,
+    Scalar,
+}
+
+impl CreateGf16Method {
+    fn from_env() -> Self {
+        match std::env::var("PAR2RS_CREATE_GF16") {
+            Ok(value) => match value.to_ascii_lowercase().as_str() {
+                "auto" => Self::Auto,
+                "pshufb" | "avx2-pshufb" | "avx2_pshufb" => Self::Avx2PshufbPrepared,
+                "xor-jit" | "xor_jit" | "xorit" | "avx2-xor-jit" => Self::Avx2XorJit,
+                "scalar" => Self::Scalar,
+                _ => Self::Auto,
+            },
+            Err(_) => Self::Auto,
+        }
+    }
+
+    fn resolve(self) -> Self {
+        match self {
+            Self::Auto => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    if matches!(detect_simd_support(), SimdLevel::Avx2) {
+                        return Self::Avx2PshufbPrepared;
+                    }
+                }
+                Self::Scalar
+            }
+            Self::Avx2PshufbPrepared => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    if matches!(detect_simd_support(), SimdLevel::Avx2) {
+                        return Self::Avx2PshufbPrepared;
+                    }
+                }
+                Self::Scalar
+            }
+            Self::Avx2XorJit => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    if matches!(detect_simd_support(), SimdLevel::Avx2) {
+                        return Self::Avx2XorJit;
+                    }
+                }
+                Self::Scalar
+            }
+            Self::Scalar => Self::Scalar,
+        }
+    }
+
+    #[inline]
+    fn ideal_input_multiple(self) -> usize {
+        match self {
+            Self::Auto | Self::Avx2PshufbPrepared | Self::Avx2XorJit => 4,
+            Self::Scalar => 1,
+        }
+    }
+
+    #[inline]
+    fn ideal_segment_len(self) -> usize {
+        match self {
+            Self::Auto | Self::Avx2PshufbPrepared | Self::Avx2XorJit => CREATE_SEGMENT_SIZE,
+            Self::Scalar => CREATE_SEGMENT_SIZE / 2,
+        }
+    }
+}
 
 /// Prepared coefficient for one `(recovery output, source input)` pair.
-pub struct Gf16Coeff {
+pub struct CreateCoeff {
     pub value: u16,
     pub split: SplitMulTable,
     #[cfg(target_arch = "x86_64")]
     pub avx2: Option<Avx2PreparedCoeff>,
 }
 
-impl Gf16Coeff {
+pub type Gf16Coeff = CreateCoeff;
+
+impl CreateCoeff {
     #[inline]
-    fn new(value: u16) -> Self {
+    fn new(value: u16, prepare_pshufb: bool) -> Self {
         let split = build_split_mul_table(Galois16::new(value));
         #[cfg(target_arch = "x86_64")]
-        let avx2 = Some(prepare_avx2_coeff(&split));
+        let avx2 = prepare_pshufb.then(|| prepare_avx2_coeff(&split));
 
         Self {
             value,
@@ -40,21 +118,45 @@ impl Gf16Coeff {
     }
 }
 
+pub struct StagingArea {
+    inputs: AlignedVec,
+    source_indices: Vec<usize>,
+    batch_len: usize,
+}
+
+impl StagingArea {
+    fn new(input_grouping: usize, aligned_chunk_len: usize) -> Self {
+        Self {
+            inputs: AlignedVec::new_zeroed(input_grouping * aligned_chunk_len),
+            source_indices: vec![0; input_grouping],
+            batch_len: 0,
+        }
+    }
+
+    #[inline]
+    fn slot_mut(&mut self, slot: usize, aligned_chunk_len: usize, chunk_len: usize) -> &mut [u8] {
+        let start = slot * aligned_chunk_len;
+        let end = start + chunk_len;
+        &mut self.inputs[start..end]
+    }
+}
+
 /// Create-side recovery backend with all hot-path storage owned up front.
 pub struct CreateRecoveryBackend {
-    pub recovery_exponents: Vec<u16>,
     pub source_count: usize,
+    pub recovery_exponents: Vec<u16>,
+    pub max_chunk_len: usize,
     pub chunk_len: usize,
-    pub output_chunks: Vec<AlignedVec>,
-    pub input_staging: Vec<AlignedVec>,
-    pub coeffs: Vec<Gf16Coeff>,
-    #[cfg(target_arch = "x86_64")]
-    pub batch_coeffs: Vec<Avx2PreparedCoeff>,
-    transfer_buffers: Vec<AlignedVec>,
-    batch_source_indices: Vec<usize>,
-    batch_len: usize,
-    #[cfg(target_arch = "x86_64")]
-    simd_level: SimdLevel,
+    pub method: CreateGf16Method,
+    pub input_grouping: usize,
+    transfer_buffers: [AlignedVec; TRANSFER_BUFFER_COUNT],
+    pub staging: Vec<StagingArea>,
+    pub output_chunks: AlignedVec,
+    pub coeffs: Vec<CreateCoeff>,
+    workers: CreateWorkerPool,
+    aligned_chunk_len: usize,
+    active_staging: usize,
+    job_storage: Vec<ComputeJob>,
 }
 
 impl CreateRecoveryBackend {
@@ -63,12 +165,20 @@ impl CreateRecoveryBackend {
         first_recovery_block: u32,
         recovery_count: usize,
         max_chunk_len: usize,
+        thread_count: usize,
     ) -> Self {
+        let requested_method = CreateGf16Method::from_env();
+        let method = requested_method.resolve();
         let source_count = base_values.len();
+        let aligned_chunk_len = align_up(max_chunk_len, AVX2_ALIGNMENT);
+        let input_grouping = input_grouping(source_count, method);
         let recovery_exponents = (0..recovery_count)
             .map(|offset| (first_recovery_block + offset as u32) as u16)
             .collect::<Vec<_>>();
-
+        let prepare_pshufb = matches!(
+            method,
+            CreateGf16Method::Avx2PshufbPrepared | CreateGf16Method::Avx2XorJit
+        );
         let coeffs = recovery_exponents
             .iter()
             .flat_map(|&exponent| {
@@ -76,116 +186,139 @@ impl CreateRecoveryBackend {
                     .iter()
                     .map(move |&base| Galois16::new(base).pow(exponent).value())
             })
-            .map(Gf16Coeff::new)
+            .map(|value| CreateCoeff::new(value, prepare_pshufb))
             .collect::<Vec<_>>();
-
-        #[cfg(target_arch = "x86_64")]
-        let batch_coeffs = coeffs
-            .iter()
-            .filter_map(|coeff| coeff.avx2.clone())
-            .collect::<Vec<_>>();
+        let worker_count = thread_count.max(1);
+        let max_job_count = max_compute_jobs(max_chunk_len, recovery_count, worker_count, method);
 
         Self {
-            recovery_exponents,
             source_count,
+            recovery_exponents,
+            max_chunk_len,
             chunk_len: 0,
-            output_chunks: (0..recovery_count)
-                .map(|_| AlignedVec::new_zeroed(max_chunk_len))
-                .collect(),
-            input_staging: (0..DEFAULT_INPUT_BATCH_SIZE)
-                .map(|_| AlignedVec::new_zeroed(max_chunk_len))
-                .collect(),
+            method,
+            input_grouping,
+            transfer_buffers: [
+                AlignedVec::new_zeroed(aligned_chunk_len),
+                AlignedVec::new_zeroed(aligned_chunk_len),
+            ],
+            staging: vec![
+                StagingArea::new(input_grouping, aligned_chunk_len),
+                StagingArea::new(input_grouping, aligned_chunk_len),
+            ],
+            output_chunks: AlignedVec::new_zeroed(recovery_count * aligned_chunk_len),
             coeffs,
-            #[cfg(target_arch = "x86_64")]
-            batch_coeffs,
-            transfer_buffers: (0..TRANSFER_BUFFER_COUNT)
-                .map(|_| AlignedVec::new_zeroed(max_chunk_len))
-                .collect(),
-            batch_source_indices: vec![0; DEFAULT_INPUT_BATCH_SIZE],
-            batch_len: 0,
-            #[cfg(target_arch = "x86_64")]
-            simd_level: detect_simd_support(),
+            workers: CreateWorkerPool::new(worker_count, max_job_count),
+            aligned_chunk_len,
+            active_staging: 0,
+            job_storage: vec![ComputeJob::default(); max_job_count],
         }
     }
 
     #[inline]
     pub fn begin_chunk(&mut self, chunk_len: usize) {
         self.chunk_len = chunk_len;
-        self.batch_len = 0;
+        self.active_staging = 0;
+        self.staging
+            .iter_mut()
+            .for_each(|staging| staging.batch_len = 0);
 
+        debug_assert!(chunk_len <= self.max_chunk_len);
         debug_assert_eq!(
             self.coeffs.len(),
             self.recovery_exponents.len() * self.source_count
         );
+        debug_assert!(self
+            .staging
+            .iter()
+            .all(|staging| (staging.inputs.as_ptr() as usize).is_multiple_of(AVX2_ALIGNMENT)));
+        debug_assert!((self.output_chunks.as_ptr() as usize).is_multiple_of(AVX2_ALIGNMENT));
+        debug_assert!(
+            self.output_chunks.len() >= self.recovery_exponents.len() * self.aligned_chunk_len
+        );
+        debug_assert!(self.workers.capacity() >= self.job_storage.len());
         #[cfg(target_arch = "x86_64")]
-        debug_assert_eq!(self.batch_coeffs.len(), self.coeffs.len());
-        debug_assert!(self
-            .input_staging
-            .iter()
-            .all(|buffer| (buffer.as_ptr() as usize).is_multiple_of(32)));
-        debug_assert!(self
-            .output_chunks
-            .iter()
-            .all(|buffer| chunk_len <= buffer.len()));
+        debug_assert!(
+            self.method != CreateGf16Method::Avx2PshufbPrepared
+                || self.coeffs.iter().all(|c| c.avx2.is_some())
+        );
 
-        self.output_chunks
-            .iter_mut()
-            .for_each(|chunk| chunk[..chunk_len].fill(0));
+        self.output_chunks.fill(0);
     }
 
     #[inline]
-    pub fn prepare_transfer_buffer(&mut self, ring_index: usize) -> &mut [u8] {
-        let idx = ring_index % self.transfer_buffers.len();
+    pub fn transfer_buffer(&mut self, ring_index: usize) -> &mut [u8] {
+        let idx = ring_index % TRANSFER_BUFFER_COUNT;
         let chunk = &mut self.transfer_buffers[idx][..self.chunk_len];
         chunk.fill(0);
         chunk
     }
 
     #[inline]
+    pub fn prepare_transfer_buffer(&mut self, ring_index: usize) -> &mut [u8] {
+        self.transfer_buffer(ring_index)
+    }
+
+    #[inline]
     pub fn add_input(&mut self, source_idx: usize, input_chunk: &[u8]) {
         debug_assert!(source_idx < self.source_count);
         debug_assert_eq!(input_chunk.len(), self.chunk_len);
-        debug_assert!(self.batch_len < self.input_staging.len());
+        let staging_idx = self.active_staging;
+        let staging = &mut self.staging[staging_idx];
+        debug_assert!(staging.batch_len < self.input_grouping);
 
-        let slot = self.batch_len;
-        self.input_staging[slot][..self.chunk_len].copy_from_slice(input_chunk);
-        self.batch_source_indices[slot] = source_idx;
-        self.batch_len += 1;
+        let slot = staging.batch_len;
+        staging
+            .slot_mut(slot, self.aligned_chunk_len, self.chunk_len)
+            .copy_from_slice(input_chunk);
+        staging.source_indices[slot] = source_idx;
+        staging.batch_len += 1;
 
-        if self.batch_len == self.input_staging.len() {
-            self.flush_batch();
+        if staging.batch_len == self.input_grouping {
+            self.flush_active_staging();
         }
     }
 
     #[inline]
     pub fn add_transfer_input(&mut self, source_idx: usize, ring_index: usize) {
-        let idx = ring_index % self.transfer_buffers.len();
+        let idx = ring_index % TRANSFER_BUFFER_COUNT;
+        debug_assert!(source_idx < self.source_count);
         debug_assert!(self.chunk_len <= self.transfer_buffers[idx].len());
-        debug_assert!(self.batch_len < self.input_staging.len());
+        let staging_idx = self.active_staging;
+        let staging = &mut self.staging[staging_idx];
+        debug_assert!(staging.batch_len < self.input_grouping);
 
-        let slot = self.batch_len;
-        self.input_staging[slot][..self.chunk_len]
+        let slot = staging.batch_len;
+        staging
+            .slot_mut(slot, self.aligned_chunk_len, self.chunk_len)
             .copy_from_slice(&self.transfer_buffers[idx][..self.chunk_len]);
-        self.batch_source_indices[slot] = source_idx;
-        self.batch_len += 1;
+        staging.source_indices[slot] = source_idx;
+        staging.batch_len += 1;
 
-        if self.batch_len == self.input_staging.len() {
-            self.flush_batch();
+        if staging.batch_len == self.input_grouping {
+            self.flush_active_staging();
         }
     }
 
     #[inline]
-    pub fn finish_chunk(&mut self, recovery_blocks: &mut [(u16, Vec<u8>)], block_size: usize) {
-        self.flush_batch();
+    pub fn end_input(&mut self) {
+        self.flush_active_staging();
+    }
 
-        self.output_chunks
-            .iter()
-            .zip(recovery_blocks.iter_mut())
-            .for_each(|(output_chunk, (_, recovery_data))| {
+    #[inline]
+    pub fn finish_chunk(&mut self, recovery_blocks: &mut [(u16, Vec<u8>)], block_size: usize) {
+        self.end_input();
+
+        recovery_blocks
+            .iter_mut()
+            .enumerate()
+            .for_each(|(recovery_idx, (_, recovery_data))| {
                 debug_assert!(recovery_data.capacity() >= block_size);
                 debug_assert!(recovery_data.len() + self.chunk_len <= recovery_data.capacity());
-                debug_assert!(self.chunk_len <= output_chunk.len());
-                recovery_data.extend_from_slice(&output_chunk[..self.chunk_len]);
+                let start = recovery_idx * self.aligned_chunk_len;
+                let end = start + self.chunk_len;
+                debug_assert!(end <= self.output_chunks.len());
+                recovery_data.extend_from_slice(&self.output_chunks[start..end]);
             });
     }
 
@@ -198,144 +331,447 @@ impl CreateRecoveryBackend {
     }
 
     #[inline]
-    fn flush_batch(&mut self) {
-        if self.batch_len == 0 {
+    pub fn selected_method(&self) -> CreateGf16Method {
+        self.method
+    }
+
+    #[inline]
+    fn flush_active_staging(&mut self) {
+        let staging_idx = self.active_staging;
+        if self.staging[staging_idx].batch_len == 0 {
             return;
         }
 
-        let chunk_len = self.chunk_len;
-        let source_count = self.source_count;
-        let batch_len = self.batch_len;
-        let coeffs = &self.coeffs;
-        let input_staging = &self.input_staging;
-        let source_indices = &self.batch_source_indices;
-        #[cfg(target_arch = "x86_64")]
-        let simd_level = self.simd_level;
+        let job_count = self.build_compute_jobs(staging_idx);
+        self.workers.run(&self.job_storage[..job_count]);
+        self.staging[staging_idx].batch_len = 0;
+        self.active_staging = (self.active_staging + 1) % self.staging.len();
+    }
 
-        self.output_chunks
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(recovery_idx, output_chunk)| {
-                let output = &mut output_chunk[..chunk_len];
-                #[cfg(target_arch = "x86_64")]
-                if matches!(simd_level, SimdLevel::Avx2) {
-                    Self::process_batch_add_avx2_x2(
-                        recovery_idx,
-                        source_count,
-                        batch_len,
-                        input_staging,
-                        source_indices,
-                        coeffs,
-                        output,
-                    );
+    fn build_compute_jobs(&mut self, staging_idx: usize) -> usize {
+        let worker_count = self.workers.worker_count();
+        let recovery_count = self.recovery_exponents.len();
+        let segment_len = align_down(
+            self.method
+                .ideal_segment_len()
+                .min(self.chunk_len)
+                .max(AVX2_ALIGNMENT),
+            AVX2_ALIGNMENT,
+        )
+        .max(AVX2_ALIGNMENT);
+        let segment_count = self.chunk_len.div_ceil(segment_len);
+        let output_groups = if segment_count < worker_count {
+            worker_count
+                .div_ceil(segment_count)
+                .min(recovery_count)
+                .max(1)
+        } else {
+            1
+        };
+        let outputs_per_group = recovery_count.div_ceil(output_groups);
+        let staging = &self.staging[staging_idx];
+        debug_assert!(staging.batch_len <= self.input_grouping);
+        debug_assert!(self.coeffs.len() == recovery_count * self.source_count);
+
+        let mut job_count = 0;
+        for segment_idx in 0..segment_count {
+            let start = segment_idx * segment_len;
+            let len = (self.chunk_len - start).min(segment_len);
+            for output_group in 0..output_groups {
+                let output_start = output_group * outputs_per_group;
+                let output_end = ((output_group + 1) * outputs_per_group).min(recovery_count);
+                if output_start == output_end {
+                    continue;
+                }
+                debug_assert!(job_count < self.job_storage.len());
+                self.job_storage[job_count] = ComputeJob {
+                    method: self.method,
+                    input_base: staging.inputs.as_ptr() as usize,
+                    output_base: self.output_chunks.as_ptr() as usize,
+                    coeffs: self.coeffs.as_ptr() as usize,
+                    source_indices: staging.source_indices.as_ptr() as usize,
+                    source_count: self.source_count,
+                    batch_len: staging.batch_len,
+                    aligned_chunk_len: self.aligned_chunk_len,
+                    segment_start: start,
+                    segment_len: len,
+                    output_start,
+                    output_end,
+                };
+                job_count += 1;
+            }
+        }
+        job_count
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct ComputeJob {
+    method: CreateGf16Method,
+    input_base: usize,
+    output_base: usize,
+    coeffs: usize,
+    source_indices: usize,
+    source_count: usize,
+    batch_len: usize,
+    aligned_chunk_len: usize,
+    segment_start: usize,
+    segment_len: usize,
+    output_start: usize,
+    output_end: usize,
+}
+
+impl Default for CreateGf16Method {
+    fn default() -> Self {
+        Self::Scalar
+    }
+}
+
+struct CreateWorkerPool {
+    shared: Arc<WorkerShared>,
+    handles: Vec<JoinHandle<()>>,
+}
+
+struct WorkerShared {
+    state: Mutex<WorkerState>,
+    ready: Condvar,
+    done: Condvar,
+}
+
+struct WorkerState {
+    jobs: Vec<ComputeJob>,
+    job_count: usize,
+    next_job: usize,
+    remaining_jobs: usize,
+    generation: u64,
+    stop: bool,
+}
+
+impl CreateWorkerPool {
+    fn new(worker_count: usize, max_jobs: usize) -> Self {
+        let shared = Arc::new(WorkerShared {
+            state: Mutex::new(WorkerState {
+                jobs: vec![ComputeJob::default(); max_jobs.max(1)],
+                job_count: 0,
+                next_job: 0,
+                remaining_jobs: 0,
+                generation: 0,
+                stop: false,
+            }),
+            ready: Condvar::new(),
+            done: Condvar::new(),
+        });
+        let handles = (0..worker_count)
+            .map(|_| {
+                let shared = Arc::clone(&shared);
+                std::thread::spawn(move || worker_loop(shared))
+            })
+            .collect::<Vec<_>>();
+
+        Self { shared, handles }
+    }
+
+    #[inline]
+    fn worker_count(&self) -> usize {
+        self.handles.len().max(1)
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        self.shared.state.lock().unwrap().jobs.len()
+    }
+
+    fn run(&self, jobs: &[ComputeJob]) {
+        if jobs.is_empty() {
+            return;
+        }
+
+        let mut state = self.shared.state.lock().unwrap();
+        debug_assert!(jobs.len() <= state.jobs.len());
+        state.jobs[..jobs.len()].copy_from_slice(jobs);
+        state.job_count = jobs.len();
+        state.next_job = 0;
+        state.remaining_jobs = jobs.len();
+        state.generation = state.generation.wrapping_add(1);
+        self.shared.ready.notify_all();
+
+        while state.remaining_jobs != 0 {
+            state = self.shared.done.wait(state).unwrap();
+        }
+    }
+}
+
+impl Drop for CreateWorkerPool {
+    fn drop(&mut self) {
+        {
+            let mut state = self.shared.state.lock().unwrap();
+            state.stop = true;
+            state.generation = state.generation.wrapping_add(1);
+        }
+        self.shared.ready.notify_all();
+        while let Some(handle) = self.handles.pop() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn worker_loop(shared: Arc<WorkerShared>) {
+    let mut seen_generation = 0u64;
+    loop {
+        let job = {
+            let mut state = shared.state.lock().unwrap();
+            loop {
+                if state.stop {
                     return;
                 }
-
-                (0..batch_len).for_each(|batch_idx| {
-                    let source_idx = source_indices[batch_idx];
-                    let coeff = &coeffs[gf_coeff_index(recovery_idx, source_idx, source_count)];
-                    let input = &input_staging[batch_idx][..chunk_len];
-                    #[cfg(target_arch = "x86_64")]
-                    Self::process_input_add(input, output, coeff, simd_level);
-                    #[cfg(not(target_arch = "x86_64"))]
-                    Self::process_input_add(input, output, coeff);
-                });
-            });
-
-        self.batch_len = 0;
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[inline]
-    fn process_batch_add_avx2_x2(
-        recovery_idx: usize,
-        source_count: usize,
-        batch_len: usize,
-        input_staging: &[AlignedVec],
-        source_indices: &[usize],
-        coeffs: &[Gf16Coeff],
-        output: &mut [u8],
-    ) {
-        let mut batch_idx = 0;
-        while batch_idx + 1 < batch_len {
-            let source_a = source_indices[batch_idx];
-            let source_b = source_indices[batch_idx + 1];
-            let coeff_a = &coeffs[gf_coeff_index(recovery_idx, source_a, source_count)];
-            let coeff_b = &coeffs[gf_coeff_index(recovery_idx, source_b, source_count)];
-
-            match (&coeff_a.avx2, &coeff_b.avx2) {
-                (Some(prepared_a), Some(prepared_b)) => unsafe {
-                    process_slices_multiply_add_prepared_avx2_x2(
-                        &input_staging[batch_idx][..output.len()],
-                        prepared_a,
-                        &coeff_a.split,
-                        &input_staging[batch_idx + 1][..output.len()],
-                        prepared_b,
-                        &coeff_b.split,
-                        output,
-                    );
-                },
-                _ => {
-                    Self::process_input_add(
-                        &input_staging[batch_idx][..output.len()],
-                        output,
-                        coeff_a,
-                        SimdLevel::None,
-                    );
-                    Self::process_input_add(
-                        &input_staging[batch_idx + 1][..output.len()],
-                        output,
-                        coeff_b,
-                        SimdLevel::None,
-                    );
+                if state.generation != seen_generation && state.next_job < state.job_count {
+                    let job = state.jobs[state.next_job];
+                    state.next_job += 1;
+                    break job;
                 }
-            }
-
-            batch_idx += 2;
-        }
-
-        if batch_idx < batch_len {
-            let source_idx = source_indices[batch_idx];
-            let coeff = &coeffs[gf_coeff_index(recovery_idx, source_idx, source_count)];
-            Self::process_input_add(
-                &input_staging[batch_idx][..output.len()],
-                output,
-                coeff,
-                SimdLevel::Avx2,
-            );
-        }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[inline]
-    fn process_input_add(
-        input: &[u8],
-        output: &mut [u8],
-        coeff: &Gf16Coeff,
-        simd_level: SimdLevel,
-    ) {
-        if matches!(simd_level, SimdLevel::Avx2) {
-            if let Some(prepared) = &coeff.avx2 {
-                unsafe {
-                    process_slice_multiply_add_prepared_avx2(input, output, prepared, &coeff.split);
+                if state.generation != seen_generation && state.next_job >= state.job_count {
+                    seen_generation = state.generation;
                 }
-                return;
+                state = shared.ready.wait(state).unwrap();
             }
+        };
+
+        process_compute_job(job);
+
+        let mut state = shared.state.lock().unwrap();
+        state.remaining_jobs -= 1;
+        if state.remaining_jobs == 0 {
+            seen_generation = state.generation;
+            shared.done.notify_one();
+        }
+    }
+}
+
+fn process_compute_job(job: ComputeJob) {
+    for recovery_idx in job.output_start..job.output_end {
+        let output_start = recovery_idx * job.aligned_chunk_len + job.segment_start;
+        let output = unsafe {
+            std::slice::from_raw_parts_mut(
+                (job.output_base as *mut u8).add(output_start),
+                job.segment_len,
+            )
+        };
+        debug_assert!(output.as_ptr() as usize >= job.output_base);
+
+        #[cfg(target_arch = "x86_64")]
+        if matches!(job.method, CreateGf16Method::Avx2PshufbPrepared) {
+            process_batch_add_avx2_x4(job, recovery_idx, output);
+            continue;
         }
 
-        process_slice_multiply_add(input, output, &coeff.split);
+        // The xor-jit method is wired as a separately selectable method, but the
+        // executable code emitter is intentionally not synthesized here. Until a
+        // JIT scratch allocator and emitter are present, forced xor-jit uses the
+        // same coefficient metadata through the scalar table executor.
+        for batch_idx in 0..job.batch_len {
+            let source_idx = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
+            let coeff = unsafe {
+                &*(job.coeffs as *const CreateCoeff).add(gf_coeff_index(
+                    recovery_idx,
+                    source_idx,
+                    job.source_count,
+                ))
+            };
+            let input_start = batch_idx * job.aligned_chunk_len + job.segment_start;
+            let input = unsafe {
+                std::slice::from_raw_parts(
+                    (job.input_base as *const u8).add(input_start),
+                    job.segment_len,
+                )
+            };
+            process_slice_multiply_add(input, output, &coeff.split);
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn process_batch_add_avx2_x4(job: ComputeJob, recovery_idx: usize, output: &mut [u8]) {
+    let mut batch_idx = 0;
+    while batch_idx + 3 < job.batch_len {
+        let source_a = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
+        let source_b = unsafe { *(job.source_indices as *const usize).add(batch_idx + 1) };
+        let source_c = unsafe { *(job.source_indices as *const usize).add(batch_idx + 2) };
+        let source_d = unsafe { *(job.source_indices as *const usize).add(batch_idx + 3) };
+        let coeff_a = unsafe {
+            &*(job.coeffs as *const CreateCoeff).add(gf_coeff_index(
+                recovery_idx,
+                source_a,
+                job.source_count,
+            ))
+        };
+        let coeff_b = unsafe {
+            &*(job.coeffs as *const CreateCoeff).add(gf_coeff_index(
+                recovery_idx,
+                source_b,
+                job.source_count,
+            ))
+        };
+        let coeff_c = unsafe {
+            &*(job.coeffs as *const CreateCoeff).add(gf_coeff_index(
+                recovery_idx,
+                source_c,
+                job.source_count,
+            ))
+        };
+        let coeff_d = unsafe {
+            &*(job.coeffs as *const CreateCoeff).add(gf_coeff_index(
+                recovery_idx,
+                source_d,
+                job.source_count,
+            ))
+        };
+        let input_a = input_segment(job, batch_idx);
+        let input_b = input_segment(job, batch_idx + 1);
+        let input_c = input_segment(job, batch_idx + 2);
+        let input_d = input_segment(job, batch_idx + 3);
+
+        match (&coeff_a.avx2, &coeff_b.avx2, &coeff_c.avx2, &coeff_d.avx2) {
+            (Some(prepared_a), Some(prepared_b), Some(prepared_c), Some(prepared_d)) => unsafe {
+                process_slices_multiply_add_prepared_avx2_x4(
+                    input_a,
+                    prepared_a,
+                    &coeff_a.split,
+                    input_b,
+                    prepared_b,
+                    &coeff_b.split,
+                    input_c,
+                    prepared_c,
+                    &coeff_c.split,
+                    input_d,
+                    prepared_d,
+                    &coeff_d.split,
+                    output,
+                );
+            },
+            _ => {
+                process_slice_multiply_add(input_a, output, &coeff_a.split);
+                process_slice_multiply_add(input_b, output, &coeff_b.split);
+                process_slice_multiply_add(input_c, output, &coeff_c.split);
+                process_slice_multiply_add(input_d, output, &coeff_d.split);
+            }
+        }
+        batch_idx += 4;
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
-    #[inline]
-    fn process_input_add(input: &[u8], output: &mut [u8], coeff: &Gf16Coeff) {
-        process_slice_multiply_add(input, output, &coeff.split);
+    while batch_idx + 1 < job.batch_len {
+        let source_a = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
+        let source_b = unsafe { *(job.source_indices as *const usize).add(batch_idx + 1) };
+        let coeff_a = unsafe {
+            &*(job.coeffs as *const CreateCoeff).add(gf_coeff_index(
+                recovery_idx,
+                source_a,
+                job.source_count,
+            ))
+        };
+        let coeff_b = unsafe {
+            &*(job.coeffs as *const CreateCoeff).add(gf_coeff_index(
+                recovery_idx,
+                source_b,
+                job.source_count,
+            ))
+        };
+        let input_a = input_segment(job, batch_idx);
+        let input_b = input_segment(job, batch_idx + 1);
+
+        match (&coeff_a.avx2, &coeff_b.avx2) {
+            (Some(prepared_a), Some(prepared_b)) => unsafe {
+                process_slices_multiply_add_prepared_avx2_x2(
+                    input_a,
+                    prepared_a,
+                    &coeff_a.split,
+                    input_b,
+                    prepared_b,
+                    &coeff_b.split,
+                    output,
+                );
+            },
+            _ => {
+                process_slice_multiply_add(input_a, output, &coeff_a.split);
+                process_slice_multiply_add(input_b, output, &coeff_b.split);
+            }
+        }
+        batch_idx += 2;
     }
+
+    if batch_idx < job.batch_len {
+        let source_idx = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
+        let coeff = unsafe {
+            &*(job.coeffs as *const CreateCoeff).add(gf_coeff_index(
+                recovery_idx,
+                source_idx,
+                job.source_count,
+            ))
+        };
+        let input = input_segment(job, batch_idx);
+        match &coeff.avx2 {
+            Some(prepared) => unsafe {
+                process_slice_multiply_add_prepared_avx2(input, output, prepared, &coeff.split);
+            },
+            None => process_slice_multiply_add(input, output, &coeff.split),
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn input_segment(job: ComputeJob, batch_idx: usize) -> &'static [u8] {
+    let start = batch_idx * job.aligned_chunk_len + job.segment_start;
+    unsafe { std::slice::from_raw_parts((job.input_base as *const u8).add(start), job.segment_len) }
 }
 
 #[inline]
 pub fn gf_coeff_index(recovery_idx: usize, source_idx: usize, source_count: usize) -> usize {
     recovery_idx * source_count + source_idx
+}
+
+#[inline]
+fn input_grouping(source_count: usize, method: CreateGf16Method) -> usize {
+    let default = DEFAULT_INPUT_GROUPING;
+    let small = source_count.div_ceil(2).max(1);
+    let requested = if small < default { small } else { default };
+    let multiple = method.ideal_input_multiple();
+    align_up(requested, multiple)
+        .max(multiple)
+        .min(source_count.max(1))
+}
+
+#[inline]
+fn max_compute_jobs(
+    max_chunk_len: usize,
+    recovery_count: usize,
+    worker_count: usize,
+    method: CreateGf16Method,
+) -> usize {
+    let segment_len = align_down(
+        method
+            .ideal_segment_len()
+            .min(max_chunk_len.max(AVX2_ALIGNMENT))
+            .max(AVX2_ALIGNMENT),
+        AVX2_ALIGNMENT,
+    )
+    .max(AVX2_ALIGNMENT);
+    let segment_count = max_chunk_len.max(1).div_ceil(segment_len);
+    let output_groups = worker_count.min(recovery_count).max(1);
+    (segment_count * output_groups).max(1)
+}
+
+#[inline]
+fn align_up(value: usize, alignment: usize) -> usize {
+    if value == 0 {
+        0
+    } else {
+        (value + alignment - 1) & !(alignment - 1)
+    }
+}
+
+#[inline]
+fn align_down(value: usize, alignment: usize) -> usize {
+    value & !(alignment - 1)
 }
 
 #[cfg(test)]
@@ -356,7 +792,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let mut backend = CreateRecoveryBackend::new(encoder.base_values(), 0, 3, block_size);
+        let mut backend = CreateRecoveryBackend::new(encoder.base_values(), 0, 3, block_size, 2);
         let mut recovery_blocks = backend.recovery_blocks(block_size);
         backend.begin_chunk(block_size);
         inputs
@@ -377,7 +813,7 @@ mod tests {
     #[test]
     fn backend_reuses_fixed_transfer_buffers() {
         let encoder = RecoveryBlockEncoder::new(64, 2);
-        let mut backend = CreateRecoveryBackend::new(encoder.base_values(), 7, 1, 64);
+        let mut backend = CreateRecoveryBackend::new(encoder.base_values(), 7, 1, 64, 1);
         backend.begin_chunk(32);
         let first = backend.prepare_transfer_buffer(0).as_ptr();
         let second = backend.prepare_transfer_buffer(1).as_ptr();
@@ -387,5 +823,22 @@ mod tests {
         assert_eq!(first, first_again);
         assert_eq!(first as usize % 32, 0);
         assert_eq!(second as usize % 32, 0);
+    }
+
+    #[test]
+    fn env_method_override_selects_scalar() {
+        std::env::set_var("PAR2RS_CREATE_GF16", "scalar");
+        let encoder = RecoveryBlockEncoder::new(64, 2);
+        let backend = CreateRecoveryBackend::new(encoder.base_values(), 0, 1, 64, 1);
+        std::env::remove_var("PAR2RS_CREATE_GF16");
+        assert_eq!(backend.selected_method(), CreateGf16Method::Scalar);
+    }
+
+    #[test]
+    fn recovery_vectors_keep_exact_reserved_capacity() {
+        let encoder = RecoveryBlockEncoder::new(96, 4);
+        let backend = CreateRecoveryBackend::new(encoder.base_values(), 0, 2, 32, 1);
+        let blocks = backend.recovery_blocks(96);
+        assert!(blocks.iter().all(|(_, bytes)| bytes.capacity() == 96));
     }
 }

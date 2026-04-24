@@ -342,12 +342,121 @@ pub unsafe fn process_slices_multiply_add_prepared_avx2_x2(
     }
 }
 
+/// PSHUFB-accelerated multiply-add for four inputs into one output.
+///
+/// This create kernel keeps a single output load/store for four source inputs,
+/// reducing repeated output traversal and giving Rayon coarser work per batch.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "ssse3")]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn process_slices_multiply_add_prepared_avx2_x4(
+    input_a: &[u8],
+    prepared_a: &Avx2PreparedCoeff,
+    scalar_a: &SplitMulTable,
+    input_b: &[u8],
+    prepared_b: &Avx2PreparedCoeff,
+    scalar_b: &SplitMulTable,
+    input_c: &[u8],
+    prepared_c: &Avx2PreparedCoeff,
+    scalar_c: &SplitMulTable,
+    input_d: &[u8],
+    prepared_d: &Avx2PreparedCoeff,
+    scalar_d: &SplitMulTable,
+    output: &mut [u8],
+) {
+    let len = input_a
+        .len()
+        .min(input_b.len())
+        .min(input_c.len())
+        .min(input_d.len())
+        .min(output.len());
+    if len < 32 {
+        process_slice_multiply_add_scalar(input_a, output, scalar_a);
+        process_slice_multiply_add_scalar(input_b, output, scalar_b);
+        process_slice_multiply_add_scalar(input_c, output, scalar_c);
+        process_slice_multiply_add_scalar(input_d, output, scalar_d);
+        return;
+    }
+
+    let table_a = load_coeff_vectors(prepared_a);
+    let table_b = load_coeff_vectors(prepared_b);
+    let table_c = load_coeff_vectors(prepared_c);
+    let table_d = load_coeff_vectors(prepared_d);
+    let mask_0x0f = _mm256_set1_epi8(0x0F);
+
+    let mut pos = 0;
+    let avx_end = (len / 32) * 32;
+    let input_a_ptr = input_a.as_ptr();
+    let input_b_ptr = input_b.as_ptr();
+    let input_c_ptr = input_c.as_ptr();
+    let input_d_ptr = input_d.as_ptr();
+    let output_ptr = output.as_mut_ptr();
+    let all_aligned = (input_a_ptr as usize).is_multiple_of(32)
+        && (input_b_ptr as usize).is_multiple_of(32)
+        && (input_c_ptr as usize).is_multiple_of(32)
+        && (input_d_ptr as usize).is_multiple_of(32)
+        && (output_ptr as usize).is_multiple_of(32);
+
+    while pos < avx_end {
+        let in_a = if all_aligned {
+            _mm256_load_si256(input_a_ptr.add(pos) as *const __m256i)
+        } else {
+            _mm256_loadu_si256(input_a_ptr.add(pos) as *const __m256i)
+        };
+        let in_b = if all_aligned {
+            _mm256_load_si256(input_b_ptr.add(pos) as *const __m256i)
+        } else {
+            _mm256_loadu_si256(input_b_ptr.add(pos) as *const __m256i)
+        };
+        let in_c = if all_aligned {
+            _mm256_load_si256(input_c_ptr.add(pos) as *const __m256i)
+        } else {
+            _mm256_loadu_si256(input_c_ptr.add(pos) as *const __m256i)
+        };
+        let in_d = if all_aligned {
+            _mm256_load_si256(input_d_ptr.add(pos) as *const __m256i)
+        } else {
+            _mm256_loadu_si256(input_d_ptr.add(pos) as *const __m256i)
+        };
+        let out_vec = if all_aligned {
+            _mm256_load_si256(output_ptr.add(pos) as *const __m256i)
+        } else {
+            _mm256_loadu_si256(output_ptr.add(pos) as *const __m256i)
+        };
+
+        let result_ab = _mm256_xor_si256(
+            multiply_vec_pshufb(in_a, &table_a, mask_0x0f),
+            multiply_vec_pshufb(in_b, &table_b, mask_0x0f),
+        );
+        let result_cd = _mm256_xor_si256(
+            multiply_vec_pshufb(in_c, &table_c, mask_0x0f),
+            multiply_vec_pshufb(in_d, &table_d, mask_0x0f),
+        );
+        let final_result = _mm256_xor_si256(out_vec, _mm256_xor_si256(result_ab, result_cd));
+
+        if all_aligned {
+            _mm256_store_si256(output_ptr.add(pos) as *mut __m256i, final_result);
+        } else {
+            _mm256_storeu_si256(output_ptr.add(pos) as *mut __m256i, final_result);
+        }
+
+        pos += 32;
+    }
+
+    if pos < len {
+        process_slice_multiply_add_scalar(&input_a[pos..], &mut output[pos..], scalar_a);
+        process_slice_multiply_add_scalar(&input_b[pos..], &mut output[pos..], scalar_b);
+        process_slice_multiply_add_scalar(&input_c[pos..], &mut output[pos..], scalar_c);
+        process_slice_multiply_add_scalar(&input_d[pos..], &mut output[pos..], scalar_d);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(target_arch = "x86_64")]
     use super::{
         build_pshufb_tables, prepare_avx2_coeff, process_slice_multiply_add_pshufb,
-        process_slices_multiply_add_prepared_avx2_x2,
+        process_slices_multiply_add_prepared_avx2_x2, process_slices_multiply_add_prepared_avx2_x4,
     };
 
     // These are only used in x86_64 tests
@@ -455,6 +564,59 @@ mod tests {
                 &input_b,
                 &prepared_b,
                 &table_b,
+                &mut actual,
+            );
+        }
+
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn process_slices_multiply_add_prepared_avx2_x4_matches_separate_adds() {
+        if !std::is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let inputs = (0..4)
+            .map(|source| {
+                (0..255)
+                    .map(|byte| (byte * 11 + source * 31) as u8)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let coeffs = [3, 5, 7, 11]
+            .into_iter()
+            .map(|value| {
+                let split = build_split_mul_table(Galois16::new(value));
+                let prepared = prepare_avx2_coeff(&split);
+                (split, prepared)
+            })
+            .collect::<Vec<_>>();
+
+        let mut expected = vec![0u8; 255];
+        inputs
+            .iter()
+            .zip(coeffs.iter())
+            .for_each(|(input, (split, _))| {
+                process_slice_multiply_add(input, &mut expected, split)
+            });
+
+        let mut actual = vec![0u8; 255];
+        unsafe {
+            process_slices_multiply_add_prepared_avx2_x4(
+                &inputs[0],
+                &coeffs[0].1,
+                &coeffs[0].0,
+                &inputs[1],
+                &coeffs[1].1,
+                &coeffs[1].0,
+                &inputs[2],
+                &coeffs[2].1,
+                &coeffs[2].0,
+                &inputs[3],
+                &coeffs[3].1,
+                &coeffs[3].0,
                 &mut actual,
             );
         }
