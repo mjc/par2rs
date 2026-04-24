@@ -4,7 +4,7 @@
 //! eliminating repetitive `.map_err()` calls throughout the codebase.
 
 use super::error::{CreateError, CreateResult};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::path::Path;
 
 /// Open a file for reading, wrapping I/O errors with file context
@@ -59,6 +59,19 @@ pub fn create_file(path: impl AsRef<Path>) -> CreateResult<File> {
         file: path.to_string_lossy().to_string(),
         source: e,
     })
+}
+
+/// Create a new output file, failing if the path already exists.
+pub fn create_new_output_file(path: impl AsRef<Path>) -> CreateResult<File> {
+    let path = path.as_ref();
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| CreateError::FileCreateError {
+            file: path.to_string_lossy().to_string(),
+            source: e,
+        })
 }
 
 /// Helper to wrap packet write errors with descriptive context
@@ -149,6 +162,17 @@ mod tests {
             }
             _ => panic!("Wrong error type"),
         }
+    }
+
+    #[test]
+    fn test_create_new_output_file_rejects_existing_file() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("existing.par2");
+        std::fs::write(&path, b"keep me").unwrap();
+
+        let result = create_new_output_file(&path);
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep me");
     }
 
     #[test]

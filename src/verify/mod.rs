@@ -111,13 +111,26 @@ pub fn comprehensive_verify_files_with_extra_files<R: VerificationReporter>(
     let stats = engine.block_table().stats();
     reporter.report_files_found(stats.file_count);
 
-    // Perform verification using global table
-    // Use should_parallelize() to avoid Rayon overhead when threads=1
-    let mut results = engine.verify_recovery_set_with_extra_files(
-        reporter,
-        config.should_parallelize(),
-        extra_files,
-    );
+    // Perform verification using global table. When -T/--file-threads is set,
+    // use a local Rayon pool so file-level scanning is bounded independently
+    // of the process-wide CPU pool.
+    let mut results = if config.should_parallelize_file_scans() {
+        if let Some(file_threads) = config.file_threads.filter(|threads| *threads > 1) {
+            match rayon::ThreadPoolBuilder::new()
+                .num_threads(file_threads)
+                .build()
+            {
+                Ok(pool) => pool.install(|| {
+                    engine.verify_recovery_set_with_extra_files(reporter, true, extra_files)
+                }),
+                Err(_) => engine.verify_recovery_set_with_extra_files(reporter, true, extra_files),
+            }
+        } else {
+            engine.verify_recovery_set_with_extra_files(reporter, true, extra_files)
+        }
+    } else {
+        engine.verify_recovery_set_with_extra_files(reporter, false, extra_files)
+    };
 
     // Use the recovery block count from the packet set
     results.recovery_blocks_available = packet_set.recovery_block_count;

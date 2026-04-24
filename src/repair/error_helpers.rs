@@ -5,8 +5,8 @@
 
 use super::error::{RepairError, Result as RepairResult};
 use super::slice_provider::error::{Result as SliceProviderResult, SliceProviderError};
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 /// Open a file for reading, wrapping I/O errors with file context
@@ -45,24 +45,70 @@ pub fn create_file(path: impl AsRef<Path>) -> RepairResult<File> {
     })
 }
 
-/// Rename a file, wrapping I/O errors with file context
+/// Move a file into place, falling back to copy+sync+remove across filesystems
 ///
 /// # Example
 /// ```no_run
-/// use par2rs::repair::error_helpers::rename_file;
+/// use par2rs::repair::error_helpers::move_file_into_place;
 /// use std::path::Path;
 ///
-/// rename_file(Path::new("temp.dat"), Path::new("final.dat"))?;
-/// # Ok::<(), par2rs::repair::RepairError>(())
+/// move_file_into_place(Path::new("temp.dat"), Path::new("final.dat"))?;
+/// # Ok::<(), std::io::Error>(())
 /// ```
+pub fn move_file_into_place(
+    temp_path: impl AsRef<Path>,
+    final_path: impl AsRef<Path>,
+) -> io::Result<()> {
+    let temp_path = temp_path.as_ref();
+    let final_path = final_path.as_ref();
+    move_file_into_place_impl(temp_path, final_path, |source, dest| {
+        std::fs::rename(source, dest)
+    })
+}
+
+/// Rename a file, wrapping I/O errors with repair path context.
 pub fn rename_file(temp_path: impl AsRef<Path>, final_path: impl AsRef<Path>) -> RepairResult<()> {
     let temp_path = temp_path.as_ref();
     let final_path = final_path.as_ref();
-    std::fs::rename(temp_path, final_path).map_err(|source| RepairError::FileRenameError {
+    move_file_into_place(temp_path, final_path).map_err(|source| RepairError::FileRenameError {
         temp_path: temp_path.to_path_buf(),
         final_path: final_path.to_path_buf(),
         source,
     })
+}
+
+fn move_file_into_place_impl<F>(temp_path: &Path, final_path: &Path, rename_fn: F) -> io::Result<()>
+where
+    F: Fn(&Path, &Path) -> io::Result<()>,
+{
+    match rename_fn(temp_path, final_path) {
+        Ok(()) => Ok(()),
+        Err(source) if is_cross_device_rename(&source) => {
+            copy_file_for_cross_device_move(temp_path, final_path)?;
+            std::fs::remove_file(temp_path)
+        }
+        Err(source) => Err(source),
+    }
+}
+
+fn is_cross_device_rename(error: &io::Error) -> bool {
+    matches!(error.kind(), io::ErrorKind::CrossesDevices) || error.raw_os_error() == Some(18)
+}
+
+fn copy_file_for_cross_device_move(temp_path: &Path, final_path: &Path) -> io::Result<()> {
+    let mut source = File::open(temp_path)?;
+    let mut destination = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(final_path)?;
+
+    match io::copy(&mut source, &mut destination) {
+        Ok(_) => destination.sync_all(),
+        Err(error) => {
+            let _ = std::fs::remove_file(final_path);
+            Err(error)
+        }
+    }
 }
 
 /// Delete a file, wrapping I/O errors with file context
@@ -251,6 +297,46 @@ fn seek_target_for_error<F: Seek>(file: &mut F, pos: SeekFrom) -> u64 {
             }
             end.map(|end| apply_signed_offset(end, delta)).unwrap_or(0)
         }
+    }
+}
+
+#[cfg(test)]
+mod cross_device_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn rename_file_falls_back_to_copy_on_cross_device_error() {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("source.bin");
+        let dest = dir.path().join("dest.bin");
+        std::fs::write(&source, b"repair data").unwrap();
+
+        move_file_into_place_impl(&source, &dest, |_src, _dest| {
+            Err(io::Error::from(io::ErrorKind::CrossesDevices))
+        })
+        .unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"repair data");
+    }
+
+    #[test]
+    fn rename_file_reports_copy_cleanup_failures() {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("source.bin");
+        let dest = dir.path().join("dest.bin");
+        std::fs::write(&source, b"repair data").unwrap();
+        std::fs::write(&dest, b"existing").unwrap();
+
+        let error = move_file_into_place_impl(&source, &dest, |_src, _dest| {
+            Err(io::Error::from(io::ErrorKind::CrossesDevices))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(source.exists());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"existing");
     }
 }
 

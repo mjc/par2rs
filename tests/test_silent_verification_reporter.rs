@@ -158,6 +158,7 @@ fn test_report_verification_results_single_file_silent() {
         total_blocks: 10,
         damaged_blocks: vec![],
         block_positions: Default::default(),
+        matched_path: None,
     };
     let results = create_test_results(vec![file], 1, 0, 0, 0);
     reporter.report_verification_results(&results);
@@ -176,6 +177,7 @@ fn test_report_verification_results_with_damaged_blocks_silent() {
         total_blocks: 10,
         damaged_blocks: vec![1, 3, 5, 7, 9],
         block_positions: Default::default(),
+        matched_path: None,
     };
     let results = create_test_results(vec![corrupted_file], 0, 0, 1, 0);
     reporter.report_verification_results(&results);
@@ -195,6 +197,7 @@ fn test_report_verification_results_large_damaged_blocks_silent() {
         total_blocks: 1000,
         damaged_blocks: large_damaged_blocks,
         block_positions: Default::default(),
+        matched_path: None,
     };
     let results = create_test_results(vec![corrupted_file], 0, 0, 1, 0);
     reporter.report_verification_results(&results);
@@ -213,6 +216,7 @@ fn test_report_verification_results_mixed_files_silent() {
             total_blocks: 10,
             damaged_blocks: vec![],
             block_positions: Default::default(),
+            matched_path: None,
         },
         FileVerificationResult {
             file_name: "missing.txt".to_string(),
@@ -222,6 +226,7 @@ fn test_report_verification_results_mixed_files_silent() {
             total_blocks: 10,
             damaged_blocks: vec![],
             block_positions: Default::default(),
+            matched_path: None,
         },
         FileVerificationResult {
             file_name: "corrupted.txt".to_string(),
@@ -231,6 +236,7 @@ fn test_report_verification_results_mixed_files_silent() {
             total_blocks: 10,
             damaged_blocks: vec![2, 4, 6],
             block_positions: Default::default(),
+            matched_path: None,
         },
         FileVerificationResult {
             file_name: "renamed.txt".to_string(),
@@ -240,6 +246,7 @@ fn test_report_verification_results_mixed_files_silent() {
             total_blocks: 10,
             damaged_blocks: vec![],
             block_positions: Default::default(),
+            matched_path: None,
         },
     ];
     let results = create_test_results(mixed_files, 1, 1, 1, 1);
@@ -278,6 +285,7 @@ fn test_comprehensive_verification_workflow_silent() {
             total_blocks: 10,
             damaged_blocks: vec![],
             block_positions: Default::default(),
+            matched_path: None,
         },
         FileVerificationResult {
             file_name: "file2.txt".to_string(),
@@ -287,6 +295,7 @@ fn test_comprehensive_verification_workflow_silent() {
             total_blocks: 10,
             damaged_blocks: vec![],
             block_positions: Default::default(),
+            matched_path: None,
         },
         FileVerificationResult {
             file_name: "file3.txt".to_string(),
@@ -296,6 +305,7 @@ fn test_comprehensive_verification_workflow_silent() {
             total_blocks: 10,
             damaged_blocks: vec![1, 5, 9],
             block_positions: Default::default(),
+            matched_path: None,
         },
     ];
     let final_results = create_test_results(final_files, 1, 0, 1, 1);

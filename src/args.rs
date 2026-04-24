@@ -1,6 +1,9 @@
 use clap::{Arg, ArgAction, Command};
 
 pub fn parse_args() -> clap::ArgMatches {
+    reject_detached_verify_repair_short_values();
+    let args = crate::cli::compat::normalize_mixed_noise_option_clusters(std::env::args_os());
+
     Command::new("par2verify")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Mika Cohen <mjc@kernel.org>")
@@ -18,6 +21,12 @@ pub fn parse_args() -> clap::ArgMatches {
                 .short('B')
                 .long("basepath")
                 .value_name("PATH"),
+        )
+        .arg(
+            Arg::new("archive_name")
+                .help("Accepted for par2cmdline compatibility")
+                .short('a')
+                .value_name("FILE"),
         )
         .arg(
             Arg::new("verbose")
@@ -38,6 +47,12 @@ pub fn parse_args() -> clap::ArgMatches {
                 .help("Purge backup files and par files when no recovery is needed")
                 .short('p')
                 .long("purge")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("rename_only")
+                .help("Rename-only mode")
+                .short('O')
                 .action(ArgAction::SetTrue),
         )
         .arg(
@@ -80,10 +95,13 @@ pub fn parse_args() -> clap::ArgMatches {
                 .short('S')
                 .value_name("N"),
         )
-        .get_matches()
+        .get_matches_from(args)
 }
 
 pub fn parse_repair_args() -> clap::ArgMatches {
+    reject_detached_verify_repair_short_values();
+    let args = crate::cli::compat::normalize_mixed_noise_option_clusters(std::env::args_os());
+
     Command::new("par2repair")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Mika Cohen <mjc@kernel.org>")
@@ -108,6 +126,12 @@ pub fn parse_repair_args() -> clap::ArgMatches {
                 .value_name("PATH"),
         )
         .arg(
+            Arg::new("archive_name")
+                .help("Accepted for par2cmdline compatibility")
+                .short('a')
+                .value_name("FILE"),
+        )
+        .arg(
             Arg::new("verbose")
                 .help("Be more verbose")
                 .short('v')
@@ -126,6 +150,12 @@ pub fn parse_repair_args() -> clap::ArgMatches {
                 .help("Purge backup files and par files on successful recovery")
                 .short('p')
                 .long("purge")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("rename_only")
+                .help("Rename-only mode")
+                .short('O')
                 .action(ArgAction::SetTrue),
         )
         .arg(
@@ -168,5 +198,16 @@ pub fn parse_repair_args() -> clap::ArgMatches {
                 .short('S')
                 .value_name("N"),
         )
-        .get_matches()
+        .get_matches_from(args)
+}
+
+fn reject_detached_verify_repair_short_values() {
+    if let Err(message) = crate::cli::compat::reject_short_value_forms(
+        std::env::args_os().skip(1),
+        &["-a", "-S", "-T", "-m"],
+        &["-B", "-S", "-T", "-m"],
+    ) {
+        eprintln!("{message}");
+        std::process::exit(2);
+    }
 }

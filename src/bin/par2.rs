@@ -4,6 +4,10 @@
 
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command};
+use par2rs::cli::compat::{
+    init_env_logger, normalize_mixed_noise_option_clusters, parse_memory_mb, parse_noise_level,
+    parse_positive_usize, reject_invalid_create_short_clusters, reject_short_value_forms,
+};
 use par2rs::create::cli::{
     parse_redundancy_option, resolve_create_inputs, validate_recovery_file_count,
     warn_for_high_redundancy, RedundancyOption,
@@ -17,11 +21,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    env_logger::Builder::from_default_env()
-        .format_timestamp(None)
-        .format_module_path(false)
-        .format_target(false)
-        .init();
+    reject_detached_short_values_for_subcommand();
+    let args = normalize_mixed_noise_option_clusters(std::env::args_os());
 
     let matches = Command::new("par2")
         .version(env!("CARGO_PKG_VERSION"))
@@ -182,6 +183,12 @@ fn main() -> Result<()> {
                         .value_name("PATH"),
                 )
                 .arg(
+                    Arg::new("archive_name")
+                        .short('a')
+                        .help("Accepted for par2cmdline compatibility")
+                        .value_name("FILE"),
+                )
+                .arg(
                     Arg::new("verbose")
                         .short('v')
                         .long("verbose")
@@ -200,6 +207,12 @@ fn main() -> Result<()> {
                         .short('p')
                         .long("purge")
                         .help("Purge backup files and par files when no recovery is needed")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("rename_only")
+                        .short('O')
+                        .help("Rename-only mode")
                         .action(ArgAction::SetTrue),
                 )
                 .arg(
@@ -267,6 +280,12 @@ fn main() -> Result<()> {
                         .value_name("PATH"),
                 )
                 .arg(
+                    Arg::new("archive_name")
+                        .short('a')
+                        .help("Accepted for par2cmdline compatibility")
+                        .value_name("FILE"),
+                )
+                .arg(
                     Arg::new("verbose")
                         .short('v')
                         .long("verbose")
@@ -285,6 +304,12 @@ fn main() -> Result<()> {
                         .short('p')
                         .long("purge")
                         .help("Purge backup files after successful repair")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("rename_only")
+                        .short('O')
+                        .help("Rename-only mode")
                         .action(ArgAction::SetTrue),
                 )
                 .arg(
@@ -328,7 +353,7 @@ fn main() -> Result<()> {
                         .value_name("N"),
                 ),
         )
-        .get_matches();
+        .get_matches_from(args);
 
     // Handle subcommands
     match matches.subcommand() {
@@ -348,6 +373,40 @@ fn main() -> Result<()> {
     }
 }
 
+fn reject_detached_short_values_for_subcommand() {
+    let args: Vec<_> = std::env::args_os().collect();
+    let Some(command) = args.get(1).and_then(|arg| arg.to_str()) else {
+        return;
+    };
+
+    let (detached_rejected, equals_rejected) = match command {
+        "create" | "c" => (
+            &["-b", "-s", "-r", "-n", "-T", "-t", "-m"][..],
+            &["-B", "-b", "-s", "-r", "-c", "-f", "-n", "-T", "-t", "-m"][..],
+        ),
+        "verify" | "v" | "repair" | "r" => {
+            (&["-a", "-S", "-T", "-m"][..], &["-B", "-S", "-T", "-m"][..])
+        }
+        _ => return,
+    };
+
+    if let Err(message) = reject_short_value_forms(
+        args.iter().skip(2).cloned(),
+        detached_rejected,
+        equals_rejected,
+    ) {
+        eprintln!("{message}");
+        std::process::exit(2);
+    }
+
+    if matches!(command, "create" | "c") {
+        if let Err(message) = reject_invalid_create_short_clusters(args.iter().skip(2).cloned()) {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    }
+}
+
 fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     let par2_file = matches
         .get_one::<String>("par2_file")
@@ -359,7 +418,9 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
         .unwrap_or_default();
 
     // Handle verbosity/quiet flags (par2cmdline style)
-    let _verbose_count = matches.get_count("verbose"); // TODO: Use for logging level
+    let noise_level = parse_noise_level(matches.get_count("verbose"), matches.get_count("quiet"))
+        .map_err(anyhow::Error::msg)?;
+    init_env_logger(noise_level);
     let quiet_count = matches.get_count("quiet");
     let quiet_mode = quiet_count > 0;
 
@@ -400,11 +461,15 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
         .transpose()
         .context("Invalid first recovery block number")?;
 
-    let memory_mb: Option<usize> = matches
-        .get_one::<String>("memory")
-        .map(|s| s.parse())
-        .transpose()
-        .context("Invalid memory value")?;
+    let memory_limit = parse_memory_mb(matches.get_one::<String>("memory").map(String::as_str))
+        .map_err(anyhow::Error::msg)?;
+    let file_threads = parse_positive_usize(
+        matches
+            .get_one::<String>("file_threads")
+            .map(String::as_str),
+        "-T",
+    )
+    .map_err(anyhow::Error::msg)?;
 
     let base_path = matches.get_one::<String>("basepath").map(PathBuf::from);
 
@@ -433,6 +498,7 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
         recurse,
     )
     .map_err(anyhow::Error::msg)?;
+    reject_par1_create_target(&output_name)?;
 
     if !quiet_mode {
         println!(
@@ -481,8 +547,8 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     if let Some(exponent) = first_recovery_block {
         context = context.first_recovery_block(exponent);
     }
-    if let Some(limit_mb) = memory_mb {
-        context = context.memory_limit(limit_mb * 1024 * 1024);
+    if let Some(limit) = memory_limit {
+        context = context.memory_limit(limit);
     }
     if let Some(path) = base_path {
         context = context.base_path(path);
@@ -496,6 +562,9 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     if let Some(thread_count) = threads {
         context = context.thread_count(thread_count);
     }
+    if let Some(file_threads) = file_threads {
+        context = context.file_thread_count(file_threads);
+    }
 
     // Initialize SIMD policy from CLI flag (disable SIMD if requested)
     let force_scalar = matches.get_flag("force_scalar");
@@ -505,9 +574,13 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
         .build()
         .context("Failed to initialize PAR2 creation context")?;
 
-    create_context
-        .create()
-        .context("Failed to create PAR2 files")?;
+    if let Err(error) = create_context.create() {
+        if let Some(exit_code) = create_error_exit_code(&error) {
+            eprintln!("Error: Failed to create PAR2 files\n\nCaused by:\n    0: {error}");
+            std::process::exit(exit_code);
+        }
+        return Err(error).context("Failed to create PAR2 files");
+    }
 
     if !quiet_mode {
         println!("\nCreated PAR2 files:");
@@ -520,8 +593,32 @@ fn handle_create(matches: &clap::ArgMatches) -> Result<()> {
     Ok(())
 }
 
+fn create_error_exit_code(error: &par2rs::create::CreateError) -> Option<i32> {
+    match error {
+        par2rs::create::CreateError::FileCreateError { source, .. }
+            if source.kind() == std::io::ErrorKind::AlreadyExists =>
+        {
+            Some(3)
+        }
+        _ => None,
+    }
+}
+
+fn reject_par1_create_target(output_name: &str) -> Result<()> {
+    if par2rs::par2_files::detect_recovery_format(Path::new(output_name))
+        == Some(par2rs::par2_files::RecoveryFormat::Par1)
+    {
+        anyhow::bail!("PAR1 create is not supported");
+    }
+    Ok(())
+}
+
 fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
     use std::path::{Path, PathBuf};
+
+    let noise_level = parse_noise_level(matches.get_count("verbose"), matches.get_count("quiet"))
+        .map_err(anyhow::Error::msg)?;
+    init_env_logger(noise_level);
 
     let par2_file = matches
         .get_one::<String>("par2_file")
@@ -540,8 +637,32 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         })
         .unwrap_or_default();
 
+    if par2rs::par2_files::detect_recovery_format(Path::new(par2_file))
+        == Some(par2rs::par2_files::RecoveryFormat::Par1)
+    {
+        let options = par2rs::par1::verify::Par1VerifyOptions { extra_files, purge };
+        let results =
+            par2rs::par1::verify::verify_par1_file_with_options(Path::new(par2_file), &options)
+                .context("Failed to verify PAR1 file")?;
+        let reporter = par2rs::reporters::ConsoleVerificationReporter::new();
+        if !quiet {
+            reporter.report_verification_results(&results);
+        }
+        if results.renamed_file_count == 0
+            && results.missing_file_count == 0
+            && results.corrupted_file_count == 0
+        {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "Repair required: {} files are missing or damaged",
+            results.renamed_file_count + results.missing_file_count + results.corrupted_file_count
+        );
+    }
+
     // Create verification config from command line arguments
-    let verify_config = par2rs::verify::VerificationConfig::from_args(matches);
+    let verify_config =
+        par2rs::verify::VerificationConfig::try_from_args(matches).map_err(anyhow::Error::msg)?;
 
     // Initialize Rayon thread pool BEFORE any parallel operations
     // This must be done before any par_iter() calls
@@ -616,6 +737,13 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         reporter.report_verification_results(&results);
     }
 
+    if results.renamed_file_count > 0 {
+        anyhow::bail!(
+            "Repair required: {} files are renamed",
+            results.renamed_file_count
+        );
+    }
+
     if results.missing_block_count == 0 {
         if purge {
             let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false, false);
@@ -642,6 +770,10 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
 }
 
 fn handle_repair(matches: &clap::ArgMatches) -> Result<()> {
+    let noise_level = parse_noise_level(matches.get_count("verbose"), matches.get_count("quiet"))
+        .map_err(anyhow::Error::msg)?;
+    init_env_logger(noise_level);
+
     let par2_file = matches
         .get_one::<String>("par2_file")
         .expect("par2_file is required");
@@ -657,8 +789,35 @@ fn handle_repair(matches: &clap::ArgMatches) -> Result<()> {
         })
         .unwrap_or_default();
 
+    if par2rs::par2_files::detect_recovery_format(Path::new(par2_file))
+        == Some(par2rs::par2_files::RecoveryFormat::Par1)
+    {
+        let memory_limit = parse_memory_mb(matches.get_one::<String>("memory").map(String::as_str))
+            .map_err(anyhow::Error::msg)?;
+        let options = par2rs::par1::repair::Par1RepairOptions {
+            memory_limit,
+            extra_files,
+            purge,
+        };
+        let results =
+            par2rs::par1::repair::repair_par1_file_with_options(Path::new(par2_file), &options)
+                .context("Failed to repair PAR1 files")?;
+        if !quiet {
+            let reporter = par2rs::reporters::ConsoleVerificationReporter::new();
+            reporter.report_verification_results(&results);
+        }
+        anyhow::ensure!(
+            results.renamed_file_count == 0
+                && results.missing_file_count == 0
+                && results.corrupted_file_count == 0,
+            "PAR1 repair failed"
+        );
+        return Ok(());
+    }
+
     // Create verification config from command line arguments (like par2repair does)
-    let verify_config = par2rs::verify::VerificationConfig::from_args(matches);
+    let verify_config =
+        par2rs::verify::VerificationConfig::try_from_args(matches).map_err(anyhow::Error::msg)?;
 
     let resolved_par2_file =
         par2rs::par2_files::resolve_par2_file_argument(Path::new(par2_file))
@@ -686,6 +845,6 @@ fn handle_repair(matches: &clap::ArgMatches) -> Result<()> {
     if result.is_success() {
         Ok(())
     } else {
-        anyhow::bail!("Repair failed");
+        std::process::exit(2);
     }
 }

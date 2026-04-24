@@ -56,8 +56,8 @@
               # which doesn't exist in Nix's sandboxed build environment
               buildFeatures = ["nix-build"];
 
-              # The main binary is 'par2' which provides par2cmdline-compatible interface
-              # Additional utilities: par2verify, par2repair, par2create, split_par2
+              # The main binary is 'par2' which provides par2cmdline-compatible interface.
+              # Additional compatibility binaries: par2verify, par2repair, par2create.
               meta = with pkgs.lib; {
                 description = "High-performance PAR2 file verification and repair utility written in Rust";
                 longDescription = ''
@@ -96,6 +96,7 @@
               cargo-llvm-cov
               rustfmt
               clippy
+              sccache
               yamllint
               cargo-flamegraph
               bc # for benchmark averaging calculations
@@ -115,6 +116,11 @@
           LIBCLANG_PATH = pkgs.lib.makeLibraryPath [pkgs.llvmPackages_latest.libclang.lib];
 
           shellHook = ''
+            export SCCACHE_DIR=''${SCCACHE_DIR:-$HOME/.cache/sccache}
+            mkdir -p "$SCCACHE_DIR"
+            export SCCACHE_SERVER_UDS=''${SCCACHE_SERVER_UDS:-$SCCACHE_DIR/par2rs.sock}
+            export RUSTC_WRAPPER=${pkgs.sccache}/bin/sccache
+            export CARGO_INCREMENTAL=0
             export PATH=$PATH:''${CARGO_HOME:-~/.cargo}/bin
             export PATH=$PATH:''${RUSTUP_HOME:-~/.rustup}/toolchains/$RUSTC_VERSION-${
               if pkgs.stdenv.isDarwin

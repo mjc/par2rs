@@ -142,6 +142,40 @@ fn test_from_args_both_flags() {
 }
 
 #[test]
+fn test_try_from_args_resource_and_skip_flags() {
+    use clap::{Arg, ArgAction, Command};
+
+    let app = Command::new("test")
+        .arg(Arg::new("threads").long("threads"))
+        .arg(
+            Arg::new("no-parallel")
+                .long("no-parallel")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(Arg::new("memory").short('m'))
+        .arg(Arg::new("file_threads").short('T'))
+        .arg(
+            Arg::new("data_skipping")
+                .short('N')
+                .action(ArgAction::SetTrue),
+        )
+        .arg(Arg::new("skip_leeway").short('S'));
+
+    let matches = app
+        .clone()
+        .get_matches_from(vec!["test", "-m16", "-T2", "-N"]);
+    let config = VerificationConfig::try_from_args(&matches).unwrap();
+    assert_eq!(config.memory_limit, Some(16 * 1024 * 1024));
+    assert_eq!(config.file_threads, Some(2));
+    assert!(config.data_skipping);
+    assert_eq!(config.skip_leeway, 64);
+
+    let matches = app.get_matches_from(vec!["test", "-N", "-S10"]);
+    let config = VerificationConfig::try_from_args(&matches).unwrap();
+    assert_eq!(config.skip_leeway, 10);
+}
+
+#[test]
 fn test_from_args_invalid_threads_uses_default() {
     use clap::{Arg, Command};
 

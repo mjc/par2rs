@@ -5,7 +5,6 @@
 //! - par2verify
 //! - par2repair
 //! - par2create
-//! - split_par2
 //!
 //! The binary paths come from Cargo when available, with a target/debug fallback
 //! for direct local runs.
@@ -22,7 +21,6 @@ fn get_binary_path(name: &str) -> PathBuf {
         "par2create" => option_env!("CARGO_BIN_EXE_par2create"),
         "par2repair" => option_env!("CARGO_BIN_EXE_par2repair"),
         "par2verify" => option_env!("CARGO_BIN_EXE_par2verify"),
-        "split_par2" => option_env!("CARGO_BIN_EXE_split_par2"),
         _ => None,
     };
     if let Some(path) = cargo_path {
@@ -39,6 +37,23 @@ fn get_binary_path(name: &str) -> PathBuf {
 /// Helper to create a test file with known content
 fn create_test_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
     fs::write(path, content)
+}
+
+fn copy_repair_scenario_fixture(temp_dir: &TempDir) -> PathBuf {
+    let fixture_dir = Path::new("tests/fixtures/repair_scenarios");
+    for entry in fs::read_dir(fixture_dir).expect("repair scenario fixture missing") {
+        let entry = entry.expect("failed to read fixture entry");
+        if !entry
+            .file_type()
+            .expect("failed to read fixture type")
+            .is_file()
+        {
+            continue;
+        }
+        fs::copy(entry.path(), temp_dir.path().join(entry.file_name()))
+            .expect("failed to copy repair scenario fixture");
+    }
+    temp_dir.path().join("testfile.par2")
 }
 
 fn assert_repeated_quiet_accepted(output: &std::process::Output) {
@@ -102,6 +117,62 @@ fn create_renamed_file_test_set(temp_dir: &TempDir) -> (PathBuf, PathBuf, PathBu
     fs::rename(&source, &renamed).expect("Failed to rename source file");
 
     (par2_file, source, renamed)
+}
+
+fn create_par1_verify_test_set(temp_dir: &TempDir) -> PathBuf {
+    const PAR1_HEADER_SIZE: usize = 96;
+    const PAR1_ENTRY_FIXED_SIZE: usize = 56;
+
+    let source_name = "source.bin";
+    let source_data = b"intact par1 protected data";
+    let source = temp_dir.path().join(source_name);
+    create_test_file(&source, source_data).expect("Failed to create PAR1 source file");
+
+    let mut name_bytes = Vec::new();
+    for code_unit in source_name.encode_utf16() {
+        name_bytes.extend_from_slice(&code_unit.to_le_bytes());
+    }
+    let entry_size = (PAR1_ENTRY_FIXED_SIZE + name_bytes.len()) as u64;
+    let source_hash = par2rs::checksum::compute_md5(source_data);
+
+    let mut file_list = Vec::new();
+    file_list.extend_from_slice(&entry_size.to_le_bytes());
+    file_list.extend_from_slice(&1u64.to_le_bytes());
+    file_list.extend_from_slice(&(source_data.len() as u64).to_le_bytes());
+    file_list.extend_from_slice(source_hash.as_bytes());
+    file_list.extend_from_slice(source_hash.as_bytes());
+    file_list.extend_from_slice(&name_bytes);
+
+    let mut par1 = Vec::new();
+    par1.extend_from_slice(b"PAR\0\0\0\0\0");
+    par1.extend_from_slice(&0x0001_0000u32.to_le_bytes());
+    par1.extend_from_slice(&0u32.to_le_bytes());
+    par1.extend_from_slice(&[0; 16]);
+    par1.extend_from_slice(&[0x11; 16]);
+    par1.extend_from_slice(&0u64.to_le_bytes());
+    par1.extend_from_slice(&1u64.to_le_bytes());
+    par1.extend_from_slice(&(PAR1_HEADER_SIZE as u64).to_le_bytes());
+    par1.extend_from_slice(&(file_list.len() as u64).to_le_bytes());
+    par1.extend_from_slice(&0u64.to_le_bytes());
+    par1.extend_from_slice(&0u64.to_le_bytes());
+    par1.extend_from_slice(&file_list);
+
+    let control_hash = par2rs::checksum::compute_md5(&par1[32..]);
+    par1[16..32].copy_from_slice(control_hash.as_bytes());
+
+    let par_file = temp_dir.path().join("archive.par");
+    fs::write(&par_file, par1).expect("Failed to create PAR1 file");
+    par_file
+}
+
+fn copy_real_par1_fixture(temp_dir: &TempDir) -> PathBuf {
+    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
+    for entry in fs::read_dir(fixture_dir).expect("PAR1 fixture directory should exist") {
+        let entry = entry.expect("fixture entry should be readable");
+        fs::copy(entry.path(), temp_dir.path().join(entry.file_name()))
+            .expect("fixture file should copy");
+    }
+    temp_dir.path().join("testdata.par")
 }
 
 fn create_purge_test_set(temp_dir: &TempDir) -> (PathBuf, PathBuf) {
@@ -323,6 +394,83 @@ fn test_par2_repair_alias() {
 }
 
 #[test]
+fn test_par2_repair_repairs_missing_par1_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = copy_real_par1_fixture(&temp_dir);
+    let missing_file = temp_dir.path().join("test-4.data");
+    fs::remove_file(&missing_file).unwrap();
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("repair")
+        .arg(&par_file)
+        .output()
+        .expect("Failed to execute par2 repair");
+
+    assert!(
+        output.status.success(),
+        "par2 repair PAR1 failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(missing_file.exists());
+}
+
+#[test]
+fn test_par2_repair_repairs_renamed_par1_file() {
+    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = copy_real_par1_fixture(&temp_dir);
+    let target = temp_dir.path().join("test-4.data");
+    let renamed = temp_dir.path().join("renamed.data");
+    fs::rename(&target, &renamed).unwrap();
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("repair")
+        .arg(&par_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2 repair");
+
+    assert!(
+        output.status.success(),
+        "par2 repair PAR1 renamed file failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        fs::read(fixture_dir.join("test-4.data")).unwrap()
+    );
+    assert!(!renamed.exists());
+}
+
+#[test]
+fn test_repair_commands_exit_2_when_repair_is_not_possible() {
+    for (binary, subcommand) in [("par2", Some("repair")), ("par2repair", None)] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let par2_file = copy_repair_scenario_fixture(&temp_dir);
+        fs::remove_file(temp_dir.path().join("testfile")).expect("Failed to remove data file");
+
+        let mut command = Command::new(get_binary_path(binary));
+        if let Some(subcommand) = subcommand {
+            command.arg(subcommand);
+        }
+        let output = command
+            .arg(&par2_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{binary} should match turbo's repair-not-possible exit code: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn test_par2_verify_missing_file() {
     let output = Command::new(get_binary_path("par2"))
         .arg("verify")
@@ -336,6 +484,108 @@ fn test_par2_verify_missing_file() {
         stderr.contains("does not exist") || stderr.contains("Error"),
         "Expected error message, got: {}",
         stderr
+    );
+}
+
+#[test]
+fn test_par2_verify_accepts_intact_par1_set() {
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = create_par1_verify_test_set(&temp_dir);
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("verify")
+        .arg(&par_file)
+        .output()
+        .expect("Failed to execute par2 verify");
+
+    assert!(
+        output.status.success(),
+        "par2 verify PAR1 failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_par1_verify_repair_accept_rename_only_flag() {
+    for binary in ["par2verify", "par2repair"] {
+        let temp_dir = TempDir::new().unwrap();
+        let par_file = create_par1_verify_test_set(&temp_dir);
+
+        let output = Command::new(get_binary_path(binary))
+            .arg("-q")
+            .arg("-O")
+            .arg(&par_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary} -O"));
+
+        assert!(
+            output.status.success(),
+            "{binary} -O rejected intact PAR1 set: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn test_par2_verify_reports_repair_required_for_renamed_par1_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = copy_real_par1_fixture(&temp_dir);
+    let target = temp_dir.path().join("test-3.data");
+    let renamed = temp_dir.path().join("renamed.data");
+    fs::rename(&target, &renamed).unwrap();
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("verify")
+        .arg(&par_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2 verify");
+
+    assert!(
+        !output.status.success(),
+        "par2 verify PAR1 renamed file should require repair: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Repair required"),
+        "par2 verify should report repair required: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_par2_verify_uppercase_par1_volume_supports_renamed_detection() {
+    let temp_dir = TempDir::new().unwrap();
+    copy_real_par1_fixture(&temp_dir);
+    fs::rename(
+        temp_dir.path().join("testdata.p01"),
+        temp_dir.path().join("testdata.P01"),
+    )
+    .unwrap();
+    let target = temp_dir.path().join("test-2.data");
+    let renamed = temp_dir.path().join("renamed.data");
+    fs::rename(&target, &renamed).unwrap();
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("verify")
+        .arg(temp_dir.path().join("testdata.P01"))
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2 verify");
+
+    assert!(
+        !output.status.success(),
+        "par2 verify PAR1 .P01 renamed file should require repair: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Repair required"),
+        "par2 verify should report repair required: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -441,10 +691,31 @@ fn test_par2_verify_scans_extra_file_arguments() {
         .expect("Failed to execute par2 verify");
 
     assert!(
-        output.status.success(),
-        "verify with extra file failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "verify with renamed extra should report repair required"
     );
+    assert!(renamed.exists(), "verify must remain non-mutating");
+}
+
+#[test]
+fn test_par2_verify_rename_only_accepts_renamed_extra() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let (par2_file, _source, renamed) = create_renamed_file_test_set(&temp_dir);
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("verify")
+        .arg("-q")
+        .arg("-O")
+        .arg(&par2_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2 verify -O");
+
+    assert!(
+        !output.status.success(),
+        "verify -O should report repair required for renamed extras"
+    );
+    assert!(renamed.exists(), "verify -O must remain non-mutating");
 }
 
 #[test]
@@ -663,12 +934,150 @@ fn test_par2_repair_scans_extra_file_arguments() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
+        source.exists(),
+        "repair should restore the protected filename from the renamed extra"
+    );
+    assert!(
+        !renamed.exists(),
+        "repair should consume the renamed extra by moving it into place"
+    );
+    assert_eq!(fs::read(&source).unwrap(), b"renamed-file-scan-data");
+}
+
+#[test]
+fn test_par2_repair_rename_only_restores_extra_file() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let (par2_file, source, renamed) = create_renamed_file_test_set(&temp_dir);
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("repair")
+        .arg("-q")
+        .arg("-O")
+        .arg(&par2_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2 repair -O");
+
+    assert!(
+        output.status.success(),
+        "repair -O with renamed extra failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(source.exists());
+    assert!(!renamed.exists());
+    assert_eq!(fs::read(&source).unwrap(), b"renamed-file-scan-data");
+}
+
+#[test]
+fn test_par2_repair_rename_only_damaged_extra_does_not_reconstruct() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let (par2_file, source, renamed) = create_renamed_file_test_set(&temp_dir);
+    fs::write(&renamed, b"damaged-renamed-data").expect("Failed to damage renamed file");
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("repair")
+        .arg("-q")
+        .arg("-O")
+        .arg(&par2_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2 repair -O with damaged extra");
+
+    assert!(
+        !output.status.success(),
+        "repair -O should fail instead of reconstructing from recovery blocks"
+    );
+    assert!(
         !source.exists(),
-        "extra file scan should not recreate the protected filename"
+        "rename-only repair should not reconstruct"
     );
     assert!(
         renamed.exists(),
-        "extra file scan should not consume user-supplied files"
+        "damaged renamed extra should be left in place"
+    );
+}
+
+#[test]
+fn test_par2_repair_renamed_extra_backs_up_corrupted_target() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("sample.dat");
+    create_test_file(&source, b"renamed-file-scan-data").expect("Failed to create source file");
+
+    let par2_file = temp_dir.path().join("archive.par2");
+    let create_output = Command::new(get_binary_path("par2create"))
+        .arg("-q")
+        .arg("-s4")
+        .arg("-c1")
+        .arg(&par2_file)
+        .arg(&source)
+        .output()
+        .expect("Failed to execute par2create");
+    assert!(create_output.status.success());
+
+    let renamed = temp_dir.path().join("renamed.dat");
+    fs::copy(&source, &renamed).expect("Failed to create exact renamed extra");
+    fs::write(&source, b"corrupted target").expect("Failed to corrupt target");
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("repair")
+        .arg("-q")
+        .arg(&par2_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2 repair");
+
+    assert!(
+        output.status.success(),
+        "repair with corrupted target and renamed extra failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read(&source).unwrap(), b"renamed-file-scan-data");
+    assert!(!renamed.exists());
+    assert_eq!(
+        fs::read(temp_dir.path().join("sample.dat.1")).unwrap(),
+        b"corrupted target"
+    );
+}
+
+#[test]
+fn test_par2_repair_renamed_extra_uses_first_free_backup_suffix() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("sample.dat");
+    create_test_file(&source, b"renamed-file-scan-data").expect("Failed to create source file");
+
+    let par2_file = temp_dir.path().join("archive.par2");
+    let create_output = Command::new(get_binary_path("par2create"))
+        .arg("-q")
+        .arg("-s4")
+        .arg("-c1")
+        .arg(&par2_file)
+        .arg(&source)
+        .output()
+        .expect("Failed to execute par2create");
+    assert!(create_output.status.success());
+
+    let renamed = temp_dir.path().join("renamed.dat");
+    fs::copy(&source, &renamed).expect("Failed to create exact renamed extra");
+    fs::write(temp_dir.path().join("sample.dat.1"), b"existing backup").unwrap();
+    fs::write(&source, b"corrupted target").expect("Failed to corrupt target");
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("repair")
+        .arg("-q")
+        .arg(&par2_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2 repair");
+
+    assert!(output.status.success());
+    assert_eq!(fs::read(&source).unwrap(), b"renamed-file-scan-data");
+    assert_eq!(
+        fs::read(temp_dir.path().join("sample.dat.1")).unwrap(),
+        b"existing backup"
+    );
+    assert_eq!(
+        fs::read(temp_dir.path().join("sample.dat.2")).unwrap(),
+        b"corrupted target"
     );
 }
 
@@ -693,6 +1102,91 @@ fn test_par2_repair_purge_is_quiet_when_requested() {
     assert_quiet_output_empty(&output);
     assert!(source.exists(), "purge should not remove source file");
     assert_no_par2_files(temp_dir.path());
+}
+
+#[test]
+fn test_par2_repair_purge_after_rename_removes_recovery_files() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let (par2_file, source, renamed) = create_renamed_file_test_set(&temp_dir);
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("repair")
+        .arg("-q")
+        .arg("-p")
+        .arg(&par2_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2 repair -p");
+
+    assert!(
+        output.status.success(),
+        "repair -p by rename failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(source.exists(), "protected data should remain after purge");
+    assert!(!renamed.exists());
+    assert_no_par2_files(temp_dir.path());
+}
+
+#[test]
+fn test_par2_repair_purge_after_rename_deletes_created_backup_only() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("sample.dat");
+    create_test_file(&source, b"renamed-file-scan-data").expect("Failed to create source file");
+
+    let par2_file = temp_dir.path().join("archive.par2");
+    let create_output = Command::new(get_binary_path("par2create"))
+        .arg("-q")
+        .arg("-s4")
+        .arg("-c1")
+        .arg(&par2_file)
+        .arg(&source)
+        .output()
+        .expect("Failed to execute par2create");
+    assert!(create_output.status.success());
+
+    let renamed = temp_dir.path().join("renamed.dat");
+    fs::copy(&source, &renamed).expect("Failed to create renamed extra");
+    fs::write(&source, b"corrupted target").expect("Failed to corrupt target");
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("repair")
+        .arg("-q")
+        .arg("-p")
+        .arg(&par2_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2 repair -p");
+
+    assert!(output.status.success());
+    assert_eq!(fs::read(&source).unwrap(), b"renamed-file-scan-data");
+    assert!(!temp_dir.path().join("sample.dat.1").exists());
+    assert_no_par2_files(temp_dir.path());
+}
+
+#[test]
+fn test_par2_repair_failed_rename_only_with_purge_keeps_recovery_files() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let (par2_file, source, renamed) = create_renamed_file_test_set(&temp_dir);
+    fs::write(&renamed, b"damaged-renamed-data").expect("Failed to damage renamed file");
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("repair")
+        .arg("-q")
+        .arg("-O")
+        .arg("-p")
+        .arg(&par2_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2 repair -O -p");
+
+    assert!(!output.status.success());
+    assert!(!source.exists());
+    assert!(renamed.exists());
+    assert!(
+        par2_file.exists(),
+        "failed repair must not purge recovery files"
+    );
 }
 
 #[test]
@@ -732,8 +1226,7 @@ fn test_par2_verify_repair_accept_scan_compat_flags() {
             .arg(subcommand)
             .arg("-q")
             .arg("-N")
-            .arg("-S")
-            .arg("512")
+            .arg("-S512")
             .arg(par2_file)
             .output()
             .unwrap_or_else(|_| panic!("Failed to execute par2 {subcommand}"));
@@ -785,7 +1278,6 @@ fn test_par2_verify_repair_accept_repeated_verbose_flags() {
     for subcommand in ["verify", "repair"] {
         let output = Command::new(get_binary_path("par2"))
             .arg(subcommand)
-            .arg("-q")
             .arg("-v")
             .arg("-v")
             .arg(par2_file)
@@ -811,7 +1303,6 @@ fn test_par2_verify_repair_accept_long_verbose_flag() {
     for subcommand in ["verify", "repair"] {
         let output = Command::new(get_binary_path("par2"))
             .arg(subcommand)
-            .arg("-q")
             .arg("--verbose")
             .arg(par2_file)
             .output()
@@ -862,6 +1353,89 @@ fn test_par2verify_missing_file() {
         .expect("Failed to execute par2verify");
 
     assert!(!output.status.success());
+}
+
+#[test]
+fn test_par2verify_accepts_intact_par1_set() {
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = create_par1_verify_test_set(&temp_dir);
+
+    let output = Command::new(get_binary_path("par2verify"))
+        .arg(&par_file)
+        .output()
+        .expect("Failed to execute par2verify");
+
+    assert!(
+        output.status.success(),
+        "par2verify PAR1 failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_par2verify_accepts_uppercase_par1_volume_extension() {
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = create_par1_verify_test_set(&temp_dir);
+    let volume_file = temp_dir.path().join("archive.P01");
+    fs::rename(&par_file, &volume_file).expect("Failed to rename PAR1 fixture");
+
+    let output = Command::new(get_binary_path("par2verify"))
+        .arg(&volume_file)
+        .output()
+        .expect("Failed to execute par2verify");
+
+    assert!(
+        output.status.success(),
+        "par2verify PAR1 .P01 failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_par2verify_reports_repair_required_for_renamed_par1_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = copy_real_par1_fixture(&temp_dir);
+    let target = temp_dir.path().join("test-1.data");
+    let renamed = temp_dir.path().join("renamed.data");
+    fs::rename(&target, &renamed).unwrap();
+
+    let output = Command::new(get_binary_path("par2verify"))
+        .arg(&par_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2verify");
+
+    assert!(
+        !output.status.success(),
+        "par2verify PAR1 renamed file should require repair: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Repair required"),
+        "par2verify should report repair required: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_par1_verify_ignores_skip_leeway_without_data_skipping() {
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = create_par1_verify_test_set(&temp_dir);
+
+    let output = Command::new(get_binary_path("par2verify"))
+        .arg("-S10")
+        .arg(&par_file)
+        .output()
+        .expect("Failed to execute par2verify");
+
+    assert!(
+        output.status.success(),
+        "PAR1 verify should ignore -S without -N: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -971,10 +1545,10 @@ fn test_par2verify_scans_extra_file_arguments() {
         .expect("Failed to execute par2verify");
 
     assert!(
-        output.status.success(),
-        "par2verify with extra file failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "par2verify with renamed extra should report repair required"
     );
+    assert!(renamed.exists(), "par2verify must remain non-mutating");
 }
 
 #[test]
@@ -1060,6 +1634,143 @@ fn test_par2repair_missing_file() {
         .expect("Failed to execute par2repair");
 
     assert!(!output.status.success());
+}
+
+#[test]
+fn test_par2repair_repairs_missing_par1_file_from_volume_input() {
+    let temp_dir = TempDir::new().unwrap();
+    copy_real_par1_fixture(&temp_dir);
+    let volume_file = temp_dir.path().join("testdata.p01");
+    let missing_file = temp_dir.path().join("test-5.data");
+    fs::remove_file(&missing_file).unwrap();
+
+    let output = Command::new(get_binary_path("par2repair"))
+        .arg(&volume_file)
+        .output()
+        .expect("Failed to execute par2repair");
+
+    assert!(
+        output.status.success(),
+        "par2repair PAR1 failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(missing_file.exists());
+}
+
+#[test]
+fn test_par2repair_repairs_renamed_par1_file() {
+    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
+    let temp_dir = TempDir::new().unwrap();
+    let par_file = copy_real_par1_fixture(&temp_dir);
+    let target = temp_dir.path().join("test-5.data");
+    let renamed = temp_dir.path().join("renamed.data");
+    fs::rename(&target, &renamed).unwrap();
+
+    let output = Command::new(get_binary_path("par2repair"))
+        .arg(&par_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2repair");
+
+    assert!(
+        output.status.success(),
+        "par2repair PAR1 renamed file failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        fs::read(fixture_dir.join("test-5.data")).unwrap()
+    );
+    assert!(!renamed.exists());
+}
+
+#[test]
+fn test_par2repair_repairs_renamed_par1_file_from_volume_input() {
+    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
+    let temp_dir = TempDir::new().unwrap();
+    copy_real_par1_fixture(&temp_dir);
+    let volume_file = temp_dir.path().join("testdata.p01");
+    let target = temp_dir.path().join("test-6.data");
+    let renamed = temp_dir.path().join("renamed.data");
+    fs::rename(&target, &renamed).unwrap();
+
+    let output = Command::new(get_binary_path("par2repair"))
+        .arg(&volume_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2repair");
+
+    assert!(
+        output.status.success(),
+        "par2repair PAR1 volume renamed file failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        fs::read(fixture_dir.join("test-6.data")).unwrap()
+    );
+    assert!(!renamed.exists());
+}
+
+#[test]
+fn test_par1_repair_honors_memory_flag() {
+    for (binary, subcommand) in [("par2", Some("repair")), ("par2repair", None)] {
+        let temp_dir = TempDir::new().unwrap();
+        let par_file = copy_real_par1_fixture(&temp_dir);
+        let missing_file = temp_dir.path().join("test-6.data");
+        fs::remove_file(&missing_file).unwrap();
+
+        let mut command = Command::new(get_binary_path(binary));
+        if let Some(subcommand) = subcommand {
+            command.arg(subcommand);
+        }
+        let output = command
+            .arg("-m1")
+            .arg(&par_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            output.status.success(),
+            "{binary} PAR1 repair with -m failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(missing_file.exists());
+    }
+}
+
+#[test]
+fn test_par1_repair_rejects_zero_memory_flag() {
+    for (binary, subcommand) in [("par2", Some("repair")), ("par2repair", None)] {
+        let temp_dir = TempDir::new().unwrap();
+        let par_file = copy_real_par1_fixture(&temp_dir);
+
+        let mut command = Command::new(get_binary_path(binary));
+        if let Some(subcommand) = subcommand {
+            command.arg(subcommand);
+        }
+        let output = command
+            .arg("-m0")
+            .arg(&par_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted PAR1 repair -m0: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("must be greater than 0"),
+            "{binary} should explain -m0 rejection: stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
@@ -1162,13 +1873,37 @@ fn test_par2repair_scans_extra_file_arguments() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        !source.exists(),
-        "extra file scan should not recreate the protected filename"
+        source.exists(),
+        "repair should restore the protected filename from the renamed extra"
     );
     assert!(
-        renamed.exists(),
-        "extra file scan should not consume user-supplied files"
+        !renamed.exists(),
+        "repair should consume the renamed extra by moving it into place"
     );
+    assert_eq!(fs::read(&source).unwrap(), b"renamed-file-scan-data");
+}
+
+#[test]
+fn test_par2repair_rename_only_restores_extra_file() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let (par2_file, source, renamed) = create_renamed_file_test_set(&temp_dir);
+
+    let output = Command::new(get_binary_path("par2repair"))
+        .arg("-q")
+        .arg("-O")
+        .arg(&par2_file)
+        .arg(&renamed)
+        .output()
+        .expect("Failed to execute par2repair -O");
+
+    assert!(
+        output.status.success(),
+        "par2repair -O with renamed extra failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(source.exists());
+    assert!(!renamed.exists());
+    assert_eq!(fs::read(&source).unwrap(), b"renamed-file-scan-data");
 }
 
 #[test]
@@ -1250,8 +1985,7 @@ fn test_standalone_verify_repair_accept_scan_compat_flags() {
         let output = Command::new(get_binary_path(binary))
             .arg("-q")
             .arg("-N")
-            .arg("-S")
-            .arg("512")
+            .arg("-S512")
             .arg(par2_file)
             .output()
             .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
@@ -1301,7 +2035,6 @@ fn test_standalone_verify_repair_accept_repeated_verbose_flags() {
 
     for binary in ["par2verify", "par2repair"] {
         let output = Command::new(get_binary_path(binary))
-            .arg("-q")
             .arg("-v")
             .arg("-v")
             .arg(par2_file)
@@ -1326,7 +2059,6 @@ fn test_standalone_verify_repair_accept_long_verbose_flag() {
 
     for binary in ["par2verify", "par2repair"] {
         let output = Command::new(get_binary_path(binary))
-            .arg("-q")
             .arg("--verbose")
             .arg(par2_file)
             .output()
@@ -1385,10 +2117,8 @@ fn test_par2create_creates_par2_files() {
     let output_base = temp_dir.path().join("sample.par2");
     let output = Command::new(get_binary_path("par2create"))
         .arg("-q")
-        .arg("-s")
-        .arg("4")
-        .arg("-c")
-        .arg("1")
+        .arg("-s4")
+        .arg("-c1")
         .arg(&output_base)
         .arg(&source)
         .output()
@@ -1415,24 +2145,119 @@ fn test_par2create_creates_par2_files() {
 }
 
 #[test]
-fn test_create_commands_accept_long_quiet_and_verbose_flags() {
-    for (binary, command) in [("par2create", None), ("par2", Some("create"))] {
+fn test_create_commands_reject_par1_output_names() {
+    for (binary, command, output_name) in [
+        ("par2create", None, "archive.par"),
+        ("par2", Some("create"), "archive.P01"),
+    ] {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let source = temp_dir.path().join("verbose.dat");
-        create_test_file(&source, b"long verbose create").expect("Failed to create source file");
-        let output_base = temp_dir.path().join("verbose.par2");
+        let source = temp_dir.path().join("source.dat");
+        create_test_file(&source, b"par1 create target rejection")
+            .expect("Failed to create source file");
+        let output_base = temp_dir.path().join(output_name);
 
         let mut command_runner = Command::new(get_binary_path(binary));
         if let Some(subcommand) = command {
             command_runner.arg(subcommand);
         }
         let output = command_runner
-            .arg("--quiet")
-            .arg("--verbose")
-            .arg("-s")
-            .arg("4")
-            .arg("-c")
-            .arg("1")
+            .arg("-q")
+            .arg("-s4")
+            .arg("-c1")
+            .arg(&output_base)
+            .arg(&source)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted PAR1 create output name: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("PAR1 create is not supported"),
+            "{binary} should explain PAR1 create rejection: stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output_base.exists(), "{binary} created a PAR1-named file");
+    }
+}
+
+#[test]
+fn test_par2_create_rejects_rename_only_flag() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("source.txt");
+    create_test_file(&source, b"source").expect("Failed to create source file");
+
+    let output = Command::new(get_binary_path("par2"))
+        .current_dir(temp_dir.path())
+        .arg("create")
+        .arg("-O")
+        .arg("out.par2")
+        .arg("source.txt")
+        .output()
+        .expect("Failed to execute par2 create -O");
+
+    assert!(!output.status.success(), "create -O should be rejected");
+    assert!(!temp_dir.path().join("out.par2").exists());
+}
+
+#[test]
+fn test_create_commands_reject_par1_archive_name() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("source.dat");
+    create_test_file(&source, b"par1 archive name rejection").expect("Failed to create source");
+    let output_base = temp_dir.path().join("archive.par2");
+    let archive_name = temp_dir.path().join("archive.par");
+
+    let output = Command::new(get_binary_path("par2create"))
+        .arg("-q")
+        .arg("-a")
+        .arg(&archive_name)
+        .arg("-s4")
+        .arg("-c1")
+        .arg(&output_base)
+        .arg(&source)
+        .output()
+        .expect("Failed to execute par2create");
+
+    assert!(
+        !output.status.success(),
+        "par2create accepted PAR1 archive name: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("PAR1 create is not supported"),
+        "par2create should explain PAR1 archive name rejection: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !archive_name.exists(),
+        "par2create created a PAR1-named archive"
+    );
+}
+
+#[test]
+fn test_create_commands_accept_long_quiet_and_verbose_flags() {
+    for (binary, command, flag, name) in [
+        ("par2create", None, "--verbose", "verbose"),
+        ("par2", Some("create"), "--quiet", "quiet"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let source = temp_dir.path().join(format!("{name}.dat"));
+        create_test_file(&source, b"long verbosity create").expect("Failed to create source file");
+        let output_base = temp_dir.path().join(format!("{name}.par2"));
+
+        let mut command_runner = Command::new(get_binary_path(binary));
+        if let Some(subcommand) = command {
+            command_runner.arg(subcommand);
+        }
+        let output = command_runner
+            .arg(flag)
+            .arg("-s4")
+            .arg("-c1")
             .arg(&output_base)
             .arg(&source)
             .output()
@@ -1440,7 +2265,397 @@ fn test_create_commands_accept_long_quiet_and_verbose_flags() {
 
         assert!(
             output.status.success(),
-            "{binary} rejected --verbose: stdout={}, stderr={}",
+            "{binary} rejected {flag}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn test_binaries_reject_mixed_verbose_and_quiet() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let source = temp_dir.path().join("source.dat");
+    create_test_file(&source, b"mixed verbosity").expect("Failed to create source file");
+
+    let cases: Vec<(&str, Vec<String>)> = vec![
+        (
+            "par2create",
+            vec![
+                "-v".into(),
+                "-q".into(),
+                temp_dir
+                    .path()
+                    .join("a.par2")
+                    .to_string_lossy()
+                    .into_owned(),
+                source.to_string_lossy().into_owned(),
+            ],
+        ),
+        (
+            "par2",
+            vec![
+                "create".into(),
+                "-v".into(),
+                "-q".into(),
+                temp_dir
+                    .path()
+                    .join("b.par2")
+                    .to_string_lossy()
+                    .into_owned(),
+                source.to_string_lossy().into_owned(),
+            ],
+        ),
+        (
+            "par2verify",
+            vec!["-v".into(), "-q".into(), "missing.par2".into()],
+        ),
+        (
+            "par2repair",
+            vec!["-v".into(), "-q".into(), "missing.par2".into()],
+        ),
+    ];
+
+    for (binary, args) in cases {
+        let output = Command::new(get_binary_path(binary))
+            .args(args)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+        assert!(
+            !output.status.success(),
+            "{binary} accepted mixed -v/-q: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn test_binaries_accept_bundled_mixed_verbose_and_quiet() {
+    for (binary, prefix_args, data_arg) in [
+        ("par2create", Vec::<&str>::new(), "source.dat"),
+        ("par2", vec!["create"], "source.dat"),
+    ] {
+        for flag in ["-qv", "-vq"] {
+            let temp_dir = TempDir::new().expect("Failed to create temp dir");
+            let source = temp_dir.path().join("source.dat");
+            create_test_file(&source, b"bundled mixed noise")
+                .expect("Failed to create source file");
+            let output_base = temp_dir.path().join(format!("{binary}-{flag}.par2"));
+
+            let mut command = Command::new(get_binary_path(binary));
+            command.args(&prefix_args);
+            let output = command
+                .current_dir(temp_dir.path())
+                .arg(flag)
+                .arg(&output_base)
+                .arg(data_arg)
+                .output()
+                .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+            assert!(
+                output.status.success(),
+                "{binary} rejected bundled {flag}: stdout={}, stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    let par2_file = Path::new("tests/fixtures/edge_cases/test_valid.par2");
+    if !par2_file.exists() {
+        eprintln!("Skipping verify/repair bundled noise test - fixture not found");
+        return;
+    }
+
+    for (binary, prefix_args) in [
+        ("par2verify", Vec::<&str>::new()),
+        ("par2repair", Vec::<&str>::new()),
+        ("par2", vec!["verify"]),
+        ("par2", vec!["repair"]),
+    ] {
+        for flag in ["-qv", "-vq"] {
+            let mut command = Command::new(get_binary_path(binary));
+            command.args(&prefix_args);
+            let output = command
+                .arg(flag)
+                .arg(par2_file)
+                .output()
+                .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+            assert!(
+                output.status.success(),
+                "{binary} rejected bundled {flag}: stdout={}, stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn test_binaries_accept_thread_option_clusters_with_trailing_noise() {
+    for (binary, prefix_args, thread_flag) in [
+        ("par2create", Vec::<&str>::new(), "-T1qv"),
+        ("par2create", Vec::<&str>::new(), "-t1qv"),
+        ("par2", vec!["create"], "-T1qv"),
+        ("par2", vec!["create"], "-t1qv"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let source = temp_dir.path().join("source.dat");
+        create_test_file(&source, b"thread option noise bundle")
+            .expect("Failed to create source file");
+        let output_base = temp_dir.path().join(format!("{binary}-{thread_flag}.par2"));
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(&prefix_args);
+        let output = command
+            .current_dir(temp_dir.path())
+            .arg(thread_flag)
+            .arg(&output_base)
+            .arg("source.dat")
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            output.status.success(),
+            "{binary} rejected bundled {thread_flag}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let par2_file = Path::new("tests/fixtures/testfile.par2");
+    if !par2_file.exists() {
+        eprintln!("Skipping thread option bundle test - fixture not found");
+        return;
+    }
+
+    for (binary, prefix_args, thread_flag) in [
+        ("par2verify", Vec::<&str>::new(), "-T1qv"),
+        ("par2verify", Vec::<&str>::new(), "-t1qv"),
+        ("par2repair", Vec::<&str>::new(), "-T1qv"),
+        ("par2repair", Vec::<&str>::new(), "-t1qv"),
+        ("par2", vec!["verify"], "-T1qv"),
+        ("par2", vec!["verify"], "-t1qv"),
+        ("par2", vec!["repair"], "-T1qv"),
+        ("par2", vec!["repair"], "-t1qv"),
+    ] {
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(&prefix_args);
+        let output = command
+            .arg(thread_flag)
+            .arg(par2_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            output.status.success(),
+            "{binary} rejected bundled {thread_flag}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn test_binaries_accept_verify_repair_thread_option_clusters_with_trailing_flags() {
+    let fixture_dir = Path::new("tests/fixtures");
+    if !fixture_dir.join("testfile.par2").exists() {
+        eprintln!("Skipping verify/repair trailing thread flag test - fixture not found");
+        return;
+    }
+
+    for (binary, prefix_args, thread_flag) in [
+        ("par2verify", Vec::<&str>::new(), "-t1p"),
+        ("par2verify", Vec::<&str>::new(), "-T1p"),
+        ("par2verify", Vec::<&str>::new(), "-t1N"),
+        ("par2verify", Vec::<&str>::new(), "-T1O"),
+        ("par2repair", Vec::<&str>::new(), "-t1p"),
+        ("par2repair", Vec::<&str>::new(), "-T1p"),
+        ("par2repair", Vec::<&str>::new(), "-t1N"),
+        ("par2repair", Vec::<&str>::new(), "-T1O"),
+        ("par2", vec!["verify"], "-t1p"),
+        ("par2", vec!["verify"], "-T1p"),
+        ("par2", vec!["verify"], "-t1N"),
+        ("par2", vec!["verify"], "-T1O"),
+        ("par2", vec!["repair"], "-t1p"),
+        ("par2", vec!["repair"], "-T1p"),
+        ("par2", vec!["repair"], "-t1N"),
+        ("par2", vec!["repair"], "-T1O"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        for name in [
+            "testfile",
+            "testfile.par2",
+            "testfile.vol00+01.par2",
+            "testfile.vol01+02.par2",
+        ] {
+            fs::copy(fixture_dir.join(name), temp_dir.path().join(name))
+                .unwrap_or_else(|_| panic!("Failed to copy fixture {name}"));
+        }
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(&prefix_args);
+        let output = command
+            .current_dir(temp_dir.path())
+            .arg(thread_flag)
+            .arg("testfile.par2")
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            output.status.success(),
+            "{binary} rejected bundled {thread_flag}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn test_binaries_accept_prefixed_verify_repair_thread_option_clusters() {
+    let fixture_dir = Path::new("tests/fixtures");
+    if !fixture_dir.join("testfile.par2").exists() {
+        eprintln!("Skipping prefixed thread cluster test - fixture not found");
+        return;
+    }
+
+    for (binary, prefix_args, thread_flag) in [
+        ("par2verify", Vec::<&str>::new(), "-qt1N"),
+        ("par2verify", Vec::<&str>::new(), "-qT1O"),
+        ("par2repair", Vec::<&str>::new(), "-qt1N"),
+        ("par2repair", Vec::<&str>::new(), "-qT1O"),
+        ("par2", vec!["verify"], "-qt1N"),
+        ("par2", vec!["verify"], "-qT1O"),
+        ("par2", vec!["repair"], "-qt1N"),
+        ("par2", vec!["repair"], "-qT1O"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        for name in [
+            "testfile",
+            "testfile.par2",
+            "testfile.vol00+01.par2",
+            "testfile.vol01+02.par2",
+        ] {
+            fs::copy(fixture_dir.join(name), temp_dir.path().join(name))
+                .unwrap_or_else(|_| panic!("Failed to copy fixture {name}"));
+        }
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(&prefix_args);
+        let output = command
+            .current_dir(temp_dir.path())
+            .arg(thread_flag)
+            .arg("testfile.par2")
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            output.status.success(),
+            "{binary} rejected bundled {thread_flag}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn test_binaries_accept_create_thread_option_clusters_with_trailing_flags() {
+    for (binary, prefix_args, thread_flag, extra_args) in [
+        ("par2create", Vec::<&str>::new(), "-t1u", Vec::<&str>::new()),
+        ("par2create", Vec::<&str>::new(), "-T1u", Vec::<&str>::new()),
+        ("par2create", Vec::<&str>::new(), "-t1l", vec!["-c3"]),
+        ("par2create", Vec::<&str>::new(), "-T1l", vec!["-c3"]),
+        ("par2", vec!["create"], "-t1u", Vec::<&str>::new()),
+        ("par2", vec!["create"], "-T1u", Vec::<&str>::new()),
+        ("par2", vec!["create"], "-t1l", vec!["-c3"]),
+        ("par2", vec!["create"], "-T1l", vec!["-c3"]),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let source = temp_dir.path().join("source.dat");
+        create_test_file(&source, b"thread option tail flags")
+            .expect("Failed to create source file");
+        let output_base = temp_dir.path().join(format!("{binary}-{thread_flag}.par2"));
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(&prefix_args);
+        let output = command
+            .current_dir(temp_dir.path())
+            .arg(thread_flag)
+            .args(&extra_args)
+            .arg(&output_base)
+            .arg("source.dat")
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            output.status.success(),
+            "{binary} rejected bundled {thread_flag}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn test_create_commands_reject_invalid_short_clusters() {
+    for (binary, prefix_args, extra_args) in [
+        ("par2create", Vec::<&str>::new(), vec!["-uq"]),
+        ("par2create", Vec::<&str>::new(), vec!["-uT1"]),
+        ("par2create", Vec::<&str>::new(), vec!["-lT1", "-c3"]),
+        ("par2create", Vec::<&str>::new(), vec!["-B.q"]),
+        ("par2", vec!["create"], vec!["-uq"]),
+        ("par2", vec!["create"], vec!["-uT1"]),
+        ("par2", vec!["create"], vec!["-lT1", "-c3"]),
+        ("par2", vec!["create"], vec!["-B.q"]),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let source = temp_dir.path().join("source.dat");
+        create_test_file(&source, b"invalid short cluster").expect("Failed to create source file");
+        let output_base = temp_dir.path().join("invalid.par2");
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(&prefix_args);
+        let output = command
+            .current_dir(temp_dir.path())
+            .args(&extra_args)
+            .arg(&output_base)
+            .arg("source.dat")
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted invalid cluster {:?}: stdout={}, stderr={}",
+            extra_args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    for (binary, prefix_args) in [("par2create", Vec::<&str>::new()), ("par2", vec!["create"])] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let tree_root = temp_dir.path().join("tree");
+        fs::create_dir_all(tree_root.join("nested")).expect("Failed to create tree fixture");
+        create_test_file(&tree_root.join("root.txt"), b"root").expect("Failed to create root");
+        create_test_file(&tree_root.join("nested").join("child.txt"), b"child")
+            .expect("Failed to create child");
+        let output_base = temp_dir.path().join("invalid.par2");
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(&prefix_args);
+        let output = command
+            .current_dir(temp_dir.path())
+            .arg("-qR")
+            .arg(&output_base)
+            .arg("tree")
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted invalid cluster -qR: stdout={}, stderr={}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -1469,10 +2684,8 @@ fn test_create_commands_accept_long_resource_flags() {
             .arg("1")
             .arg("--basepath")
             .arg(temp_dir.path())
-            .arg("-s")
-            .arg("4")
-            .arg("-c")
-            .arg("1")
+            .arg("-s4")
+            .arg("-c1")
             .arg(&output_base)
             .arg(&source)
             .output()
@@ -1488,6 +2701,276 @@ fn test_create_commands_accept_long_resource_flags() {
 }
 
 #[test]
+fn test_create_commands_reject_existing_outputs() {
+    for (binary, command) in [("par2create", None), ("par2", Some("create"))] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let source = temp_dir.path().join("overwrite.dat");
+        create_test_file(&source, b"existing output safety").expect("Failed to create source file");
+        let output_base = temp_dir.path().join("overwrite.par2");
+        create_test_file(&output_base, b"existing index").expect("Failed to create index file");
+
+        let mut command_runner = Command::new(get_binary_path(binary));
+        if let Some(subcommand) = command {
+            command_runner.arg(subcommand);
+        }
+        let output = command_runner
+            .arg("-q")
+            .arg("-s4")
+            .arg("-c1")
+            .arg(&output_base)
+            .arg(&source)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} overwrote an existing output: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(3),
+            "{binary} should match turbo's existing-output exit code: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(&output_base).unwrap(), b"existing index");
+    }
+}
+
+#[test]
+fn test_verify_and_repair_reject_skip_leeway_without_data_skipping() {
+    for (binary, args) in [
+        ("par2verify", vec!["-S10", "missing.par2"]),
+        ("par2repair", vec!["-S10", "missing.par2"]),
+        ("par2", vec!["verify", "-S10", "missing.par2"]),
+        ("par2", vec!["repair", "-S10", "missing.par2"]),
+    ] {
+        let output = Command::new(get_binary_path(binary))
+            .args(args)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+        assert!(
+            !output.status.success(),
+            "{binary} accepted -S without -N: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("only valid when -N"),
+            "{binary} failed for the wrong reason: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn test_verify_and_repair_accept_archive_name_as_noop() {
+    for (binary, prefix_args) in [
+        ("par2verify", Vec::<&str>::new()),
+        ("par2repair", Vec::<&str>::new()),
+        ("par2", vec!["verify"]),
+        ("par2", vec!["repair"]),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let (par2_file, _source) = create_purge_test_set(&temp_dir);
+        let ignored_archive = temp_dir.path().join("ignored.par2");
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(prefix_args);
+        let output = command
+            .arg("-q")
+            .arg("-aignored.par2")
+            .arg(&par2_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            output.status.success(),
+            "{binary} rejected verify/repair -a no-op: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !ignored_archive.exists(),
+            "{binary} should ignore -a during verify/repair"
+        );
+    }
+}
+
+#[test]
+fn test_short_option_value_forms_match_turbo_rejections() {
+    for (binary, prefix_args, flag, value) in [
+        ("par2create", Vec::<&str>::new(), "-b", "8"),
+        ("par2create", Vec::<&str>::new(), "-s", "4"),
+        ("par2create", Vec::<&str>::new(), "-r", "10"),
+        ("par2create", Vec::<&str>::new(), "-n", "2"),
+        ("par2create", Vec::<&str>::new(), "-T", "1"),
+        ("par2create", Vec::<&str>::new(), "-t", "1"),
+        ("par2create", Vec::<&str>::new(), "-m", "1"),
+        ("par2", vec!["create"], "-b", "8"),
+        ("par2", vec!["create"], "-s", "4"),
+        ("par2", vec!["create"], "-r", "10"),
+        ("par2", vec!["create"], "-n", "2"),
+        ("par2", vec!["create"], "-T", "1"),
+        ("par2", vec!["create"], "-t", "1"),
+        ("par2", vec!["create"], "-m", "1"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let source = temp_dir.path().join("source.dat");
+        create_test_file(&source, b"detached value rejection").expect("Failed to create source");
+        let output_base = temp_dir.path().join("out.par2");
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(prefix_args);
+        let output = command
+            .arg(flag)
+            .arg(value)
+            .arg(&output_base)
+            .arg(&source)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted detached {flag} {value}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output_base.exists(), "{binary} created an output archive");
+    }
+
+    for (binary, prefix_args, option) in [
+        ("par2create", Vec::<&str>::new(), "-B=."),
+        ("par2create", Vec::<&str>::new(), "-b=8"),
+        ("par2create", Vec::<&str>::new(), "-s=4"),
+        ("par2create", Vec::<&str>::new(), "-r=10"),
+        ("par2create", Vec::<&str>::new(), "-c=2"),
+        ("par2create", Vec::<&str>::new(), "-f=3"),
+        ("par2create", Vec::<&str>::new(), "-n=2"),
+        ("par2create", Vec::<&str>::new(), "-T=1"),
+        ("par2create", Vec::<&str>::new(), "-t=1"),
+        ("par2create", Vec::<&str>::new(), "-m=1"),
+        ("par2", vec!["create"], "-B=."),
+        ("par2", vec!["create"], "-b=8"),
+        ("par2", vec!["create"], "-s=4"),
+        ("par2", vec!["create"], "-r=10"),
+        ("par2", vec!["create"], "-c=2"),
+        ("par2", vec!["create"], "-f=3"),
+        ("par2", vec!["create"], "-n=2"),
+        ("par2", vec!["create"], "-T=1"),
+        ("par2", vec!["create"], "-t=1"),
+        ("par2", vec!["create"], "-m=1"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let source = temp_dir.path().join("source.dat");
+        create_test_file(&source, b"equals value rejection").expect("Failed to create source");
+        let output_base = temp_dir.path().join("out.par2");
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(prefix_args);
+        let output = command
+            .arg(option)
+            .arg(&output_base)
+            .arg(&source)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted {option}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output_base.exists(), "{binary} created an output archive");
+    }
+
+    for (binary, prefix_args, extra_args, flag, value) in [
+        (
+            "par2verify",
+            Vec::<&str>::new(),
+            Vec::<&str>::new(),
+            "-a",
+            "ignored.par2",
+        ),
+        ("par2verify", Vec::new(), vec!["-N"], "-S", "64"),
+        ("par2verify", Vec::new(), Vec::new(), "-T", "1"),
+        ("par2verify", Vec::new(), Vec::new(), "-m", "1"),
+        ("par2repair", Vec::new(), Vec::new(), "-a", "ignored.par2"),
+        ("par2repair", Vec::new(), vec!["-N"], "-S", "64"),
+        ("par2repair", Vec::new(), Vec::new(), "-T", "1"),
+        ("par2repair", Vec::new(), Vec::new(), "-m", "1"),
+        ("par2", vec!["verify"], Vec::new(), "-a", "ignored.par2"),
+        ("par2", vec!["verify"], vec!["-N"], "-S", "64"),
+        ("par2", vec!["verify"], Vec::new(), "-T", "1"),
+        ("par2", vec!["verify"], Vec::new(), "-m", "1"),
+        ("par2", vec!["repair"], Vec::new(), "-a", "ignored.par2"),
+        ("par2", vec!["repair"], vec!["-N"], "-S", "64"),
+        ("par2", vec!["repair"], Vec::new(), "-T", "1"),
+        ("par2", vec!["repair"], Vec::new(), "-m", "1"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let (par2_file, _source) = create_purge_test_set(&temp_dir);
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(prefix_args);
+        command.args(extra_args);
+        let output = command
+            .arg(flag)
+            .arg(value)
+            .arg(&par2_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted detached {flag} {value}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    for (binary, prefix_args, extra_args, option) in [
+        ("par2verify", Vec::<&str>::new(), Vec::<&str>::new(), "-B=."),
+        ("par2verify", Vec::new(), vec!["-N"], "-S=64"),
+        ("par2verify", Vec::new(), Vec::new(), "-T=1"),
+        ("par2verify", Vec::new(), Vec::new(), "-m=1"),
+        ("par2repair", Vec::new(), Vec::new(), "-B=."),
+        ("par2repair", Vec::new(), vec!["-N"], "-S=64"),
+        ("par2repair", Vec::new(), Vec::new(), "-T=1"),
+        ("par2repair", Vec::new(), Vec::new(), "-m=1"),
+        ("par2", vec!["verify"], Vec::new(), "-B=."),
+        ("par2", vec!["verify"], vec!["-N"], "-S=64"),
+        ("par2", vec!["verify"], Vec::new(), "-T=1"),
+        ("par2", vec!["verify"], Vec::new(), "-m=1"),
+        ("par2", vec!["repair"], Vec::new(), "-B=."),
+        ("par2", vec!["repair"], vec!["-N"], "-S=64"),
+        ("par2", vec!["repair"], Vec::new(), "-T=1"),
+        ("par2", vec!["repair"], Vec::new(), "-m=1"),
+    ] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let (par2_file, _source) = create_purge_test_set(&temp_dir);
+
+        let mut command = Command::new(get_binary_path(binary));
+        command.args(prefix_args);
+        command.args(extra_args);
+        let output = command
+            .arg(option)
+            .arg(&par2_file)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute {binary}"));
+
+        assert!(
+            !output.status.success(),
+            "{binary} accepted {option}: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn test_par2create_uses_single_existing_file_as_source() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let source = temp_dir.path().join("implicit.dat");
@@ -1496,10 +2979,8 @@ fn test_par2create_uses_single_existing_file_as_source() {
     let output = Command::new(get_binary_path("par2create"))
         .current_dir(temp_dir.path())
         .arg("-q")
-        .arg("-s")
-        .arg("4")
-        .arg("-c")
-        .arg("1")
+        .arg("-s4")
+        .arg("-c1")
         .arg("implicit.dat")
         .output()
         .expect("Failed to execute par2create");
@@ -1536,10 +3017,8 @@ fn test_create_commands_recurse_directories_with_basepath() {
             .arg("-R")
             .arg("--basepath")
             .arg(&root)
-            .arg("-s")
-            .arg("4")
-            .arg("-c")
-            .arg("1")
+            .arg("-s4")
+            .arg("-c1")
             .arg(&output_base)
             .arg(&root)
             .output()
@@ -1575,10 +3054,8 @@ fn test_create_commands_use_archive_name_option() {
             .arg("-q")
             .arg("-a")
             .arg(&archive_base)
-            .arg("-s")
-            .arg("4")
-            .arg("-c")
-            .arg("1")
+            .arg("-s4")
+            .arg("-c1")
             .arg(&positional_base)
             .arg(&source)
             .output()
@@ -1613,12 +3090,9 @@ fn test_create_commands_use_first_recovery_block_option() {
         }
         let output = command_runner
             .arg("-q")
-            .arg("-s")
-            .arg("4")
-            .arg("-c")
-            .arg("1")
-            .arg("-f")
-            .arg("7")
+            .arg("-s4")
+            .arg("-c1")
+            .arg("-f7")
             .arg(&output_base)
             .arg(&source)
             .output()
@@ -1648,10 +3122,8 @@ fn test_par2_create_uses_single_existing_file_as_source() {
         .current_dir(temp_dir.path())
         .arg("create")
         .arg("-q")
-        .arg("-s")
-        .arg("4")
-        .arg("-c")
-        .arg("1")
+        .arg("-s4")
+        .arg("-c1")
         .arg("implicit-unified.dat")
         .output()
         .expect("Failed to execute par2 create");
@@ -1679,12 +3151,9 @@ fn test_par2create_accepts_target_size_redundancy() {
     let output_base = temp_dir.path().join("target-size.par2");
     let output = Command::new(get_binary_path("par2create"))
         .arg("-q")
-        .arg("-s")
-        .arg("4")
-        .arg("-r")
-        .arg("k1")
-        .arg("-n")
-        .arg("1")
+        .arg("-s4")
+        .arg("-rk1")
+        .arg("-n1")
         .arg(&output_base)
         .arg(&source)
         .output()
@@ -1708,10 +3177,8 @@ fn test_par2create_accepts_high_redundancy_with_warning() {
     let output_base = temp_dir.path().join("high-percent.par2");
     let output = Command::new(get_binary_path("par2create"))
         .arg("-q")
-        .arg("-s")
-        .arg("4")
-        .arg("-r")
-        .arg("101")
+        .arg("-s4")
+        .arg("-r101")
         .arg(&output_base)
         .arg(&source)
         .output()
@@ -1736,12 +3203,9 @@ fn test_par2create_rejects_conflicting_create_options() {
     let output_base = temp_dir.path().join("conflict.par2");
 
     let output = Command::new(get_binary_path("par2create"))
-        .arg("-s")
-        .arg("4")
-        .arg("-c")
-        .arg("1")
-        .arg("-r")
-        .arg("5")
+        .arg("-s4")
+        .arg("-c1")
+        .arg("-r5")
         .arg(&output_base)
         .arg(&source)
         .output()
@@ -1762,12 +3226,9 @@ fn test_par2create_rejects_too_many_recovery_files() {
 
     let output = Command::new(get_binary_path("par2create"))
         .arg("-q")
-        .arg("-s")
-        .arg("4")
-        .arg("-c")
-        .arg("1")
-        .arg("-n")
-        .arg("32")
+        .arg("-s4")
+        .arg("-c1")
+        .arg("-n32")
         .arg(&output_base)
         .arg(&source)
         .output()
@@ -1913,12 +3374,9 @@ fn test_par2create_n_uses_uniform_file_sizes() {
 
     let output = Command::new(get_binary_path("par2create"))
         .arg("-q")
-        .arg("-s")
-        .arg("4")
-        .arg("-c")
-        .arg("5")
-        .arg("-n")
-        .arg("2")
+        .arg("-s4")
+        .arg("-c5")
+        .arg("-n2")
         .arg(&output_base)
         .arg(&source)
         .output()
@@ -1932,22 +3390,6 @@ fn test_par2create_n_uses_uniform_file_sizes() {
     );
     assert!(temp_dir.path().join("uniform.vol0+3.par2").exists());
     assert!(temp_dir.path().join("uniform.vol3+2.par2").exists());
-}
-
-// =============================================================================
-// split_par2 binary tests
-// =============================================================================
-
-#[test]
-fn test_split_par2_runs() {
-    let output = Command::new(get_binary_path("split_par2"))
-        .output()
-        .expect("Failed to execute split_par2");
-
-    // Should execute without crashing
-    // Note: This binary has hardcoded paths, so it may fail to find files
-    // but should still execute
-    assert!(output.status.success() || output.status.code().is_some());
 }
 
 // =============================================================================
@@ -2047,13 +3489,7 @@ fn test_par2_threads_argument() {
 
 #[test]
 fn test_all_binaries_exist() {
-    let binaries = vec![
-        "par2",
-        "par2verify",
-        "par2repair",
-        "par2create",
-        "split_par2",
-    ];
+    let binaries = vec!["par2", "par2verify", "par2repair", "par2create"];
 
     for binary in binaries {
         let path = get_binary_path(binary);

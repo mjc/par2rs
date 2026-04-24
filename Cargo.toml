@@ -41,10 +41,6 @@ path = "src/bin/par2repair.rs"
 name = "par2create"
 path = "src/bin/par2create.rs"
 
-[[bin]]
-name = "split_par2"
-path = "src/bin/split_par2.rs"
-
 [dev-dependencies]
 # Temporary directory management for tests
 tempfile = "3"

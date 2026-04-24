@@ -11,6 +11,7 @@
 //! - Determines if repair is possible with available recovery blocks
 
 use anyhow::{Context, Result};
+use par2rs::cli::compat::{init_env_logger, parse_noise_level};
 use par2rs::{analysis, par2_files, reporters::VerificationReporter, verify};
 use std::path::{Path, PathBuf};
 
@@ -20,14 +21,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Initialize the logger
-    env_logger::Builder::from_default_env()
-        .format_timestamp(None)
-        .format_module_path(false)
-        .format_target(false)
-        .init();
-
     let matches = par2rs::parse_args();
+    let noise_level = parse_noise_level(matches.get_count("verbose"), matches.get_count("quiet"))
+        .map_err(anyhow::Error::msg)?;
+    init_env_logger(noise_level);
 
     let input_file = matches
         .get_one::<String>("input")
@@ -46,8 +43,32 @@ fn main() -> Result<()> {
         })
         .unwrap_or_default();
 
+    if par2_files::detect_recovery_format(Path::new(input_file))
+        == Some(par2_files::RecoveryFormat::Par1)
+    {
+        let options = par2rs::par1::verify::Par1VerifyOptions { extra_files, purge };
+        let verification_results =
+            par2rs::par1::verify::verify_par1_file_with_options(Path::new(input_file), &options)
+                .context("Failed to verify PAR1 file")?;
+        let reporter = par2rs::reporters::ConsoleVerificationReporter::new();
+        if !quiet {
+            reporter.report_verification_results(&verification_results);
+        }
+        anyhow::ensure!(
+            verification_results.renamed_file_count == 0
+                && verification_results.missing_file_count == 0
+                && verification_results.corrupted_file_count == 0,
+            "Repair required: {} files are missing or damaged",
+            verification_results.renamed_file_count
+                + verification_results.missing_file_count
+                + verification_results.corrupted_file_count
+        );
+        return Ok(());
+    }
+
     // Create verification config from command line arguments
-    let verify_config = verify::VerificationConfig::from_args(&matches);
+    let verify_config =
+        verify::VerificationConfig::try_from_args(&matches).map_err(anyhow::Error::msg)?;
 
     let file_path = par2_files::resolve_par2_file_argument(Path::new(input_file))
         .with_context(|| format!("Failed to locate PAR2 file for {}", input_file))?;
@@ -114,6 +135,11 @@ fn main() -> Result<()> {
     }
 
     // Return success if no repair is needed, error if repair is required
+    anyhow::ensure!(
+        verification_results.renamed_file_count == 0,
+        "Repair required: {} files are renamed",
+        verification_results.renamed_file_count
+    );
     anyhow::ensure!(
         verification_results.missing_block_count == 0,
         "Repair required: {} blocks are missing or damaged",

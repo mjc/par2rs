@@ -643,6 +643,7 @@ mod file_status_tests {
             total_blocks: 10,
             damaged_blocks: vec![],
             block_positions: Default::default(),
+            matched_path: None,
         };
 
         let cloned = result.clone();
@@ -767,6 +768,7 @@ mod print_verification_results_tests {
             total_blocks: 100,
             damaged_blocks,
             block_positions: Default::default(),
+            matched_path: None,
         });
 
         let results = VerificationResults {
@@ -835,6 +837,7 @@ mod verification_result_calculations {
                 total_blocks: 100,
                 damaged_blocks: if i > 0 { vec![0u32, 1u32] } else { vec![] },
                 block_positions: Default::default(),
+                matched_path: None,
             });
         }
 
@@ -894,6 +897,7 @@ mod verification_result_calculations {
                 total_blocks: 10,
                 damaged_blocks: vec![],
                 block_positions: Default::default(),
+                matched_path: None,
             },
             FileVerificationResult {
                 file_name: "damaged.txt".to_string(),
@@ -903,6 +907,7 @@ mod verification_result_calculations {
                 total_blocks: 10,
                 damaged_blocks: vec![5, 6, 7, 8, 9],
                 block_positions: Default::default(),
+                matched_path: None,
             },
             FileVerificationResult {
                 file_name: "missing.txt".to_string(),
@@ -912,6 +917,7 @@ mod verification_result_calculations {
                 total_blocks: 10,
                 damaged_blocks: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
                 block_positions: Default::default(),
+                matched_path: None,
             },
         ];
 
@@ -1084,6 +1090,7 @@ mod file_name_handling {
             total_blocks: 10,
             damaged_blocks: vec![],
             block_positions: Default::default(),
+            matched_path: None,
         };
 
         assert_eq!(result.file_name, "файл.txt");

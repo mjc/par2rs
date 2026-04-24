@@ -29,6 +29,7 @@ pub struct RepairContextBuilder {
     metadata: Option<Vec<RecoverySliceMetadata>>,
     base_path: Option<PathBuf>,
     reporter: Option<Box<dyn ProgressReporter>>,
+    memory_limit: Option<usize>,
 }
 
 impl RepairContextBuilder {
@@ -39,6 +40,7 @@ impl RepairContextBuilder {
             metadata: None,
             base_path: None,
             reporter: None,
+            memory_limit: None,
         }
     }
 
@@ -63,6 +65,12 @@ impl RepairContextBuilder {
     /// Set a custom progress reporter
     pub fn reporter(mut self, reporter: Box<dyn ProgressReporter>) -> Self {
         self.reporter = Some(reporter);
+        self
+    }
+
+    /// Set memory limit for reconstruction, in bytes.
+    pub fn memory_limit(mut self, limit: usize) -> Self {
+        self.memory_limit = Some(limit);
         self
     }
 
@@ -97,11 +105,13 @@ impl RepairContextBuilder {
             .reporter
             .unwrap_or_else(|| Box::new(ConsoleReporter::new(false)));
 
-        if let Some(metadata) = self.metadata {
+        let mut context = if let Some(metadata) = self.metadata {
             RepairContext::new_with_metadata_and_reporter(packets, metadata, base_path, reporter)
         } else {
             RepairContext::new_with_reporter(packets, base_path, reporter)
-        }
+        }?;
+        context.set_memory_limit(self.memory_limit);
+        Ok(context)
     }
 }
 
@@ -151,5 +161,11 @@ mod tests {
     fn test_builder_custom_reporter() {
         let builder = RepairContextBuilder::new().reporter(Box::new(SilentReporter::new()));
         assert!(builder.reporter.is_some());
+    }
+
+    #[test]
+    fn test_builder_memory_limit() {
+        let builder = RepairContextBuilder::new().memory_limit(1024);
+        assert_eq!(builder.memory_limit, Some(1024));
     }
 }

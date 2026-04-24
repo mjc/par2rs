@@ -420,9 +420,9 @@ fn test_repair_context_purge_files_with_backups() {
     let result = context.purge_files(par2_file.to_str().unwrap());
     assert!(result.is_ok());
 
-    // Backup files should be deleted
-    assert!(!backup_1.exists());
-    assert!(!backup_bak.exists());
+    // Existing user-created backup files are not deleted by generic purge.
+    assert!(backup_1.exists());
+    assert!(backup_bak.exists());
 
     // Main file should still exist
     assert!(main_file.exists());

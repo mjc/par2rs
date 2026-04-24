@@ -1,5 +1,95 @@
 # Benchmark Results Summary
 
+## April 22, 2026 Local `cargo bench` Rerun
+
+This run was requested after an earlier benchmark attempt was interrupted
+because the system was busy. The interrupted run was discarded. The fresh run
+completed with:
+
+```sh
+nix develop -c cargo bench
+```
+
+Run metadata:
+
+- Date: 2026-04-22, America/Denver local time.
+- Host: `tina`.
+- CPU: AMD Ryzen 9 5950X 16-Core Processor, 16 cores / 32 threads.
+- RAM: 62 GiB total, 32 GiB available at metadata capture.
+- OS: NixOS Linux `6.18.22`, x86_64.
+- Git commit tested: `875ad6d` (`Support PAR1 renamed repair and purge`).
+- Turbo baseline available from Nix:
+  `/nix/store/02pgbh7v6h2ysrs1l8sqv09izk2swplq-par2cmdline-turbo-1.4.0/bin/par2`.
+- Raw run log: `/tmp/par2rs-cargo-bench-20260422-rerun.log` on the machine
+  where the run was performed.
+
+Completed benchmark files:
+
+- `benches/aligned_benchmark.rs` completed with no measured tests.
+- `benches/create_benchmark.rs` completed.
+- `benches/iai_simd.rs` completed: 9 Iai-Callgrind benchmarks, 0 regressions.
+- `benches/md5_optimized.rs` completed.
+- `benches/md5_throughput.rs` completed.
+- `benches/repair_benchmark.rs` completed.
+- `benches/simd_size_variants.rs` completed with no measured tests.
+- `benches/verify_performance.rs` completed.
+
+Failures and skips:
+
+- `cargo bench` exited successfully.
+- Criterion emitted two Gnuplot plot-generation errors during
+  `create_benchmark`; measurement continued and the benchmark command did not
+  fail.
+- The release test harness reported normal ignored unit tests before running
+  benchmarks.
+
+Selected median samples from the fresh run:
+
+| Group | Benchmark | Median |
+| --- | --- | ---: |
+| Create | `create_file/1KB` | 2.9197 ms |
+| Create | `create_file/10KB` | 57.557 ms |
+| Create | `create_file/100KB` | 141.42 ms |
+| Create | `create_file/1MB` | 152.80 ms |
+| Create | `create_file/10MB` | 179.99 ms |
+| MD5 throughput | `calculate_file_md5/1GB` | 1.6612 s, 601.97 MiB/s |
+| Repair SIMD | `simd_multiply_add_comparison/with_pshufb` | 53.255 ns |
+| Repair SIMD | `simd_multiply_add_comparison/lib_scalar` | 123.54 ns |
+| Repair SIMD | `simd_variants_by_size/pshufb/1MB` | 52.557 us |
+| Repair SIMD | `simd_variants_by_size/scalar/1MB` | 258.79 us |
+| Reed-Solomon | `reconstruct/1` | 72.482 us |
+| Reed-Solomon | `reconstruct/5` | 8.4893 ms |
+| Reed-Solomon | `reconstruct/10` | 16.169 ms |
+| GF16 matrix | `invert_4x4` | 33.970 ns |
+| GF16 matrix | `invert_16x16` | 1.8845 us |
+| GF16 matrix | `invert_32x32` | 13.965 us |
+| Verify | `verify_1GB/old_two_pass` | 1.2716 s, 805.28 MiB/s |
+| Verify | `verify_1GB/new_single_pass` | 1.2778 s, 801.36 MiB/s |
+
+Summary:
+
+- The fresh rerun was substantially cleaner than the interrupted busy-system
+  attempt and completed all benchmark files.
+- The Criterion "Performance has improved" annotations in create benchmarks are
+  relative to local stored baselines and are not treated as turbo comparison
+  claims.
+- PSHUFB SIMD measured faster than scalar in the repair microbenchmarks on this
+  AVX2-capable host.
+- The verify single-pass and old two-pass samples were close on this run, with
+  the 1 GiB single-pass sample slightly slower than the old two-pass sample.
+- No optimization changes were made based on this benchmark run.
+
+## April 2026 Parity-Branch Status
+
+The `codex/par2-turbo-parity` branch expands benchmark coverage for the current
+par2cmdline-turbo parity work. In addition to the existing create, verify, MD5,
+SIMD, and reconstruction benchmarks, `benches/repair_benchmark.rs` now includes
+focused GF16 matrix inversion and scalar GF16 arithmetic benchmarks.
+
+No new timing numbers are recorded here yet. Run `cargo bench` on the target
+machine before making performance claims, and use `cargo bench --no-run` as the
+fast compile-only acceptance check.
+
 ⚠️ **Performance Regression Note:** These results (November 2025) show degraded performance compared to previous benchmarks (October 2025) which demonstrated 2-200× speedups. The current implementation maintains correctness and par2cmdline compatibility but has lost most of its performance advantages on Linux x86_64. This regression is under investigation.
 
 Comprehensive end-to-end benchmarking results showing par2rs performance compared to par2cmdline across different platforms.

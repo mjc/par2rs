@@ -17,6 +17,7 @@ use crate::packets::FileDescriptionPacket;
 use crate::reporters::VerificationReporter;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashSet as HashSet;
 use smallvec::SmallVec;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -25,6 +26,8 @@ use std::sync::Mutex;
 type AvailableBlocksMap = HashMap<(Md5Hash, Crc32Value), Vec<(FileId, u32)>>;
 /// Map of file IDs to their determined status
 type FileStatusMap = HashMap<FileId, FileStatus>;
+/// Map of file IDs to wrong-name paths that exactly matched them.
+type RenamedFileMatches = HashMap<FileId, PathBuf>;
 
 /// Result of attempting to match a block against the global table
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,12 +84,20 @@ pub struct GlobalVerificationEngine {
     block_table: GlobalBlockTable,
     /// File descriptions for all files in the recovery set
     file_descriptions: HashMap<FileId, FileDescriptionPacket>,
+    /// Deterministic protected-file order from the main packet.
+    file_order: Vec<FileId>,
     /// Base directory for file operations
     base_dir: std::path::PathBuf,
     /// Number of recovery blocks available
     recovery_block_count: usize,
     /// Skip full file MD5 computation (for pre-repair verification)
     skip_full_md5: bool,
+    /// Enable turbo-style skip-ahead scanning through sparse non-matching data.
+    data_skipping: bool,
+    /// Leeway in bytes on either side of expected block positions when skipping.
+    skip_leeway: usize,
+    /// Only scan extra files that can be exact renamed matches.
+    rename_only: bool,
 }
 
 /// Result of verifying a single file using global block table
@@ -120,9 +131,10 @@ impl GlobalVerificationEngine {
         config: &super::VerificationConfig,
     ) -> Result<Self, String> {
         // Extract packet information
-        let block_size = crate::packets::processing::extract_main_packet(packets)
-            .map(|m| m.slice_size)
+        let main_packet = crate::packets::processing::extract_main_packet(packets)
             .ok_or("No main packet found")?;
+        let block_size = main_packet.slice_size;
+        let file_order = main_packet.file_ids.clone();
 
         let file_descriptions = crate::packets::processing::extract_file_descriptions(packets);
         let slice_checksums = crate::packets::processing::extract_slice_checksums(packets);
@@ -156,9 +168,13 @@ impl GlobalVerificationEngine {
         Ok(Self {
             block_table,
             file_descriptions: file_lookup,
+            file_order,
             base_dir: base_dir.as_ref().to_path_buf(),
             recovery_block_count,
             skip_full_md5: config.skip_full_file_md5,
+            data_skipping: config.data_skipping,
+            skip_leeway: config.skip_leeway,
+            rename_only: config.rename_only,
         })
     }
 
@@ -195,12 +211,16 @@ impl GlobalVerificationEngine {
         // Note: report_verification_start and report_files_found should be called by the caller
 
         // Step 1: Scan all available files to build availability map
-        let (available_blocks, file_statuses, scan_metadatas) =
+        let (available_blocks, file_statuses, scan_metadatas, renamed_matches) =
             self.scan_available_blocks_with_extra_files(reporter, parallel, extra_files);
 
         // Step 2: Create aggregate results (individual file reporting already done in scan_available_blocks)
-        let file_results =
-            self.create_file_results(&available_blocks, &file_statuses, &scan_metadatas);
+        let file_results = self.create_file_results(
+            &available_blocks,
+            &file_statuses,
+            &scan_metadatas,
+            &renamed_matches,
+        );
         let block_results = self.create_block_verification_results(&available_blocks);
 
         // Count recovery blocks available from recovery packets
@@ -226,6 +246,7 @@ impl GlobalVerificationEngine {
         AvailableBlocksMap,
         FileStatusMap,
         HashMap<FileId, FileScanMetadata>,
+        RenamedFileMatches,
     ) {
         // Wrap reporter in Mutex for thread-safe output (like par2cmdline-turbo's output_lock)
         let reporter_lock = Mutex::new(reporter);
@@ -275,19 +296,42 @@ impl GlobalVerificationEngine {
             }
         }
 
+        let deduped_extra_files = Self::dedupe_extra_files(extra_files);
         let extra_results: Vec<_> = if parallel {
-            extra_files
+            deduped_extra_files
                 .par_iter()
-                .filter_map(|path| self.process_extra_file(path, &reporter_lock))
+                .filter_map(|path| self.process_extra_file(path, &reporter_lock, &file_statuses))
                 .collect()
         } else {
-            extra_files
+            deduped_extra_files
                 .iter()
-                .filter_map(|path| self.process_extra_file(path, &reporter_lock))
+                .filter_map(|path| self.process_extra_file(path, &reporter_lock, &file_statuses))
                 .collect()
         };
 
-        for (local_map, metadata) in extra_results {
+        let mut renamed_matches = HashMap::default();
+        let mut used_extra_paths = HashSet::default();
+
+        for (extra_path, extra_key, local_map, metadata) in extra_results {
+            if !used_extra_paths.contains(&extra_key) {
+                for file_description in self.ordered_file_descriptions() {
+                    let file_id = file_description.file_id;
+                    if renamed_matches.contains_key(&file_id)
+                        || !self
+                            .protected_file_can_use_renamed_extra(file_description, &file_statuses)
+                    {
+                        continue;
+                    }
+
+                    if self.extra_file_matches_description(&metadata, file_description) {
+                        file_statuses.insert(file_id, FileStatus::Renamed);
+                        renamed_matches.insert(file_id, extra_path.clone());
+                        used_extra_paths.insert(extra_key.clone());
+                        break;
+                    }
+                }
+            }
+
             for (offset, file_id, block_number) in &metadata.found_blocks {
                 scan_metadatas
                     .entry(*file_id)
@@ -303,21 +347,50 @@ impl GlobalVerificationEngine {
             }
         }
 
-        (global_block_map, file_statuses, scan_metadatas)
+        (
+            global_block_map,
+            file_statuses,
+            scan_metadatas,
+            renamed_matches,
+        )
     }
 
     fn process_extra_file<R: VerificationReporter>(
         &self,
         file_path: &Path,
         reporter_lock: &Mutex<&R>,
-    ) -> Option<(LocalBlockMap, FileScanMetadata)> {
+        file_statuses: &FileStatusMap,
+    ) -> Option<(PathBuf, PathBuf, LocalBlockMap, FileScanMetadata)> {
+        if Self::is_par2_path(file_path) {
+            return None;
+        }
+
         let metadata = std::fs::metadata(file_path).ok()?;
         if !metadata.is_file() {
             return None;
         }
 
+        if self.rename_only
+            && !self.rename_only_extra_can_match(file_path, metadata.len(), file_statuses)
+        {
+            return None;
+        }
+
         let file_size = FileSize::new(metadata.len());
-        Some(self.scan_single_file_with_progress(file_path, file_size, reporter_lock))
+        let (local_map, mut scan_metadata) =
+            self.scan_single_file_with_progress(file_path, file_size, reporter_lock);
+
+        if self.skip_full_md5 && scan_metadata.actual_file_hash.is_none() {
+            Self::record_file_hashes(
+                file_path,
+                super::types::BlockSize::new(self.block_table.block_size() as usize),
+                false,
+                &mut scan_metadata,
+            );
+        }
+
+        let key = Self::canonical_key(file_path);
+        Some((file_path.to_path_buf(), key, local_map, scan_metadata))
     }
 
     /// Process a single file: scan blocks and report status
@@ -402,6 +475,7 @@ impl GlobalVerificationEngine {
             Ok(f) => f,
             Err(_) => return (local_block_map, FileScanMetadata::new()),
         };
+        let actual_file_size = file.metadata().ok().map(|metadata| metadata.len());
 
         let block_size = BlockSize::new(self.block_table.block_size() as usize);
         let buffer_capacity = block_size.doubled();
@@ -426,6 +500,7 @@ impl GlobalVerificationEngine {
 
         // Initialize scanner state (includes scan metadata)
         let mut state = ScannerState::new(bytes_read);
+        state.scan_metadata.actual_file_size = actual_file_size;
 
         // PHASE 1 & 1.5: Aligned blocks and short file detection
         // The type system ensures short files are handled completely here
@@ -448,11 +523,12 @@ impl GlobalVerificationEngine {
             // Short file is now complete - mark as 100% scanned and compute file hash
             Self::report_progress(reporter_lock, &state, file_size);
 
-            if !self.skip_full_md5 {
-                if let Ok(md5) = crate::checksum::calculate_file_md5(file_path) {
-                    state.scan_metadata.actual_file_hash = Some(md5);
-                }
-            }
+            Self::record_file_hashes(
+                file_path,
+                block_size,
+                self.skip_full_md5,
+                &mut state.scan_metadata,
+            );
 
             // Return early - file is complete, prevent duplicate detection in Phase 2
             return (local_block_map, state.scan_metadata);
@@ -470,6 +546,10 @@ impl GlobalVerificationEngine {
 
         // Scan byte-by-byte through the entire file (like par2cmdline-turbo's Step loop)
         let mut step_count: u64 = 0;
+        let scan_distance =
+            std::cmp::min(self.skip_leeway.saturating_mul(2), block_size.as_usize());
+        let scan_skip = block_size.as_usize().saturating_sub(scan_distance);
+        let mut consecutive_non_matches = 0usize;
         loop {
             step_count += 1;
 
@@ -506,6 +586,7 @@ impl GlobalVerificationEngine {
             // Try to match block at current position
             match self.scan_block_position(&buffer, &mut state, block_size, &mut local_block_map) {
                 ScanAction::SkipBlock => {
+                    consecutive_non_matches = 0;
                     // Found a match - jump forward by block size (like par2cmdline-turbo's Jump)
                     state.skip_block(block_size);
 
@@ -522,6 +603,23 @@ impl GlobalVerificationEngine {
                     // No match - advance one byte with rolling CRC (like par2cmdline-turbo's Step)
                     state.advance_one_byte();
                     state.slide_crc_one_byte(&rolling_table, &buffer, block_size);
+                    consecutive_non_matches = consecutive_non_matches.saturating_add(1);
+
+                    if self.data_skipping
+                        && scan_skip > 0
+                        && scan_distance > 0
+                        && consecutive_non_matches >= scan_distance
+                    {
+                        state.advance_by(scan_skip);
+                        consecutive_non_matches = 0;
+                        if state.can_fit_block(block_size) {
+                            let new_crc =
+                                compute_crc32(buffer.block_at(state.buffer_position, block_size));
+                            state.set_rolling_crc(Some(new_crc));
+                        } else {
+                            state.set_rolling_crc(None);
+                        }
+                    }
                 }
             }
 
@@ -550,15 +648,172 @@ impl GlobalVerificationEngine {
         // Mark file as 100% scanned
         Self::report_progress(reporter_lock, &state, file_size);
 
-        // Compute file MD5 hash and store in metadata using a streaming hasher
-        // (avoid reading entire file into memory for large files)
-        if !self.skip_full_md5 {
-            if let Ok(md5) = crate::checksum::calculate_file_md5(file_path) {
-                state.scan_metadata.actual_file_hash = Some(md5);
+        // Compute file hashes and store them in metadata using a streaming hasher
+        // (avoid reading entire file into memory for large files).
+        Self::record_file_hashes(
+            file_path,
+            block_size,
+            self.skip_full_md5,
+            &mut state.scan_metadata,
+        );
+
+        (local_block_map, state.scan_metadata)
+    }
+
+    fn record_file_hashes(
+        file_path: &Path,
+        block_size: super::types::BlockSize,
+        skip_full_md5: bool,
+        metadata: &mut FileScanMetadata,
+    ) {
+        if skip_full_md5 {
+            return;
+        }
+
+        let file_path_string = file_path.to_string_lossy().into_owned();
+        if let Ok(checksummer) =
+            crate::checksum::FileCheckSummer::new(file_path_string, block_size.as_usize())
+        {
+            if let Ok(results) = checksummer.compute_file_hashes() {
+                metadata.actual_file_hash = Some(results.hash_full);
+                metadata.actual_file_hash_16k = Some(results.hash_16k);
+                metadata.actual_file_size = Some(results.file_size);
+            }
+        }
+    }
+
+    fn extra_file_matches_description(
+        &self,
+        metadata: &FileScanMetadata,
+        file_description: &FileDescriptionPacket,
+    ) -> bool {
+        metadata.actual_file_size == Some(file_description.file_length)
+            && metadata.actual_file_hash.as_ref() == Some(&file_description.md5_hash)
+            && metadata.actual_file_hash_16k.as_ref() == Some(&file_description.md5_16k)
+    }
+
+    fn ordered_file_descriptions(&self) -> Vec<&FileDescriptionPacket> {
+        let mut ordered = Vec::with_capacity(self.file_descriptions.len());
+        let mut seen = HashSet::default();
+
+        for file_id in &self.file_order {
+            if let Some(description) = self.file_descriptions.get(file_id) {
+                ordered.push(description);
+                seen.insert(*file_id);
             }
         }
 
-        (local_block_map, state.scan_metadata)
+        let mut leftovers: Vec<_> = self
+            .file_descriptions
+            .iter()
+            .filter(|(file_id, _)| !seen.contains(file_id))
+            .map(|(_, description)| description)
+            .collect();
+        leftovers.sort_by_key(|description| extract_file_name(description));
+        ordered.extend(leftovers);
+        ordered
+    }
+
+    fn protected_file_can_use_renamed_extra(
+        &self,
+        file_description: &FileDescriptionPacket,
+        file_statuses: &FileStatusMap,
+    ) -> bool {
+        let file_name = extract_file_name(file_description);
+        let file_path = self.base_dir.join(&file_name);
+
+        match file_statuses.get(&file_description.file_id) {
+            Some(FileStatus::Present) => false,
+            Some(FileStatus::Renamed) => false,
+            Some(FileStatus::Corrupted | FileStatus::Missing) => true,
+            None => !file_path.exists(),
+        }
+    }
+
+    fn dedupe_extra_files(extra_files: &[PathBuf]) -> Vec<PathBuf> {
+        let mut seen = HashSet::default();
+        let mut deduped = Vec::new();
+
+        for path in extra_files {
+            let key = Self::canonical_key(path);
+            if seen.insert(key) {
+                deduped.push(path.clone());
+            }
+        }
+
+        deduped
+    }
+
+    fn canonical_key(path: &Path) -> PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    fn is_par2_path(path: &Path) -> bool {
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("par2"))
+    }
+
+    fn rename_only_extra_can_match(
+        &self,
+        file_path: &Path,
+        actual_size: u64,
+        file_statuses: &FileStatusMap,
+    ) -> bool {
+        let mut file = match std::fs::File::open(file_path) {
+            Ok(file) => file,
+            Err(_) => return false,
+        };
+
+        for file_description in self.ordered_file_descriptions() {
+            if file_description.file_length != actual_size
+                || !self.protected_file_can_use_renamed_extra(file_description, file_statuses)
+            {
+                continue;
+            }
+
+            if self.first_block_matches_description(&mut file, file_description) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn first_block_matches_description(
+        &self,
+        file: &mut std::fs::File,
+        file_description: &FileDescriptionPacket,
+    ) -> bool {
+        use crate::checksum::{compute_block_checksums_padded, compute_crc32, compute_md5_only};
+        use std::io::{Read, Seek};
+
+        let file_blocks = self.block_table.get_file_blocks(file_description.file_id);
+        let Some(first_block) = file_blocks
+            .into_iter()
+            .find(|entry| entry.position.block_number == 0)
+        else {
+            return file_description.file_length == 0;
+        };
+
+        if file.rewind().is_err() {
+            return false;
+        }
+
+        let block_size = self.block_table.block_size() as usize;
+        let bytes_to_read = block_size.min(file_description.file_length as usize);
+        let mut buffer = vec![0u8; bytes_to_read];
+        if file.read_exact(&mut buffer).is_err() {
+            return false;
+        }
+
+        let (md5_hash, crc32) = if bytes_to_read < block_size {
+            compute_block_checksums_padded(&buffer, block_size)
+        } else {
+            (compute_md5_only(&buffer), compute_crc32(&buffer))
+        };
+
+        first_block.checksums.md5_hash == md5_hash && first_block.checksums.crc32 == crc32
     }
 
     /// Insert all matching blocks from the global table into the local block map
@@ -767,6 +1022,10 @@ impl GlobalVerificationEngine {
         }
 
         // Scan byte-by-byte through the buffer
+        let scan_distance =
+            std::cmp::min(self.skip_leeway.saturating_mul(2), block_size.as_usize());
+        let scan_skip = block_size.as_usize().saturating_sub(scan_distance);
+        let mut consecutive_non_matches = 0usize;
         loop {
             // Stop if we can't fit another block
             if !state.can_fit_block(block_size) {
@@ -776,6 +1035,7 @@ impl GlobalVerificationEngine {
             // Try to match block at current position
             match self.scan_block_position(buffer, state, block_size, local_block_map) {
                 ScanAction::SkipBlock => {
+                    consecutive_non_matches = 0;
                     // Found a match - jump forward by block size
                     state.skip_block(block_size);
 
@@ -792,6 +1052,23 @@ impl GlobalVerificationEngine {
                     // No match - advance one byte with rolling CRC
                     state.advance_one_byte();
                     state.slide_crc_one_byte(rolling_table, buffer, block_size);
+                    consecutive_non_matches = consecutive_non_matches.saturating_add(1);
+
+                    if self.data_skipping
+                        && scan_skip > 0
+                        && scan_distance > 0
+                        && consecutive_non_matches >= scan_distance
+                    {
+                        state.advance_by(scan_skip);
+                        consecutive_non_matches = 0;
+                        if state.can_fit_block(block_size) {
+                            let new_crc =
+                                compute_crc32(buffer.block_at(state.buffer_position, block_size));
+                            state.set_rolling_crc(Some(new_crc));
+                        } else {
+                            state.set_rolling_crc(None);
+                        }
+                    }
                 }
             }
         }
@@ -924,10 +1201,11 @@ impl GlobalVerificationEngine {
         available_blocks: &AvailableBlocksMap,
         file_statuses: &FileStatusMap,
         scan_metadatas: &HashMap<FileId, FileScanMetadata>,
+        renamed_matches: &RenamedFileMatches,
     ) -> Vec<FileVerificationResult> {
         let mut file_results = Vec::new();
 
-        for file_description in self.file_descriptions.values() {
+        for file_description in self.ordered_file_descriptions() {
             let file_name = extract_file_name(file_description);
             let file_size = FileSize::new(file_description.file_length);
             let total_blocks = self.calculate_total_blocks(file_size);
@@ -971,7 +1249,7 @@ impl GlobalVerificationEngine {
                         if file_path.exists() {
                             FileStatus::Present
                         } else {
-                            FileStatus::Renamed
+                            FileStatus::Missing
                         }
                     } else if blocks_available.is_empty() {
                         FileStatus::Missing
@@ -1003,6 +1281,9 @@ impl GlobalVerificationEngine {
                 total_blocks: total_blocks.as_usize(),
                 damaged_blocks,
                 block_positions,
+                matched_path: (status == FileStatus::Renamed)
+                    .then(|| renamed_matches.get(&file_description.file_id).cloned())
+                    .flatten(),
             });
         }
 
@@ -1139,9 +1420,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let mut local_map = HashMap::default();
@@ -1215,9 +1500,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let mut local_map = HashMap::default();
@@ -1268,9 +1557,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let mut local_map = HashMap::default();
@@ -1328,9 +1621,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         // Test 1: Direct insertion
@@ -1698,9 +1995,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         // Case 1: All blocks available
@@ -1843,9 +2144,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         // Create a buffer with the matching block
@@ -1905,9 +2210,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let block_size = BlockSize::new(1024);
@@ -1963,9 +2272,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let block_size = BlockSize::new(1024);
@@ -2011,9 +2324,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let block_size = BlockSize::new(1024);
@@ -2061,9 +2378,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let block_size = BlockSize::new(1024);
@@ -2112,9 +2433,13 @@ mod tests {
         let _engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         // Create a buffer with 2MB worth of data
@@ -2230,9 +2555,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let block_size = BlockSize::new(1024);
@@ -2290,9 +2619,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let mut state = ScannerState::new(3072);
@@ -2365,9 +2698,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let mut local_map = HashMap::default();
@@ -2431,9 +2768,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let block_size = BlockSize::new(1024);
@@ -2477,9 +2818,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         // Simulate finding only 2 of 3 blocks
@@ -2509,20 +2854,23 @@ mod tests {
     // Reference: par2cmdline-turbo/src/par2repairer.cpp:1853-1863 (hash validation)
     // Tests that file hash mismatch would invalidate a perfect match
     fn test_post_scan_hash_validation() {
-        // This test verifies the CONCEPT of hash validation
-        // In par2cmdline-turbo, even if all blocks are found, the file is still
-        // validated against:
-        // 1. File size
-        // 2. Full file MD5 hash
-        // 3. First 16k MD5 hash
-        //
-        // If any of these don't match, it's downgraded to ePartialMatch
+        // Hash validation is covered by test_file_hash_mismatch_should_be_corrupted.
+        // The scanner stores actual_file_hash unless skip_full_md5 is set for pre-repair.
+        let expected_hash = Md5Hash::new([1; 16]);
+        let mut metadata = FileScanMetadata::new();
+        metadata.first_block_at_offset_zero = true;
+        metadata.blocks_in_sequence = true;
+        metadata.actual_file_hash = Some(Md5Hash::new([2; 16]));
 
-        // We would need to implement full file hashing during scan to test this
-        // For now, this test documents the requirement
-
-        // TODO: Implement file hash computation during scanning
-        // TODO: Add validation logic to compare computed vs expected hashes
+        assert_eq!(
+            GlobalVerificationEngine::determine_file_status_with_metadata(
+                BlockCount::new(1),
+                BlockCount::new(1),
+                &metadata,
+                &expected_hash,
+            ),
+            FileStatus::Corrupted
+        );
     }
 
     #[test]
@@ -2543,9 +2891,13 @@ mod tests {
         let engine = GlobalVerificationEngine {
             recovery_block_count: 0,
             skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 0,
             block_table,
             file_descriptions: HashMap::default(),
             base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
         };
 
         let mut local_map = HashMap::default();
@@ -2636,9 +2988,7 @@ mod tests {
         // par2cmdline-turbo uses a scan distance parameter to limit byte-by-byte scanning
         // scandistance = min(skipleaway<<1, blocksize)
         //
-        // This test documents the concept - we currently scan the entire buffer
-        // byte-by-byte, but par2cmdline-turbo would skip ahead after scanning
-        // scandistance bytes without finding a match
+        // This test documents the calculation used when data_skipping is enabled.
 
         let block_size = 1024usize;
         let skipleaway = 512usize; // From command line option
@@ -2654,7 +3004,7 @@ mod tests {
         let scanskip = block_size - scan_distance;
         assert_eq!(scanskip, 0, "With these parameters, no skipping");
 
-        // TODO: Implement skip-ahead optimization in scan_byte_by_byte
+        assert_eq!(scan_distance + scanskip, block_size);
     }
 
     #[test]
@@ -2688,7 +3038,113 @@ mod tests {
         //
         // This avoids byte-by-byte scanning through potentially gigabytes of data
 
-        // TODO: Implement this optimization
+        // Implemented behind VerificationConfig::data_skipping so default scans remain exhaustive.
+    }
+
+    #[test]
+    fn test_data_skipping_finds_blocks_within_leeway() {
+        use crate::checksum::rolling_crc::RollingCrcTable;
+        use crate::verify::global_table::GlobalBlockTableBuilder;
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::{BlockSize, ScanBuffer};
+
+        let block_size = 8;
+        let match_offset = 18;
+        let mut buffer = ScanBuffer::with_capacity(64);
+        for byte in buffer.iter_mut() {
+            *byte = 0;
+        }
+        for byte in buffer.slice_mut(match_offset..match_offset + block_size) {
+            *byte = 0x42;
+        }
+
+        let expected_crc32 =
+            crate::checksum::compute_crc32(buffer.slice(match_offset..match_offset + block_size));
+        let expected_md5 = crate::checksum::compute_md5_only(
+            buffer.slice(match_offset..match_offset + block_size),
+        );
+        let mut builder = GlobalBlockTableBuilder::new(block_size as u64);
+        let file_id = FileId::new([1; 16]);
+        builder.add_file_blocks(file_id, &[(expected_md5, expected_crc32)]);
+
+        let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
+            skip_full_md5: false,
+            data_skipping: true,
+            skip_leeway: 2,
+            block_table: builder.build(),
+            file_descriptions: HashMap::default(),
+            base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
+        };
+
+        let mut state = ScannerState::new(64);
+        let mut local_map = HashMap::default();
+        engine.scan_byte_by_byte(
+            &buffer,
+            &mut state,
+            &RollingCrcTable::new(block_size),
+            BlockSize::new(block_size),
+            &mut local_map,
+        );
+
+        assert_eq!(local_map.len(), 1);
+        assert_eq!(
+            state.scan_metadata.found_blocks[0],
+            (match_offset, file_id, 0)
+        );
+    }
+
+    #[test]
+    fn test_default_scan_remains_exhaustive_without_data_skipping() {
+        use crate::checksum::rolling_crc::RollingCrcTable;
+        use crate::verify::global_table::GlobalBlockTableBuilder;
+        use crate::verify::scanner_state::ScannerState;
+        use crate::verify::types::{BlockSize, ScanBuffer};
+
+        let block_size = 8;
+        let match_offset = 20;
+        let mut buffer = ScanBuffer::with_capacity(64);
+        for byte in buffer.iter_mut() {
+            *byte = 0;
+        }
+        for byte in buffer.slice_mut(match_offset..match_offset + block_size) {
+            *byte = 0x24;
+        }
+
+        let expected_crc32 =
+            crate::checksum::compute_crc32(buffer.slice(match_offset..match_offset + block_size));
+        let expected_md5 = crate::checksum::compute_md5_only(
+            buffer.slice(match_offset..match_offset + block_size),
+        );
+        let mut builder = GlobalBlockTableBuilder::new(block_size as u64);
+        let file_id = FileId::new([2; 16]);
+        builder.add_file_blocks(file_id, &[(expected_md5, expected_crc32)]);
+
+        let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
+            skip_full_md5: false,
+            data_skipping: false,
+            skip_leeway: 2,
+            block_table: builder.build(),
+            file_descriptions: HashMap::default(),
+            base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
+        };
+
+        let mut state = ScannerState::new(64);
+        let mut local_map = HashMap::default();
+        engine.scan_byte_by_byte(
+            &buffer,
+            &mut state,
+            &RollingCrcTable::new(block_size),
+            BlockSize::new(block_size),
+            &mut local_map,
+        );
+
+        assert_eq!(local_map.len(), 1);
     }
 
     #[test]
@@ -2730,19 +3186,11 @@ mod tests {
     #[test]
     // Reference: par2cmdline-turbo/src/verificationhashtable.h:303-443 (FindMatch with suggested entry)
     fn test_suggested_entry_optimization() {
-        // par2cmdline-turbo's FindMatch() takes a "suggestedentry" parameter
-        // This is the entry we EXPECT to find next (for sequential files)
-        //
-        // If suggestedentry matches, we can skip hash table lookup entirely
-        //
-        // Our implementation doesn't have this optimization yet, but we could add it
-        // by tracking the last matched block and checking if the next block
-        // sequentially follows
-
-        // This is partially achieved through scan_aligned_blocks which processes
-        // sequential matching blocks efficiently
-
-        // TODO: Consider adding explicit "suggested next" optimization
+        // par2cmdline-turbo's FindMatch() takes a suggested-entry fast path for
+        // sequential files. This implementation covers the same common case by
+        // scanning aligned blocks before entering the byte-by-byte recovery scan.
+        // The explicit suggested-entry lookup is a performance optimization, not
+        // a correctness requirement for the current scanner.
     }
 
     #[test]
@@ -2767,8 +3215,9 @@ mod tests {
 
         assert_ne!(full_hash, hash_16k, "16k hash should differ from full hash");
 
-        // TODO: Implement concurrent hash computation during file scanning
-        // Should be done in scan_single_file_with_progress
+        // Full-file hash validation is performed after scanning in
+        // scan_single_file_with_progress; 16k hash comparison remains part of
+        // descriptor/file-level verification paths.
     }
 
     #[test]
@@ -3032,5 +3481,170 @@ mod tests {
             FileStatus::Corrupted,
             "File should be Corrupted when file hash doesn't match even if blocks do"
         );
+    }
+
+    #[test]
+    fn test_renamed_extra_file_requires_exact_file_hash_match() {
+        use crate::checksum::{compute_block_checksums, compute_md5};
+        use std::fs::File;
+        use std::io::Write;
+
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let base_path = temporary_directory.path();
+        let file_id = FileId::new([4; 16]);
+        let protected_data = vec![0x42; 1024];
+        let extra_path = base_path.join("renamed.bin");
+        let mut extra_file = File::create(&extra_path).unwrap();
+        extra_file.write_all(&protected_data).unwrap();
+        extra_file.flush().unwrap();
+        drop(extra_file);
+
+        let (md5_hash, crc32) = compute_block_checksums(&protected_data);
+        let mut file_description = create_test_file_desc(file_id, protected_data.len() as u64);
+        file_description.file_name = b"original.bin".to_vec();
+        file_description.md5_hash = compute_md5(&protected_data);
+        file_description.md5_16k = compute_md5(&protected_data);
+
+        let main_packet = crate::packets::MainPacket {
+            length: 92,
+            md5: Md5Hash::new([0; 16]),
+            set_id: crate::domain::RecoverySetId::new([1; 16]),
+            slice_size: 1024,
+            file_count: 1,
+            file_ids: vec![file_id],
+            non_recovery_file_ids: vec![],
+        };
+
+        let packets = vec![
+            crate::Packet::Main(main_packet),
+            crate::Packet::FileDescription(file_description),
+            crate::Packet::InputFileSliceChecksum(crate::packets::InputFileSliceChecksumPacket {
+                length: 64 + 16 + 20,
+                md5: Md5Hash::new([0; 16]),
+                set_id: crate::domain::RecoverySetId::new([1; 16]),
+                file_id,
+                slice_checksums: vec![(md5_hash, crc32)],
+            }),
+        ];
+
+        let engine = GlobalVerificationEngine::from_packets(&packets, base_path).unwrap();
+        let reporter = crate::reporters::ConsoleVerificationReporter::new();
+        let results = engine.verify_recovery_set_with_extra_files(&reporter, false, &[extra_path]);
+
+        assert_eq!(results.files[0].status, FileStatus::Renamed);
+        assert_eq!(
+            results.files[0].matched_path.as_deref(),
+            Some(base_path.join("renamed.bin").as_path())
+        );
+        assert_eq!(results.renamed_file_count, 1);
+    }
+
+    #[test]
+    fn test_extra_file_with_same_size_but_wrong_hash_is_not_renamed() {
+        use crate::checksum::{compute_block_checksums, compute_md5};
+        use std::fs::File;
+        use std::io::Write;
+
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let base_path = temporary_directory.path();
+        let file_id = FileId::new([5; 16]);
+        let protected_data = vec![0x42; 1024];
+        let extra_path = base_path.join("not_exact.bin");
+        let mut extra_file = File::create(&extra_path).unwrap();
+        let mut wrong_data = protected_data.clone();
+        wrong_data[0] = 0xFF;
+        extra_file.write_all(&wrong_data).unwrap();
+        extra_file.flush().unwrap();
+        drop(extra_file);
+
+        let (md5_hash, crc32) = compute_block_checksums(&protected_data);
+        let mut file_description = create_test_file_desc(file_id, protected_data.len() as u64);
+        file_description.file_name = b"original.bin".to_vec();
+        file_description.md5_hash = compute_md5(&protected_data);
+        file_description.md5_16k = compute_md5(&protected_data);
+
+        let main_packet = crate::packets::MainPacket {
+            length: 92,
+            md5: Md5Hash::new([0; 16]),
+            set_id: crate::domain::RecoverySetId::new([1; 16]),
+            slice_size: 1024,
+            file_count: 1,
+            file_ids: vec![file_id],
+            non_recovery_file_ids: vec![],
+        };
+
+        let packets = vec![
+            crate::Packet::Main(main_packet),
+            crate::Packet::FileDescription(file_description),
+            crate::Packet::InputFileSliceChecksum(crate::packets::InputFileSliceChecksumPacket {
+                length: 64 + 16 + 20,
+                md5: Md5Hash::new([0; 16]),
+                set_id: crate::domain::RecoverySetId::new([1; 16]),
+                file_id,
+                slice_checksums: vec![(md5_hash, crc32)],
+            }),
+        ];
+
+        let engine = GlobalVerificationEngine::from_packets(&packets, base_path).unwrap();
+        let reporter = crate::reporters::ConsoleVerificationReporter::new();
+        let results = engine.verify_recovery_set_with_extra_files(&reporter, false, &[extra_path]);
+
+        assert_eq!(results.files[0].blocks_available, 0);
+        assert_eq!(results.files[0].status, FileStatus::Missing);
+        assert_eq!(results.files[0].matched_path, None);
+        assert_eq!(results.renamed_file_count, 0);
+    }
+
+    #[test]
+    fn test_par2_extra_inputs_are_ignored_as_renamed_data() {
+        use crate::checksum::{compute_block_checksums, compute_md5};
+        use std::fs::File;
+        use std::io::Write;
+
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let base_path = temporary_directory.path();
+        let file_id = FileId::new([6; 16]);
+        let protected_data = vec![0x42; 1024];
+        let extra_path = base_path.join("renamed.PAR2");
+        let mut extra_file = File::create(&extra_path).unwrap();
+        extra_file.write_all(&protected_data).unwrap();
+        extra_file.flush().unwrap();
+        drop(extra_file);
+
+        let (md5_hash, crc32) = compute_block_checksums(&protected_data);
+        let mut file_description = create_test_file_desc(file_id, protected_data.len() as u64);
+        file_description.file_name = b"original.bin".to_vec();
+        file_description.md5_hash = compute_md5(&protected_data);
+        file_description.md5_16k = compute_md5(&protected_data);
+
+        let main_packet = crate::packets::MainPacket {
+            length: 92,
+            md5: Md5Hash::new([0; 16]),
+            set_id: crate::domain::RecoverySetId::new([1; 16]),
+            slice_size: 1024,
+            file_count: 1,
+            file_ids: vec![file_id],
+            non_recovery_file_ids: vec![],
+        };
+
+        let packets = vec![
+            crate::Packet::Main(main_packet),
+            crate::Packet::FileDescription(file_description),
+            crate::Packet::InputFileSliceChecksum(crate::packets::InputFileSliceChecksumPacket {
+                length: 64 + 16 + 20,
+                md5: Md5Hash::new([0; 16]),
+                set_id: crate::domain::RecoverySetId::new([1; 16]),
+                file_id,
+                slice_checksums: vec![(md5_hash, crc32)],
+            }),
+        ];
+
+        let engine = GlobalVerificationEngine::from_packets(&packets, base_path).unwrap();
+        let reporter = crate::reporters::ConsoleVerificationReporter::new();
+        let results = engine.verify_recovery_set_with_extra_files(&reporter, false, &[extra_path]);
+
+        assert_eq!(results.files[0].status, FileStatus::Missing);
+        assert_eq!(results.files[0].matched_path, None);
+        assert_eq!(results.renamed_file_count, 0);
     }
 }
