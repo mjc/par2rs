@@ -1,6 +1,6 @@
 # Makefile for par2rs project
 
-.PHONY: help test coverage coverage-html coverage-llvm coverage-lcov coverage-cobertura coverage-codecov coverage-all coverage-both coverage-quick coverage-tests coverage-open coverage-ci coverage-clean clean check-tools
+.PHONY: help test benchmark-create-perf coverage coverage-html coverage-llvm coverage-lcov coverage-cobertura coverage-codecov coverage-all coverage-both coverage-quick coverage-tests coverage-open coverage-ci coverage-clean clean check-tools
 
 # Default target
 help:
@@ -8,6 +8,7 @@ help:
 	@echo ""
 	@echo "Available targets:"
 	@echo "  test           - Run all tests"
+	@echo "  benchmark-create-perf - Compare par2rs create vs par2cmdline-turbo with perf counters"
 	@echo "  coverage       - Generate HTML coverage report"
 	@echo "  coverage-html  - Generate HTML coverage report"
 	@echo "  coverage-llvm  - Generate text, HTML, LCOV, Cobertura, and Codecov JSON reports"
@@ -22,6 +23,9 @@ help:
 # Run tests
 test:
 	cargo test
+
+benchmark-create-perf:
+	./scripts/benchmark_create_perf.sh
 
 # Generate an HTML coverage report
 coverage:

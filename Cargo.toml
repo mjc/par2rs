@@ -83,3 +83,8 @@ strip = false
 lto = true            # Link-time optimization for better performance
 codegen-units = 1     # Single codegen unit for better optimization
 overflow-checks = true  # Keep overflow checks for safety with untrusted network data
+
+[profile.profiling]
+inherits = "release"
+debug = 2             # Full DWARF debuginfo for accurate flamegraphs
+strip = false

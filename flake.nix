@@ -99,6 +99,7 @@
               sccache
               yamllint
               cargo-flamegraph
+              inferno
               bc # for benchmark averaging calculations
               gnuplot # for criterion benchmark graphs
               valgrind # for iai-callgrind benchmarks
