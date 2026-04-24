@@ -418,7 +418,9 @@ This keeps the common case efficient while matching `par2cmdline` behavior for t
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GNU General Public License v3.0 only - see the [LICENSE](LICENSE) file for details.
+
+The project was relicensed to GPL-3.0-only so future PAR2 compatibility and performance work can incorporate GPL-compatible implementation details from established PAR2 tools when appropriate, with attribution and source availability preserved.
 
 ## Acknowledgments
 
