@@ -401,11 +401,11 @@ impl RepairContext {
 
             if missing_slices.is_empty() {
                 if *status != FileStatus::Present
-                    && self.has_noncanonical_block_sources(file_info, block_sources_map)
+                    && self.file_needs_rewrite_without_missing_slices(file_info, block_sources_map)
                 {
                     debug!(
-                        "File {} has all valid slices from noncanonical sources; rewriting",
-                        file_info.file_name
+                        "File {} has all valid slices but status is {:?}; rewriting",
+                        file_info.file_name, status
                     );
                     files_to_repair.push((file_info, missing_slices));
                 } else {
@@ -1021,6 +1021,15 @@ impl RepairContext {
         Ok(())
     }
 
+    fn file_needs_rewrite_without_missing_slices(
+        &self,
+        file_info: &FileInfo,
+        block_sources_map: &HashMap<FileId, HashMap<u32, BlockSource>>,
+    ) -> bool {
+        self.has_noncanonical_block_sources(file_info, block_sources_map)
+            || self.target_file_size_differs(file_info)
+    }
+
     fn has_noncanonical_block_sources(
         &self,
         file_info: &FileInfo,
@@ -1034,12 +1043,22 @@ impl RepairContext {
         let slice_size = self.recovery_set.slice_size.as_usize();
 
         (0..file_info.slice_count.as_usize()).any(|slice_index| {
-            let Some(source) = block_sources.get(&(slice_index as u32)) else {
+            let Ok(block_number) = u32::try_from(slice_index) else {
+                return true;
+            };
+            let Some(source) = block_sources.get(&block_number) else {
                 return false;
             };
 
             source.file_path != target_path || source.offset != slice_index * slice_size
         })
+    }
+
+    fn target_file_size_differs(&self, file_info: &FileInfo) -> bool {
+        let target_path = self.base_path.join(&file_info.file_name);
+        fs::metadata(target_path)
+            .map(|metadata| metadata.len() != file_info.file_length.as_u64())
+            .unwrap_or(true)
     }
 }
 

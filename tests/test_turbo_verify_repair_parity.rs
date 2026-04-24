@@ -99,6 +99,25 @@ fn repair_rewrites_misaligned_file_when_all_blocks_are_available() {
 }
 
 #[test]
+fn repair_rewrites_canonical_corruption_when_all_blocks_are_available() {
+    let temp_dir = TempDir::new().unwrap();
+    let par2_file = create_small_recovery_set(&temp_dir, "data.bin", b"abcdefghijkl");
+
+    let target = temp_dir.path().join("data.bin");
+    fs::write(&target, b"abcdefghijklX").unwrap();
+
+    let (_, result) = repair_files(
+        par2_file.to_str().unwrap(),
+        Box::new(SilentReporter),
+        &VerificationConfig::default(),
+    )
+    .unwrap();
+
+    assert!(result.is_success(), "{result:?}");
+    assert_eq!(fs::read(target).unwrap(), b"abcdefghijkl");
+}
+
+#[test]
 fn repair_uses_partial_extra_file_blocks_as_repair_sources() {
     let temp_dir = TempDir::new().unwrap();
     let par2_file = create_small_recovery_set(&temp_dir, "data.bin", b"abcdefghijkl");
