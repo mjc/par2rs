@@ -17,7 +17,7 @@ use crate::reed_solomon::simd::{
 
 const DEFAULT_INPUT_GROUPING: usize = 12;
 const TRANSFER_BUFFER_COUNT: usize = 2;
-const CREATE_SEGMENT_SIZE: usize = 1024 * 1024;
+const CREATE_SEGMENT_SIZE: usize = 256 * 1024;
 const AVX2_ALIGNMENT: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +156,7 @@ pub struct CreateRecoveryBackend {
     workers: CreateWorkerPool,
     aligned_chunk_len: usize,
     active_staging: usize,
+    compute_in_flight: bool,
     job_storage: Vec<ComputeJob>,
 }
 
@@ -211,6 +212,7 @@ impl CreateRecoveryBackend {
             workers: CreateWorkerPool::new(worker_count, max_job_count),
             aligned_chunk_len,
             active_staging: 0,
+            compute_in_flight: false,
             job_storage: vec![ComputeJob::default(); max_job_count],
         }
     }
@@ -219,6 +221,7 @@ impl CreateRecoveryBackend {
     pub fn begin_chunk(&mut self, chunk_len: usize) {
         self.chunk_len = chunk_len;
         self.active_staging = 0;
+        debug_assert!(!self.compute_in_flight);
         self.staging
             .iter_mut()
             .for_each(|staging| staging.batch_len = 0);
@@ -303,6 +306,7 @@ impl CreateRecoveryBackend {
     #[inline]
     pub fn end_input(&mut self) {
         self.flush_active_staging();
+        self.wait_for_compute();
     }
 
     #[inline]
@@ -342,10 +346,20 @@ impl CreateRecoveryBackend {
             return;
         }
 
+        self.wait_for_compute();
         let job_count = self.build_compute_jobs(staging_idx);
-        self.workers.run(&self.job_storage[..job_count]);
+        self.workers.submit(&self.job_storage[..job_count]);
+        self.compute_in_flight = true;
         self.staging[staging_idx].batch_len = 0;
         self.active_staging = (self.active_staging + 1) % self.staging.len();
+    }
+
+    #[inline]
+    fn wait_for_compute(&mut self) {
+        if self.compute_in_flight {
+            self.workers.wait();
+            self.compute_in_flight = false;
+        }
     }
 
     fn build_compute_jobs(&mut self, staging_idx: usize) -> usize {
@@ -481,12 +495,13 @@ impl CreateWorkerPool {
         self.shared.state.lock().unwrap().jobs.len()
     }
 
-    fn run(&self, jobs: &[ComputeJob]) {
+    fn submit(&self, jobs: &[ComputeJob]) {
         if jobs.is_empty() {
             return;
         }
 
         let mut state = self.shared.state.lock().unwrap();
+        debug_assert_eq!(state.remaining_jobs, 0);
         debug_assert!(jobs.len() <= state.jobs.len());
         state.jobs[..jobs.len()].copy_from_slice(jobs);
         state.job_count = jobs.len();
@@ -494,7 +509,10 @@ impl CreateWorkerPool {
         state.remaining_jobs = jobs.len();
         state.generation = state.generation.wrapping_add(1);
         self.shared.ready.notify_all();
+    }
 
+    fn wait(&self) {
+        let mut state = self.shared.state.lock().unwrap();
         while state.remaining_jobs != 0 {
             state = self.shared.done.wait(state).unwrap();
         }
@@ -503,6 +521,7 @@ impl CreateWorkerPool {
 
 impl Drop for CreateWorkerPool {
     fn drop(&mut self) {
+        self.wait();
         {
             let mut state = self.shared.state.lock().unwrap();
             state.stop = true;
