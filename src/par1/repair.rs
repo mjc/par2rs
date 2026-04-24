@@ -367,12 +367,160 @@ fn read_existing_slices(
 mod tests {
     use super::*;
 
+    const PAR1_FLATDATA_FILES: [(&str, &[(usize, u8)]); 10] = [
+        (
+            "test-0.data",
+            &[
+                (18_593, 1),
+                (11_835, 2),
+                (10_742, 3),
+                (15_039, 4),
+                (9_681, 5),
+            ],
+        ),
+        (
+            "test-1.data",
+            &[
+                (8_834, 5),
+                (10_703, 6),
+                (10_664, 7),
+                (18_085, 8),
+                (13_203, 9),
+                (17_695, 10),
+                (19_023, 11),
+                (17_421, 12),
+                (14_687, 13),
+                (17_226, 14),
+                (10_820, 15),
+                (13_437, 16),
+                (5_376, 17),
+            ],
+        ),
+        (
+            "test-2.data",
+            &[
+                (9_506, 17),
+                (14_414, 18),
+                (18_750, 19),
+                (13_750, 20),
+                (14_179, 21),
+                (18_476, 22),
+                (546, 23),
+            ],
+        ),
+        (
+            "test-3.data",
+            &[
+                (12_735, 23),
+                (12_500, 24),
+                (13_125, 25),
+                (18_437, 26),
+                (15_390, 27),
+                (12_617, 28),
+                (16_171, 29),
+                (11_562, 30),
+                (11_523, 31),
+                (10_156, 32),
+                (7_913, 33),
+            ],
+        ),
+        (
+            "test-4.data",
+            &[
+                (10_290, 33),
+                (13_984, 34),
+                (11_445, 35),
+                (11_523, 36),
+                (13_281, 37),
+                (13_945, 38),
+                (18_359, 39),
+                (9_298, 40),
+            ],
+        ),
+        (
+            "test-5.data",
+            &[
+                (3_436, 40),
+                (16_171, 41),
+                (17_812, 42),
+                (11_445, 43),
+                (11_796, 44),
+                (16_289, 45),
+                (18_125, 46),
+                (4_876, 47),
+            ],
+        ),
+        (
+            "test-6.data",
+            &[
+                (6_374, 47),
+                (12_968, 48),
+                (13_906, 49),
+                (14_453, 50),
+                (16_992, 51),
+                (13_828, 52),
+                (19_335, 53),
+                (16_757, 54),
+                (14_787, 55),
+            ],
+        ),
+        (
+            "test-7.data",
+            &[
+                (2_322, 55),
+                (14_921, 56),
+                (14_023, 57),
+                (11_015, 58),
+                (11_679, 59),
+                (11_757, 60),
+                (2_018, 61),
+            ],
+        ),
+        (
+            "test-8.data",
+            &[
+                (12_747, 61),
+                (17_695, 62),
+                (17_500, 63),
+                (19_218, 64),
+                (3_447, 65),
+            ],
+        ),
+        (
+            "test-9.data",
+            &[
+                (16_474, 65),
+                (12_304, 66),
+                (16_093, 67),
+                (18_710, 68),
+                (18_281, 69),
+                (18_906, 70),
+                (3_177, 71),
+            ],
+        ),
+    ];
+
+    fn par1_flatdata_file_bytes(name: &str) -> Vec<u8> {
+        let (_, runs) = PAR1_FLATDATA_FILES
+            .iter()
+            .find(|(file_name, _)| *file_name == name)
+            .copied()
+            .unwrap_or_else(|| panic!("unknown PAR1 flatdata file {name}"));
+        runs.iter()
+            .flat_map(|(len, byte)| std::iter::repeat_n(*byte, *len))
+            .collect()
+    }
+
     fn copy_par1_fixture(temp: &tempfile::TempDir) {
         let source_dir = Path::new("tests/fixtures/par1/flatdata");
-        for entry in std::fs::read_dir(source_dir).unwrap() {
-            let entry = entry.unwrap();
-            std::fs::copy(entry.path(), temp.path().join(entry.file_name())).unwrap();
-        }
+        ["testdata.par", "testdata.p01", "testdata.p02"]
+            .iter()
+            .for_each(|name| {
+                std::fs::copy(source_dir.join(name), temp.path().join(name)).unwrap();
+            });
+        PAR1_FLATDATA_FILES.iter().for_each(|(name, _)| {
+            std::fs::write(temp.path().join(name), par1_flatdata_file_bytes(name)).unwrap();
+        });
     }
 
     fn remove_par1_volumes(temp: &tempfile::TempDir) {
@@ -396,7 +544,6 @@ mod tests {
 
     #[test]
     fn repairs_missing_file_from_real_par1_fixture_with_memory_limit() {
-        let source_dir = Path::new("tests/fixtures/par1/flatdata");
         let temp = tempfile::tempdir().unwrap();
         copy_par1_fixture(&temp);
 
@@ -410,7 +557,7 @@ mod tests {
         assert_eq!(results.missing_file_count, 0);
         assert_eq!(
             std::fs::read(temp.path().join("test-3.data")).unwrap(),
-            std::fs::read(source_dir.join("test-3.data")).unwrap()
+            par1_flatdata_file_bytes("test-3.data")
         );
     }
 
@@ -429,7 +576,6 @@ mod tests {
 
     #[test]
     fn repairs_corrupted_file_from_real_par1_fixture() {
-        let source_dir = Path::new("tests/fixtures/par1/flatdata");
         let temp = tempfile::tempdir().unwrap();
         copy_par1_fixture(&temp);
 
@@ -441,7 +587,7 @@ mod tests {
         assert_eq!(results.corrupted_file_count, 0);
         assert_eq!(
             std::fs::read(temp.path().join("test-2.data")).unwrap(),
-            std::fs::read(source_dir.join("test-2.data")).unwrap()
+            par1_flatdata_file_bytes("test-2.data")
         );
     }
 
@@ -461,7 +607,6 @@ mod tests {
 
     #[test]
     fn repair_renames_exact_extra_for_missing_target_without_recovery_blocks() {
-        let source_dir = Path::new("tests/fixtures/par1/flatdata");
         let temp = tempfile::tempdir().unwrap();
         copy_par1_fixture(&temp);
         remove_par1_volumes(&temp);
@@ -481,20 +626,19 @@ mod tests {
         assert_eq!(results.present_file_count, 10);
         assert_eq!(
             std::fs::read(&target).unwrap(),
-            std::fs::read(source_dir.join("test-3.data")).unwrap()
+            par1_flatdata_file_bytes("test-3.data")
         );
         assert!(!extra.exists());
     }
 
     #[test]
     fn repair_backs_up_corrupted_target_before_renaming_exact_extra() {
-        let source_dir = Path::new("tests/fixtures/par1/flatdata");
         let temp = tempfile::tempdir().unwrap();
         copy_par1_fixture(&temp);
         remove_par1_volumes(&temp);
         let target = temp.path().join("test-2.data");
         let extra = temp.path().join("renamed.data");
-        std::fs::copy(source_dir.join("test-2.data"), &extra).unwrap();
+        std::fs::write(&extra, par1_flatdata_file_bytes("test-2.data")).unwrap();
         std::fs::write(&target, b"corrupted").unwrap();
 
         let results = repair_par1_file_with_options(
@@ -509,7 +653,7 @@ mod tests {
         assert_eq!(results.present_file_count, 10);
         assert_eq!(
             std::fs::read(&target).unwrap(),
-            std::fs::read(source_dir.join("test-2.data")).unwrap()
+            par1_flatdata_file_bytes("test-2.data")
         );
         assert_eq!(
             std::fs::read(temp.path().join("test-2.data.1")).unwrap(),
@@ -520,13 +664,12 @@ mod tests {
 
     #[test]
     fn repair_uses_first_free_numbered_backup_suffix() {
-        let source_dir = Path::new("tests/fixtures/par1/flatdata");
         let temp = tempfile::tempdir().unwrap();
         copy_par1_fixture(&temp);
         remove_par1_volumes(&temp);
         let target = temp.path().join("test-2.data");
         let extra = temp.path().join("renamed.data");
-        std::fs::copy(source_dir.join("test-2.data"), &extra).unwrap();
+        std::fs::write(&extra, par1_flatdata_file_bytes("test-2.data")).unwrap();
         std::fs::write(&target, b"corrupted").unwrap();
         std::fs::write(temp.path().join("test-2.data.1"), b"existing backup").unwrap();
 

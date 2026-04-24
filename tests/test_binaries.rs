@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
+mod common;
+
 /// Helper to get the path to a compiled binary
 fn get_binary_path(name: &str) -> PathBuf {
     let cargo_path = match name {
@@ -166,13 +168,7 @@ fn create_par1_verify_test_set(temp_dir: &TempDir) -> PathBuf {
 }
 
 fn copy_real_par1_fixture(temp_dir: &TempDir) -> PathBuf {
-    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
-    for entry in fs::read_dir(fixture_dir).expect("PAR1 fixture directory should exist") {
-        let entry = entry.expect("fixture entry should be readable");
-        fs::copy(entry.path(), temp_dir.path().join(entry.file_name()))
-            .expect("fixture file should copy");
-    }
-    temp_dir.path().join("testdata.par")
+    common::prepare_par1_flatdata_fixture(temp_dir.path())
 }
 
 fn create_purge_test_set(temp_dir: &TempDir) -> (PathBuf, PathBuf) {
@@ -417,7 +413,6 @@ fn test_par2_repair_repairs_missing_par1_file() {
 
 #[test]
 fn test_par2_repair_repairs_renamed_par1_file() {
-    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
     let temp_dir = TempDir::new().unwrap();
     let par_file = copy_real_par1_fixture(&temp_dir);
     let target = temp_dir.path().join("test-4.data");
@@ -439,7 +434,7 @@ fn test_par2_repair_repairs_renamed_par1_file() {
     );
     assert_eq!(
         fs::read(&target).unwrap(),
-        fs::read(fixture_dir.join("test-4.data")).unwrap()
+        common::par1_flatdata_file_bytes("test-4.data")
     );
     assert!(!renamed.exists());
 }
@@ -1660,7 +1655,6 @@ fn test_par2repair_repairs_missing_par1_file_from_volume_input() {
 
 #[test]
 fn test_par2repair_repairs_renamed_par1_file() {
-    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
     let temp_dir = TempDir::new().unwrap();
     let par_file = copy_real_par1_fixture(&temp_dir);
     let target = temp_dir.path().join("test-5.data");
@@ -1681,14 +1675,13 @@ fn test_par2repair_repairs_renamed_par1_file() {
     );
     assert_eq!(
         fs::read(&target).unwrap(),
-        fs::read(fixture_dir.join("test-5.data")).unwrap()
+        common::par1_flatdata_file_bytes("test-5.data")
     );
     assert!(!renamed.exists());
 }
 
 #[test]
 fn test_par2repair_repairs_renamed_par1_file_from_volume_input() {
-    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
     let temp_dir = TempDir::new().unwrap();
     copy_real_par1_fixture(&temp_dir);
     let volume_file = temp_dir.path().join("testdata.p01");
@@ -1710,7 +1703,7 @@ fn test_par2repair_repairs_renamed_par1_file_from_volume_input() {
     );
     assert_eq!(
         fs::read(&target).unwrap(),
-        fs::read(fixture_dir.join("test-6.data")).unwrap()
+        common::par1_flatdata_file_bytes("test-6.data")
     );
     assert!(!renamed.exists());
 }

@@ -4,3 +4,4 @@ perf*
 benchmark_output.txt
 flamegraph.svg
 lcov.info
+tests/fixtures/par1/flatdata/test-*.data

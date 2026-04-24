@@ -4,12 +4,10 @@ use par2rs::par1::verify::{verify_par1_file, verify_par1_file_with_options, Par1
 use par2rs::verify::FileStatus;
 use std::path::Path;
 
+mod common;
+
 fn copy_real_par1_fixture(temp: &tempfile::TempDir) {
-    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
-    for entry in std::fs::read_dir(fixture_dir).unwrap() {
-        let entry = entry.unwrap();
-        std::fs::copy(entry.path(), temp.path().join(entry.file_name())).unwrap();
-    }
+    common::prepare_par1_flatdata_fixture(temp.path());
 }
 
 #[test]
@@ -30,8 +28,10 @@ fn real_par1_fixture_parses_main_and_volumes() {
 
 #[test]
 fn real_par1_fixture_verifies_intact_files() {
-    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
-    let results = verify_par1_file(&fixture_dir.join("testdata.par")).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    copy_real_par1_fixture(&temp);
+
+    let results = verify_par1_file(&temp.path().join("testdata.par")).unwrap();
 
     assert_eq!(results.files.len(), 10);
     assert_eq!(results.present_file_count, 10);
@@ -45,8 +45,10 @@ fn real_par1_fixture_verifies_intact_files() {
 
 #[test]
 fn real_par1_fixture_verifies_from_volume_input() {
-    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
-    let results = verify_par1_file(&fixture_dir.join("testdata.p01")).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    copy_real_par1_fixture(&temp);
+
+    let results = verify_par1_file(&temp.path().join("testdata.p01")).unwrap();
 
     assert_eq!(results.files.len(), 10);
     assert_eq!(results.present_file_count, 10);
@@ -118,12 +120,11 @@ fn par1_repair_purge_after_reconstruction_deletes_recovery_files_only() {
 
 #[test]
 fn par1_repair_purge_after_rename_deletes_recovery_files_and_created_backups() {
-    let fixture_dir = Path::new("tests/fixtures/par1/flatdata");
     let temp = tempfile::tempdir().unwrap();
     copy_real_par1_fixture(&temp);
     let target = temp.path().join("test-2.data");
     let extra = temp.path().join("renamed.data");
-    std::fs::copy(fixture_dir.join("test-2.data"), &extra).unwrap();
+    std::fs::write(&extra, common::par1_flatdata_file_bytes("test-2.data")).unwrap();
     std::fs::write(&target, b"corrupted").unwrap();
 
     let results = repair_par1_file_with_options(
@@ -139,7 +140,7 @@ fn par1_repair_purge_after_rename_deletes_recovery_files_and_created_backups() {
     assert_eq!(results.present_file_count, 10);
     assert_eq!(
         std::fs::read(&target).unwrap(),
-        std::fs::read(fixture_dir.join("test-2.data")).unwrap()
+        common::par1_flatdata_file_bytes("test-2.data")
     );
     assert!(!temp.path().join("testdata.par").exists());
     assert!(!temp.path().join("testdata.p01").exists());
