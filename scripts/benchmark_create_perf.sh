@@ -21,6 +21,7 @@ KEEP_WORK="${KEEP_WORK:-0}"
 RUN_FLAMEGRAPH="${RUN_FLAMEGRAPH:-1}"
 PROFILE_FREQUENCY="${PROFILE_FREQUENCY:-997}"
 PERF_EVENTS="${PERF_EVENTS:-instructions,cycles,branches,branch-misses,cache-references,cache-misses,task-clock,context-switches,cpu-migrations,page-faults}"
+VERIFY_OUTPUTS="${VERIFY_OUTPUTS:-1}"
 
 # label:file_count:file_size_mib:block_size_bytes
 DEFAULT_CASES="single_16m:1:16:262144,single_128m:1:128:1048576,multi_128m:32:4:262144"
@@ -39,6 +40,7 @@ Environment:
   REDUNDANCY=N       create redundancy percentage (default: $REDUNDANCY)
   RECOVERY_FILES=N   recovery file count via -n (default: $RECOVERY_FILES)
   PAR2CMD_BIN=PATH   par2cmdline-turbo binary (default: $PAR2CMD_BIN)
+  VERIFY_OUTPUTS=0   skip cross-tool verification after each create
   RUN_FLAMEGRAPH=0   skip par2rs perf/inferno flamegraph generation
   PROFILE_FREQUENCY=N perf sampling frequency for flamegraph (default: $PROFILE_FREQUENCY)
   KEEP_WORK=1        keep generated benchmark work directory
@@ -99,7 +101,7 @@ echo
 echo "Building par2rs release binary..."
 (cd "$PROJECT_ROOT" && cargo build --release --bin par2 --quiet)
 
-printf 'case,tool,run,status,instructions,cycles,branches,branch_misses,cache_references,cache_misses,task_clock_msec,context_switches,cpu_migrations,page_faults,wall_seconds\n' > "$RAW_CSV"
+printf 'case,tool,run,status,validation_status,instructions,cycles,branches,branch_misses,cache_references,cache_misses,task_clock_msec,context_switches,cpu_migrations,page_faults,wall_seconds\n' > "$RAW_CSV"
 
 split_cases() {
     tr ',' '\n' <<< "$CASES"
@@ -176,7 +178,7 @@ run_create() {
         cmd+=("-t$THREADS")
     fi
 
-    local start_ns end_ns status wall_seconds
+    local start_ns end_ns status validation_status wall_seconds
     start_ns="$(date +%s%N)"
     set +e
     (
@@ -188,6 +190,28 @@ run_create() {
     set -e
     end_ns="$(date +%s%N)"
     wall_seconds="$(awk -v s="$start_ns" -v e="$end_ns" 'BEGIN { printf "%.6f", (e - s) / 1000000000 }')"
+    validation_status=0
+
+    if [[ "$status" == "0" && "$VERIFY_OUTPUTS" == "1" ]]; then
+        local verifier_stdout verifier_stderr
+        verifier_stdout="$RUN_ROOT/verify-$case_label-$tool-$run_number.stdout"
+        verifier_stderr="$RUN_ROOT/verify-$case_label-$tool-$run_number.stderr"
+        set +e
+        if [[ "$tool" == "par2rs" ]]; then
+            (cd "$run_dir" && "$PAR2CMD_BIN" v -q -q out.par2 >"$verifier_stdout" 2>"$verifier_stderr")
+        else
+            (cd "$run_dir" && "$PAR2RS_BIN" v -q -q out.par2 >"$verifier_stdout" 2>"$verifier_stderr")
+        fi
+        validation_status="$?"
+        set -e
+        if [[ "$validation_status" != "0" ]]; then
+            echo "error: cross-tool verification failed for $case_label/$tool run $run_number" >&2
+            echo "stdout: $verifier_stdout" >&2
+            echo "stderr: $verifier_stderr" >&2
+        else
+            rm -f "$verifier_stdout" "$verifier_stderr"
+        fi
+    fi
 
     if [[ "$measured" == "1" ]]; then
         local instructions cycles branches branch_misses cache_references cache_misses
@@ -202,15 +226,18 @@ run_create() {
         context_switches="$(perf_value "$perf_file" context-switches)"
         cpu_migrations="$(perf_value "$perf_file" cpu-migrations)"
         page_faults="$(perf_value "$perf_file" page-faults)"
-        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-            "$case_label" "$tool" "$run_number" "$status" \
+        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+            "$case_label" "$tool" "$run_number" "$status" "$validation_status" \
             "$instructions" "$cycles" "$branches" "$branch_misses" \
             "$cache_references" "$cache_misses" "$task_clock" \
             "$context_switches" "$cpu_migrations" "$page_faults" "$wall_seconds" >> "$RAW_CSV"
     fi
 
     rm -rf "$run_dir"
-    return "$status"
+    if [[ "$status" != "0" ]]; then
+        return "$status"
+    fi
+    return "$validation_status"
 }
 
 summarize_results() {
@@ -277,6 +304,7 @@ with open(summary_md, "w") as out:
     out.write(f"- threads: {threads}\n")
     out.write(f"- redundancy: {redundancy}%\n")
     out.write(f"- recovery files: {recovery_files}\n")
+    out.write("- validation: par2rs output verified by turbo; turbo output verified by par2rs\n")
     out.write("- primary signal: Linux perf `instructions`\n\n")
 
     out.write("## Relative Summary\n\n")
@@ -301,8 +329,11 @@ with open(summary_md, "w") as out:
         for tool in ("par2rs", "turbo"):
             group = groups[(case, tool)]
             failures = [r for r in group if r["status"] != "0"]
+            validation_failures = [r for r in group if r.get("validation_status", "0") != "0"]
             if failures:
                 out.write(f"| {case} | {tool} | failures | {len(failures)} | status != 0 |  |  |  |  |\n")
+            if validation_failures:
+                out.write(f"| {case} | {tool} | validation failures | {len(validation_failures)} | validation_status != 0 |  |  |  |  |\n")
             for key, label in metrics:
                 s = stats(number(r, key) for r in group)
                 if s is None:

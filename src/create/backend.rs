@@ -5,6 +5,7 @@ use crate::reed_solomon::codec::{
 };
 use crate::reed_solomon::galois::Galois16;
 use crate::reed_solomon::AlignedVec;
+use rayon::prelude::*;
 
 #[cfg(target_arch = "x86_64")]
 use crate::reed_solomon::simd::{
@@ -212,7 +213,7 @@ impl CreateRecoveryBackend {
         let simd_level = self.simd_level;
 
         self.output_chunks
-            .iter_mut()
+            .par_iter_mut()
             .enumerate()
             .for_each(|(recovery_idx, output_chunk)| {
                 let output = &mut output_chunk[..chunk_len];

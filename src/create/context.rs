@@ -109,6 +109,7 @@ fn encode_and_hash_files(
     base_values: &[u16],
     first_recovery_block: u32,
     recovery_count: usize,
+    thread_count: usize,
     reporter: &dyn CreateReporter,
 ) -> CreateResult<(RecoveryBlockVec, Vec<FileHashState>)> {
     use crate::checksum::compute_file_id;
@@ -118,13 +119,10 @@ fn encode_and_hash_files(
     use std::fs::File;
     use std::io::{Read, Seek};
 
-    let mut backend = CreateRecoveryBackend::new(
-        base_values,
-        first_recovery_block,
-        recovery_count,
-        chunk_size,
-    );
-    let mut recovery_blocks = backend.recovery_blocks(block_size as usize);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(thread_count)
+        .build()
+        .map_err(|err| CreateError::Other(format!("failed to create thread pool: {err}")))?;
 
     let mut file_handles: Vec<File> = Vec::with_capacity(source_files.len());
     let mut file_md5_states: Vec<Md5> = Vec::with_capacity(source_files.len());
@@ -151,69 +149,84 @@ fn encode_and_hash_files(
         global_block_offset += block_count;
     }
 
-    // Main chunk loop
-    let mut block_offset = 0u64;
-    while block_offset < block_size {
-        let chunk_len = ((block_size - block_offset) as usize).min(chunk_size);
-        backend.begin_chunk(chunk_len);
+    let recovery_blocks = pool.install(|| {
+        let mut backend = CreateRecoveryBackend::new(
+            base_values,
+            first_recovery_block,
+            recovery_count,
+            chunk_size,
+        );
+        let mut recovery_blocks = backend.recovery_blocks(block_size as usize);
 
-        let mut file_block_idx = 0usize;
+        // Main chunk loop
+        let mut block_offset = 0u64;
+        while block_offset < block_size {
+            let chunk_len = ((block_size - block_offset) as usize).min(chunk_size);
+            backend.begin_chunk(chunk_len);
 
-        for (file_idx, file) in source_files.iter().enumerate() {
-            let (block_count, _) = file_block_meta[file_idx];
-            for block_idx in 0..block_count {
-                let is_last = block_idx == block_count - 1;
-                let block_actual = if is_last && file.size % block_size != 0 {
-                    (file.size % block_size) as usize
-                } else {
-                    block_size as usize
-                };
-                let bytes_available = if block_offset >= block_actual as u64 {
-                    0
-                } else {
-                    block_actual - block_offset as usize
-                };
-                let bytes_to_read = bytes_available.min(chunk_len);
-                {
-                    let chunk = backend.prepare_transfer_buffer(file_block_idx);
-                    if bytes_to_read > 0 {
-                        let file_pos = block_idx as u64 * block_size + block_offset;
-                        file_handles[file_idx]
-                            .seek(std::io::SeekFrom::Start(file_pos))
-                            .map_err(|e| CreateError::FileReadError {
-                                file: file.path.to_string_lossy().to_string(),
-                                source: e,
-                            })?;
-                        file_handles[file_idx]
-                            .read_exact(&mut chunk[..bytes_to_read])
-                            .map_err(|e| CreateError::FileReadError {
-                                file: file.path.to_string_lossy().to_string(),
-                                source: e,
-                            })?;
-                        if file_pos < 16 * 1024 {
-                            let capture_start = file_pos as usize;
-                            let capture_end = (capture_start + bytes_to_read).min(16 * 1024);
-                            let capture_len = capture_end - capture_start;
-                            file_16k_buffers[file_idx][capture_start..capture_end]
-                                .copy_from_slice(&chunk[..capture_len]);
+            let mut file_block_idx = 0usize;
+
+            for (file_idx, file) in source_files.iter().enumerate() {
+                let (block_count, _) = file_block_meta[file_idx];
+                for block_idx in 0..block_count {
+                    let is_last = block_idx == block_count - 1;
+                    let block_actual = if is_last && file.size % block_size != 0 {
+                        (file.size % block_size) as usize
+                    } else {
+                        block_size as usize
+                    };
+                    let bytes_available = if block_offset >= block_actual as u64 {
+                        0
+                    } else {
+                        block_actual - block_offset as usize
+                    };
+                    let bytes_to_read = bytes_available.min(chunk_len);
+                    {
+                        let chunk = backend.prepare_transfer_buffer(file_block_idx);
+                        if bytes_to_read > 0 {
+                            let file_pos = block_idx as u64 * block_size + block_offset;
+                            file_handles[file_idx]
+                                .seek(std::io::SeekFrom::Start(file_pos))
+                                .map_err(|e| CreateError::FileReadError {
+                                    file: file.path.to_string_lossy().to_string(),
+                                    source: e,
+                                })?;
+                            file_handles[file_idx]
+                                .read_exact(&mut chunk[..bytes_to_read])
+                                .map_err(|e| CreateError::FileReadError {
+                                    file: file.path.to_string_lossy().to_string(),
+                                    source: e,
+                                })?;
+                            if file_pos < 16 * 1024 {
+                                let capture_start = file_pos as usize;
+                                let capture_end = (capture_start + bytes_to_read).min(16 * 1024);
+                                let capture_len = capture_end - capture_start;
+                                file_16k_buffers[file_idx][capture_start..capture_end]
+                                    .copy_from_slice(&chunk[..capture_len]);
+                            }
+                            file_md5_states[file_idx].update(&chunk[..bytes_to_read]);
                         }
-                        file_md5_states[file_idx].update(&chunk[..bytes_to_read]);
+                        block_md5_states[file_block_idx].update(&chunk[..chunk_len]);
+                        block_crc32_states[file_block_idx].update(&chunk[..chunk_len]);
                     }
-                    block_md5_states[file_block_idx].update(&chunk[..chunk_len]);
-                    block_crc32_states[file_block_idx].update(&chunk[..chunk_len]);
+                    backend.add_transfer_input(file_block_idx, file_block_idx);
+                    file_block_idx += 1;
                 }
-                backend.add_transfer_input(file_block_idx, file_block_idx);
-                file_block_idx += 1;
             }
+
+            backend.finish_chunk(&mut recovery_blocks, block_size as usize);
+
+            block_offset += chunk_len as u64;
+            let progress =
+                ((block_offset as f64 / block_size as f64) * recovery_count as f64) as u32;
+            reporter.report_recovery_generation(
+                progress.min(recovery_count as u32),
+                recovery_count as u32,
+            );
         }
 
-        backend.finish_chunk(&mut recovery_blocks, block_size as usize);
-
-        block_offset += chunk_len as u64;
-        let progress = ((block_offset as f64 / block_size as f64) * recovery_count as f64) as u32;
-        reporter
-            .report_recovery_generation(progress.min(recovery_count as u32), recovery_count as u32);
-    }
+        Ok::<_, CreateError>(recovery_blocks)
+    })?;
 
     // Finalize file MD5s and block checksums
     let finalized_file_md5s: Vec<[u8; 16]> = file_md5_states
@@ -697,6 +710,7 @@ impl CreateContext {
             encoder.base_values(),
             self.config.first_recovery_block,
             self.recovery_block_count as usize,
+            self.config.effective_threads(),
             self.reporter.as_ref(),
         )?;
 
