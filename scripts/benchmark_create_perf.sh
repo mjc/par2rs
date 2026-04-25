@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Compare par2rs create against par2cmdline-turbo using instruction counts.
+# Compare par2rs create against par2cmdline-turbo.
 #
-# This harness is designed for loaded machines: wall clock is captured only as
-# context, while Linux perf hardware counters are the primary comparison signal.
+# Wall time is the pass/fail signal for the JIT-vs-turbo requirement. Linux perf
+# hardware counters are captured as diagnostics to explain timing differences.
 
 set -euo pipefail
 
@@ -19,6 +19,8 @@ PAR2RS_BIN="${PAR2RS_BIN:-$PROJECT_ROOT/target/release/par2}"
 RESULTS_ROOT="${RESULTS_ROOT:-$PROJECT_ROOT/target/perf-results/create}"
 KEEP_WORK="${KEEP_WORK:-0}"
 RUN_FLAMEGRAPH="${RUN_FLAMEGRAPH:-1}"
+PROFILE_CASE="${PROFILE_CASE:-}"
+PROFILE_TOOL="${PROFILE_TOOL:-par2rs-xor-jit-port}"
 PROFILE_FREQUENCY="${PROFILE_FREQUENCY:-997}"
 PERF_EVENTS="${PERF_EVENTS:-instructions,cycles,branches,branch-misses,cache-references,cache-misses,task-clock,context-switches,cpu-migrations,page-faults}"
 VERIFY_OUTPUTS="${VERIFY_OUTPUTS:-1}"
@@ -53,6 +55,8 @@ Environment:
   Required tools: ${BENCHMARK_TOOLS[*]}
   Forced JIT runs set PAR2RS_CREATE_XOR_JIT_FALLBACK=error.
   RUN_FLAMEGRAPH=0   skip par2rs perf/inferno flamegraph generation
+  PROFILE_CASE=LABEL profile this CASES label; default profiles the last case
+  PROFILE_TOOL=TOOL   par2rs tool variant to profile (default: $PROFILE_TOOL)
   PROFILE_FREQUENCY=N perf sampling frequency for flamegraph (default: $PROFILE_FREQUENCY)
   KEEP_WORK=1        keep generated benchmark work directory
 
@@ -666,12 +670,32 @@ for name, count in inclusive.most_common(40):
 '
 }
 
+par2rs_tool_env() {
+    local tool="$1"
+
+    case "$tool" in
+        par2rs-pshufb)
+            printf '%s\0' env PAR2RS_CREATE_GF16=pshufb
+            ;;
+        par2rs-xor-jit|par2rs-xor-jit-port)
+            printf '%s\0' env PAR2RS_CREATE_GF16=xor-jit-port PAR2RS_CREATE_XOR_JIT_FALLBACK=error
+            ;;
+        par2rs-xor-jit-clean)
+            printf '%s\0' env PAR2RS_CREATE_GF16=xor-jit-clean PAR2RS_CREATE_XOR_JIT_FALLBACK=error
+            ;;
+        *)
+            echo "error: PROFILE_TOOL must be a par2rs variant, got: $tool" >&2
+            return 1
+            ;;
+    esac
+}
+
 generate_flamegraph() {
     local case_spec="$1"
     IFS=: read -r label file_count file_size_mib block_size <<< "$case_spec"
     local case_dir="$WORK_ROOT/$label"
     local corpus_dir="$case_dir/corpus"
-    local flamegraph_file="$RUN_ROOT/par2rs-create-$label-flamegraph.svg"
+    local flamegraph_file="$RUN_ROOT/par2rs-create-$label-$PROFILE_TOOL-flamegraph.svg"
     local output_file="$case_dir/flamegraph-out.par2"
 
     if [[ "$RUN_FLAMEGRAPH" != "1" ]]; then
@@ -707,12 +731,14 @@ generate_flamegraph() {
     )
 
     local profiling_bin="$PROJECT_ROOT/target/profiling/par2"
-    local perf_data="$RUN_ROOT/par2rs-create-$label.perf.data"
-    local perf_summary="$RUN_ROOT/par2rs-create-$label.perf-report.txt"
-    local hotspots="$RUN_ROOT/par2rs-create-$label.hotspots.txt"
+    local perf_data="$RUN_ROOT/par2rs-create-$label-$PROFILE_TOOL.perf.data"
+    local perf_summary="$RUN_ROOT/par2rs-create-$label-$PROFILE_TOOL.perf-report.txt"
+    local hotspots="$RUN_ROOT/par2rs-create-$label-$PROFILE_TOOL.hotspots.txt"
+    local -a env_prefix
+    mapfile -d '' -t env_prefix < <(par2rs_tool_env "$PROFILE_TOOL")
 
-    echo "Recording par2rs flamegraph for case '$label'..."
-    if ! perf record -g --call-graph fp -F "$PROFILE_FREQUENCY" -o "$perf_data" -- "$profiling_bin" "${args[@]}" >/dev/null; then
+    echo "Recording par2rs flamegraph for case '$label' / $PROFILE_TOOL..."
+    if ! perf record -g --call-graph fp -F "$PROFILE_FREQUENCY" -o "$perf_data" -- "${env_prefix[@]}" "$profiling_bin" "${args[@]}" >/dev/null; then
         echo "warning: flamegraph generation failed; benchmark results are still available" >&2
         return 0
     fi
@@ -733,6 +759,7 @@ generate_flamegraph() {
 }
 
 last_case=""
+profile_case_spec=""
 run_smoke_benchmarks
 
 while IFS= read -r case_spec; do
@@ -744,6 +771,9 @@ while IFS= read -r case_spec; do
     fi
 
     last_case="$case_spec"
+    if [[ -n "$PROFILE_CASE" && ( "$PROFILE_CASE" == "$label" || "$PROFILE_CASE" == "$case_spec" ) ]]; then
+        profile_case_spec="$case_spec"
+    fi
     case_dir="$WORK_ROOT/$label"
     corpus_dir="$case_dir/corpus"
     echo "Preparing case '$label': ${file_count}x${file_size_mib}MiB, block size ${block_size}"
@@ -766,8 +796,15 @@ done < <(split_cases)
 
 summarize_results
 enforce_pass_criteria "$RAW_CSV"
-if [[ -n "$last_case" ]]; then
-    generate_flamegraph "$last_case"
+if [[ -n "$PROFILE_CASE" && -z "$profile_case_spec" ]]; then
+    echo "error: PROFILE_CASE '$PROFILE_CASE' did not match any CASES label or spec" >&2
+    exit 1
+fi
+if [[ -z "$profile_case_spec" ]]; then
+    profile_case_spec="$last_case"
+fi
+if [[ -n "$profile_case_spec" ]]; then
+    generate_flamegraph "$profile_case_spec"
 fi
 
 echo
