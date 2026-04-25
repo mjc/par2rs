@@ -69,22 +69,29 @@ impl XorJitCleanPlan {
 #[cfg_attr(not(test), allow(dead_code))]
 impl CleanCoeffPlan {
     fn new(coefficient: u16) -> Self {
-        let output_masks = std::array::from_fn(|output_bit| {
-            (0..16)
-                .filter(|&input_bit| {
-                    multiply_word(1 << input_bit, coefficient) & (1 << output_bit) != 0
-                })
-                .fold(0u16, |mask, input_bit| mask | (1 << input_bit))
-        });
+        let output_masks =
+            std::array::from_fn(|output_bit| input_dependency_mask(coefficient, output_bit));
 
         Self { output_masks }
     }
 
-    fn output_bit_depends_on(&self, output_bit: usize, input_bit: usize) -> bool {
+    fn input_mask_for_output_bit(&self, output_bit: usize) -> u16 {
         debug_assert!(output_bit < 16);
-        debug_assert!(input_bit < 16);
-        self.output_masks[output_bit] & (1 << input_bit) != 0
+        self.output_masks[output_bit]
     }
+
+    fn output_bit_depends_on(&self, output_bit: usize, input_bit: usize) -> bool {
+        debug_assert!(input_bit < 16);
+        self.input_mask_for_output_bit(output_bit) & (1 << input_bit) != 0
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn input_dependency_mask(coefficient: u16, output_bit: usize) -> u16 {
+    (0..16)
+        .filter(|&input_bit| multiply_word(1 << input_bit, coefficient) & (1 << output_bit) != 0)
+        .fold(0u16, |mask, input_bit| mask | (1 << input_bit))
 }
 
 #[cfg(target_arch = "x86_64")]
