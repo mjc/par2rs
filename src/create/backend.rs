@@ -18,6 +18,9 @@ use crate::reed_solomon::simd::{
 const DEFAULT_INPUT_GROUPING: usize = 12;
 const TRANSFER_BUFFER_COUNT: usize = 2;
 const CREATE_SEGMENT_SIZE: usize = 256 * 1024;
+// The prepared x1 PSHUFB path currently retires fewer instructions on the
+// large-file create proxy than the x2/x4 packed kernels on this CPU.
+const PSHUFB_PACKED_INPUTS: usize = 1;
 const AVX2_ALIGNMENT: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -579,7 +582,7 @@ fn process_compute_job(job: ComputeJob) {
 
         #[cfg(target_arch = "x86_64")]
         if matches!(job.method, CreateGf16Method::Avx2PshufbPrepared) {
-            process_batch_add_avx2_x4(job, recovery_idx, output);
+            process_batch_add_avx2_pshufb(job, recovery_idx, output);
             continue;
         }
 
@@ -609,9 +612,9 @@ fn process_compute_job(job: ComputeJob) {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn process_batch_add_avx2_x4(job: ComputeJob, recovery_idx: usize, output: &mut [u8]) {
+fn process_batch_add_avx2_pshufb(job: ComputeJob, recovery_idx: usize, output: &mut [u8]) {
     let mut batch_idx = 0;
-    while batch_idx + 3 < job.batch_len {
+    while PSHUFB_PACKED_INPUTS >= 4 && batch_idx + 3 < job.batch_len {
         let source_a = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
         let source_b = unsafe { *(job.source_indices as *const usize).add(batch_idx + 1) };
         let source_c = unsafe { *(job.source_indices as *const usize).add(batch_idx + 2) };
@@ -677,7 +680,7 @@ fn process_batch_add_avx2_x4(job: ComputeJob, recovery_idx: usize, output: &mut 
         batch_idx += 4;
     }
 
-    while batch_idx + 1 < job.batch_len {
+    while PSHUFB_PACKED_INPUTS >= 2 && batch_idx + 1 < job.batch_len {
         let source_a = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
         let source_b = unsafe { *(job.source_indices as *const usize).add(batch_idx + 1) };
         let coeff_a = unsafe {
@@ -717,7 +720,7 @@ fn process_batch_add_avx2_x4(job: ComputeJob, recovery_idx: usize, output: &mut 
         batch_idx += 2;
     }
 
-    if batch_idx < job.batch_len {
+    while batch_idx < job.batch_len {
         let source_idx = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
         let coeff = unsafe {
             &*(job.coeffs as *const CreateCoeff).add(gf_coeff_index(
@@ -733,6 +736,7 @@ fn process_batch_add_avx2_x4(job: ComputeJob, recovery_idx: usize, output: &mut 
             },
             None => process_slice_multiply_add(input, output, &coeff.split),
         }
+        batch_idx += 1;
     }
 }
 
