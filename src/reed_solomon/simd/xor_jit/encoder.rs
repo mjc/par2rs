@@ -23,7 +23,15 @@ impl Program {
     pub fn vmovdqu_ymm0_from_rdi(mut self) -> Self {
         self.instructions.push(Instruction::VmovdquLoad {
             dst: Ymm::Ymm0,
-            base: BaseReg::Rdi,
+            memory: Memory::base(BaseReg::Rdi),
+        });
+        self
+    }
+
+    pub fn vmovdqu_ymm0_from_rdi_offset(mut self, offset: i32) -> Self {
+        self.instructions.push(Instruction::VmovdquLoad {
+            dst: Ymm::Ymm0,
+            memory: Memory::base_offset(BaseReg::Rdi, offset),
         });
         self
     }
@@ -31,7 +39,15 @@ impl Program {
     pub fn vmovdqu_ymm1_from_rsi(mut self) -> Self {
         self.instructions.push(Instruction::VmovdquLoad {
             dst: Ymm::Ymm1,
-            base: BaseReg::Rsi,
+            memory: Memory::base(BaseReg::Rsi),
+        });
+        self
+    }
+
+    pub fn vmovdqu_ymm1_from_rsi_offset(mut self, offset: i32) -> Self {
+        self.instructions.push(Instruction::VmovdquLoad {
+            dst: Ymm::Ymm1,
+            memory: Memory::base_offset(BaseReg::Rsi, offset),
         });
         self
     }
@@ -47,7 +63,15 @@ impl Program {
 
     pub fn vmovdqu_rsi_from_ymm0(mut self) -> Self {
         self.instructions.push(Instruction::VmovdquStore {
-            base: BaseReg::Rsi,
+            memory: Memory::base(BaseReg::Rsi),
+            src: Ymm::Ymm0,
+        });
+        self
+    }
+
+    pub fn vmovdqu_rsi_offset_from_ymm0(mut self, offset: i32) -> Self {
+        self.instructions.push(Instruction::VmovdquStore {
+            memory: Memory::base_offset(BaseReg::Rsi, offset),
             src: Ymm::Ymm0,
         });
         self
@@ -69,8 +93,8 @@ impl Program {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Instruction {
     MovEaxImm32(u32),
-    VmovdquLoad { dst: Ymm, base: BaseReg },
-    VmovdquStore { base: BaseReg, src: Ymm },
+    VmovdquLoad { dst: Ymm, memory: Memory },
+    VmovdquStore { memory: Memory, src: Ymm },
     Vpxor { dst: Ymm, lhs: Ymm, rhs: Ymm },
     Vzeroupper,
     Ret,
@@ -80,11 +104,11 @@ impl Instruction {
     fn encode(self) -> Vec<u8> {
         match self {
             Self::MovEaxImm32(value) => [vec![0xb8], value.to_le_bytes().to_vec()].concat(),
-            Self::VmovdquLoad { dst, base } => {
-                vec![0xc5, 0xfe, 0x6f, modrm_memory(dst.code(), base.code())]
+            Self::VmovdquLoad { dst, memory } => {
+                [vec![0xc5, 0xfe, 0x6f], memory.encode(dst.code())].concat()
             }
-            Self::VmovdquStore { base, src } => {
-                vec![0xc5, 0xfe, 0x7f, modrm_memory(src.code(), base.code())]
+            Self::VmovdquStore { memory, src } => {
+                [vec![0xc5, 0xfe, 0x7f], memory.encode(src.code())].concat()
             }
             Self::Vpxor { dst, lhs, rhs } => {
                 debug_assert_eq!(dst, lhs);
@@ -126,8 +150,55 @@ impl BaseReg {
     }
 }
 
-const fn modrm_memory(reg: u8, rm: u8) -> u8 {
-    (reg << 3) | rm
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Memory {
+    base: BaseReg,
+    displacement: i32,
+}
+
+impl Memory {
+    const fn base(base: BaseReg) -> Self {
+        Self {
+            base,
+            displacement: 0,
+        }
+    }
+
+    const fn base_offset(base: BaseReg, displacement: i32) -> Self {
+        Self { base, displacement }
+    }
+
+    fn encode(self, reg: u8) -> Vec<u8> {
+        let rm = self.base.code();
+        match displacement_size(self.displacement) {
+            DisplacementSize::None => vec![modrm_memory(0b00, reg, rm)],
+            DisplacementSize::Byte => vec![modrm_memory(0b01, reg, rm), self.displacement as u8],
+            DisplacementSize::Dword => [
+                vec![modrm_memory(0b10, reg, rm)],
+                self.displacement.to_le_bytes().to_vec(),
+            ]
+            .concat(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplacementSize {
+    None,
+    Byte,
+    Dword,
+}
+
+fn displacement_size(displacement: i32) -> DisplacementSize {
+    match displacement {
+        0 => DisplacementSize::None,
+        -128..=127 => DisplacementSize::Byte,
+        _ => DisplacementSize::Dword,
+    }
+}
+
+const fn modrm_memory(mode: u8, reg: u8, rm: u8) -> u8 {
+    (mode << 6) | (reg << 3) | rm
 }
 
 const fn modrm_register(reg: u8, rm: u8) -> u8 {

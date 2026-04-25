@@ -945,6 +945,34 @@ mod tests {
     }
 
     #[test]
+    fn generated_avx2_lane_xor_updates_destination_offset() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let mut input = [0u8; 64];
+        let mut output = [0x33u8; 64];
+        input[32..].fill(0xcc);
+
+        let program = encoder::Program::new()
+            .vmovdqu_ymm0_from_rdi_offset(32)
+            .vmovdqu_ymm1_from_rsi_offset(32)
+            .vpxor_ymm0_ymm0_ymm1()
+            .vmovdqu_rsi_offset_from_ymm0(32)
+            .vzeroupper()
+            .ret();
+        let generated = program.finish();
+        let mut code = exec_mem::ExecutableBuffer::new(generated.len()).expect("executable code");
+        code.write(&generated).expect("write generated code");
+        let function: extern "sysv64" fn(*const u8, *mut u8) = unsafe { code.function() };
+
+        function(input.as_ptr(), output.as_mut_ptr());
+
+        assert_eq!(&output[..32], &[0x33; 32]);
+        assert_eq!(&output[32..], &[0xff; 32]);
+    }
+
+    #[test]
     fn clean_identity_lane_kernel_matches_table_executor() {
         if !is_x86_feature_detected!("avx2") {
             return;
