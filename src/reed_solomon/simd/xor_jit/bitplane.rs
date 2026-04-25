@@ -52,18 +52,27 @@ pub fn prepare_avx2(dst: &mut [u8], src: &[u8]) -> usize {
     let prepared_len = src.len().next_multiple_of(AVX2_BLOCK_BYTES);
     assert!(dst.len() >= prepared_len);
 
-    for block_start in (0..src.len()).step_by(AVX2_BLOCK_BYTES) {
-        let block_end = (block_start + AVX2_BLOCK_BYTES).min(src.len());
-        let mut input_block = [0u8; AVX2_BLOCK_BYTES];
-        input_block[..block_end - block_start].copy_from_slice(&src[block_start..block_end]);
-
-        let output_block = (&mut dst[block_start..block_start + AVX2_BLOCK_BYTES])
-            .try_into()
-            .expect("prepared block length");
+    for (block_index, input_block) in source_blocks(src).enumerate() {
+        let output_start = block_index * AVX2_BLOCK_BYTES;
+        let output_block = prepared_block_mut(dst, output_start);
         prepare_avx2_block(output_block, &input_block);
     }
 
     prepared_len
+}
+
+fn source_blocks(src: &[u8]) -> impl Iterator<Item = [u8; AVX2_BLOCK_BYTES]> + '_ {
+    src.chunks(AVX2_BLOCK_BYTES).map(|chunk| {
+        let mut block = [0u8; AVX2_BLOCK_BYTES];
+        block[..chunk.len()].copy_from_slice(chunk);
+        block
+    })
+}
+
+fn prepared_block_mut(dst: &mut [u8], output_start: usize) -> &mut [u8; AVX2_BLOCK_BYTES] {
+    (&mut dst[output_start..output_start + AVX2_BLOCK_BYTES])
+        .try_into()
+        .expect("prepared block length")
 }
 
 pub fn mask_offset(half: ByteHalf, bit_from_msb: usize, group: usize) -> usize {
