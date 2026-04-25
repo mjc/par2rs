@@ -116,7 +116,7 @@ fn write_byte_planes(
     byte: u8,
 ) {
     for bit_from_msb in 0..BITS_PER_BYTE {
-        if byte & (0x80 >> bit_from_msb) != 0 {
+        if byte_bit_is_set(byte, bit_from_msb) {
             let offset = Plane::new(half, bit_from_msb, group).offset();
             let mut mask = u32::from_le_bytes(dst[offset..offset + MASK_BYTES].try_into().unwrap());
             mask |= 1 << lane;
@@ -176,10 +176,10 @@ fn write_prepared_byte(prepared: &mut [u8], half: ByteHalf, word: WordLane, valu
     for bit_from_msb in 0..BITS_PER_BYTE {
         let plane = Plane::new(half, bit_from_msb, word.group);
         let mask = read_mask(prepared, plane);
-        let next = if value & (0x80 >> bit_from_msb) == 0 {
-            mask & !lane_mask
-        } else {
+        let next = if byte_bit_is_set(value, bit_from_msb) {
             mask | lane_mask
+        } else {
+            mask & !lane_mask
         };
         write_mask(prepared, plane, next);
     }
@@ -191,7 +191,15 @@ fn prepared_byte(prepared: &[u8], half: ByteHalf, word: WordLane) -> u8 {
             let mask = read_mask(prepared, Plane::new(half, bit_from_msb, word.group));
             mask & (1 << word.lane) != 0
         })
-        .fold(0u8, |byte, bit_from_msb| byte | (0x80 >> bit_from_msb))
+        .fold(0u8, |byte, bit_from_msb| byte | byte_bit_mask(bit_from_msb))
+}
+
+fn byte_bit_is_set(value: u8, bit_from_msb: usize) -> bool {
+    value & byte_bit_mask(bit_from_msb) != 0
+}
+
+fn byte_bit_mask(bit_from_msb: usize) -> u8 {
+    0x80 >> bit_from_msb
 }
 
 fn read_mask(prepared: &[u8], plane: Plane) -> u32 {
