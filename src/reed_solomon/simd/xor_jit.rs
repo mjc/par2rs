@@ -80,14 +80,11 @@ struct CleanLaneKernel {
 #[cfg_attr(not(test), allow(dead_code))]
 impl CleanLaneKernel {
     fn identity() -> std::io::Result<Self> {
-        let generated = encoder::Program::new()
-            .vmovdqu_ymm0_from_rdi()
-            .vmovdqu_ymm1_from_rsi()
-            .vpxor_ymm0_ymm0_ymm1()
-            .vmovdqu_rsi_from_ymm0()
-            .vzeroupper()
-            .ret()
-            .finish();
+        Self::from_program(identity_lane_program())
+    }
+
+    fn from_program(program: encoder::Program) -> std::io::Result<Self> {
+        let generated = program.finish();
         let mut code = exec_mem::ExecutableBuffer::new(generated.len())?;
         code.write(&generated)?;
         let function = unsafe { code.function() };
@@ -99,6 +96,18 @@ impl CleanLaneKernel {
         debug_assert!(!self.code.is_empty());
         (self.function)(input, output);
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn identity_lane_program() -> encoder::Program {
+    encoder::Program::new()
+        .vmovdqu_ymm0_from_rdi()
+        .vmovdqu_ymm1_from_rsi()
+        .vpxor_ymm0_ymm0_ymm1()
+        .vmovdqu_rsi_from_ymm0()
+        .vzeroupper()
+        .ret()
 }
 
 #[cfg(target_arch = "x86_64")]
