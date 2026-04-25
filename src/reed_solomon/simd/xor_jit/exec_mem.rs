@@ -13,28 +13,9 @@ pub struct ExecutableBuffer {
 
 impl ExecutableBuffer {
     pub fn new(capacity: usize) -> io::Result<Self> {
-        let page_size = page_size();
-        let capacity = capacity.max(1).next_multiple_of(page_size);
-        let ptr = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                capacity,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-
-        if ptr == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
-        }
-
-        let ptr = NonNull::new(ptr.cast::<u8>())
-            .ok_or_else(|| io::Error::other("mmap returned null executable buffer"))?;
-
+        let capacity = round_to_page_size(capacity.max(1));
         Ok(Self {
-            ptr,
+            ptr: map_writable(capacity)?,
             capacity,
             len: 0,
             executable: false,
@@ -66,20 +47,11 @@ impl ExecutableBuffer {
     pub unsafe fn function<F: Copy>(&self) -> F {
         debug_assert!(self.executable);
         debug_assert!(self.len > 0);
-        std::mem::transmute_copy(&self.ptr)
+        function_from_ptr(self.ptr)
     }
 
     fn make_executable(&mut self) -> io::Result<()> {
-        let result = unsafe {
-            libc::mprotect(
-                self.ptr.as_ptr().cast::<c_void>(),
-                self.capacity,
-                libc::PROT_READ | libc::PROT_EXEC,
-            )
-        };
-        if result != 0 {
-            return Err(io::Error::last_os_error());
-        }
+        protect_executable(self.ptr, self.capacity)?;
         self.executable = true;
         Ok(())
     }
@@ -91,6 +63,49 @@ impl Drop for ExecutableBuffer {
             libc::munmap(self.ptr.as_ptr().cast::<c_void>(), self.capacity);
         }
     }
+}
+
+fn map_writable(capacity: usize) -> io::Result<NonNull<u8>> {
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            capacity,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+
+    if ptr == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+
+    NonNull::new(ptr.cast::<u8>())
+        .ok_or_else(|| io::Error::other("mmap returned null executable buffer"))
+}
+
+fn protect_executable(ptr: NonNull<u8>, capacity: usize) -> io::Result<()> {
+    let result = unsafe {
+        libc::mprotect(
+            ptr.as_ptr().cast::<c_void>(),
+            capacity,
+            libc::PROT_READ | libc::PROT_EXEC,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+unsafe fn function_from_ptr<F: Copy>(ptr: NonNull<u8>) -> F {
+    std::mem::transmute_copy(&ptr)
+}
+
+fn round_to_page_size(value: usize) -> usize {
+    value.next_multiple_of(page_size())
 }
 
 fn page_size() -> usize {
