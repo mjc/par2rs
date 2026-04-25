@@ -37,14 +37,18 @@ impl Plane {
 }
 
 pub fn prepare_avx2_block(dst: &mut [u8; AVX2_BLOCK_BYTES], src: &[u8; AVX2_BLOCK_BYTES]) {
-    dst.fill(0);
-
     for group in 0..GROUPS_PER_BLOCK {
+        let mut low_masks = [0u32; BITS_PER_BYTE];
+        let mut high_masks = [0u32; BITS_PER_BYTE];
+
         for lane in 0..WORDS_PER_GROUP {
             let word_offset = (group * WORDS_PER_GROUP + lane) * 2;
-            write_byte_planes(dst, ByteHalf::Low, group, lane, src[word_offset]);
-            write_byte_planes(dst, ByteHalf::High, group, lane, src[word_offset + 1]);
+            accumulate_byte_planes(&mut low_masks, lane, src[word_offset]);
+            accumulate_byte_planes(&mut high_masks, lane, src[word_offset + 1]);
         }
+
+        write_plane_group(dst, ByteHalf::High, group, &high_masks);
+        write_plane_group(dst, ByteHalf::Low, group, &low_masks);
     }
 }
 
@@ -52,21 +56,24 @@ pub fn prepare_avx2(dst: &mut [u8], src: &[u8]) -> usize {
     let prepared_len = src.len().next_multiple_of(AVX2_BLOCK_BYTES);
     assert!(dst.len() >= prepared_len);
 
-    for (block_index, input_block) in source_blocks(src).enumerate() {
+    let full_len = src.len() / AVX2_BLOCK_BYTES * AVX2_BLOCK_BYTES;
+    for (block_index, input_block) in src[..full_len].chunks_exact(AVX2_BLOCK_BYTES).enumerate() {
         let output_start = block_index * AVX2_BLOCK_BYTES;
         let output_block = prepared_block_mut(dst, output_start);
-        prepare_avx2_block(output_block, &input_block);
+        prepare_avx2_block(
+            output_block,
+            input_block.try_into().expect("full input block"),
+        );
+    }
+
+    if full_len < src.len() {
+        let mut block = [0u8; AVX2_BLOCK_BYTES];
+        block[..src.len() - full_len].copy_from_slice(&src[full_len..]);
+        let output_block = prepared_block_mut(dst, full_len);
+        prepare_avx2_block(output_block, &block);
     }
 
     prepared_len
-}
-
-fn source_blocks(src: &[u8]) -> impl Iterator<Item = [u8; AVX2_BLOCK_BYTES]> + '_ {
-    src.chunks(AVX2_BLOCK_BYTES).map(|chunk| {
-        let mut block = [0u8; AVX2_BLOCK_BYTES];
-        block[..chunk.len()].copy_from_slice(chunk);
-        block
-    })
 }
 
 fn prepared_block_mut(dst: &mut [u8], output_start: usize) -> &mut [u8; AVX2_BLOCK_BYTES] {
@@ -103,26 +110,53 @@ pub fn multiply_add_prepared_avx2_block_to_prepared(
 }
 
 pub fn finish_avx2_block(dst: &mut [u8; AVX2_BLOCK_BYTES], prepared: &[u8; AVX2_BLOCK_BYTES]) {
-    for word_lane in WordLane::all() {
-        write_output_word(dst, word_lane, prepared_word(prepared, word_lane));
+    for group in 0..GROUPS_PER_BLOCK {
+        let low_masks = read_plane_group(prepared, ByteHalf::Low, group);
+        let high_masks = read_plane_group(prepared, ByteHalf::High, group);
+
+        for lane in 0..WORDS_PER_GROUP {
+            let word = WordLane::new(group, lane);
+            let low = byte_from_planes(&low_masks, lane);
+            let high = byte_from_planes(&high_masks, lane);
+            write_output_word(dst, word, u16::from_le_bytes([low, high]));
+        }
     }
 }
 
-fn write_byte_planes(
+fn accumulate_byte_planes(masks: &mut [u32; BITS_PER_BYTE], lane: usize, byte: u8) {
+    let lane_mask = 1u32 << lane;
+    for bit_from_msb in 0..BITS_PER_BYTE {
+        let bit = ((byte >> (BITS_PER_BYTE - 1 - bit_from_msb)) & 1) as u32;
+        masks[bit_from_msb] |= 0u32.wrapping_sub(bit) & lane_mask;
+    }
+}
+
+fn write_plane_group(
     dst: &mut [u8; AVX2_BLOCK_BYTES],
     half: ByteHalf,
     group: usize,
-    lane: usize,
-    byte: u8,
+    masks: &[u32; BITS_PER_BYTE],
 ) {
-    for bit_from_msb in 0..BITS_PER_BYTE {
-        if byte_bit_is_set(byte, bit_from_msb) {
-            let offset = Plane::new(half, bit_from_msb, group).offset();
-            let mut mask = u32::from_le_bytes(dst[offset..offset + MASK_BYTES].try_into().unwrap());
-            mask |= 1 << lane;
-            dst[offset..offset + MASK_BYTES].copy_from_slice(&mask.to_le_bytes());
-        }
+    for (bit_from_msb, &mask) in masks.iter().enumerate() {
+        write_mask(dst, Plane::new(half, bit_from_msb, group), mask);
     }
+}
+
+fn read_plane_group(
+    prepared: &[u8; AVX2_BLOCK_BYTES],
+    half: ByteHalf,
+    group: usize,
+) -> [u32; BITS_PER_BYTE] {
+    core::array::from_fn(|bit_from_msb| read_mask(prepared, Plane::new(half, bit_from_msb, group)))
+}
+
+fn byte_from_planes(masks: &[u32; BITS_PER_BYTE], lane: usize) -> u8 {
+    let mut byte = 0u8;
+    for (bit_from_msb, &mask) in masks.iter().enumerate() {
+        let bit = ((mask >> lane) & 1) as u8;
+        byte |= bit << (BITS_PER_BYTE - 1 - bit_from_msb);
+    }
+    byte
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,30 +210,17 @@ fn write_prepared_byte(prepared: &mut [u8], half: ByteHalf, word: WordLane, valu
     for bit_from_msb in 0..BITS_PER_BYTE {
         let plane = Plane::new(half, bit_from_msb, word.group);
         let mask = read_mask(prepared, plane);
-        let next = if byte_bit_is_set(value, bit_from_msb) {
-            mask | lane_mask
-        } else {
-            mask & !lane_mask
-        };
+        let bit = ((value >> (BITS_PER_BYTE - 1 - bit_from_msb)) & 1) as u32;
+        let next = (mask & !lane_mask) | (0u32.wrapping_sub(bit) & lane_mask);
         write_mask(prepared, plane, next);
     }
 }
 
 fn prepared_byte(prepared: &[u8], half: ByteHalf, word: WordLane) -> u8 {
-    (0..BITS_PER_BYTE)
-        .filter(|&bit_from_msb| {
-            let mask = read_mask(prepared, Plane::new(half, bit_from_msb, word.group));
-            mask & (1 << word.lane) != 0
-        })
-        .fold(0u8, |byte, bit_from_msb| byte | byte_bit_mask(bit_from_msb))
-}
-
-fn byte_bit_is_set(value: u8, bit_from_msb: usize) -> bool {
-    value & byte_bit_mask(bit_from_msb) != 0
-}
-
-fn byte_bit_mask(bit_from_msb: usize) -> u8 {
-    0x80 >> bit_from_msb
+    byte_from_planes(
+        &read_plane_group_slice(prepared, half, word.group),
+        word.lane,
+    )
 }
 
 fn read_mask(prepared: &[u8], plane: Plane) -> u32 {
@@ -210,6 +231,10 @@ fn read_mask(prepared: &[u8], plane: Plane) -> u32 {
 fn write_mask(prepared: &mut [u8], plane: Plane, value: u32) {
     let offset = plane.offset();
     prepared[offset..offset + MASK_BYTES].copy_from_slice(&value.to_le_bytes());
+}
+
+fn read_plane_group_slice(prepared: &[u8], half: ByteHalf, group: usize) -> [u32; BITS_PER_BYTE] {
+    core::array::from_fn(|bit_from_msb| read_mask(prepared, Plane::new(half, bit_from_msb, group)))
 }
 
 fn multiply_word(mut input: u16, coefficient: u16) -> u16 {

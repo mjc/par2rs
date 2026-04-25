@@ -10,13 +10,14 @@ use std::thread::JoinHandle;
 
 #[cfg(target_arch = "x86_64")]
 use crate::reed_solomon::simd::{
-    detect_simd_support, prepare_avx2_coeff, process_slice_multiply_add_prepared_avx2,
+    detect_simd_support, finish_xor_jit_bitplane_chunks, prepare_avx2_coeff,
+    prepare_xor_jit_bitplane_chunks, process_slice_multiply_add_prepared_avx2,
     process_slice_multiply_add_xor_jit, process_slices_multiply_add_prepared_avx2_x2,
     process_slices_multiply_add_prepared_avx2_x4, process_slices_multiply_add_xor_jit_x2,
     process_slices_multiply_add_xor_jit_x4,
     process_slices_multiply_add_xor_jit_x4_inputs_x2_outputs,
     process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs, Avx2PreparedCoeff, SimdLevel,
-    XorJitFlavor, XorJitPreparedCoeff, XorJitPreparedCoeffCache,
+    XorJitBitplaneKernel, XorJitFlavor, XorJitPreparedCoeff, XorJitPreparedCoeffCache,
 };
 
 const DEFAULT_INPUT_GROUPING: usize = 12;
@@ -26,6 +27,7 @@ const CREATE_SEGMENT_SIZE: usize = 256 * 1024;
 // large-file create proxy than the x2/x4 packed kernels on this CPU.
 const PSHUFB_PACKED_INPUTS: usize = 1;
 const AVX2_ALIGNMENT: usize = 32;
+const XOR_JIT_BITPLANE_ALIGNMENT: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateGf16Method {
@@ -81,12 +83,7 @@ impl CreateGf16Method {
                         return self;
                     }
                 }
-                if xor_jit_fallback_is_error() {
-                    panic!(
-                        "forced XOR-JIT create backend requires x86_64 AVX2 and VPCLMULQDQ support"
-                    );
-                }
-                Self::Scalar
+                panic!("XOR-JIT create backend requires x86_64 AVX2 and VPCLMULQDQ support");
             }
             Self::Scalar => Self::Scalar,
         }
@@ -96,10 +93,9 @@ impl CreateGf16Method {
     fn ideal_input_multiple(self) -> usize {
         match self {
             Self::Auto | Self::Avx2PshufbPrepared => 4,
-            // Match par2cmdline-turbo's default CPU controller target: round
-            // a 12-input staging batch to the method's ideal multiple. AVX2
-            // XOR-JIT has an ideal multiple of 1, so turbo stages 12 inputs.
-            Self::Avx2XorJitPort | Self::Avx2XorJitClean => 12,
+            // Turbo's AVX2 XOR-JIT leaves idealInputMultiple at 1, so its
+            // default input batch rounds to DEFAULT_INPUT_GROUPING.
+            Self::Avx2XorJitPort | Self::Avx2XorJitClean => 1,
             Self::Scalar => 1,
         }
     }
@@ -127,13 +123,6 @@ impl CreateGf16Method {
     }
 }
 
-#[inline]
-fn xor_jit_fallback_is_error() -> bool {
-    std::env::var("PAR2RS_CREATE_XOR_JIT_FALLBACK")
-        .map(|value| value.eq_ignore_ascii_case("error"))
-        .unwrap_or(false)
-}
-
 /// Prepared coefficient for one `(recovery output, source input)` pair.
 pub struct CreateCoeff {
     pub value: u16,
@@ -142,6 +131,8 @@ pub struct CreateCoeff {
     pub avx2: Option<Avx2PreparedCoeff>,
     #[cfg(target_arch = "x86_64")]
     pub xor_jit: Option<XorJitPreparedCoeff>,
+    #[cfg(target_arch = "x86_64")]
+    pub xor_jit_bitplane: Option<Arc<XorJitBitplaneKernel>>,
 }
 
 pub type Gf16Coeff = CreateCoeff;
@@ -149,16 +140,36 @@ pub type Gf16Coeff = CreateCoeff;
 impl CreateCoeff {
     #[inline]
     #[cfg(target_arch = "x86_64")]
-    fn new(value: u16, prepare_pshufb: bool, xor_jit_cache: &mut XorJitPreparedCoeffCache) -> Self {
+    fn new(
+        value: u16,
+        prepare_pshufb: bool,
+        prepare_bitplane: bool,
+        xor_jit_cache: &mut XorJitPreparedCoeffCache,
+        bitplane_cache: &mut [Option<Arc<XorJitBitplaneKernel>>],
+    ) -> Self {
         let split = build_split_mul_table(Galois16::new(value));
         let avx2 = prepare_pshufb.then(|| prepare_avx2_coeff(&split));
-        let xor_jit = Some(xor_jit_cache.prepare(value));
+        let xor_jit_bitplane = prepare_bitplane.then(|| {
+            let prepared = xor_jit_cache.prepare(value);
+            let bitplane_idx = prepared.coefficient() as usize;
+            if bitplane_cache[bitplane_idx].is_none() {
+                bitplane_cache[bitplane_idx] = Some(Arc::new(
+                    XorJitBitplaneKernel::new(&prepared)
+                        .expect("forced XOR-JIT bitplane kernel compilation failed"),
+                ));
+            }
+            bitplane_cache[bitplane_idx]
+                .as_ref()
+                .expect("bitplane kernel just initialized")
+                .clone()
+        });
 
         Self {
             value,
             split,
             avx2,
-            xor_jit,
+            xor_jit: None,
+            xor_jit_bitplane,
         }
     }
 
@@ -202,6 +213,8 @@ pub struct CreateRecoveryBackend {
     pub chunk_len: usize,
     pub method: CreateGf16Method,
     pub input_grouping: usize,
+    #[cfg(target_arch = "x86_64")]
+    xor_jit_bitplane: bool,
     transfer_buffers: [AlignedVec; TRANSFER_BUFFER_COUNT],
     pub staging: Vec<StagingArea>,
     pub output_chunks: AlignedVec,
@@ -224,7 +237,17 @@ impl CreateRecoveryBackend {
         let requested_method = CreateGf16Method::from_env();
         let method = requested_method.resolve();
         let source_count = base_values.len();
-        let aligned_chunk_len = align_up(max_chunk_len, AVX2_ALIGNMENT);
+        #[cfg(target_arch = "x86_64")]
+        let xor_jit_bitplane = method.xor_jit_flavor().is_some();
+        #[cfg(target_arch = "x86_64")]
+        let chunk_alignment = if xor_jit_bitplane {
+            XOR_JIT_BITPLANE_ALIGNMENT
+        } else {
+            AVX2_ALIGNMENT
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let chunk_alignment = AVX2_ALIGNMENT;
+        let aligned_chunk_len = align_up(max_chunk_len, chunk_alignment);
         let input_grouping = input_grouping(source_count, method);
         let recovery_exponents = (0..recovery_count)
             .map(|offset| (first_recovery_block + offset as u32) as u16)
@@ -232,6 +255,8 @@ impl CreateRecoveryBackend {
         let prepare_pshufb = matches!(method, CreateGf16Method::Avx2PshufbPrepared);
         #[cfg(target_arch = "x86_64")]
         let mut xor_jit_cache = XorJitPreparedCoeffCache::new();
+        #[cfg(target_arch = "x86_64")]
+        let mut bitplane_cache = vec![None; u16::MAX as usize + 1];
         let coeffs = recovery_exponents
             .iter()
             .flat_map(|&exponent| {
@@ -242,7 +267,13 @@ impl CreateRecoveryBackend {
             .map(|value| {
                 #[cfg(target_arch = "x86_64")]
                 {
-                    CreateCoeff::new(value, prepare_pshufb, &mut xor_jit_cache)
+                    CreateCoeff::new(
+                        value,
+                        prepare_pshufb,
+                        xor_jit_bitplane,
+                        &mut xor_jit_cache,
+                        &mut bitplane_cache,
+                    )
                 }
                 #[cfg(not(target_arch = "x86_64"))]
                 {
@@ -251,7 +282,12 @@ impl CreateRecoveryBackend {
             })
             .collect::<Vec<_>>();
         let worker_count = thread_count.max(1);
-        let max_job_count = max_compute_jobs(max_chunk_len, recovery_count, worker_count, method);
+        let max_job_count = max_compute_jobs(
+            aligned_chunk_len.max(max_chunk_len),
+            recovery_count,
+            worker_count,
+            method,
+        );
 
         Self {
             source_count,
@@ -260,6 +296,8 @@ impl CreateRecoveryBackend {
             chunk_len: 0,
             method,
             input_grouping,
+            #[cfg(target_arch = "x86_64")]
+            xor_jit_bitplane,
             transfer_buffers: [
                 AlignedVec::new_zeroed(aligned_chunk_len),
                 AlignedVec::new_zeroed(aligned_chunk_len),
@@ -306,6 +344,10 @@ impl CreateRecoveryBackend {
             self.method != CreateGf16Method::Avx2PshufbPrepared
                 || self.coeffs.iter().all(|c| c.avx2.is_some())
         );
+        #[cfg(target_arch = "x86_64")]
+        debug_assert!(
+            !self.xor_jit_bitplane || self.coeffs.iter().all(|c| c.xor_jit_bitplane.is_some())
+        );
 
         self.output_chunks.fill(0);
     }
@@ -332,6 +374,17 @@ impl CreateRecoveryBackend {
         debug_assert!(staging.batch_len < self.input_grouping);
 
         let slot = staging.batch_len;
+        #[cfg(target_arch = "x86_64")]
+        if self.xor_jit_bitplane {
+            let prepared = staging.slot_mut(slot, self.aligned_chunk_len, self.aligned_chunk_len);
+            let prepared_len = prepare_xor_jit_bitplane_chunks(prepared, input_chunk);
+            debug_assert_eq!(prepared_len, self.aligned_chunk_len);
+        } else {
+            staging
+                .slot_mut(slot, self.aligned_chunk_len, self.chunk_len)
+                .copy_from_slice(input_chunk);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
         staging
             .slot_mut(slot, self.aligned_chunk_len, self.chunk_len)
             .copy_from_slice(input_chunk);
@@ -353,6 +406,20 @@ impl CreateRecoveryBackend {
         debug_assert!(staging.batch_len < self.input_grouping);
 
         let slot = staging.batch_len;
+        #[cfg(target_arch = "x86_64")]
+        if self.xor_jit_bitplane {
+            let prepared = staging.slot_mut(slot, self.aligned_chunk_len, self.aligned_chunk_len);
+            let prepared_len = prepare_xor_jit_bitplane_chunks(
+                prepared,
+                &self.transfer_buffers[idx][..self.chunk_len],
+            );
+            debug_assert_eq!(prepared_len, self.aligned_chunk_len);
+        } else {
+            staging
+                .slot_mut(slot, self.aligned_chunk_len, self.chunk_len)
+                .copy_from_slice(&self.transfer_buffers[idx][..self.chunk_len]);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
         staging
             .slot_mut(slot, self.aligned_chunk_len, self.chunk_len)
             .copy_from_slice(&self.transfer_buffers[idx][..self.chunk_len]);
@@ -383,6 +450,20 @@ impl CreateRecoveryBackend {
                 let start = recovery_idx * self.aligned_chunk_len;
                 let end = start + self.chunk_len;
                 debug_assert!(end <= self.output_chunks.len());
+                #[cfg(target_arch = "x86_64")]
+                if self.xor_jit_bitplane {
+                    let prepared_end = start + self.aligned_chunk_len;
+                    debug_assert!(prepared_end <= self.output_chunks.len());
+                    let output_start = recovery_data.len();
+                    recovery_data.resize(output_start + self.chunk_len, 0);
+                    finish_xor_jit_bitplane_chunks(
+                        &mut recovery_data[output_start..output_start + self.chunk_len],
+                        &self.output_chunks[start..prepared_end],
+                    );
+                } else {
+                    recovery_data.extend_from_slice(&self.output_chunks[start..end]);
+                }
+                #[cfg(not(target_arch = "x86_64"))]
                 recovery_data.extend_from_slice(&self.output_chunks[start..end]);
             });
     }
@@ -426,25 +507,45 @@ impl CreateRecoveryBackend {
     fn build_compute_jobs(&mut self, staging_idx: usize) -> usize {
         let worker_count = self.workers.worker_count();
         let recovery_count = self.recovery_exponents.len();
+        #[cfg(target_arch = "x86_64")]
+        let compute_len = if self.xor_jit_bitplane {
+            self.aligned_chunk_len
+        } else {
+            self.chunk_len
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let compute_len = self.chunk_len;
         let segment_len = align_down(
             self.method
                 .ideal_segment_len()
-                .min(self.chunk_len)
+                .min(compute_len)
                 .max(AVX2_ALIGNMENT),
             AVX2_ALIGNMENT,
         )
         .max(AVX2_ALIGNMENT);
-        let segment_count = self.chunk_len.div_ceil(segment_len);
+        let segment_count = compute_len.div_ceil(segment_len);
         let output_groups = worker_count.min(recovery_count).max(1);
         let outputs_per_group = recovery_count.div_ceil(output_groups);
         let staging = &self.staging[staging_idx];
         debug_assert!(staging.batch_len <= self.input_grouping);
         debug_assert!(self.coeffs.len() == recovery_count * self.source_count);
 
+        #[cfg(target_arch = "x86_64")]
+        if self.xor_jit_bitplane {
+            return self.build_compute_jobs_xor_jit_bitplane(
+                compute_len,
+                segment_len,
+                segment_count,
+                worker_count,
+                recovery_count,
+                staging_idx,
+            );
+        }
+
         let mut job_count = 0;
         for segment_idx in 0..segment_count {
             let start = segment_idx * segment_len;
-            let len = (self.chunk_len - start).min(segment_len);
+            let len = (compute_len - start).min(segment_len);
             for output_group in 0..output_groups {
                 let output_start = output_group * outputs_per_group;
                 let output_end = ((output_group + 1) * outputs_per_group).min(recovery_count);
@@ -461,14 +562,107 @@ impl CreateRecoveryBackend {
                     source_count: self.source_count,
                     batch_len: staging.batch_len,
                     aligned_chunk_len: self.aligned_chunk_len,
+                    compute_len,
                     segment_start: start,
                     segment_len: len,
+                    segment_count: 1,
                     output_start,
                     output_end,
+                    #[cfg(target_arch = "x86_64")]
+                    xor_jit_bitplane: self.xor_jit_bitplane,
                 };
                 job_count += 1;
             }
         }
+        job_count
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn build_compute_jobs_xor_jit_bitplane(
+        &mut self,
+        compute_len: usize,
+        segment_len: usize,
+        segment_count: usize,
+        worker_count: usize,
+        recovery_count: usize,
+        staging_idx: usize,
+    ) -> usize {
+        let staging = &self.staging[staging_idx];
+        let mut job_count = 0;
+
+        if segment_count >= worker_count {
+            let segment_groups = worker_count.min(segment_count).max(1);
+            let base_segments = segment_count / segment_groups;
+            let extra_segments = segment_count % segment_groups;
+            let mut segment_idx = 0;
+
+            for group_idx in 0..segment_groups {
+                let group_segments = base_segments + usize::from(group_idx < extra_segments);
+                debug_assert!(group_segments > 0);
+                debug_assert!(job_count < self.job_storage.len());
+                self.job_storage[job_count] = ComputeJob {
+                    method: self.method,
+                    input_base: staging.inputs.as_ptr() as usize,
+                    output_base: self.output_chunks.as_ptr() as usize,
+                    coeffs: self.coeffs.as_ptr() as usize,
+                    source_indices: staging.source_indices.as_ptr() as usize,
+                    source_count: self.source_count,
+                    batch_len: staging.batch_len,
+                    aligned_chunk_len: self.aligned_chunk_len,
+                    compute_len,
+                    segment_start: segment_idx * segment_len,
+                    segment_len,
+                    segment_count: group_segments,
+                    output_start: 0,
+                    output_end: recovery_count,
+                    xor_jit_bitplane: true,
+                };
+                job_count += 1;
+                segment_idx += group_segments;
+            }
+
+            return job_count;
+        }
+
+        let segment_groups = segment_count.max(1);
+        let output_groups = (worker_count / segment_groups)
+            .max(1)
+            .min(recovery_count)
+            .max(1);
+        let outputs_per_group = recovery_count.div_ceil(output_groups);
+
+        for segment_idx in 0..segment_count {
+            let start = segment_idx * segment_len;
+            let len = (compute_len - start).min(segment_len);
+            for output_group in 0..output_groups {
+                let output_start = output_group * outputs_per_group;
+                let output_end = ((output_group + 1) * outputs_per_group).min(recovery_count);
+                if output_start == output_end {
+                    continue;
+                }
+
+                debug_assert!(job_count < self.job_storage.len());
+                self.job_storage[job_count] = ComputeJob {
+                    method: self.method,
+                    input_base: staging.inputs.as_ptr() as usize,
+                    output_base: self.output_chunks.as_ptr() as usize,
+                    coeffs: self.coeffs.as_ptr() as usize,
+                    source_indices: staging.source_indices.as_ptr() as usize,
+                    source_count: self.source_count,
+                    batch_len: staging.batch_len,
+                    aligned_chunk_len: self.aligned_chunk_len,
+                    compute_len,
+                    segment_start: start,
+                    segment_len: len,
+                    segment_count: 1,
+                    output_start,
+                    output_end,
+                    xor_jit_bitplane: true,
+                };
+                job_count += 1;
+            }
+        }
+
         job_count
     }
 }
@@ -483,10 +677,14 @@ struct ComputeJob {
     source_count: usize,
     batch_len: usize,
     aligned_chunk_len: usize,
+    compute_len: usize,
     segment_start: usize,
     segment_len: usize,
+    segment_count: usize,
     output_start: usize,
     output_end: usize,
+    #[cfg(target_arch = "x86_64")]
+    xor_jit_bitplane: bool,
 }
 
 impl Default for CreateGf16Method {
@@ -666,6 +864,11 @@ fn process_compute_job(job: ComputeJob) {
 
 #[cfg(target_arch = "x86_64")]
 fn process_compute_job_xor_jit(job: ComputeJob, flavor: XorJitFlavor) {
+    if job.xor_jit_bitplane {
+        process_compute_job_xor_jit_bitplane(job);
+        return;
+    }
+
     let mut recovery_idx = job.output_start;
     while recovery_idx + 3 < job.output_end {
         let output_a_start = recovery_idx * job.aligned_chunk_len + job.segment_start;
@@ -746,6 +949,46 @@ fn process_compute_job_xor_jit(job: ComputeJob, flavor: XorJitFlavor) {
             )
         };
         process_batch_add_avx2_xor_jit(job, recovery_idx, output, flavor);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn process_compute_job_xor_jit_bitplane(job: ComputeJob) {
+    for segment_idx in 0..job.segment_count {
+        let segment_start = job.segment_start + segment_idx * job.segment_len;
+        let segment_len = (job.compute_len - segment_start).min(job.segment_len);
+        process_compute_job_xor_jit_bitplane_segment(ComputeJob {
+            segment_start,
+            segment_len,
+            segment_count: 1,
+            ..job
+        });
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn process_compute_job_xor_jit_bitplane_segment(job: ComputeJob) {
+    debug_assert!(job.segment_start.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
+    debug_assert!(job.segment_len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
+    for recovery_idx in job.output_start..job.output_end {
+        let output_start = recovery_idx * job.aligned_chunk_len + job.segment_start;
+        let output = unsafe {
+            std::slice::from_raw_parts_mut(
+                (job.output_base as *mut u8).add(output_start),
+                job.segment_len,
+            )
+        };
+
+        for batch_idx in 0..job.batch_len {
+            let source_idx = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
+            let coeff = coeff_for(job, recovery_idx, source_idx);
+            let input = input_segment(job, batch_idx);
+
+            match &coeff.xor_jit_bitplane {
+                Some(kernel) => kernel.multiply_add_chunks(input, output),
+                None => panic!("forced XOR-JIT create backend missing bitplane kernel"),
+            }
+        }
     }
 }
 
@@ -854,27 +1097,7 @@ fn process_batch_add_avx2_xor_jit_x4_outputs(
                     flavor,
                 );
             },
-            _ if xor_jit_fallback_is_error() => {
-                panic!("forced XOR-JIT create backend missing prepared coefficient")
-            }
-            _ => {
-                process_slice_multiply_add(input_a, output_a, &coeff_a0.split);
-                process_slice_multiply_add(input_b, output_a, &coeff_b0.split);
-                process_slice_multiply_add(input_c, output_a, &coeff_c0.split);
-                process_slice_multiply_add(input_d, output_a, &coeff_d0.split);
-                process_slice_multiply_add(input_a, output_b, &coeff_a1.split);
-                process_slice_multiply_add(input_b, output_b, &coeff_b1.split);
-                process_slice_multiply_add(input_c, output_b, &coeff_c1.split);
-                process_slice_multiply_add(input_d, output_b, &coeff_d1.split);
-                process_slice_multiply_add(input_a, output_c, &coeff_a2.split);
-                process_slice_multiply_add(input_b, output_c, &coeff_b2.split);
-                process_slice_multiply_add(input_c, output_c, &coeff_c2.split);
-                process_slice_multiply_add(input_d, output_c, &coeff_d2.split);
-                process_slice_multiply_add(input_a, output_d, &coeff_a3.split);
-                process_slice_multiply_add(input_b, output_d, &coeff_b3.split);
-                process_slice_multiply_add(input_c, output_d, &coeff_c3.split);
-                process_slice_multiply_add(input_d, output_d, &coeff_d3.split);
-            }
+            _ => panic!("XOR-JIT create backend missing prepared coefficient"),
         }
         batch_idx += 4;
     }
@@ -983,19 +1206,7 @@ fn process_batch_add_avx2_xor_jit_x2_outputs(
                     flavor,
                 );
             },
-            _ if xor_jit_fallback_is_error() => {
-                panic!("forced XOR-JIT create backend missing prepared coefficient")
-            }
-            _ => {
-                process_slice_multiply_add(input_a, output_a, &coeff_a0.split);
-                process_slice_multiply_add(input_b, output_a, &coeff_b0.split);
-                process_slice_multiply_add(input_c, output_a, &coeff_c0.split);
-                process_slice_multiply_add(input_d, output_a, &coeff_d0.split);
-                process_slice_multiply_add(input_a, output_b, &coeff_a1.split);
-                process_slice_multiply_add(input_b, output_b, &coeff_b1.split);
-                process_slice_multiply_add(input_c, output_b, &coeff_c1.split);
-                process_slice_multiply_add(input_d, output_b, &coeff_d1.split);
-            }
+            _ => panic!("XOR-JIT create backend missing prepared coefficient"),
         }
         batch_idx += 4;
     }
@@ -1034,15 +1245,7 @@ fn process_batch_add_avx2_xor_jit_x2_outputs(
                     flavor,
                 );
             },
-            _ if xor_jit_fallback_is_error() => {
-                panic!("forced XOR-JIT create backend missing prepared coefficient")
-            }
-            _ => {
-                process_slice_multiply_add(input_a, output_a, &coeff_a0.split);
-                process_slice_multiply_add(input_b, output_a, &coeff_b0.split);
-                process_slice_multiply_add(input_a, output_b, &coeff_a1.split);
-                process_slice_multiply_add(input_b, output_b, &coeff_b1.split);
-            }
+            _ => panic!("XOR-JIT create backend missing prepared coefficient"),
         }
         batch_idx += 2;
     }
@@ -1057,13 +1260,7 @@ fn process_batch_add_avx2_xor_jit_x2_outputs(
                 process_slice_multiply_add_xor_jit(input, output_a, prepared_a, flavor);
                 process_slice_multiply_add_xor_jit(input, output_b, prepared_b, flavor);
             },
-            _ if xor_jit_fallback_is_error() => {
-                panic!("forced XOR-JIT create backend missing prepared coefficient")
-            }
-            _ => {
-                process_slice_multiply_add(input, output_a, &coeff_a.split);
-                process_slice_multiply_add(input, output_b, &coeff_b.split);
-            }
+            _ => panic!("XOR-JIT create backend missing prepared coefficient"),
         }
         batch_idx += 1;
     }
@@ -1103,15 +1300,7 @@ fn process_batch_add_avx2_xor_jit(
                     prepared_d, output, flavor,
                 );
             },
-            _ if xor_jit_fallback_is_error() => {
-                panic!("forced XOR-JIT create backend missing prepared coefficient")
-            }
-            _ => {
-                process_slice_multiply_add(input_a, output, &coeff_a.split);
-                process_slice_multiply_add(input_b, output, &coeff_b.split);
-                process_slice_multiply_add(input_c, output, &coeff_c.split);
-                process_slice_multiply_add(input_d, output, &coeff_d.split);
-            }
+            _ => panic!("XOR-JIT create backend missing prepared coefficient"),
         }
         batch_idx += 4;
     }
@@ -1130,13 +1319,7 @@ fn process_batch_add_avx2_xor_jit(
                     input_a, prepared_a, input_b, prepared_b, output, flavor,
                 );
             },
-            _ if xor_jit_fallback_is_error() => {
-                panic!("forced XOR-JIT create backend missing prepared coefficient")
-            }
-            _ => {
-                process_slice_multiply_add(input_a, output, &coeff_a.split);
-                process_slice_multiply_add(input_b, output, &coeff_b.split);
-            }
+            _ => panic!("XOR-JIT create backend missing prepared coefficient"),
         }
         batch_idx += 2;
     }
@@ -1149,10 +1332,7 @@ fn process_batch_add_avx2_xor_jit(
             Some(prepared) => unsafe {
                 process_slice_multiply_add_xor_jit(input, output, prepared, flavor);
             },
-            None if xor_jit_fallback_is_error() => {
-                panic!("forced XOR-JIT create backend missing prepared coefficient")
-            }
-            None => process_slice_multiply_add(input, output, &coeff.split),
+            None => panic!("XOR-JIT create backend missing prepared coefficient"),
         }
         batch_idx += 1;
     }
@@ -1338,6 +1518,20 @@ fn max_compute_jobs(
     )
     .max(AVX2_ALIGNMENT);
     let segment_count = max_chunk_len.max(1).div_ceil(segment_len);
+    #[cfg(target_arch = "x86_64")]
+    if method.xor_jit_flavor().is_some() {
+        if segment_count >= worker_count {
+            return worker_count.min(segment_count).max(1);
+        }
+
+        let segment_groups = segment_count.max(1);
+        let output_groups = (worker_count / segment_groups)
+            .max(1)
+            .min(recovery_count)
+            .max(1);
+        return (segment_groups * output_groups).max(1);
+    }
+
     let output_groups = worker_count.min(recovery_count).max(1);
     (segment_count * output_groups).max(1)
 }
@@ -1347,7 +1541,7 @@ fn align_up(value: usize, alignment: usize) -> usize {
     if value == 0 {
         0
     } else {
-        (value + alignment - 1) & !(alignment - 1)
+        value.div_ceil(alignment) * alignment
     }
 }
 
@@ -1448,6 +1642,26 @@ mod tests {
     }
 
     #[test]
+    fn forced_xor_jit_backend_uses_bitplane_without_legacy_fallback() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("PAR2RS_CREATE_GF16", "xor-jit-port");
+
+        let encoder = RecoveryBlockEncoder::new(1024, 12);
+        let backend = CreateRecoveryBackend::new(encoder.base_values(), 0, 5, 1024, 4);
+        std::env::remove_var("PAR2RS_CREATE_GF16");
+
+        if backend.selected_method() != CreateGf16Method::Avx2XorJitPort {
+            return;
+        }
+
+        assert!(backend.coeffs.iter().all(|coeff| coeff.xor_jit.is_none()));
+        assert!(backend
+            .coeffs
+            .iter()
+            .all(|coeff| coeff.xor_jit_bitplane.is_some()));
+    }
+
+    #[test]
     fn backend_reuses_fixed_transfer_buffers() {
         let encoder = RecoveryBlockEncoder::new(64, 2);
         let mut backend = CreateRecoveryBackend::new(encoder.base_values(), 7, 1, 64, 1);
@@ -1478,5 +1692,13 @@ mod tests {
         let backend = CreateRecoveryBackend::new(encoder.base_values(), 0, 2, 32, 1);
         let blocks = backend.recovery_blocks(96);
         assert!(blocks.iter().all(|(_, bytes)| bytes.capacity() == 96));
+    }
+
+    #[test]
+    fn input_grouping_handles_non_power_of_two_multiple() {
+        assert_eq!(align_up(12, 12), 12);
+        assert_eq!(align_up(13, 12), 24);
+        assert_eq!(input_grouping(256, CreateGf16Method::Avx2XorJitPort), 12);
+        assert_eq!(input_grouping(256, CreateGf16Method::Avx2XorJitClean), 12);
     }
 }
