@@ -8,7 +8,7 @@ pub struct ExecutableBuffer {
     ptr: NonNull<u8>,
     capacity: usize,
     len: usize,
-    executable: bool,
+    protection: Protection,
 }
 
 impl ExecutableBuffer {
@@ -18,7 +18,7 @@ impl ExecutableBuffer {
             ptr: map_writable(capacity)?,
             capacity,
             len: 0,
-            executable: false,
+            protection: Protection::Writable,
         })
     }
 
@@ -30,9 +30,9 @@ impl ExecutableBuffer {
             ));
         }
 
-        if self.executable {
-            protect_writable(self.ptr, self.capacity)?;
-            self.executable = false;
+        if self.protection == Protection::Executable {
+            set_protection(self.ptr, self.capacity, Protection::Writable)?;
+            self.protection = Protection::Writable;
         }
 
         unsafe {
@@ -43,7 +43,7 @@ impl ExecutableBuffer {
     }
 
     pub unsafe fn function<F: Copy>(&self) -> F {
-        debug_assert!(self.executable);
+        debug_assert_eq!(self.protection, Protection::Executable);
         debug_assert!(self.len > 0);
         function_from_ptr(self.ptr)
     }
@@ -53,9 +53,24 @@ impl ExecutableBuffer {
     }
 
     fn make_executable(&mut self) -> io::Result<()> {
-        protect_executable(self.ptr, self.capacity)?;
-        self.executable = true;
+        set_protection(self.ptr, self.capacity, Protection::Executable)?;
+        self.protection = Protection::Executable;
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Protection {
+    Writable,
+    Executable,
+}
+
+impl Protection {
+    const fn flags(self) -> i32 {
+        match self {
+            Self::Writable => libc::PROT_READ | libc::PROT_WRITE,
+            Self::Executable => libc::PROT_READ | libc::PROT_EXEC,
+        }
     }
 }
 
@@ -87,29 +102,9 @@ fn map_writable(capacity: usize) -> io::Result<NonNull<u8>> {
         .ok_or_else(|| io::Error::other("mmap returned null executable buffer"))
 }
 
-fn protect_executable(ptr: NonNull<u8>, capacity: usize) -> io::Result<()> {
-    let result = unsafe {
-        libc::mprotect(
-            ptr.as_ptr().cast::<c_void>(),
-            capacity,
-            libc::PROT_READ | libc::PROT_EXEC,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-fn protect_writable(ptr: NonNull<u8>, capacity: usize) -> io::Result<()> {
-    let result = unsafe {
-        libc::mprotect(
-            ptr.as_ptr().cast::<c_void>(),
-            capacity,
-            libc::PROT_READ | libc::PROT_WRITE,
-        )
-    };
+fn set_protection(ptr: NonNull<u8>, capacity: usize, protection: Protection) -> io::Result<()> {
+    let result =
+        unsafe { libc::mprotect(ptr.as_ptr().cast::<c_void>(), capacity, protection.flags()) };
     if result == 0 {
         Ok(())
     } else {
