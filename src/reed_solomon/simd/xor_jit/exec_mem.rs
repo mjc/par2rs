@@ -31,10 +31,8 @@ impl ExecutableBuffer {
         }
 
         if self.executable {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "executable buffer has already been sealed",
-            ));
+            protect_writable(self.ptr, self.capacity)?;
+            self.executable = false;
         }
 
         unsafe {
@@ -95,6 +93,21 @@ fn protect_executable(ptr: NonNull<u8>, capacity: usize) -> io::Result<()> {
             ptr.as_ptr().cast::<c_void>(),
             capacity,
             libc::PROT_READ | libc::PROT_EXEC,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn protect_writable(ptr: NonNull<u8>, capacity: usize) -> io::Result<()> {
+    let result = unsafe {
+        libc::mprotect(
+            ptr.as_ptr().cast::<c_void>(),
+            capacity,
+            libc::PROT_READ | libc::PROT_WRITE,
         )
     };
     if result == 0 {

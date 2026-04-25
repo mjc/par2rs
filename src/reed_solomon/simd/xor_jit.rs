@@ -859,6 +859,21 @@ mod tests {
     }
 
     #[test]
+    fn executable_buffer_can_be_reused_for_new_code() {
+        let mut code = exec_mem::ExecutableBuffer::new(16).expect("executable buffer");
+
+        code.write(&encoder::Program::new().mov_eax_imm32(7).ret().finish())
+            .expect("write first generated code");
+        let function: extern "sysv64" fn() -> u32 = unsafe { code.function() };
+        assert_eq!(function(), 7);
+
+        code.write(&encoder::Program::new().mov_eax_imm32(11).ret().finish())
+            .expect("rewrite generated code");
+        let function: extern "sysv64" fn() -> u32 = unsafe { code.function() };
+        assert_eq!(function(), 11);
+    }
+
+    #[test]
     fn generated_avx2_lane_xor_updates_destination() {
         if !is_x86_feature_detected!("avx2") {
             return;
