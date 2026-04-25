@@ -33,7 +33,7 @@ BENCHMARK_TOOLS=(
 )
 
 # label:file_count:file_size_mib:block_size_bytes
-DEFAULT_CASES="single_16m:1:16:262144,single_128m:1:128:1048576,multi_128m:32:4:262144"
+DEFAULT_CASES="single_256m:1:256:1048576,multi_1g:64:16:1048576,single_5g:1:5120:1048576"
 CASES="${CASES:-$DEFAULT_CASES}"
 
 usage() {
@@ -61,8 +61,8 @@ Environment:
   KEEP_WORK=1        keep generated benchmark work directory
 
 Example:
-  nix develop --command env ITERATIONS=40 THREADS=16 \\
-    CASES='single_256m:1:256:1048576,multi_1g:64:16:1048576' \\
+  nix develop --command env ITERATIONS=10 THREADS=16 PROFILE_CASE=single_5g \\
+    CASES='single_256m:1:256:1048576,multi_1g:64:16:1048576,single_5g:1:5120:1048576' \\
     scripts/benchmark_create_perf.sh
 EOF
 }

@@ -13,8 +13,10 @@ use crate::reed_solomon::simd::{
     detect_simd_support, prepare_avx2_coeff, process_slice_multiply_add_prepared_avx2,
     process_slice_multiply_add_xor_jit, process_slices_multiply_add_prepared_avx2_x2,
     process_slices_multiply_add_prepared_avx2_x4, process_slices_multiply_add_xor_jit_x2,
-    process_slices_multiply_add_xor_jit_x4, Avx2PreparedCoeff, SimdLevel, XorJitFlavor,
-    XorJitPreparedCoeff,
+    process_slices_multiply_add_xor_jit_x4,
+    process_slices_multiply_add_xor_jit_x4_inputs_x2_outputs,
+    process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs, Avx2PreparedCoeff, SimdLevel,
+    XorJitFlavor, XorJitPreparedCoeff,
 };
 
 const DEFAULT_INPUT_GROUPING: usize = 12;
@@ -74,14 +76,14 @@ impl CreateGf16Method {
                 #[cfg(target_arch = "x86_64")]
                 {
                     if matches!(detect_simd_support(), SimdLevel::Avx2)
-                        && is_x86_feature_detected!("pclmulqdq")
+                        && is_x86_feature_detected!("vpclmulqdq")
                     {
                         return self;
                     }
                 }
                 if xor_jit_fallback_is_error() {
                     panic!(
-                        "forced XOR-JIT create backend requires x86_64 AVX2 and PCLMULQDQ support"
+                        "forced XOR-JIT create backend requires x86_64 AVX2 and VPCLMULQDQ support"
                     );
                 }
                 Self::Scalar
@@ -93,10 +95,11 @@ impl CreateGf16Method {
     #[inline]
     fn ideal_input_multiple(self) -> usize {
         match self {
-            Self::Auto
-            | Self::Avx2PshufbPrepared
-            | Self::Avx2XorJitPort
-            | Self::Avx2XorJitClean => 4,
+            Self::Auto | Self::Avx2PshufbPrepared => 4,
+            // Match par2cmdline-turbo's default CPU controller target: round
+            // a 12-input staging batch to the method's ideal multiple. AVX2
+            // XOR-JIT has an ideal multiple of 1, so turbo stages 12 inputs.
+            Self::Avx2XorJitPort | Self::Avx2XorJitClean => 12,
             Self::Scalar => 1,
         }
     }
@@ -104,10 +107,11 @@ impl CreateGf16Method {
     #[inline]
     fn ideal_segment_len(self) -> usize {
         match self {
-            Self::Auto
-            | Self::Avx2PshufbPrepared
-            | Self::Avx2XorJitPort
-            | Self::Avx2XorJitClean => CREATE_SEGMENT_SIZE,
+            Self::Auto | Self::Avx2PshufbPrepared => CREATE_SEGMENT_SIZE,
+            // Turbo's AVX2 XOR-JIT method reports a 128KiB ideal chunk. Keep
+            // the port/clean segmentation aligned with that until the full
+            // transformed XOR-JIT kernel is ported.
+            Self::Avx2XorJitPort | Self::Avx2XorJitClean => 128 * 1024,
             Self::Scalar => CREATE_SEGMENT_SIZE / 2,
         }
     }
@@ -601,6 +605,12 @@ fn worker_loop(shared: Arc<WorkerShared>) {
 }
 
 fn process_compute_job(job: ComputeJob) {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(flavor) = job.method.xor_jit_flavor() {
+        process_compute_job_xor_jit(job, flavor);
+        return;
+    }
+
     for recovery_idx in job.output_start..job.output_end {
         let output_start = recovery_idx * job.aligned_chunk_len + job.segment_start;
         let output = unsafe {
@@ -614,12 +624,6 @@ fn process_compute_job(job: ComputeJob) {
         #[cfg(target_arch = "x86_64")]
         if matches!(job.method, CreateGf16Method::Avx2PshufbPrepared) {
             process_batch_add_avx2_pshufb(job, recovery_idx, output);
-            continue;
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        if let Some(flavor) = job.method.xor_jit_flavor() {
-            process_batch_add_avx2_xor_jit(job, recovery_idx, output, flavor);
             continue;
         }
 
@@ -641,6 +645,411 @@ fn process_compute_job(job: ComputeJob) {
             };
             process_slice_multiply_add(input, output, &coeff.split);
         }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn process_compute_job_xor_jit(job: ComputeJob, flavor: XorJitFlavor) {
+    let mut recovery_idx = job.output_start;
+    while recovery_idx + 3 < job.output_end {
+        let output_a_start = recovery_idx * job.aligned_chunk_len + job.segment_start;
+        let output_b_start = (recovery_idx + 1) * job.aligned_chunk_len + job.segment_start;
+        let output_c_start = (recovery_idx + 2) * job.aligned_chunk_len + job.segment_start;
+        let output_d_start = (recovery_idx + 3) * job.aligned_chunk_len + job.segment_start;
+        let output_a = unsafe {
+            std::slice::from_raw_parts_mut(
+                (job.output_base as *mut u8).add(output_a_start),
+                job.segment_len,
+            )
+        };
+        let output_b = unsafe {
+            std::slice::from_raw_parts_mut(
+                (job.output_base as *mut u8).add(output_b_start),
+                job.segment_len,
+            )
+        };
+        let output_c = unsafe {
+            std::slice::from_raw_parts_mut(
+                (job.output_base as *mut u8).add(output_c_start),
+                job.segment_len,
+            )
+        };
+        let output_d = unsafe {
+            std::slice::from_raw_parts_mut(
+                (job.output_base as *mut u8).add(output_d_start),
+                job.segment_len,
+            )
+        };
+        process_batch_add_avx2_xor_jit_x4_outputs(
+            job,
+            recovery_idx,
+            output_a,
+            recovery_idx + 1,
+            output_b,
+            recovery_idx + 2,
+            output_c,
+            recovery_idx + 3,
+            output_d,
+            flavor,
+        );
+        recovery_idx += 4;
+    }
+
+    while recovery_idx + 1 < job.output_end {
+        let output_a_start = recovery_idx * job.aligned_chunk_len + job.segment_start;
+        let output_b_start = (recovery_idx + 1) * job.aligned_chunk_len + job.segment_start;
+        let output_a = unsafe {
+            std::slice::from_raw_parts_mut(
+                (job.output_base as *mut u8).add(output_a_start),
+                job.segment_len,
+            )
+        };
+        let output_b = unsafe {
+            std::slice::from_raw_parts_mut(
+                (job.output_base as *mut u8).add(output_b_start),
+                job.segment_len,
+            )
+        };
+        process_batch_add_avx2_xor_jit_x2_outputs(
+            job,
+            recovery_idx,
+            output_a,
+            recovery_idx + 1,
+            output_b,
+            flavor,
+        );
+        recovery_idx += 2;
+    }
+
+    if recovery_idx < job.output_end {
+        let output_start = recovery_idx * job.aligned_chunk_len + job.segment_start;
+        let output = unsafe {
+            std::slice::from_raw_parts_mut(
+                (job.output_base as *mut u8).add(output_start),
+                job.segment_len,
+            )
+        };
+        process_batch_add_avx2_xor_jit(job, recovery_idx, output, flavor);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn process_batch_add_avx2_xor_jit_x4_outputs(
+    job: ComputeJob,
+    recovery_a: usize,
+    output_a: &mut [u8],
+    recovery_b: usize,
+    output_b: &mut [u8],
+    recovery_c: usize,
+    output_c: &mut [u8],
+    recovery_d: usize,
+    output_d: &mut [u8],
+    flavor: XorJitFlavor,
+) {
+    let mut batch_idx = 0;
+    while batch_idx + 3 < job.batch_len {
+        let source_a = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
+        let source_b = unsafe { *(job.source_indices as *const usize).add(batch_idx + 1) };
+        let source_c = unsafe { *(job.source_indices as *const usize).add(batch_idx + 2) };
+        let source_d = unsafe { *(job.source_indices as *const usize).add(batch_idx + 3) };
+        let coeff_a0 = coeff_for(job, recovery_a, source_a);
+        let coeff_b0 = coeff_for(job, recovery_a, source_b);
+        let coeff_c0 = coeff_for(job, recovery_a, source_c);
+        let coeff_d0 = coeff_for(job, recovery_a, source_d);
+        let coeff_a1 = coeff_for(job, recovery_b, source_a);
+        let coeff_b1 = coeff_for(job, recovery_b, source_b);
+        let coeff_c1 = coeff_for(job, recovery_b, source_c);
+        let coeff_d1 = coeff_for(job, recovery_b, source_d);
+        let coeff_a2 = coeff_for(job, recovery_c, source_a);
+        let coeff_b2 = coeff_for(job, recovery_c, source_b);
+        let coeff_c2 = coeff_for(job, recovery_c, source_c);
+        let coeff_d2 = coeff_for(job, recovery_c, source_d);
+        let coeff_a3 = coeff_for(job, recovery_d, source_a);
+        let coeff_b3 = coeff_for(job, recovery_d, source_b);
+        let coeff_c3 = coeff_for(job, recovery_d, source_c);
+        let coeff_d3 = coeff_for(job, recovery_d, source_d);
+        let input_a = input_segment(job, batch_idx);
+        let input_b = input_segment(job, batch_idx + 1);
+        let input_c = input_segment(job, batch_idx + 2);
+        let input_d = input_segment(job, batch_idx + 3);
+
+        match (
+            &coeff_a0.xor_jit,
+            &coeff_b0.xor_jit,
+            &coeff_c0.xor_jit,
+            &coeff_d0.xor_jit,
+            &coeff_a1.xor_jit,
+            &coeff_b1.xor_jit,
+            &coeff_c1.xor_jit,
+            &coeff_d1.xor_jit,
+            &coeff_a2.xor_jit,
+            &coeff_b2.xor_jit,
+            &coeff_c2.xor_jit,
+            &coeff_d2.xor_jit,
+            &coeff_a3.xor_jit,
+            &coeff_b3.xor_jit,
+            &coeff_c3.xor_jit,
+            &coeff_d3.xor_jit,
+        ) {
+            (
+                Some(prepared_a0),
+                Some(prepared_b0),
+                Some(prepared_c0),
+                Some(prepared_d0),
+                Some(prepared_a1),
+                Some(prepared_b1),
+                Some(prepared_c1),
+                Some(prepared_d1),
+                Some(prepared_a2),
+                Some(prepared_b2),
+                Some(prepared_c2),
+                Some(prepared_d2),
+                Some(prepared_a3),
+                Some(prepared_b3),
+                Some(prepared_c3),
+                Some(prepared_d3),
+            ) => unsafe {
+                process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs(
+                    input_a,
+                    input_b,
+                    input_c,
+                    input_d,
+                    prepared_a0,
+                    prepared_b0,
+                    prepared_c0,
+                    prepared_d0,
+                    output_a,
+                    prepared_a1,
+                    prepared_b1,
+                    prepared_c1,
+                    prepared_d1,
+                    output_b,
+                    prepared_a2,
+                    prepared_b2,
+                    prepared_c2,
+                    prepared_d2,
+                    output_c,
+                    prepared_a3,
+                    prepared_b3,
+                    prepared_c3,
+                    prepared_d3,
+                    output_d,
+                    flavor,
+                );
+            },
+            _ if xor_jit_fallback_is_error() => {
+                panic!("forced XOR-JIT create backend missing prepared coefficient")
+            }
+            _ => {
+                process_slice_multiply_add(input_a, output_a, &coeff_a0.split);
+                process_slice_multiply_add(input_b, output_a, &coeff_b0.split);
+                process_slice_multiply_add(input_c, output_a, &coeff_c0.split);
+                process_slice_multiply_add(input_d, output_a, &coeff_d0.split);
+                process_slice_multiply_add(input_a, output_b, &coeff_a1.split);
+                process_slice_multiply_add(input_b, output_b, &coeff_b1.split);
+                process_slice_multiply_add(input_c, output_b, &coeff_c1.split);
+                process_slice_multiply_add(input_d, output_b, &coeff_d1.split);
+                process_slice_multiply_add(input_a, output_c, &coeff_a2.split);
+                process_slice_multiply_add(input_b, output_c, &coeff_b2.split);
+                process_slice_multiply_add(input_c, output_c, &coeff_c2.split);
+                process_slice_multiply_add(input_d, output_c, &coeff_d2.split);
+                process_slice_multiply_add(input_a, output_d, &coeff_a3.split);
+                process_slice_multiply_add(input_b, output_d, &coeff_b3.split);
+                process_slice_multiply_add(input_c, output_d, &coeff_c3.split);
+                process_slice_multiply_add(input_d, output_d, &coeff_d3.split);
+            }
+        }
+        batch_idx += 4;
+    }
+
+    if batch_idx < job.batch_len {
+        process_batch_add_avx2_xor_jit_x2_outputs(
+            ComputeJob {
+                batch_len: job.batch_len - batch_idx,
+                input_base: unsafe {
+                    (job.input_base as *const u8).add(batch_idx * job.aligned_chunk_len) as usize
+                },
+                source_indices: unsafe {
+                    (job.source_indices as *const usize).add(batch_idx) as usize
+                },
+                ..job
+            },
+            recovery_a,
+            output_a,
+            recovery_b,
+            output_b,
+            flavor,
+        );
+        process_batch_add_avx2_xor_jit_x2_outputs(
+            ComputeJob {
+                batch_len: job.batch_len - batch_idx,
+                input_base: unsafe {
+                    (job.input_base as *const u8).add(batch_idx * job.aligned_chunk_len) as usize
+                },
+                source_indices: unsafe {
+                    (job.source_indices as *const usize).add(batch_idx) as usize
+                },
+                ..job
+            },
+            recovery_c,
+            output_c,
+            recovery_d,
+            output_d,
+            flavor,
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn process_batch_add_avx2_xor_jit_x2_outputs(
+    job: ComputeJob,
+    recovery_a: usize,
+    output_a: &mut [u8],
+    recovery_b: usize,
+    output_b: &mut [u8],
+    flavor: XorJitFlavor,
+) {
+    let mut batch_idx = 0;
+    while batch_idx + 3 < job.batch_len {
+        let source_a = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
+        let source_b = unsafe { *(job.source_indices as *const usize).add(batch_idx + 1) };
+        let source_c = unsafe { *(job.source_indices as *const usize).add(batch_idx + 2) };
+        let source_d = unsafe { *(job.source_indices as *const usize).add(batch_idx + 3) };
+        let coeff_a0 = coeff_for(job, recovery_a, source_a);
+        let coeff_b0 = coeff_for(job, recovery_a, source_b);
+        let coeff_c0 = coeff_for(job, recovery_a, source_c);
+        let coeff_d0 = coeff_for(job, recovery_a, source_d);
+        let coeff_a1 = coeff_for(job, recovery_b, source_a);
+        let coeff_b1 = coeff_for(job, recovery_b, source_b);
+        let coeff_c1 = coeff_for(job, recovery_b, source_c);
+        let coeff_d1 = coeff_for(job, recovery_b, source_d);
+        let input_a = input_segment(job, batch_idx);
+        let input_b = input_segment(job, batch_idx + 1);
+        let input_c = input_segment(job, batch_idx + 2);
+        let input_d = input_segment(job, batch_idx + 3);
+
+        match (
+            &coeff_a0.xor_jit,
+            &coeff_b0.xor_jit,
+            &coeff_c0.xor_jit,
+            &coeff_d0.xor_jit,
+            &coeff_a1.xor_jit,
+            &coeff_b1.xor_jit,
+            &coeff_c1.xor_jit,
+            &coeff_d1.xor_jit,
+        ) {
+            (
+                Some(prepared_a0),
+                Some(prepared_b0),
+                Some(prepared_c0),
+                Some(prepared_d0),
+                Some(prepared_a1),
+                Some(prepared_b1),
+                Some(prepared_c1),
+                Some(prepared_d1),
+            ) => unsafe {
+                process_slices_multiply_add_xor_jit_x4_inputs_x2_outputs(
+                    input_a,
+                    input_b,
+                    input_c,
+                    input_d,
+                    prepared_a0,
+                    prepared_b0,
+                    prepared_c0,
+                    prepared_d0,
+                    output_a,
+                    prepared_a1,
+                    prepared_b1,
+                    prepared_c1,
+                    prepared_d1,
+                    output_b,
+                    flavor,
+                );
+            },
+            _ if xor_jit_fallback_is_error() => {
+                panic!("forced XOR-JIT create backend missing prepared coefficient")
+            }
+            _ => {
+                process_slice_multiply_add(input_a, output_a, &coeff_a0.split);
+                process_slice_multiply_add(input_b, output_a, &coeff_b0.split);
+                process_slice_multiply_add(input_c, output_a, &coeff_c0.split);
+                process_slice_multiply_add(input_d, output_a, &coeff_d0.split);
+                process_slice_multiply_add(input_a, output_b, &coeff_a1.split);
+                process_slice_multiply_add(input_b, output_b, &coeff_b1.split);
+                process_slice_multiply_add(input_c, output_b, &coeff_c1.split);
+                process_slice_multiply_add(input_d, output_b, &coeff_d1.split);
+            }
+        }
+        batch_idx += 4;
+    }
+
+    while batch_idx + 1 < job.batch_len {
+        let source_a = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
+        let source_b = unsafe { *(job.source_indices as *const usize).add(batch_idx + 1) };
+        let coeff_a0 = coeff_for(job, recovery_a, source_a);
+        let coeff_b0 = coeff_for(job, recovery_a, source_b);
+        let coeff_a1 = coeff_for(job, recovery_b, source_a);
+        let coeff_b1 = coeff_for(job, recovery_b, source_b);
+        let input_a = input_segment(job, batch_idx);
+        let input_b = input_segment(job, batch_idx + 1);
+
+        match (
+            &coeff_a0.xor_jit,
+            &coeff_b0.xor_jit,
+            &coeff_a1.xor_jit,
+            &coeff_b1.xor_jit,
+        ) {
+            (Some(prepared_a0), Some(prepared_b0), Some(prepared_a1), Some(prepared_b1)) => unsafe {
+                process_slices_multiply_add_xor_jit_x2(
+                    input_a,
+                    prepared_a0,
+                    input_b,
+                    prepared_b0,
+                    output_a,
+                    flavor,
+                );
+                process_slices_multiply_add_xor_jit_x2(
+                    input_a,
+                    prepared_a1,
+                    input_b,
+                    prepared_b1,
+                    output_b,
+                    flavor,
+                );
+            },
+            _ if xor_jit_fallback_is_error() => {
+                panic!("forced XOR-JIT create backend missing prepared coefficient")
+            }
+            _ => {
+                process_slice_multiply_add(input_a, output_a, &coeff_a0.split);
+                process_slice_multiply_add(input_b, output_a, &coeff_b0.split);
+                process_slice_multiply_add(input_a, output_b, &coeff_a1.split);
+                process_slice_multiply_add(input_b, output_b, &coeff_b1.split);
+            }
+        }
+        batch_idx += 2;
+    }
+
+    while batch_idx < job.batch_len {
+        let source_idx = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
+        let coeff_a = coeff_for(job, recovery_a, source_idx);
+        let coeff_b = coeff_for(job, recovery_b, source_idx);
+        let input = input_segment(job, batch_idx);
+        match (&coeff_a.xor_jit, &coeff_b.xor_jit) {
+            (Some(prepared_a), Some(prepared_b)) => unsafe {
+                process_slice_multiply_add_xor_jit(input, output_a, prepared_a, flavor);
+                process_slice_multiply_add_xor_jit(input, output_b, prepared_b, flavor);
+            },
+            _ if xor_jit_fallback_is_error() => {
+                panic!("forced XOR-JIT create backend missing prepared coefficient")
+            }
+            _ => {
+                process_slice_multiply_add(input, output_a, &coeff_a.split);
+                process_slice_multiply_add(input, output_b, &coeff_b.split);
+            }
+        }
+        batch_idx += 1;
     }
 }
 

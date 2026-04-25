@@ -149,19 +149,13 @@ unsafe fn multiply_vec_clean(input: __m256i, plan: &XorJitCleanPlan) -> __m256i 
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2", enable = "pclmulqdq")]
+#[target_feature(enable = "avx2", enable = "vpclmulqdq")]
 unsafe fn clmul_256<const CONTROL: i32>(left: __m256i, right: __m256i) -> __m256i {
-    let left_lo = _mm256_castsi256_si128(left);
-    let left_hi = _mm256_extracti128_si256(left, 1);
-    let right_lo = _mm256_castsi256_si128(right);
-    let right_hi = _mm256_extracti128_si256(right, 1);
-    let product_lo = _mm_clmulepi64_si128(left_lo, right_lo, CONTROL);
-    let product_hi = _mm_clmulepi64_si128(left_hi, right_hi, CONTROL);
-    _mm256_inserti128_si256(_mm256_castsi128_si256(product_lo), product_hi, 1)
+    _mm256_clmulepi64_epi128::<CONTROL>(left, right)
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2", enable = "pclmulqdq")]
+#[target_feature(enable = "avx2", enable = "vpclmulqdq")]
 unsafe fn multiply_vec_clmul(
     input: __m256i,
     coeff: &XorJitCoeffVectors,
@@ -237,7 +231,7 @@ fn multiply_add_tail(input: &[u8], output: &mut [u8], coefficient: u16) {
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2", enable = "pclmulqdq")]
+#[target_feature(enable = "avx2", enable = "vpclmulqdq")]
 unsafe fn multiply_vec(
     input: __m256i,
     coeff: &XorJitCoeffVectors,
@@ -251,27 +245,19 @@ unsafe fn multiply_vec(
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2", enable = "pclmulqdq")]
-unsafe fn load_vec(ptr: *const u8, pos: usize, aligned: bool) -> __m256i {
-    if aligned {
-        _mm256_load_si256(ptr.add(pos) as *const __m256i)
-    } else {
-        _mm256_loadu_si256(ptr.add(pos) as *const __m256i)
-    }
+#[target_feature(enable = "avx2", enable = "vpclmulqdq")]
+unsafe fn load_vec(ptr: *const u8, pos: usize) -> __m256i {
+    _mm256_loadu_si256(ptr.add(pos) as *const __m256i)
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2", enable = "pclmulqdq")]
-unsafe fn store_vec(ptr: *mut u8, pos: usize, value: __m256i, aligned: bool) {
-    if aligned {
-        _mm256_store_si256(ptr.add(pos) as *mut __m256i, value);
-    } else {
-        _mm256_storeu_si256(ptr.add(pos) as *mut __m256i, value);
-    }
+#[target_feature(enable = "avx2", enable = "vpclmulqdq")]
+unsafe fn store_vec(ptr: *mut u8, pos: usize, value: __m256i) {
+    _mm256_storeu_si256(ptr.add(pos) as *mut __m256i, value);
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2", enable = "pclmulqdq")]
+#[target_feature(enable = "avx2", enable = "vpclmulqdq")]
 pub unsafe fn process_slice_multiply_add_xor_jit(
     input: &[u8],
     output: &mut [u8],
@@ -284,55 +270,49 @@ pub unsafe fn process_slice_multiply_add_xor_jit(
     let avx_end = len / 32 * 32;
     let input_ptr = input.as_ptr();
     let output_ptr = output.as_mut_ptr();
-    let aligned =
-        (input_ptr as usize).is_multiple_of(32) && (output_ptr as usize).is_multiple_of(32);
 
     let mut pos = 0;
     while pos + 128 <= avx_end {
-        let in0 = load_vec(input_ptr, pos, aligned);
-        let out0 = load_vec(output_ptr, pos, aligned);
+        let in0 = load_vec(input_ptr, pos);
+        let out0 = load_vec(output_ptr, pos);
         store_vec(
             output_ptr,
             pos,
             _mm256_xor_si256(out0, multiply_vec(in0, &coeff, &constants, flavor)),
-            aligned,
         );
         pos += 32;
 
-        let in1 = load_vec(input_ptr, pos, aligned);
-        let out1 = load_vec(output_ptr, pos, aligned);
+        let in1 = load_vec(input_ptr, pos);
+        let out1 = load_vec(output_ptr, pos);
         store_vec(
             output_ptr,
             pos,
             _mm256_xor_si256(out1, multiply_vec(in1, &coeff, &constants, flavor)),
-            aligned,
         );
         pos += 32;
 
-        let in2 = load_vec(input_ptr, pos, aligned);
-        let out2 = load_vec(output_ptr, pos, aligned);
+        let in2 = load_vec(input_ptr, pos);
+        let out2 = load_vec(output_ptr, pos);
         store_vec(
             output_ptr,
             pos,
             _mm256_xor_si256(out2, multiply_vec(in2, &coeff, &constants, flavor)),
-            aligned,
         );
         pos += 32;
 
-        let in3 = load_vec(input_ptr, pos, aligned);
-        let out3 = load_vec(output_ptr, pos, aligned);
+        let in3 = load_vec(input_ptr, pos);
+        let out3 = load_vec(output_ptr, pos);
         store_vec(
             output_ptr,
             pos,
             _mm256_xor_si256(out3, multiply_vec(in3, &coeff, &constants, flavor)),
-            aligned,
         );
         pos += 32;
     }
 
     while pos < avx_end {
-        let input_vec = load_vec(input_ptr, pos, aligned);
-        let output_vec = load_vec(output_ptr, pos, aligned);
+        let input_vec = load_vec(input_ptr, pos);
+        let output_vec = load_vec(output_ptr, pos);
         store_vec(
             output_ptr,
             pos,
@@ -340,7 +320,6 @@ pub unsafe fn process_slice_multiply_add_xor_jit(
                 output_vec,
                 multiply_vec(input_vec, &coeff, &constants, flavor),
             ),
-            aligned,
         );
         pos += 32;
     }
@@ -355,7 +334,7 @@ pub unsafe fn process_slice_multiply_add_xor_jit(
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2", enable = "pclmulqdq")]
+#[target_feature(enable = "avx2", enable = "vpclmulqdq")]
 pub unsafe fn process_slices_multiply_add_xor_jit_x2(
     input_a: &[u8],
     prepared_a: &XorJitPreparedCoeff,
@@ -372,33 +351,15 @@ pub unsafe fn process_slices_multiply_add_xor_jit_x2(
     let input_a_ptr = input_a.as_ptr();
     let input_b_ptr = input_b.as_ptr();
     let output_ptr = output.as_mut_ptr();
-    let aligned = (input_a_ptr as usize).is_multiple_of(32)
-        && (input_b_ptr as usize).is_multiple_of(32)
-        && (output_ptr as usize).is_multiple_of(32);
 
     let mut pos = 0;
     while pos < avx_end {
         let result = _mm256_xor_si256(
-            multiply_vec(
-                load_vec(input_a_ptr, pos, aligned),
-                &coeff_a,
-                &constants,
-                flavor,
-            ),
-            multiply_vec(
-                load_vec(input_b_ptr, pos, aligned),
-                &coeff_b,
-                &constants,
-                flavor,
-            ),
+            multiply_vec(load_vec(input_a_ptr, pos), &coeff_a, &constants, flavor),
+            multiply_vec(load_vec(input_b_ptr, pos), &coeff_b, &constants, flavor),
         );
-        let output_vec = load_vec(output_ptr, pos, aligned);
-        store_vec(
-            output_ptr,
-            pos,
-            _mm256_xor_si256(output_vec, result),
-            aligned,
-        );
+        let output_vec = load_vec(output_ptr, pos);
+        store_vec(output_ptr, pos, _mm256_xor_si256(output_vec, result));
         pos += 32;
     }
 
@@ -417,7 +378,7 @@ pub unsafe fn process_slices_multiply_add_xor_jit_x2(
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2", enable = "pclmulqdq")]
+#[target_feature(enable = "avx2", enable = "vpclmulqdq")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn process_slices_multiply_add_xor_jit_x4(
     input_a: &[u8],
@@ -448,48 +409,22 @@ pub unsafe fn process_slices_multiply_add_xor_jit_x4(
     let input_c_ptr = input_c.as_ptr();
     let input_d_ptr = input_d.as_ptr();
     let output_ptr = output.as_mut_ptr();
-    let aligned = (input_a_ptr as usize).is_multiple_of(32)
-        && (input_b_ptr as usize).is_multiple_of(32)
-        && (input_c_ptr as usize).is_multiple_of(32)
-        && (input_d_ptr as usize).is_multiple_of(32)
-        && (output_ptr as usize).is_multiple_of(32);
 
     let mut pos = 0;
     while pos < avx_end {
         let ab = _mm256_xor_si256(
-            multiply_vec(
-                load_vec(input_a_ptr, pos, aligned),
-                &coeff_a,
-                &constants,
-                flavor,
-            ),
-            multiply_vec(
-                load_vec(input_b_ptr, pos, aligned),
-                &coeff_b,
-                &constants,
-                flavor,
-            ),
+            multiply_vec(load_vec(input_a_ptr, pos), &coeff_a, &constants, flavor),
+            multiply_vec(load_vec(input_b_ptr, pos), &coeff_b, &constants, flavor),
         );
         let cd = _mm256_xor_si256(
-            multiply_vec(
-                load_vec(input_c_ptr, pos, aligned),
-                &coeff_c,
-                &constants,
-                flavor,
-            ),
-            multiply_vec(
-                load_vec(input_d_ptr, pos, aligned),
-                &coeff_d,
-                &constants,
-                flavor,
-            ),
+            multiply_vec(load_vec(input_c_ptr, pos), &coeff_c, &constants, flavor),
+            multiply_vec(load_vec(input_d_ptr, pos), &coeff_d, &constants, flavor),
         );
-        let output_vec = load_vec(output_ptr, pos, aligned);
+        let output_vec = load_vec(output_ptr, pos);
         store_vec(
             output_ptr,
             pos,
             _mm256_xor_si256(output_vec, _mm256_xor_si256(ab, cd)),
-            aligned,
         );
         pos += 32;
     }
@@ -515,6 +450,343 @@ pub unsafe fn process_slices_multiply_add_xor_jit_x4(
             &mut output[pos..len],
             prepared_d.coefficient,
         );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "vpclmulqdq")]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn process_slices_multiply_add_xor_jit_x4_inputs_x2_outputs(
+    input_a: &[u8],
+    input_b: &[u8],
+    input_c: &[u8],
+    input_d: &[u8],
+    coeff_a0: &XorJitPreparedCoeff,
+    coeff_b0: &XorJitPreparedCoeff,
+    coeff_c0: &XorJitPreparedCoeff,
+    coeff_d0: &XorJitPreparedCoeff,
+    output_0: &mut [u8],
+    coeff_a1: &XorJitPreparedCoeff,
+    coeff_b1: &XorJitPreparedCoeff,
+    coeff_c1: &XorJitPreparedCoeff,
+    coeff_d1: &XorJitPreparedCoeff,
+    output_1: &mut [u8],
+    flavor: XorJitFlavor,
+) {
+    let constants = kernel_constants();
+    let coeff_a0_vec = coeff_vectors(coeff_a0, &constants);
+    let coeff_b0_vec = coeff_vectors(coeff_b0, &constants);
+    let coeff_c0_vec = coeff_vectors(coeff_c0, &constants);
+    let coeff_d0_vec = coeff_vectors(coeff_d0, &constants);
+    let coeff_a1_vec = coeff_vectors(coeff_a1, &constants);
+    let coeff_b1_vec = coeff_vectors(coeff_b1, &constants);
+    let coeff_c1_vec = coeff_vectors(coeff_c1, &constants);
+    let coeff_d1_vec = coeff_vectors(coeff_d1, &constants);
+    let len = input_a
+        .len()
+        .min(input_b.len())
+        .min(input_c.len())
+        .min(input_d.len())
+        .min(output_0.len())
+        .min(output_1.len());
+    let avx_end = len / 32 * 32;
+    let input_a_ptr = input_a.as_ptr();
+    let input_b_ptr = input_b.as_ptr();
+    let input_c_ptr = input_c.as_ptr();
+    let input_d_ptr = input_d.as_ptr();
+    let output_0_ptr = output_0.as_mut_ptr();
+    let output_1_ptr = output_1.as_mut_ptr();
+
+    macro_rules! process_vector {
+        ($offset:expr) => {{
+            let offset = $offset;
+            let in_a = load_vec(input_a_ptr, offset);
+            let in_b = load_vec(input_b_ptr, offset);
+            let in_c = load_vec(input_c_ptr, offset);
+            let in_d = load_vec(input_d_ptr, offset);
+
+            let result_0_ab = _mm256_xor_si256(
+                multiply_vec(in_a, &coeff_a0_vec, &constants, flavor),
+                multiply_vec(in_b, &coeff_b0_vec, &constants, flavor),
+            );
+            let result_0_cd = _mm256_xor_si256(
+                multiply_vec(in_c, &coeff_c0_vec, &constants, flavor),
+                multiply_vec(in_d, &coeff_d0_vec, &constants, flavor),
+            );
+            let output_0_vec = load_vec(output_0_ptr, offset);
+            store_vec(
+                output_0_ptr,
+                offset,
+                _mm256_xor_si256(output_0_vec, _mm256_xor_si256(result_0_ab, result_0_cd)),
+            );
+
+            let result_1_ab = _mm256_xor_si256(
+                multiply_vec(in_a, &coeff_a1_vec, &constants, flavor),
+                multiply_vec(in_b, &coeff_b1_vec, &constants, flavor),
+            );
+            let result_1_cd = _mm256_xor_si256(
+                multiply_vec(in_c, &coeff_c1_vec, &constants, flavor),
+                multiply_vec(in_d, &coeff_d1_vec, &constants, flavor),
+            );
+            let output_1_vec = load_vec(output_1_ptr, offset);
+            store_vec(
+                output_1_ptr,
+                offset,
+                _mm256_xor_si256(output_1_vec, _mm256_xor_si256(result_1_ab, result_1_cd)),
+            );
+        }};
+    }
+
+    let mut pos = 0;
+    while pos + 128 <= avx_end {
+        process_vector!(pos);
+        process_vector!(pos + 32);
+        process_vector!(pos + 64);
+        process_vector!(pos + 96);
+        pos += 128;
+    }
+
+    while pos < avx_end {
+        process_vector!(pos);
+        pos += 32;
+    }
+
+    if pos < len {
+        multiply_add_tail(
+            &input_a[pos..len],
+            &mut output_0[pos..len],
+            coeff_a0.coefficient,
+        );
+        multiply_add_tail(
+            &input_b[pos..len],
+            &mut output_0[pos..len],
+            coeff_b0.coefficient,
+        );
+        multiply_add_tail(
+            &input_c[pos..len],
+            &mut output_0[pos..len],
+            coeff_c0.coefficient,
+        );
+        multiply_add_tail(
+            &input_d[pos..len],
+            &mut output_0[pos..len],
+            coeff_d0.coefficient,
+        );
+        multiply_add_tail(
+            &input_a[pos..len],
+            &mut output_1[pos..len],
+            coeff_a1.coefficient,
+        );
+        multiply_add_tail(
+            &input_b[pos..len],
+            &mut output_1[pos..len],
+            coeff_b1.coefficient,
+        );
+        multiply_add_tail(
+            &input_c[pos..len],
+            &mut output_1[pos..len],
+            coeff_c1.coefficient,
+        );
+        multiply_add_tail(
+            &input_d[pos..len],
+            &mut output_1[pos..len],
+            coeff_d1.coefficient,
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "vpclmulqdq")]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs(
+    input_a: &[u8],
+    input_b: &[u8],
+    input_c: &[u8],
+    input_d: &[u8],
+    coeff_a0: &XorJitPreparedCoeff,
+    coeff_b0: &XorJitPreparedCoeff,
+    coeff_c0: &XorJitPreparedCoeff,
+    coeff_d0: &XorJitPreparedCoeff,
+    output_0: &mut [u8],
+    coeff_a1: &XorJitPreparedCoeff,
+    coeff_b1: &XorJitPreparedCoeff,
+    coeff_c1: &XorJitPreparedCoeff,
+    coeff_d1: &XorJitPreparedCoeff,
+    output_1: &mut [u8],
+    coeff_a2: &XorJitPreparedCoeff,
+    coeff_b2: &XorJitPreparedCoeff,
+    coeff_c2: &XorJitPreparedCoeff,
+    coeff_d2: &XorJitPreparedCoeff,
+    output_2: &mut [u8],
+    coeff_a3: &XorJitPreparedCoeff,
+    coeff_b3: &XorJitPreparedCoeff,
+    coeff_c3: &XorJitPreparedCoeff,
+    coeff_d3: &XorJitPreparedCoeff,
+    output_3: &mut [u8],
+    flavor: XorJitFlavor,
+) {
+    let constants = kernel_constants();
+    let coeff_a0_vec = coeff_vectors(coeff_a0, &constants);
+    let coeff_b0_vec = coeff_vectors(coeff_b0, &constants);
+    let coeff_c0_vec = coeff_vectors(coeff_c0, &constants);
+    let coeff_d0_vec = coeff_vectors(coeff_d0, &constants);
+    let coeff_a1_vec = coeff_vectors(coeff_a1, &constants);
+    let coeff_b1_vec = coeff_vectors(coeff_b1, &constants);
+    let coeff_c1_vec = coeff_vectors(coeff_c1, &constants);
+    let coeff_d1_vec = coeff_vectors(coeff_d1, &constants);
+    let coeff_a2_vec = coeff_vectors(coeff_a2, &constants);
+    let coeff_b2_vec = coeff_vectors(coeff_b2, &constants);
+    let coeff_c2_vec = coeff_vectors(coeff_c2, &constants);
+    let coeff_d2_vec = coeff_vectors(coeff_d2, &constants);
+    let coeff_a3_vec = coeff_vectors(coeff_a3, &constants);
+    let coeff_b3_vec = coeff_vectors(coeff_b3, &constants);
+    let coeff_c3_vec = coeff_vectors(coeff_c3, &constants);
+    let coeff_d3_vec = coeff_vectors(coeff_d3, &constants);
+    let len = input_a
+        .len()
+        .min(input_b.len())
+        .min(input_c.len())
+        .min(input_d.len())
+        .min(output_0.len())
+        .min(output_1.len())
+        .min(output_2.len())
+        .min(output_3.len());
+    let avx_end = len / 32 * 32;
+    let input_a_ptr = input_a.as_ptr();
+    let input_b_ptr = input_b.as_ptr();
+    let input_c_ptr = input_c.as_ptr();
+    let input_d_ptr = input_d.as_ptr();
+    let output_0_ptr = output_0.as_mut_ptr();
+    let output_1_ptr = output_1.as_mut_ptr();
+    let output_2_ptr = output_2.as_mut_ptr();
+    let output_3_ptr = output_3.as_mut_ptr();
+
+    macro_rules! accumulate_output {
+        ($offset:expr, $in_a:expr, $in_b:expr, $in_c:expr, $in_d:expr, $out_ptr:expr, $ca:expr, $cb:expr, $cc:expr, $cd:expr) => {{
+            let result_ab = _mm256_xor_si256(
+                multiply_vec($in_a, $ca, &constants, flavor),
+                multiply_vec($in_b, $cb, &constants, flavor),
+            );
+            let result_cd = _mm256_xor_si256(
+                multiply_vec($in_c, $cc, &constants, flavor),
+                multiply_vec($in_d, $cd, &constants, flavor),
+            );
+            let output_vec = load_vec($out_ptr, $offset);
+            store_vec(
+                $out_ptr,
+                $offset,
+                _mm256_xor_si256(output_vec, _mm256_xor_si256(result_ab, result_cd)),
+            );
+        }};
+    }
+
+    macro_rules! process_vector {
+        ($offset:expr) => {{
+            let offset = $offset;
+            let in_a = load_vec(input_a_ptr, offset);
+            let in_b = load_vec(input_b_ptr, offset);
+            let in_c = load_vec(input_c_ptr, offset);
+            let in_d = load_vec(input_d_ptr, offset);
+
+            accumulate_output!(
+                offset,
+                in_a,
+                in_b,
+                in_c,
+                in_d,
+                output_0_ptr,
+                &coeff_a0_vec,
+                &coeff_b0_vec,
+                &coeff_c0_vec,
+                &coeff_d0_vec
+            );
+            accumulate_output!(
+                offset,
+                in_a,
+                in_b,
+                in_c,
+                in_d,
+                output_1_ptr,
+                &coeff_a1_vec,
+                &coeff_b1_vec,
+                &coeff_c1_vec,
+                &coeff_d1_vec
+            );
+            accumulate_output!(
+                offset,
+                in_a,
+                in_b,
+                in_c,
+                in_d,
+                output_2_ptr,
+                &coeff_a2_vec,
+                &coeff_b2_vec,
+                &coeff_c2_vec,
+                &coeff_d2_vec
+            );
+            accumulate_output!(
+                offset,
+                in_a,
+                in_b,
+                in_c,
+                in_d,
+                output_3_ptr,
+                &coeff_a3_vec,
+                &coeff_b3_vec,
+                &coeff_c3_vec,
+                &coeff_d3_vec
+            );
+        }};
+    }
+
+    let mut pos = 0;
+    while pos + 64 <= avx_end {
+        process_vector!(pos);
+        process_vector!(pos + 32);
+        pos += 64;
+    }
+
+    while pos < avx_end {
+        process_vector!(pos);
+        pos += 32;
+    }
+
+    if pos < len {
+        for (output, coeff_a, coeff_b, coeff_c, coeff_d) in [
+            (
+                &mut output_0[pos..len],
+                coeff_a0.coefficient,
+                coeff_b0.coefficient,
+                coeff_c0.coefficient,
+                coeff_d0.coefficient,
+            ),
+            (
+                &mut output_1[pos..len],
+                coeff_a1.coefficient,
+                coeff_b1.coefficient,
+                coeff_c1.coefficient,
+                coeff_d1.coefficient,
+            ),
+            (
+                &mut output_2[pos..len],
+                coeff_a2.coefficient,
+                coeff_b2.coefficient,
+                coeff_c2.coefficient,
+                coeff_d2.coefficient,
+            ),
+            (
+                &mut output_3[pos..len],
+                coeff_a3.coefficient,
+                coeff_b3.coefficient,
+                coeff_c3.coefficient,
+                coeff_d3.coefficient,
+            ),
+        ] {
+            multiply_add_tail(&input_a[pos..len], output, coeff_a);
+            multiply_add_tail(&input_b[pos..len], output, coeff_b);
+            multiply_add_tail(&input_c[pos..len], output, coeff_c);
+            multiply_add_tail(&input_d[pos..len], output, coeff_d);
+        }
     }
 }
 
@@ -544,7 +816,7 @@ mod tests {
 
     #[test]
     fn xor_jit_avx2_matches_table_executor() {
-        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("pclmulqdq") {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("vpclmulqdq") {
             return;
         }
 

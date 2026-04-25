@@ -193,28 +193,29 @@ cargo build --release --bins
 
 ### Create Performance Benchmarking
 
-For create-side comparisons on loaded machines, use the perf-counter benchmark
-rather than wall-clock timing:
+For create-side comparisons, use the perf benchmark harness:
 
 ```bash
 nix develop --command make benchmark-create-perf
 ```
 
-The benchmark compares `par2rs` create against `par2cmdline-turbo` (`par2` by
-default), runs 30 measured iterations per case, reports mean/stddev/CV for
-Linux `perf` counters, and writes a `par2rs` create flamegraph. Results are
-saved under `target/perf-results/create/`.
+The benchmark compares `par2rs` create variants against `par2cmdline-turbo`
+(`par2` by default), runs measured iterations per case, verifies outputs across
+tools, reports wall time plus Linux `perf` counters, and writes a selected
+`par2rs` create flamegraph. Results are saved under
+`target/perf-results/create/`.
 
 Useful overrides:
 
 ```bash
-nix develop --command env ITERATIONS=40 THREADS=16 \
-  CASES='single_256m:1:256:1048576,multi_1g:64:16:1048576' \
+nix develop --command env ITERATIONS=10 THREADS=16 PROFILE_CASE=single_5g \
+  CASES='single_256m:1:256:1048576,multi_1g:64:16:1048576,single_5g:1:5120:1048576' \
   scripts/benchmark_create_perf.sh
 ```
 
-The primary comparison is `par2rs/turbo` instructions. Wall-clock seconds are
-included only as context because they are noisy on a busy system.
+The pass/fail signal is mean wall time: both `par2rs-xor-jit-port` and
+`par2rs-xor-jit-clean` must match or beat `turbo-auto` for every configured
+case. Linux `perf` counters are recorded to explain the wall-time result.
 
 ### Testing
 
