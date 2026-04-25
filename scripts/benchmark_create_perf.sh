@@ -23,6 +23,12 @@ PROFILE_FREQUENCY="${PROFILE_FREQUENCY:-997}"
 PERF_EVENTS="${PERF_EVENTS:-instructions,cycles,branches,branch-misses,cache-references,cache-misses,task-clock,context-switches,cpu-migrations,page-faults}"
 VERIFY_OUTPUTS="${VERIFY_OUTPUTS:-1}"
 VERIFY_REPAIR="${VERIFY_REPAIR:-smoke}"
+BENCHMARK_TOOLS=(
+    par2rs-pshufb
+    par2rs-xor-jit-port
+    par2rs-xor-jit-clean
+    turbo-auto
+)
 
 # label:file_count:file_size_mib:block_size_bytes
 DEFAULT_CASES="single_16m:1:16:262144,single_128m:1:128:1048576,multi_128m:32:4:262144"
@@ -44,6 +50,8 @@ Environment:
   VERIFY_OUTPUTS=0   skip cross-tool verification after each create
   VERIFY_REPAIR=MODE run destructive cross-tool repair validation: smoke, 1, or 0
                      default: $VERIFY_REPAIR
+  Required tools: ${BENCHMARK_TOOLS[*]}
+  Forced JIT runs set PAR2RS_CREATE_XOR_JIT_FALLBACK=error.
   RUN_FLAMEGRAPH=0   skip par2rs perf/inferno flamegraph generation
   PROFILE_FREQUENCY=N perf sampling frequency for flamegraph (default: $PROFILE_FREQUENCY)
   KEEP_WORK=1        keep generated benchmark work directory
@@ -206,8 +214,16 @@ run_create() {
                 env_prefix=(env PAR2RS_CREATE_GF16=pshufb)
                 ;;
             par2rs-xor-jit)
-                selected_method="xor-jit"
-                env_prefix=(env PAR2RS_CREATE_GF16=xor-jit)
+                selected_method="xor-jit-port"
+                env_prefix=(env PAR2RS_CREATE_GF16=xor-jit-port PAR2RS_CREATE_XOR_JIT_FALLBACK=error)
+                ;;
+            par2rs-xor-jit-port)
+                selected_method="xor-jit-port"
+                env_prefix=(env PAR2RS_CREATE_GF16=xor-jit-port PAR2RS_CREATE_XOR_JIT_FALLBACK=error)
+                ;;
+            par2rs-xor-jit-clean)
+                selected_method="xor-jit-clean"
+                env_prefix=(env PAR2RS_CREATE_GF16=xor-jit-clean PAR2RS_CREATE_XOR_JIT_FALLBACK=error)
                 ;;
             *)
                 echo "error: unknown par2rs variant: $tool" >&2
@@ -451,7 +467,7 @@ with open(summary_md, "w") as out:
     out.write(f"- redundancy: {redundancy}%\n")
     out.write(f"- recovery files: {recovery_files}\n")
     out.write("- validation: par2rs output verified/repaired by turbo; turbo output verified/repaired by par2rs\n")
-    out.write("- primary signal: Linux perf `instructions`\n\n")
+    out.write("- primary signal: wall seconds; Linux perf counters are recorded for diagnostics\n\n")
 
     out.write("## Relative Summary\n\n")
     out.write("| case | tool | method | instructions | cycles | wall seconds | effective CPU |\n")
@@ -493,6 +509,77 @@ with open(summary_md, "w") as out:
 PY
 }
 
+enforce_pass_criteria() {
+    local raw_csv="${1:-$RAW_CSV}"
+
+    python3 - "$raw_csv" <<'PY'
+import csv
+import math
+import statistics
+import sys
+from collections import defaultdict
+
+raw_csv = sys.argv[1]
+required = ["par2rs-xor-jit-port", "par2rs-xor-jit-clean", "turbo-auto"]
+groups = defaultdict(list)
+failures = []
+
+with open(raw_csv, newline="") as f:
+    for row in csv.DictReader(f):
+        if row.get("status") != "0" or row.get("validation_status") != "0":
+            failures.append(row)
+        groups[(row["case"], row["tool"])].append(row)
+
+def mean_wall(rows):
+    values = []
+    for row in rows:
+        try:
+            value = float(row.get("wall_seconds", ""))
+        except ValueError:
+            continue
+        if math.isfinite(value):
+            values.append(value)
+    return statistics.fmean(values) if values else None
+
+errors = []
+if failures:
+    for row in failures:
+        errors.append(
+            f"{row['case']}/{row['tool']} run {row['run']} status={row.get('status')} "
+            f"validation={row.get('validation_status')}"
+        )
+
+cases = sorted({case for case, _tool in groups})
+for case in cases:
+    missing = [tool for tool in required if not groups.get((case, tool))]
+    if missing:
+        errors.append(f"{case}: missing required tools: {', '.join(missing)}")
+        continue
+
+    turbo = mean_wall(groups[(case, "turbo-auto")])
+    if turbo is None:
+        errors.append(f"{case}: missing turbo-auto wall_seconds")
+        continue
+
+    for tool in ["par2rs-xor-jit-port", "par2rs-xor-jit-clean"]:
+        wall = mean_wall(groups[(case, tool)])
+        if wall is None:
+            errors.append(f"{case}: missing {tool} wall_seconds")
+        elif wall > turbo:
+            errors.append(
+                f"{case}: {tool} mean wall {wall:.6f}s is slower than turbo-auto {turbo:.6f}s"
+            )
+
+if errors:
+    print("error: XOR-JIT performance pass criteria failed", file=sys.stderr)
+    for error in errors:
+        print(f"  - {error}", file=sys.stderr)
+    sys.exit(1)
+
+print("XOR-JIT performance pass criteria passed.")
+PY
+}
+
 run_smoke_benchmarks() {
     echo
     echo "Smoke benchmark: one measured, cross-validated run for each configured case/tool"
@@ -509,14 +596,10 @@ run_smoke_benchmarks() {
         echo "Smoke preparing '$label': ${file_count}x${file_size_mib}MiB, block size ${block_size}"
         make_corpus "$case_dir" "$file_count" "$file_size_mib"
 
-        echo "Smoke measured: $label / par2rs-pshufb"
-        run_create "$label" "par2rs-pshufb" "smoke" "$block_size" "$corpus_dir" 1 "$SMOKE_CSV"
-
-        echo "Smoke measured: $label / par2rs-xor-jit"
-        run_create "$label" "par2rs-xor-jit" "smoke" "$block_size" "$corpus_dir" 1 "$SMOKE_CSV"
-
-        echo "Smoke measured: $label / turbo-auto"
-        run_create "$label" "turbo-auto" "smoke" "$block_size" "$corpus_dir" 1 "$SMOKE_CSV"
+        for tool in "${BENCHMARK_TOOLS[@]}"; do
+            echo "Smoke measured: $label / $tool"
+            run_create "$label" "$tool" "smoke" "$block_size" "$corpus_dir" 1 "$SMOKE_CSV"
+        done
     done < <(split_cases)
 
     summarize_results "$SMOKE_CSV" "$SMOKE_SUMMARY_MD" 1 0 "PAR2 Create Perf Smoke Benchmark"
@@ -666,7 +749,7 @@ while IFS= read -r case_spec; do
     echo "Preparing case '$label': ${file_count}x${file_size_mib}MiB, block size ${block_size}"
     make_corpus "$case_dir" "$file_count" "$file_size_mib"
 
-    for tool in par2rs-pshufb par2rs-xor-jit turbo-auto; do
+    for tool in "${BENCHMARK_TOOLS[@]}"; do
         echo "Warmup: $label / $tool"
         for run in $(seq 1 "$WARMUP_RUNS"); do
             run_create "$label" "$tool" "warmup-$run" "$block_size" "$corpus_dir" 0
@@ -682,6 +765,7 @@ while IFS= read -r case_spec; do
 done < <(split_cases)
 
 summarize_results
+enforce_pass_criteria "$RAW_CSV"
 if [[ -n "$last_case" ]]; then
     generate_flamegraph "$last_case"
 fi

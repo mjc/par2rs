@@ -11,8 +11,10 @@ use std::thread::JoinHandle;
 #[cfg(target_arch = "x86_64")]
 use crate::reed_solomon::simd::{
     detect_simd_support, prepare_avx2_coeff, process_slice_multiply_add_prepared_avx2,
-    process_slices_multiply_add_prepared_avx2_x2, process_slices_multiply_add_prepared_avx2_x4,
-    Avx2PreparedCoeff, SimdLevel,
+    process_slice_multiply_add_xor_jit, process_slices_multiply_add_prepared_avx2_x2,
+    process_slices_multiply_add_prepared_avx2_x4, process_slices_multiply_add_xor_jit_x2,
+    process_slices_multiply_add_xor_jit_x4, Avx2PreparedCoeff, SimdLevel, XorJitFlavor,
+    XorJitPreparedCoeff,
 };
 
 const DEFAULT_INPUT_GROUPING: usize = 12;
@@ -27,7 +29,8 @@ const AVX2_ALIGNMENT: usize = 32;
 pub enum CreateGf16Method {
     Auto,
     Avx2PshufbPrepared,
-    Avx2XorJit,
+    Avx2XorJitPort,
+    Avx2XorJitClean,
     Scalar,
 }
 
@@ -37,7 +40,9 @@ impl CreateGf16Method {
             Ok(value) => match value.to_ascii_lowercase().as_str() {
                 "auto" => Self::Auto,
                 "pshufb" | "avx2-pshufb" | "avx2_pshufb" => Self::Avx2PshufbPrepared,
-                "xor-jit" | "xor_jit" | "xorit" | "avx2-xor-jit" => Self::Avx2XorJit,
+                "xor-jit" | "xor_jit" | "xorit" | "avx2-xor-jit" | "xor-jit-port"
+                | "xor_jit_port" | "avx2-xor-jit-port" => Self::Avx2XorJitPort,
+                "xor-jit-clean" | "xor_jit_clean" | "avx2-xor-jit-clean" => Self::Avx2XorJitClean,
                 "scalar" => Self::Scalar,
                 _ => Self::Auto,
             },
@@ -65,12 +70,19 @@ impl CreateGf16Method {
                 }
                 Self::Scalar
             }
-            Self::Avx2XorJit => {
+            Self::Avx2XorJitPort | Self::Avx2XorJitClean => {
                 #[cfg(target_arch = "x86_64")]
                 {
-                    if matches!(detect_simd_support(), SimdLevel::Avx2) {
-                        return Self::Avx2XorJit;
+                    if matches!(detect_simd_support(), SimdLevel::Avx2)
+                        && is_x86_feature_detected!("pclmulqdq")
+                    {
+                        return self;
                     }
+                }
+                if xor_jit_fallback_is_error() {
+                    panic!(
+                        "forced XOR-JIT create backend requires x86_64 AVX2 and PCLMULQDQ support"
+                    );
                 }
                 Self::Scalar
             }
@@ -81,7 +93,10 @@ impl CreateGf16Method {
     #[inline]
     fn ideal_input_multiple(self) -> usize {
         match self {
-            Self::Auto | Self::Avx2PshufbPrepared | Self::Avx2XorJit => 4,
+            Self::Auto
+            | Self::Avx2PshufbPrepared
+            | Self::Avx2XorJitPort
+            | Self::Avx2XorJitClean => 4,
             Self::Scalar => 1,
         }
     }
@@ -89,10 +104,30 @@ impl CreateGf16Method {
     #[inline]
     fn ideal_segment_len(self) -> usize {
         match self {
-            Self::Auto | Self::Avx2PshufbPrepared | Self::Avx2XorJit => CREATE_SEGMENT_SIZE,
+            Self::Auto
+            | Self::Avx2PshufbPrepared
+            | Self::Avx2XorJitPort
+            | Self::Avx2XorJitClean => CREATE_SEGMENT_SIZE,
             Self::Scalar => CREATE_SEGMENT_SIZE / 2,
         }
     }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn xor_jit_flavor(self) -> Option<XorJitFlavor> {
+        match self {
+            Self::Avx2XorJitPort => Some(XorJitFlavor::Port),
+            Self::Avx2XorJitClean => Some(XorJitFlavor::Clean),
+            _ => None,
+        }
+    }
+}
+
+#[inline]
+fn xor_jit_fallback_is_error() -> bool {
+    std::env::var("PAR2RS_CREATE_XOR_JIT_FALLBACK")
+        .map(|value| value.eq_ignore_ascii_case("error"))
+        .unwrap_or(false)
 }
 
 /// Prepared coefficient for one `(recovery output, source input)` pair.
@@ -101,6 +136,8 @@ pub struct CreateCoeff {
     pub split: SplitMulTable,
     #[cfg(target_arch = "x86_64")]
     pub avx2: Option<Avx2PreparedCoeff>,
+    #[cfg(target_arch = "x86_64")]
+    pub xor_jit: Option<XorJitPreparedCoeff>,
 }
 
 pub type Gf16Coeff = CreateCoeff;
@@ -111,12 +148,16 @@ impl CreateCoeff {
         let split = build_split_mul_table(Galois16::new(value));
         #[cfg(target_arch = "x86_64")]
         let avx2 = prepare_pshufb.then(|| prepare_avx2_coeff(&split));
+        #[cfg(target_arch = "x86_64")]
+        let xor_jit = Some(XorJitPreparedCoeff::new(value));
 
         Self {
             value,
             split,
             #[cfg(target_arch = "x86_64")]
             avx2,
+            #[cfg(target_arch = "x86_64")]
+            xor_jit,
         }
     }
 }
@@ -179,10 +220,7 @@ impl CreateRecoveryBackend {
         let recovery_exponents = (0..recovery_count)
             .map(|offset| (first_recovery_block + offset as u32) as u16)
             .collect::<Vec<_>>();
-        let prepare_pshufb = matches!(
-            method,
-            CreateGf16Method::Avx2PshufbPrepared | CreateGf16Method::Avx2XorJit
-        );
+        let prepare_pshufb = matches!(method, CreateGf16Method::Avx2PshufbPrepared);
         let coeffs = recovery_exponents
             .iter()
             .flat_map(|&exponent| {
@@ -377,14 +415,7 @@ impl CreateRecoveryBackend {
         )
         .max(AVX2_ALIGNMENT);
         let segment_count = self.chunk_len.div_ceil(segment_len);
-        let output_groups = if segment_count < worker_count {
-            worker_count
-                .div_ceil(segment_count)
-                .min(recovery_count)
-                .max(1)
-        } else {
-            1
-        };
+        let output_groups = worker_count.min(recovery_count).max(1);
         let outputs_per_group = recovery_count.div_ceil(output_groups);
         let staging = &self.staging[staging_idx];
         debug_assert!(staging.batch_len <= self.input_grouping);
@@ -586,10 +617,12 @@ fn process_compute_job(job: ComputeJob) {
             continue;
         }
 
-        // The xor-jit method is wired as a separately selectable method, but the
-        // executable code emitter is intentionally not synthesized here. Until a
-        // JIT scratch allocator and emitter are present, forced xor-jit uses the
-        // same coefficient metadata through the scalar table executor.
+        #[cfg(target_arch = "x86_64")]
+        if let Some(flavor) = job.method.xor_jit_flavor() {
+            process_batch_add_avx2_xor_jit(job, recovery_idx, output, flavor);
+            continue;
+        }
+
         for batch_idx in 0..job.batch_len {
             let source_idx = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
             let coeff = unsafe {
@@ -608,6 +641,95 @@ fn process_compute_job(job: ComputeJob) {
             };
             process_slice_multiply_add(input, output, &coeff.split);
         }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn process_batch_add_avx2_xor_jit(
+    job: ComputeJob,
+    recovery_idx: usize,
+    output: &mut [u8],
+    flavor: XorJitFlavor,
+) {
+    let mut batch_idx = 0;
+    while batch_idx + 3 < job.batch_len {
+        let source_a = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
+        let source_b = unsafe { *(job.source_indices as *const usize).add(batch_idx + 1) };
+        let source_c = unsafe { *(job.source_indices as *const usize).add(batch_idx + 2) };
+        let source_d = unsafe { *(job.source_indices as *const usize).add(batch_idx + 3) };
+        let coeff_a = coeff_for(job, recovery_idx, source_a);
+        let coeff_b = coeff_for(job, recovery_idx, source_b);
+        let coeff_c = coeff_for(job, recovery_idx, source_c);
+        let coeff_d = coeff_for(job, recovery_idx, source_d);
+        let input_a = input_segment(job, batch_idx);
+        let input_b = input_segment(job, batch_idx + 1);
+        let input_c = input_segment(job, batch_idx + 2);
+        let input_d = input_segment(job, batch_idx + 3);
+
+        match (
+            &coeff_a.xor_jit,
+            &coeff_b.xor_jit,
+            &coeff_c.xor_jit,
+            &coeff_d.xor_jit,
+        ) {
+            (Some(prepared_a), Some(prepared_b), Some(prepared_c), Some(prepared_d)) => unsafe {
+                process_slices_multiply_add_xor_jit_x4(
+                    input_a, prepared_a, input_b, prepared_b, input_c, prepared_c, input_d,
+                    prepared_d, output, flavor,
+                );
+            },
+            _ if xor_jit_fallback_is_error() => {
+                panic!("forced XOR-JIT create backend missing prepared coefficient")
+            }
+            _ => {
+                process_slice_multiply_add(input_a, output, &coeff_a.split);
+                process_slice_multiply_add(input_b, output, &coeff_b.split);
+                process_slice_multiply_add(input_c, output, &coeff_c.split);
+                process_slice_multiply_add(input_d, output, &coeff_d.split);
+            }
+        }
+        batch_idx += 4;
+    }
+
+    while batch_idx + 1 < job.batch_len {
+        let source_a = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
+        let source_b = unsafe { *(job.source_indices as *const usize).add(batch_idx + 1) };
+        let coeff_a = coeff_for(job, recovery_idx, source_a);
+        let coeff_b = coeff_for(job, recovery_idx, source_b);
+        let input_a = input_segment(job, batch_idx);
+        let input_b = input_segment(job, batch_idx + 1);
+
+        match (&coeff_a.xor_jit, &coeff_b.xor_jit) {
+            (Some(prepared_a), Some(prepared_b)) => unsafe {
+                process_slices_multiply_add_xor_jit_x2(
+                    input_a, prepared_a, input_b, prepared_b, output, flavor,
+                );
+            },
+            _ if xor_jit_fallback_is_error() => {
+                panic!("forced XOR-JIT create backend missing prepared coefficient")
+            }
+            _ => {
+                process_slice_multiply_add(input_a, output, &coeff_a.split);
+                process_slice_multiply_add(input_b, output, &coeff_b.split);
+            }
+        }
+        batch_idx += 2;
+    }
+
+    while batch_idx < job.batch_len {
+        let source_idx = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
+        let coeff = coeff_for(job, recovery_idx, source_idx);
+        let input = input_segment(job, batch_idx);
+        match &coeff.xor_jit {
+            Some(prepared) => unsafe {
+                process_slice_multiply_add_xor_jit(input, output, prepared, flavor);
+            },
+            None if xor_jit_fallback_is_error() => {
+                panic!("forced XOR-JIT create backend missing prepared coefficient")
+            }
+            None => process_slice_multiply_add(input, output, &coeff.split),
+        }
+        batch_idx += 1;
     }
 }
 
@@ -747,6 +869,18 @@ fn input_segment(job: ComputeJob, batch_idx: usize) -> &'static [u8] {
     unsafe { std::slice::from_raw_parts((job.input_base as *const u8).add(start), job.segment_len) }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn coeff_for(job: ComputeJob, recovery_idx: usize, source_idx: usize) -> &'static CreateCoeff {
+    unsafe {
+        &*(job.coeffs as *const CreateCoeff).add(gf_coeff_index(
+            recovery_idx,
+            source_idx,
+            job.source_count,
+        ))
+    }
+}
+
 #[inline]
 pub fn gf_coeff_index(recovery_idx: usize, source_idx: usize, source_count: usize) -> usize {
     recovery_idx * source_count + source_idx
@@ -884,7 +1018,8 @@ mod tests {
 
     #[test]
     fn forced_xor_jit_backend_matches_encoder_for_full_batch() {
-        assert_forced_backend_matches_encoder("xor-jit", CreateGf16Method::Avx2XorJit);
+        assert_forced_backend_matches_encoder("xor-jit-port", CreateGf16Method::Avx2XorJitPort);
+        assert_forced_backend_matches_encoder("xor-jit-clean", CreateGf16Method::Avx2XorJitClean);
     }
 
     #[test]
