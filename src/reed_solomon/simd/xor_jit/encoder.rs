@@ -30,6 +30,16 @@ impl Program {
         self
     }
 
+    pub fn vmovdqu_ymm0_from_rsi_offset(mut self, offset: i32) -> Self {
+        self.push_vmovdqu_load(Ymm::Ymm0, Memory::base_offset(BaseReg::Rsi, offset));
+        self
+    }
+
+    pub fn vmovdqu_ymm1_from_rdi_offset(mut self, offset: i32) -> Self {
+        self.push_vmovdqu_load(Ymm::Ymm1, Memory::base_offset(BaseReg::Rdi, offset));
+        self
+    }
+
     pub fn vmovdqu_ymm1_from_rsi(mut self) -> Self {
         self.push_vmovdqu_load(Ymm::Ymm1, Memory::base(BaseReg::Rsi));
         self

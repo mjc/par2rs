@@ -116,6 +116,13 @@ struct CleanLaneKernel {
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
+struct CleanBitplaneKernel {
+    code: exec_mem::ExecutableBuffer,
+    function: LaneKernelFn,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
 impl CleanLaneKernel {
     fn identity() -> std::io::Result<Self> {
         Self::from_program(identity_lane_program())
@@ -138,6 +145,30 @@ impl CleanLaneKernel {
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
+impl CleanBitplaneKernel {
+    fn new(coefficient: u16) -> std::io::Result<Self> {
+        Self::from_program(bitplane_multiply_add_program(CleanCoeffPlan::new(
+            coefficient,
+        )))
+    }
+
+    fn from_program(program: encoder::Program) -> std::io::Result<Self> {
+        let generated = program.finish();
+        let mut code = exec_mem::ExecutableBuffer::new(generated.len())?;
+        code.write(&generated)?;
+        let function = unsafe { code.function() };
+
+        Ok(Self { code, function })
+    }
+
+    unsafe fn multiply_add(&self, input: *const u8, output: *mut u8) {
+        debug_assert!(!self.code.is_empty());
+        (self.function)(input, output);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
 fn identity_lane_program() -> encoder::Program {
     encoder::Program::new()
         .vmovdqu_ymm0_from_rdi()
@@ -146,6 +177,57 @@ fn identity_lane_program() -> encoder::Program {
         .vmovdqu_rsi_from_ymm0()
         .vzeroupper()
         .ret()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn bitplane_multiply_add_program(plan: CleanCoeffPlan) -> encoder::Program {
+    (0..16)
+        .filter_map(|output_bit| {
+            let input_mask = plan.input_mask_for_output_bit(output_bit);
+            (input_mask != 0).then_some((output_bit, input_mask))
+        })
+        .fold(encoder::Program::new(), emit_output_bitplane)
+        .vzeroupper()
+        .ret()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn emit_output_bitplane(
+    program: encoder::Program,
+    (output_bit, input_mask): (usize, u16),
+) -> encoder::Program {
+    input_bits(input_mask)
+        .fold(
+            program.vmovdqu_ymm0_from_rsi_offset(bitplane_vector_offset(output_bit)),
+            |program, input_bit| {
+                program
+                    .vmovdqu_ymm1_from_rdi_offset(bitplane_vector_offset(input_bit))
+                    .vpxor_ymm0_ymm0_ymm1()
+            },
+        )
+        .vmovdqu_rsi_offset_from_ymm0(bitplane_vector_offset(output_bit))
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn input_bits(mask: u16) -> impl Iterator<Item = usize> {
+    (0..16).filter(move |input_bit| mask & (1 << input_bit) != 0)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn bitplane_vector_offset(word_bit: usize) -> i32 {
+    debug_assert!(word_bit < 16);
+    let half = if word_bit < 8 {
+        bitplane::ByteHalf::Low
+    } else {
+        bitplane::ByteHalf::High
+    };
+    let bit_from_msb = 7 - (word_bit & 7);
+
+    bitplane::mask_offset(half, bit_from_msb, 0) as i32
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1133,6 +1215,38 @@ mod tests {
                 expected,
                 "coefficient={coefficient:#06x}"
             );
+        }
+    }
+
+    #[test]
+    fn generated_bitplane_multiply_add_matches_reference() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let input = core::array::from_fn(|idx| (idx * 37 + 11) as u8);
+        let initial_output = core::array::from_fn(|idx| (idx * 17 + 3) as u8);
+        let mut prepared_input = [0u8; bitplane::AVX2_BLOCK_BYTES];
+        let mut prepared_output = [0u8; bitplane::AVX2_BLOCK_BYTES];
+
+        bitplane::prepare_avx2_block(&mut prepared_input, &input);
+        bitplane::prepare_avx2_block(&mut prepared_output, &initial_output);
+
+        for coefficient in [0, 1, 2, 3, 5, 0x100b, 0xffff] {
+            let mut expected = prepared_output;
+            let mut actual = prepared_output;
+            let kernel = CleanBitplaneKernel::new(coefficient).expect("bitplane kernel");
+
+            bitplane::multiply_add_prepared_avx2_block_to_prepared(
+                &prepared_input,
+                coefficient,
+                &mut expected,
+            );
+            unsafe {
+                kernel.multiply_add(prepared_input.as_ptr(), actual.as_mut_ptr());
+            }
+
+            assert_eq!(actual, expected, "coefficient={coefficient:#06x}");
         }
     }
 
