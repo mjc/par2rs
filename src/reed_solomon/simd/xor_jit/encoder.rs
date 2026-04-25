@@ -21,34 +21,22 @@ impl Program {
     }
 
     pub fn vmovdqu_ymm0_from_rdi(mut self) -> Self {
-        self.instructions.push(Instruction::VmovdquLoad {
-            dst: Ymm::Ymm0,
-            memory: Memory::base(BaseReg::Rdi),
-        });
+        self.push_vmovdqu_load(Ymm::Ymm0, Memory::base(BaseReg::Rdi));
         self
     }
 
     pub fn vmovdqu_ymm0_from_rdi_offset(mut self, offset: i32) -> Self {
-        self.instructions.push(Instruction::VmovdquLoad {
-            dst: Ymm::Ymm0,
-            memory: Memory::base_offset(BaseReg::Rdi, offset),
-        });
+        self.push_vmovdqu_load(Ymm::Ymm0, Memory::base_offset(BaseReg::Rdi, offset));
         self
     }
 
     pub fn vmovdqu_ymm1_from_rsi(mut self) -> Self {
-        self.instructions.push(Instruction::VmovdquLoad {
-            dst: Ymm::Ymm1,
-            memory: Memory::base(BaseReg::Rsi),
-        });
+        self.push_vmovdqu_load(Ymm::Ymm1, Memory::base(BaseReg::Rsi));
         self
     }
 
     pub fn vmovdqu_ymm1_from_rsi_offset(mut self, offset: i32) -> Self {
-        self.instructions.push(Instruction::VmovdquLoad {
-            dst: Ymm::Ymm1,
-            memory: Memory::base_offset(BaseReg::Rsi, offset),
-        });
+        self.push_vmovdqu_load(Ymm::Ymm1, Memory::base_offset(BaseReg::Rsi, offset));
         self
     }
 
@@ -62,18 +50,12 @@ impl Program {
     }
 
     pub fn vmovdqu_rsi_from_ymm0(mut self) -> Self {
-        self.instructions.push(Instruction::VmovdquStore {
-            memory: Memory::base(BaseReg::Rsi),
-            src: Ymm::Ymm0,
-        });
+        self.push_vmovdqu_store(Memory::base(BaseReg::Rsi), Ymm::Ymm0);
         self
     }
 
     pub fn vmovdqu_rsi_offset_from_ymm0(mut self, offset: i32) -> Self {
-        self.instructions.push(Instruction::VmovdquStore {
-            memory: Memory::base_offset(BaseReg::Rsi, offset),
-            src: Ymm::Ymm0,
-        });
+        self.push_vmovdqu_store(Memory::base_offset(BaseReg::Rsi, offset), Ymm::Ymm0);
         self
     }
 
@@ -87,6 +69,16 @@ impl Program {
             .into_iter()
             .flat_map(Instruction::encode)
             .collect()
+    }
+
+    fn push_vmovdqu_load(&mut self, dst: Ymm, memory: Memory) {
+        self.instructions
+            .push(Instruction::VmovdquLoad { dst, memory });
+    }
+
+    fn push_vmovdqu_store(&mut self, memory: Memory, src: Ymm) {
+        self.instructions
+            .push(Instruction::VmovdquStore { memory, src });
     }
 }
 
