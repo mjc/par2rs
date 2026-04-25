@@ -22,6 +22,7 @@ RUN_FLAMEGRAPH="${RUN_FLAMEGRAPH:-1}"
 PROFILE_FREQUENCY="${PROFILE_FREQUENCY:-997}"
 PERF_EVENTS="${PERF_EVENTS:-instructions,cycles,branches,branch-misses,cache-references,cache-misses,task-clock,context-switches,cpu-migrations,page-faults}"
 VERIFY_OUTPUTS="${VERIFY_OUTPUTS:-1}"
+VERIFY_REPAIR="${VERIFY_REPAIR:-smoke}"
 
 # label:file_count:file_size_mib:block_size_bytes
 DEFAULT_CASES="single_16m:1:16:262144,single_128m:1:128:1048576,multi_128m:32:4:262144"
@@ -41,6 +42,8 @@ Environment:
   RECOVERY_FILES=N   recovery file count via -n (default: $RECOVERY_FILES)
   PAR2CMD_BIN=PATH   par2cmdline-turbo binary (default: $PAR2CMD_BIN)
   VERIFY_OUTPUTS=0   skip cross-tool verification after each create
+  VERIFY_REPAIR=MODE run destructive cross-tool repair validation: smoke, 1, or 0
+                     default: $VERIFY_REPAIR
   RUN_FLAMEGRAPH=0   skip par2rs perf/inferno flamegraph generation
   PROFILE_FREQUENCY=N perf sampling frequency for flamegraph (default: $PROFILE_FREQUENCY)
   KEEP_WORK=1        keep generated benchmark work directory
@@ -68,6 +71,7 @@ need_tool() {
 need_tool perf
 need_tool python3
 need_tool dd
+need_tool cmp
 need_tool "$PAR2CMD_BIN"
 
 if ! perf stat -x, -e instructions -- true >/dev/null 2>&1; then
@@ -264,6 +268,24 @@ run_create() {
         else
             rm -f "$verifier_stdout" "$verifier_stderr"
         fi
+
+        if [[ "$validation_status" == "0" ]] && should_repair_validate "$run_number"; then
+            local repair_stdout repair_stderr
+            repair_stdout="$RUN_ROOT/repair-$case_label-$tool-$run_number.stdout"
+            repair_stderr="$RUN_ROOT/repair-$case_label-$tool-$run_number.stderr"
+            set +e
+            validate_repair_output "$tool" "$run_dir" "$corpus_dir" "$block_size" "$repair_stdout" "$repair_stderr"
+            validation_status="$?"
+            set -e
+            if [[ "$validation_status" != "0" ]]; then
+                echo "error: cross-tool repair validation failed for $case_label/$tool run $run_number" >&2
+                echo "stdout: $repair_stdout" >&2
+                echo "stderr: $repair_stderr" >&2
+                echo "work dir: $run_dir" >&2
+            else
+                rm -f "$repair_stdout" "$repair_stderr"
+            fi
+        fi
     fi
 
     if [[ "$measured" == "1" ]]; then
@@ -296,6 +318,66 @@ run_create() {
         return "$status"
     fi
     return "$validation_status"
+}
+
+should_repair_validate() {
+    local run_number="$1"
+    case "$VERIFY_REPAIR" in
+        1|true|yes)
+            return 0
+            ;;
+        smoke)
+            [[ "$run_number" == "smoke" ]]
+            return
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+validate_repair_output() {
+    local tool="$1"
+    local run_dir="$2"
+    local corpus_dir="$3"
+    local block_size="$4"
+    local repair_stdout="$5"
+    local repair_stderr="$6"
+
+    local target base
+    target="$(find "$run_dir" -maxdepth 1 -type f -name '*.bin' | sort | head -n 1)"
+    if [[ -z "$target" ]]; then
+        echo "no source file found to damage" > "$repair_stderr"
+        return 97
+    fi
+    base="$(basename "$target")"
+
+    cp -p "$target" "$target.detached"
+    mv "$target.detached" "$target"
+    python3 - "$target" "$block_size" <<'PY'
+import sys
+
+path = sys.argv[1]
+block_size = int(sys.argv[2])
+
+with open(path, "r+b") as f:
+    data = f.read(block_size)
+    if not data:
+        sys.exit(2)
+    f.seek(0)
+    f.write(bytes(b ^ 0xFF for b in data))
+PY
+
+    if [[ "$tool" == par2rs-* ]]; then
+        (cd "$run_dir" && "$PAR2CMD_BIN" r -q -q out.par2 >"$repair_stdout" 2>"$repair_stderr")
+    else
+        (cd "$run_dir" && "$PAR2RS_BIN" repair -q -q out.par2 >"$repair_stdout" 2>"$repair_stderr")
+    fi || return "$?"
+
+    if ! cmp -s "$corpus_dir/$base" "$run_dir/$base"; then
+        echo "repaired file differs from original corpus file: $base" >> "$repair_stderr"
+        return 98
+    fi
 }
 
 summarize_results() {
@@ -368,7 +450,7 @@ with open(summary_md, "w") as out:
     out.write(f"- threads: {threads}\n")
     out.write(f"- redundancy: {redundancy}%\n")
     out.write(f"- recovery files: {recovery_files}\n")
-    out.write("- validation: par2rs output verified by turbo; turbo output verified by par2rs\n")
+    out.write("- validation: par2rs output verified/repaired by turbo; turbo output verified/repaired by par2rs\n")
     out.write("- primary signal: Linux perf `instructions`\n\n")
 
     out.write("## Relative Summary\n\n")
