@@ -234,33 +234,58 @@ pub unsafe fn process_slice_multiply_add_prepared_avx2(
     let both_aligned =
         (input_ptr as usize).is_multiple_of(32) && (output_ptr as usize).is_multiple_of(32);
 
-    while pos < avx_end {
-        // Load 32 bytes of input and output
-        // Use aligned loads/stores when both pointers are 32-byte aligned (common case now)
-        let in_vec = if both_aligned {
-            _mm256_load_si256(input_ptr.add(pos) as *const __m256i)
-        } else {
-            _mm256_loadu_si256(input_ptr.add(pos) as *const __m256i)
-        };
-        let out_vec = if both_aligned {
-            _mm256_load_si256(output_ptr.add(pos) as *const __m256i)
-        } else {
-            _mm256_loadu_si256(output_ptr.add(pos) as *const __m256i)
-        };
-
-        let result = multiply_vec_pshufb(in_vec, &table_vectors, mask_0x0f);
-        let final_result = _mm256_xor_si256(out_vec, result);
-
-        // Store result using aligned store when possible (fast path for reconstruction)
-        if both_aligned {
-            _mm256_store_si256(output.as_mut_ptr().add(pos) as *mut __m256i, final_result);
-        } else {
-            _mm256_storeu_si256(output.as_mut_ptr().add(pos) as *mut __m256i, final_result);
+    if both_aligned {
+        macro_rules! process_aligned_vec {
+            () => {{
+                let in_vec = _mm256_load_si256(input_ptr.add(pos) as *const __m256i);
+                let out_vec = _mm256_load_si256(output_ptr.add(pos) as *const __m256i);
+                let result = multiply_vec_pshufb(in_vec, &table_vectors, mask_0x0f);
+                let final_result = _mm256_xor_si256(out_vec, result);
+                _mm256_store_si256(output_ptr.add(pos) as *mut __m256i, final_result);
+                pos += 32;
+            }};
         }
 
-        // Debug the final iteration to see if it's corrupting byte 512
+        while pos + 256 <= avx_end {
+            process_aligned_vec!();
+            process_aligned_vec!();
+            process_aligned_vec!();
+            process_aligned_vec!();
+            process_aligned_vec!();
+            process_aligned_vec!();
+            process_aligned_vec!();
+            process_aligned_vec!();
+        }
 
-        pos += 32;
+        while pos < avx_end {
+            process_aligned_vec!();
+        }
+    } else {
+        macro_rules! process_unaligned_vec {
+            () => {{
+                let in_vec = _mm256_loadu_si256(input_ptr.add(pos) as *const __m256i);
+                let out_vec = _mm256_loadu_si256(output_ptr.add(pos) as *const __m256i);
+                let result = multiply_vec_pshufb(in_vec, &table_vectors, mask_0x0f);
+                let final_result = _mm256_xor_si256(out_vec, result);
+                _mm256_storeu_si256(output_ptr.add(pos) as *mut __m256i, final_result);
+                pos += 32;
+            }};
+        }
+
+        while pos + 256 <= avx_end {
+            process_unaligned_vec!();
+            process_unaligned_vec!();
+            process_unaligned_vec!();
+            process_unaligned_vec!();
+            process_unaligned_vec!();
+            process_unaligned_vec!();
+            process_unaligned_vec!();
+            process_unaligned_vec!();
+        }
+
+        while pos < avx_end {
+            process_unaligned_vec!();
+        }
     }
 
     // Handle remaining bytes with scalar fallback
