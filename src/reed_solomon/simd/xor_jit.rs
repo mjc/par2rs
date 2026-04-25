@@ -1058,6 +1058,18 @@ mod tests {
     }
 
     #[test]
+    fn avx2_bitplane_finish_roundtrips_prepared_block() {
+        let input = core::array::from_fn(|idx| (idx * 37 + 11) as u8);
+        let mut prepared = [0u8; bitplane::AVX2_BLOCK_BYTES];
+        let mut actual = [0u8; bitplane::AVX2_BLOCK_BYTES];
+
+        bitplane::prepare_avx2_block(&mut prepared, &input);
+        bitplane::finish_avx2_block(&mut actual, &prepared);
+
+        assert_eq!(actual, input);
+    }
+
+    #[test]
     fn xor_jit_word_multiply_matches_table() {
         let coeffs = [0, 1, 2, 7, 0x100b, 0xbeef, 0xffff];
         let values = [0, 1, 2, 0x1234, 0x8000, 0xffff];

@@ -95,6 +95,18 @@ pub fn multiply_add_prepared_avx2_block(prepared: &[u8], coefficient: u16, outpu
     }
 }
 
+pub fn finish_avx2_block(dst: &mut [u8; AVX2_BLOCK_BYTES], prepared: &[u8; AVX2_BLOCK_BYTES]) {
+    dst.fill(0);
+
+    for group in 0..GROUPS_PER_BLOCK {
+        for lane in 0..WORDS_PER_GROUP {
+            let word = prepared_word(prepared, WordLane::new(group, lane));
+            let output_offset = WordLane::new(group, lane).byte_offset();
+            dst[output_offset..output_offset + 2].copy_from_slice(&word.to_le_bytes());
+        }
+    }
+}
+
 fn write_byte_planes(
     dst: &mut [u8; AVX2_BLOCK_BYTES],
     half: ByteHalf,
