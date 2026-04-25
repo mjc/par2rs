@@ -99,6 +99,49 @@ impl Program {
         encoded
     }
 
+    pub fn finish_block_loop(self, block_bytes: u32) -> Vec<u8> {
+        let body_len: usize = self.instructions.iter().map(Instruction::encoded_len).sum();
+        if body_len == 0 {
+            return Self::new().vzeroupper().ret().finish();
+        }
+
+        let loop_footer = [
+            Instruction::AddRegImm32 {
+                reg: GpReg::Rdi,
+                value: block_bytes,
+            },
+            Instruction::AddRegImm32 {
+                reg: GpReg::Rsi,
+                value: block_bytes,
+            },
+            Instruction::SubRegImm32 {
+                reg: GpReg::Rdx,
+                value: block_bytes,
+            },
+        ];
+        let footer_len: usize = loop_footer.iter().map(Instruction::encoded_len).sum();
+        let jump_len = Instruction::JneRel32(0).encoded_len();
+        let back_edge = -((body_len + footer_len + jump_len) as i32);
+        let total_len = body_len
+            + footer_len
+            + jump_len
+            + Instruction::Vzeroupper.encoded_len()
+            + Instruction::Ret.encoded_len();
+        let mut encoded = Vec::with_capacity(total_len);
+
+        self.instructions
+            .into_iter()
+            .for_each(|instruction| instruction.encode_into(&mut encoded));
+        loop_footer
+            .into_iter()
+            .for_each(|instruction| instruction.encode_into(&mut encoded));
+        Instruction::JneRel32(back_edge).encode_into(&mut encoded);
+        Instruction::Vzeroupper.encode_into(&mut encoded);
+        Instruction::Ret.encode_into(&mut encoded);
+        debug_assert_eq!(encoded.len(), total_len);
+        encoded
+    }
+
     fn push_vmovdqu_load(&mut self, dst: Ymm, memory: Memory) {
         self.instructions
             .push(Instruction::VmovdquLoad { dst, memory });
@@ -117,9 +160,12 @@ impl Program {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Instruction {
     MovEaxImm32(u32),
+    AddRegImm32 { reg: GpReg, value: u32 },
+    SubRegImm32 { reg: GpReg, value: u32 },
     VmovdquLoad { dst: Ymm, memory: Memory },
     VmovdquStore { memory: Memory, src: Ymm },
     Vpxor { dst: Ymm, lhs: Ymm, rhs: Ymm },
+    JneRel32(i32),
     Vzeroupper,
     Ret,
 }
@@ -128,10 +174,12 @@ impl Instruction {
     fn encoded_len(&self) -> usize {
         match self {
             Self::MovEaxImm32(_) => 5,
+            Self::AddRegImm32 { .. } | Self::SubRegImm32 { .. } => 7,
             Self::VmovdquLoad { memory, .. } | Self::VmovdquStore { memory, .. } => {
                 3 + memory.encoded_len()
             }
             Self::Vpxor { .. } => 4,
+            Self::JneRel32(_) => 6,
             Self::Vzeroupper => 3,
             Self::Ret => 1,
         }
@@ -143,6 +191,8 @@ impl Instruction {
                 encoded.push(0xb8);
                 encoded.extend_from_slice(&value.to_le_bytes());
             }
+            Self::AddRegImm32 { reg, value } => encode_reg_imm32(encoded, 0x81, 0, reg, value),
+            Self::SubRegImm32 { reg, value } => encode_reg_imm32(encoded, 0x81, 5, reg, value),
             Self::VmovdquLoad { dst, memory } => {
                 encoded.extend_from_slice(&[0xc5, 0xfe, 0x6f]);
                 memory.encode_into(encoded, dst.code());
@@ -159,6 +209,10 @@ impl Instruction {
                     0xef,
                     modrm_register(dst.code(), rhs.code()),
                 ]);
+            }
+            Self::JneRel32(offset) => {
+                encoded.extend_from_slice(&[0x0f, 0x85]);
+                encoded.extend_from_slice(&offset.to_le_bytes());
             }
             Self::Vzeroupper => encoded.extend_from_slice(&[0xc5, 0xf8, 0x77]),
             Self::Ret => encoded.push(0xc3),
@@ -192,6 +246,23 @@ enum BaseReg {
 impl BaseReg {
     const fn code(self) -> u8 {
         match self {
+            Self::Rsi => 6,
+            Self::Rdi => 7,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GpReg {
+    Rdx,
+    Rsi,
+    Rdi,
+}
+
+impl GpReg {
+    const fn code(self) -> u8 {
+        match self {
+            Self::Rdx => 2,
             Self::Rsi => 6,
             Self::Rdi => 7,
         }
@@ -265,4 +336,11 @@ const fn modrm_register(reg: u8, rm: u8) -> u8 {
 
 const fn vex_256_66_0f(lhs: u8) -> u8 {
     0x80 | ((!lhs & 0x0f) << 3) | 0x05
+}
+
+fn encode_reg_imm32(encoded: &mut Vec<u8>, opcode: u8, extension: u8, reg: GpReg, value: u32) {
+    encoded.push(0x48);
+    encoded.push(opcode);
+    encoded.push(modrm_register(extension, reg.code()));
+    encoded.extend_from_slice(&value.to_le_bytes());
 }

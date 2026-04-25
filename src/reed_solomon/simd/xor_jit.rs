@@ -167,6 +167,10 @@ type LaneKernelFn = unsafe extern "sysv64" fn(*const u8, *mut u8);
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
+type ChunkKernelFn = unsafe extern "sysv64" fn(*const u8, *mut u8, usize);
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
 struct CleanLaneKernel {
     code: exec_mem::ExecutableBuffer,
     function: LaneKernelFn,
@@ -176,7 +180,7 @@ struct CleanLaneKernel {
 #[cfg_attr(not(test), allow(dead_code))]
 struct CleanBitplaneKernel {
     code: exec_mem::ExecutableBuffer,
-    function: LaneKernelFn,
+    function: ChunkKernelFn,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -216,8 +220,8 @@ impl CleanBitplaneKernel {
     }
 
     fn from_plan_ref(plan: &CleanCoeffPlan) -> std::io::Result<Self> {
-        let (code, function) = compile_lane_program(
-            bitplane_multiply_add_program(plan),
+        let (code, function) = compile_chunk_program(
+            bitplane_multiply_add_body_program(plan),
             "bitplane",
             Some(plan.coefficient()),
         )?;
@@ -226,25 +230,24 @@ impl CleanBitplaneKernel {
 
     #[allow(dead_code)]
     fn from_program(program: encoder::Program) -> std::io::Result<Self> {
-        let (code, function) = compile_lane_program(program, "bitplane", None)?;
+        let (code, function) = compile_chunk_program(program, "bitplane", None)?;
         Ok(Self { code, function })
     }
 
-    unsafe fn multiply_add(&self, input: *const u8, output: *mut u8) {
+    unsafe fn multiply_add(&self, input: *const u8, output: *mut u8, len: usize) {
         debug_assert!(!self.code.is_empty());
-        (self.function)(input, output);
+        (self.function)(input, output, len);
     }
 
     fn multiply_add_chunks(&self, input: &[u8], output: &mut [u8]) {
         assert_prepared_chunk_shape(input, output);
 
-        for (input_block, output_block) in input
-            .chunks_exact(bitplane::AVX2_BLOCK_BYTES)
-            .zip(output.chunks_exact_mut(bitplane::AVX2_BLOCK_BYTES))
-        {
-            unsafe {
-                self.multiply_add(input_block.as_ptr(), output_block.as_mut_ptr());
-            }
+        if input.is_empty() {
+            return;
+        }
+
+        unsafe {
+            self.multiply_add(input.as_ptr(), output.as_mut_ptr(), input.len());
         }
     }
 
@@ -252,7 +255,11 @@ impl CleanBitplaneKernel {
         assert_eq!(input.len(), bitplane::AVX2_BLOCK_BYTES);
         assert_eq!(output.len(), bitplane::AVX2_BLOCK_BYTES);
         unsafe {
-            self.multiply_add(input.as_ptr(), output.as_mut_ptr());
+            self.multiply_add(
+                input.as_ptr(),
+                output.as_mut_ptr(),
+                bitplane::AVX2_BLOCK_BYTES,
+            );
         }
     }
 }
@@ -334,6 +341,22 @@ fn compile_lane_program(
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
+fn compile_chunk_program(
+    program: encoder::Program,
+    label: &str,
+    coefficient: Option<u16>,
+) -> std::io::Result<(exec_mem::ExecutableBuffer, ChunkKernelFn)> {
+    let generated = program.finish_block_loop(bitplane::AVX2_BLOCK_BYTES as u32);
+    dump_generated_program(label, coefficient, &generated);
+    let mut code = exec_mem::ExecutableBuffer::new(generated.len())?;
+    code.write(&generated)?;
+    let function = unsafe { code.function() };
+
+    Ok((code, function))
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
 fn dump_generated_program(label: &str, coefficient: Option<u16>, generated: &[u8]) {
     let Ok(dir) = std::env::var("PAR2RS_XOR_JIT_DUMP_DIR") else {
         return;
@@ -366,13 +389,17 @@ fn identity_lane_program() -> encoder::Program {
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 fn bitplane_multiply_add_program(plan: &CleanCoeffPlan) -> encoder::Program {
-    (0..8)
-        .fold(encoder::Program::new(), |program, bit| {
-            emit_output_bitplane_pair(program, plan, bit)
-        })
-        .vzeroupper()
-        .ret()
+    bitplane_multiply_add_body_program(plan).vzeroupper().ret()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn bitplane_multiply_add_body_program(plan: &CleanCoeffPlan) -> encoder::Program {
+    (0..8).fold(encoder::Program::new(), |program, bit| {
+        emit_output_bitplane_pair(program, plan, bit)
+    })
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1474,7 +1501,11 @@ mod tests {
                 &mut expected,
             );
             unsafe {
-                kernel.multiply_add(prepared_input.as_ptr(), actual.as_mut_ptr());
+                kernel.multiply_add(
+                    prepared_input.as_ptr(),
+                    actual.as_mut_ptr(),
+                    bitplane::AVX2_BLOCK_BYTES,
+                );
             }
 
             assert_eq!(actual, expected, "coefficient={coefficient:#06x}");
