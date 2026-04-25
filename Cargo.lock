@@ -610,6 +610,7 @@ dependencies = [
  "env_logger",
  "hex",
  "iai-callgrind",
+ "libc",
  "log",
  "md-5",
  "proptest",

@@ -24,6 +24,7 @@ rustc-hash = "2.1"
 thiserror = "2.0.17"
 anyhow = "1.0"
 smallvec = { version = "1.15.1", features = ["const_generics"] }
+libc = "0.2"
 
 # Binaries
 [[bin]]

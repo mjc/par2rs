@@ -8,6 +8,9 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
+#[cfg(target_arch = "x86_64")]
+mod exec_mem;
+
 const GF16_REDUCTION: u16 = 0x100b;
 
 #[derive(Debug, Clone)]
@@ -795,6 +798,17 @@ mod tests {
     use super::*;
     use crate::reed_solomon::codec::{build_split_mul_table, process_slice_multiply_add};
     use crate::reed_solomon::galois::Galois16;
+
+    #[test]
+    fn executable_buffer_runs_constant_function() {
+        let mut code = exec_mem::ExecutableBuffer::new(16).expect("executable buffer");
+        // mov eax, 7; ret
+        code.write(&[0xb8, 0x07, 0x00, 0x00, 0x00, 0xc3])
+            .expect("write generated code");
+        let function: extern "sysv64" fn() -> u32 = unsafe { code.function() };
+
+        assert_eq!(function(), 7);
+    }
 
     #[test]
     fn xor_jit_word_multiply_matches_table() {
