@@ -159,8 +159,7 @@ impl CleanBitplaneKernel {
     }
 
     fn multiply_add_chunks(&self, input: &[u8], output: &mut [u8]) {
-        assert_eq!(input.len(), output.len());
-        assert_eq!(input.len() % bitplane::AVX2_BLOCK_BYTES, 0);
+        assert_prepared_chunk_shape(input, output);
 
         for (input_block, output_block) in input
             .chunks_exact(bitplane::AVX2_BLOCK_BYTES)
@@ -171,6 +170,13 @@ impl CleanBitplaneKernel {
             }
         }
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn assert_prepared_chunk_shape(input: &[u8], output: &[u8]) {
+    assert_eq!(input.len(), output.len());
+    assert_eq!(input.len() % bitplane::AVX2_BLOCK_BYTES, 0);
 }
 
 #[cfg(target_arch = "x86_64")]
