@@ -66,6 +66,42 @@ pub enum XorJitFlavor {
 }
 
 #[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+type LaneKernelFn = unsafe extern "sysv64" fn(*const u8, *mut u8);
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+struct CleanLaneKernel {
+    code: exec_mem::ExecutableBuffer,
+    function: LaneKernelFn,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+impl CleanLaneKernel {
+    fn identity() -> std::io::Result<Self> {
+        let generated = encoder::Program::new()
+            .vmovdqu_ymm0_from_rdi()
+            .vmovdqu_ymm1_from_rsi()
+            .vpxor_ymm0_ymm0_ymm1()
+            .vmovdqu_rsi_from_ymm0()
+            .vzeroupper()
+            .ret()
+            .finish();
+        let mut code = exec_mem::ExecutableBuffer::new(generated.len())?;
+        code.write(&generated)?;
+        let function = unsafe { code.function() };
+
+        Ok(Self { code, function })
+    }
+
+    unsafe fn run(&self, input: *const u8, output: *mut u8) {
+        debug_assert!(!self.code.is_empty());
+        (self.function)(input, output);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 struct XorJitConstants {
     word_mask: __m256i,
     shuf_lo_hi: __m256i,
@@ -844,6 +880,26 @@ mod tests {
         function(input.as_ptr(), output.as_mut_ptr());
 
         assert_eq!(output, [0xffu8; 32]);
+    }
+
+    #[test]
+    fn clean_identity_lane_kernel_matches_table_executor() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let input = (0..32).map(|value| value as u8).collect::<Vec<_>>();
+        let mut expected = vec![0x33; 32];
+        let mut actual = expected.clone();
+        let tables = build_split_mul_table(Galois16::new(1));
+        process_slice_multiply_add(&input, &mut expected, &tables);
+
+        let kernel = CleanLaneKernel::identity().expect("identity lane kernel");
+        unsafe {
+            kernel.run(input.as_ptr(), actual.as_mut_ptr());
+        }
+
+        assert_eq!(actual, expected);
     }
 
     #[test]

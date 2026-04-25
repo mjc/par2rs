@@ -50,6 +50,10 @@ impl ExecutableBuffer {
         function_from_ptr(self.ptr)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     fn make_executable(&mut self) -> io::Result<()> {
         protect_executable(self.ptr, self.capacity)?;
         self.executable = true;
