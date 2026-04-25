@@ -49,6 +49,8 @@ Environment:
   REDUNDANCY=N       create redundancy percentage (default: $REDUNDANCY)
   RECOVERY_FILES=N   recovery file count via -n (default: $RECOVERY_FILES)
   PAR2CMD_BIN=PATH   par2cmdline-turbo binary (default: $PAR2CMD_BIN)
+  WORK_ROOT=DIR      generated corpus and PAR2 work directory
+                     default: result run directory/work
   VERIFY_OUTPUTS=0   skip cross-tool verification after each create
   VERIFY_REPAIR=MODE run destructive cross-tool repair validation: smoke, 1, or 0
                      default: $VERIFY_REPAIR
@@ -62,6 +64,7 @@ Environment:
 
 Example:
   nix develop --command env ITERATIONS=10 THREADS=16 PROFILE_CASE=single_5g \\
+    WORK_ROOT="\$HOME/uncompressed/par2rs-create-perf/manual-run" \\
     CASES='single_256m:1:256:1048576,multi_1g:64:16:1048576,single_5g:1:5120:1048576' \\
     scripts/benchmark_create_perf.sh
 EOF
@@ -95,13 +98,13 @@ fi
 mkdir -p "$RESULTS_ROOT"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 RUN_ROOT="$RESULTS_ROOT/run-$TIMESTAMP"
-WORK_ROOT="$RUN_ROOT/work"
+WORK_ROOT="${WORK_ROOT:-$RUN_ROOT/work}"
 RAW_CSV="$RUN_ROOT/raw.csv"
 SUMMARY_MD="$RUN_ROOT/summary.md"
 SMOKE_CSV="$RUN_ROOT/smoke.csv"
 SMOKE_SUMMARY_MD="$RUN_ROOT/smoke-summary.md"
 PRESERVE_WORK=0
-mkdir -p "$WORK_ROOT"
+mkdir -p "$RUN_ROOT" "$WORK_ROOT"
 
 cleanup() {
     if [[ "$KEEP_WORK" != "1" && "$PRESERVE_WORK" != "1" ]]; then
@@ -112,6 +115,7 @@ trap cleanup EXIT
 
 echo "=== par2rs create perf benchmark ==="
 echo "results: $RUN_ROOT"
+echo "work:    $WORK_ROOT"
 echo "iterations: $ITERATIONS measured, $WARMUP_RUNS warmup"
 echo "cases: $CASES"
 echo "threads: $THREADS"
