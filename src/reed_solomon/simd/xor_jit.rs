@@ -1070,6 +1070,45 @@ mod tests {
     }
 
     #[test]
+    fn prepared_bitplane_multiply_add_to_prepared_matches_table_executor() {
+        let input = (0..bitplane::AVX2_BLOCK_BYTES)
+            .map(|value| (value * 37 + 11) as u8)
+            .collect::<Vec<_>>();
+        let initial_output = (0..bitplane::AVX2_BLOCK_BYTES)
+            .map(|value| (value * 17 + 3) as u8)
+            .collect::<Vec<_>>();
+        let mut prepared_input = [0u8; bitplane::AVX2_BLOCK_BYTES];
+        let mut prepared_output = [0u8; bitplane::AVX2_BLOCK_BYTES];
+
+        bitplane::prepare_avx2_block(&mut prepared_input, input.as_slice().try_into().unwrap());
+        bitplane::prepare_avx2_block(
+            &mut prepared_output,
+            initial_output.as_slice().try_into().unwrap(),
+        );
+
+        for coefficient in [0, 1, 2, 3, 5, 0x100b, 0xffff] {
+            let tables = build_split_mul_table(Galois16::new(coefficient));
+            let mut expected = initial_output.clone();
+            let mut actual = [0u8; bitplane::AVX2_BLOCK_BYTES];
+            let mut output_block = prepared_output;
+
+            process_slice_multiply_add(&input, &mut expected, &tables);
+            bitplane::multiply_add_prepared_avx2_block_to_prepared(
+                &prepared_input,
+                coefficient,
+                &mut output_block,
+            );
+            bitplane::finish_avx2_block(&mut actual, &output_block);
+
+            assert_eq!(
+                actual.as_slice(),
+                expected,
+                "coefficient={coefficient:#06x}"
+            );
+        }
+    }
+
+    #[test]
     fn xor_jit_word_multiply_matches_table() {
         let coeffs = [0, 1, 2, 7, 0x100b, 0xbeef, 0xffff];
         let values = [0, 1, 2, 0x1234, 0x8000, 0xffff];

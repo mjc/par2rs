@@ -90,6 +90,18 @@ pub fn multiply_add_prepared_avx2_block(prepared: &[u8], coefficient: u16, outpu
     }
 }
 
+pub fn multiply_add_prepared_avx2_block_to_prepared(
+    prepared: &[u8; AVX2_BLOCK_BYTES],
+    coefficient: u16,
+    output: &mut [u8; AVX2_BLOCK_BYTES],
+) {
+    for word_lane in WordLane::all() {
+        let multiplied = multiply_word(prepared_word(prepared, word_lane), coefficient);
+        let result = prepared_word(output, word_lane) ^ multiplied;
+        write_prepared_word(output, word_lane, result);
+    }
+}
+
 pub fn finish_avx2_block(dst: &mut [u8; AVX2_BLOCK_BYTES], prepared: &[u8; AVX2_BLOCK_BYTES]) {
     for word_lane in WordLane::all() {
         write_output_word(dst, word_lane, prepared_word(prepared, word_lane));
@@ -152,6 +164,27 @@ fn prepared_word(prepared: &[u8], word: WordLane) -> u16 {
     u16::from_le_bytes([low, high])
 }
 
+fn write_prepared_word(prepared: &mut [u8], word: WordLane, value: u16) {
+    let [low, high] = value.to_le_bytes();
+    write_prepared_byte(prepared, ByteHalf::Low, word, low);
+    write_prepared_byte(prepared, ByteHalf::High, word, high);
+}
+
+fn write_prepared_byte(prepared: &mut [u8], half: ByteHalf, word: WordLane, value: u8) {
+    let lane_mask = 1 << word.lane;
+
+    for bit_from_msb in 0..BITS_PER_BYTE {
+        let plane = Plane::new(half, bit_from_msb, word.group);
+        let mask = read_mask(prepared, plane);
+        let next = if value & (0x80 >> bit_from_msb) == 0 {
+            mask & !lane_mask
+        } else {
+            mask | lane_mask
+        };
+        write_mask(prepared, plane, next);
+    }
+}
+
 fn prepared_byte(prepared: &[u8], half: ByteHalf, word: WordLane) -> u8 {
     (0..BITS_PER_BYTE)
         .filter(|&bit_from_msb| {
@@ -164,6 +197,11 @@ fn prepared_byte(prepared: &[u8], half: ByteHalf, word: WordLane) -> u8 {
 fn read_mask(prepared: &[u8], plane: Plane) -> u32 {
     let offset = plane.offset();
     u32::from_le_bytes(prepared[offset..offset + MASK_BYTES].try_into().unwrap())
+}
+
+fn write_mask(prepared: &mut [u8], plane: Plane, value: u32) {
+    let offset = plane.offset();
+    prepared[offset..offset + MASK_BYTES].copy_from_slice(&value.to_le_bytes());
 }
 
 fn multiply_word(mut input: u16, coefficient: u16) -> u16 {
