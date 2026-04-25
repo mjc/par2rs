@@ -8,6 +8,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PLATFORM="$(uname -s)"
+ARCH="$(uname -m)"
 
 ITERATIONS="${ITERATIONS:-30}"
 WARMUP_RUNS="${WARMUP_RUNS:-3}"
@@ -20,12 +22,12 @@ RESULTS_ROOT="${RESULTS_ROOT:-$PROJECT_ROOT/target/perf-results/create}"
 KEEP_WORK="${KEEP_WORK:-0}"
 RUN_FLAMEGRAPH="${RUN_FLAMEGRAPH:-1}"
 PROFILE_CASE="${PROFILE_CASE:-}"
-PROFILE_TOOL="${PROFILE_TOOL:-par2rs-xor-jit-port}"
+PROFILE_TOOL="${PROFILE_TOOL:-}"
 PROFILE_FREQUENCY="${PROFILE_FREQUENCY:-997}"
 PERF_EVENTS="${PERF_EVENTS:-instructions,cycles,branches,branch-misses,cache-references,cache-misses,task-clock,context-switches,cpu-migrations,page-faults}"
 VERIFY_OUTPUTS="${VERIFY_OUTPUTS:-1}"
 VERIFY_REPAIR="${VERIFY_REPAIR:-smoke}"
-BENCHMARK_TOOLS=(
+DEFAULT_BENCHMARK_TOOLS=(
     par2rs-pshufb
     par2rs-xor-jit-port
     par2rs-xor-jit-clean
@@ -54,12 +56,12 @@ Environment:
   VERIFY_OUTPUTS=0   skip cross-tool verification after each create
   VERIFY_REPAIR=MODE run destructive cross-tool repair validation: smoke, 1, or 0
                      default: $VERIFY_REPAIR
-  Required tools: ${BENCHMARK_TOOLS[*]}
+  Required tools depend on platform/arch.
   Forced JIT runs set PAR2RS_CREATE_XOR_JIT_FALLBACK=error.
-  RUN_FLAMEGRAPH=0   skip par2rs perf/inferno flamegraph generation
+  RUN_FLAMEGRAPH=0   skip par2rs flamegraph generation
   PROFILE_CASE=LABEL profile this CASES label; default profiles the last case
-  PROFILE_TOOL=TOOL   par2rs tool variant to profile (default: $PROFILE_TOOL)
-  PROFILE_FREQUENCY=N perf sampling frequency for flamegraph (default: $PROFILE_FREQUENCY)
+  PROFILE_TOOL=TOOL   par2rs tool variant to profile (default: platform-specific)
+  PROFILE_FREQUENCY=N sampling frequency for flamegraph (default: $PROFILE_FREQUENCY)
   KEEP_WORK=1        keep generated benchmark work directory
 
 Example:
@@ -83,16 +85,65 @@ need_tool() {
     fi
 }
 
-need_tool perf
+tool_supported() {
+    local tool="$1"
+
+    case "$tool" in
+        turbo-auto|par2rs-auto|par2rs-scalar)
+            return 0
+            ;;
+        par2rs-pshufb|par2rs-xor-jit-port|par2rs-xor-jit-clean|par2rs-xor-jit)
+            [[ "$ARCH" == "x86_64" ]]
+            return
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+BENCHMARK_TOOLS=()
+for tool in "${DEFAULT_BENCHMARK_TOOLS[@]}"; do
+    if tool_supported "$tool"; then
+        BENCHMARK_TOOLS+=("$tool")
+    fi
+done
+
+if [[ "${#BENCHMARK_TOOLS[@]}" == "1" && "${BENCHMARK_TOOLS[0]}" == "turbo-auto" ]]; then
+    BENCHMARK_TOOLS=(par2rs-auto turbo-auto)
+fi
+
+if [[ -z "$PROFILE_TOOL" ]]; then
+    for tool in "${BENCHMARK_TOOLS[@]}"; do
+        if [[ "$tool" == par2rs-* ]]; then
+            PROFILE_TOOL="$tool"
+            break
+        fi
+    done
+fi
+
+if [[ -z "$PROFILE_TOOL" ]]; then
+    echo "error: could not determine a par2rs PROFILE_TOOL for $PLATFORM/$ARCH" >&2
+    exit 1
+fi
+
+if ! tool_supported "$PROFILE_TOOL"; then
+    echo "error: PROFILE_TOOL '$PROFILE_TOOL' is unsupported on $PLATFORM/$ARCH" >&2
+    exit 1
+fi
+
 need_tool python3
 need_tool dd
 need_tool cmp
 need_tool "$PAR2CMD_BIN"
 
-if ! perf stat -x, -e instructions -- true >/dev/null 2>&1; then
-    echo "error: perf cannot read the instructions counter." >&2
-    echo "Check kernel.perf_event_paranoid or run in an environment with perf permissions." >&2
-    exit 1
+if [[ "$PLATFORM" == "Linux" ]]; then
+    need_tool perf
+    if ! perf stat -x, -e instructions -- true >/dev/null 2>&1; then
+        echo "error: perf cannot read the instructions counter." >&2
+        echo "Check kernel.perf_event_paranoid or run in an environment with perf permissions." >&2
+        exit 1
+    fi
 fi
 
 mkdir -p "$RESULTS_ROOT"
@@ -119,6 +170,9 @@ echo "work:    $WORK_ROOT"
 echo "iterations: $ITERATIONS measured, $WARMUP_RUNS warmup"
 echo "cases: $CASES"
 echo "threads: $THREADS"
+echo "platform: $PLATFORM/$ARCH"
+echo "tools: ${BENCHMARK_TOOLS[*]}"
+echo "profile tool: $PROFILE_TOOL"
 echo
 
 echo "Building par2rs release binary..."
@@ -131,6 +185,13 @@ write_csv_header() {
 
 write_csv_header "$RAW_CSV"
 write_csv_header "$SMOKE_CSV"
+
+now_ns() {
+    python3 - <<'PY'
+import time
+print(time.time_ns())
+PY
+}
 
 split_cases() {
     tr ',' '\n' <<< "$CASES"
@@ -181,6 +242,9 @@ link_corpus() {
 perf_value() {
     local perf_file="$1"
     local event="$2"
+    if [[ ! -f "$perf_file" ]]; then
+        return 0
+    fi
     awk -F, -v event="$event" '
         {
             parsed_event = $3
@@ -217,6 +281,10 @@ run_create() {
     local -a env_prefix=()
     if [[ "$tool" == par2rs-* ]]; then
         case "$tool" in
+            par2rs-auto)
+                selected_method="auto"
+                env_prefix=()
+                ;;
             par2rs-pshufb)
                 selected_method="pshufb"
                 env_prefix=(env PAR2RS_CREATE_GF16=pshufb)
@@ -233,6 +301,10 @@ run_create() {
                 selected_method="xor-jit-clean"
                 env_prefix=(env PAR2RS_CREATE_GF16=xor-jit-clean PAR2RS_CREATE_XOR_JIT_FALLBACK=error)
                 ;;
+            par2rs-scalar)
+                selected_method="scalar"
+                env_prefix=(env PAR2RS_CREATE_GF16=scalar)
+                ;;
             *)
                 echo "error: unknown par2rs variant: $tool" >&2
                 return 2
@@ -248,16 +320,24 @@ run_create() {
     fi
 
     local start_ns end_ns status validation_status wall_seconds
-    start_ns="$(date +%s%N)"
+    start_ns="$(now_ns)"
     set +e
-    (
-        cd "$run_dir"
-        sources=(./*.bin)
-        perf stat -x, -o "$perf_file" -e "$PERF_EVENTS" -- "${env_prefix[@]}" "${cmd[@]}" out.par2 "${sources[@]}" >/dev/null
-    )
+    if [[ "$PLATFORM" == "Linux" ]]; then
+        (
+            cd "$run_dir"
+            sources=(./*.bin)
+            perf stat -x, -o "$perf_file" -e "$PERF_EVENTS" -- "${env_prefix[@]}" "${cmd[@]}" out.par2 "${sources[@]}" >/dev/null
+        )
+    else
+        (
+            cd "$run_dir"
+            sources=(./*.bin)
+            "${env_prefix[@]}" "${cmd[@]}" out.par2 "${sources[@]}" >/dev/null
+        )
+    fi
     status="$?"
     set -e
-    end_ns="$(date +%s%N)"
+    end_ns="$(now_ns)"
     wall_seconds="$(awk -v s="$start_ns" -v e="$end_ns" 'BEGIN { printf "%.6f", (e - s) / 1000000000 }')"
     validation_status=0
 
@@ -475,7 +555,7 @@ with open(summary_md, "w") as out:
     out.write(f"- redundancy: {redundancy}%\n")
     out.write(f"- recovery files: {recovery_files}\n")
     out.write("- validation: par2rs output verified/repaired by turbo; turbo output verified/repaired by par2rs\n")
-    out.write("- primary signal: wall seconds; Linux perf counters are recorded for diagnostics\n\n")
+    out.write("- primary signal: wall seconds; Linux perf counters are recorded for diagnostics when available\n\n")
 
     out.write("## Relative Summary\n\n")
     out.write("| case | tool | method | instructions | cycles | wall seconds | effective CPU |\n")
@@ -519,6 +599,11 @@ PY
 
 enforce_pass_criteria() {
     local raw_csv="${1:-$RAW_CSV}"
+
+    if ! tool_supported "par2rs-xor-jit-port" || ! tool_supported "par2rs-xor-jit-clean"; then
+        echo "Skipping XOR-JIT pass criteria on $PLATFORM/$ARCH."
+        return 0
+    fi
 
     python3 - "$raw_csv" <<'PY'
 import csv
@@ -678,6 +763,9 @@ par2rs_tool_env() {
     local tool="$1"
 
     case "$tool" in
+        par2rs-auto)
+            printf '%s\0' env
+            ;;
         par2rs-pshufb)
             printf '%s\0' env PAR2RS_CREATE_GF16=pshufb
             ;;
@@ -686,6 +774,35 @@ par2rs_tool_env() {
             ;;
         par2rs-xor-jit-clean)
             printf '%s\0' env PAR2RS_CREATE_GF16=xor-jit-clean PAR2RS_CREATE_XOR_JIT_FALLBACK=error
+            ;;
+        par2rs-scalar)
+            printf '%s\0' env PAR2RS_CREATE_GF16=scalar
+            ;;
+        *)
+            echo "error: PROFILE_TOOL must be a par2rs variant, got: $tool" >&2
+            return 1
+            ;;
+    esac
+}
+
+par2rs_tool_env_args() {
+    local tool="$1"
+
+    case "$tool" in
+        par2rs-auto)
+            return 0
+            ;;
+        par2rs-pshufb)
+            printf '%s\0' PAR2RS_CREATE_GF16=pshufb
+            ;;
+        par2rs-xor-jit|par2rs-xor-jit-port)
+            printf '%s\0' PAR2RS_CREATE_GF16=xor-jit-port PAR2RS_CREATE_XOR_JIT_FALLBACK=error
+            ;;
+        par2rs-xor-jit-clean)
+            printf '%s\0' PAR2RS_CREATE_GF16=xor-jit-clean PAR2RS_CREATE_XOR_JIT_FALLBACK=error
+            ;;
+        par2rs-scalar)
+            printf '%s\0' PAR2RS_CREATE_GF16=scalar
             ;;
         *)
             echo "error: PROFILE_TOOL must be a par2rs variant, got: $tool" >&2
@@ -705,15 +822,6 @@ generate_flamegraph() {
     if [[ "$RUN_FLAMEGRAPH" != "1" ]]; then
         return 0
     fi
-    if ! command -v inferno-collapse-perf >/dev/null 2>&1 || ! command -v inferno-flamegraph >/dev/null 2>&1; then
-        if command -v cargo >/dev/null 2>&1; then
-            echo "inferno not found; installing with cargo install inferno..."
-            cargo install inferno
-        else
-            echo "warning: inferno is unavailable; skipping flamegraph" >&2
-            return 0
-        fi
-    fi
 
     rm -f "$case_dir"/flamegraph-out*.par2
     local -a args=(c -q -q "-s$block_size" "-r$REDUNDANCY" "-n$RECOVERY_FILES")
@@ -726,40 +834,150 @@ generate_flamegraph() {
         args+=("$file")
     done
 
-    echo
-    echo "Building par2rs profiling binary with frame pointers..."
-    (
-        cd "$PROJECT_ROOT"
-        RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
-            cargo build --profile profiling --bin par2 --quiet
-    )
+    case "$PLATFORM" in
+        Linux)
+            if ! command -v inferno-collapse-perf >/dev/null 2>&1 || ! command -v inferno-flamegraph >/dev/null 2>&1; then
+                if command -v cargo >/dev/null 2>&1; then
+                    echo "inferno not found; installing with cargo install inferno..."
+                    cargo install inferno
+                else
+                    echo "warning: inferno is unavailable; skipping flamegraph" >&2
+                    return 0
+                fi
+            fi
 
-    local profiling_bin="$PROJECT_ROOT/target/profiling/par2"
-    local perf_data="$RUN_ROOT/par2rs-create-$label-$PROFILE_TOOL.perf.data"
-    local perf_summary="$RUN_ROOT/par2rs-create-$label-$PROFILE_TOOL.perf-report.txt"
-    local hotspots="$RUN_ROOT/par2rs-create-$label-$PROFILE_TOOL.hotspots.txt"
-    local -a env_prefix
-    mapfile -d '' -t env_prefix < <(par2rs_tool_env "$PROFILE_TOOL")
+            echo
+            echo "Building par2rs profiling binary with frame pointers..."
+            (
+                cd "$PROJECT_ROOT"
+                RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
+                    cargo build --profile profiling --bin par2 --quiet
+            )
 
-    echo "Recording par2rs flamegraph for case '$label' / $PROFILE_TOOL..."
-    if ! perf record -g --call-graph fp -F "$PROFILE_FREQUENCY" -o "$perf_data" -- "${env_prefix[@]}" "$profiling_bin" "${args[@]}" >/dev/null; then
-        echo "warning: flamegraph generation failed; benchmark results are still available" >&2
-        return 0
-    fi
+            local profiling_bin="$PROJECT_ROOT/target/profiling/par2"
+            local perf_data="$RUN_ROOT/par2rs-create-$label-$PROFILE_TOOL.perf.data"
+            local perf_summary="$RUN_ROOT/par2rs-create-$label-$PROFILE_TOOL.perf-report.txt"
+            local hotspots="$RUN_ROOT/par2rs-create-$label-$PROFILE_TOOL.hotspots.txt"
+            local -a env_prefix
+            mapfile -d '' -t env_prefix < <(par2rs_tool_env "$PROFILE_TOOL")
 
-    echo "Rendering flamegraph SVG..."
-    perf script -i "$perf_data" 2>/dev/null | inferno-collapse-perf | inferno-flamegraph > "$flamegraph_file"
+            echo "Recording par2rs flamegraph for case '$label' / $PROFILE_TOOL..."
+            if ! perf record -g --call-graph fp -F "$PROFILE_FREQUENCY" -o "$perf_data" -- "${env_prefix[@]}" "$profiling_bin" "${args[@]}" >/dev/null; then
+                echo "warning: flamegraph generation failed; benchmark results are still available" >&2
+                return 0
+            fi
 
-    echo "Generating perf report text..."
-    perf report -i "$perf_data" --stdio --sort comm,dso,symbol > "$perf_summary" 2>/dev/null || true
+            echo "Rendering flamegraph SVG..."
+            perf script -i "$perf_data" 2>/dev/null | inferno-collapse-perf | inferno-flamegraph > "$flamegraph_file"
 
-    echo "Generating hotspot summary..."
-    perf script -i "$perf_data" 2>/dev/null | summarize_perf_script > "$hotspots" || true
+            echo "Generating perf report text..."
+            perf report -i "$perf_data" --stdio --sort comm,dso,symbol > "$perf_summary" 2>/dev/null || true
 
-    echo "flamegraph: $flamegraph_file"
-    echo "perf data:  $perf_data"
-    echo "perf text:  $perf_summary"
-    echo "hotspots:   $hotspots"
+            echo "Generating hotspot summary..."
+            perf script -i "$perf_data" 2>/dev/null | summarize_perf_script > "$hotspots" || true
+
+            echo "flamegraph: $flamegraph_file"
+            echo "perf data:  $perf_data"
+            echo "perf text:  $perf_summary"
+            echo "hotspots:   $hotspots"
+            ;;
+        Darwin)
+            if ! command -v xctrace >/dev/null 2>&1; then
+                echo "warning: xctrace is unavailable; skipping flamegraph" >&2
+                return 0
+            fi
+            if ! command -v inferno-collapse-xctrace >/dev/null 2>&1; then
+                echo "warning: inferno-collapse-xctrace is unavailable; skipping flamegraph" >&2
+                return 0
+            fi
+            if ! command -v inferno-flamegraph >/dev/null 2>&1; then
+                echo "warning: inferno-flamegraph is unavailable; skipping flamegraph" >&2
+                return 0
+            fi
+
+            local -a env_vars
+            local xctrace_bin xctrace_dir developer_dir
+            local trace_file xml_file folded_file
+            mapfile -d '' -t env_vars < <(par2rs_tool_env_args "$PROFILE_TOOL")
+            xctrace_bin="$(command -v xctrace || true)"
+            if [[ -z "$xctrace_bin" ]]; then
+                xctrace_bin="$(xcrun --find xctrace 2>/dev/null || true)"
+            fi
+            if [[ -z "$xctrace_bin" ]]; then
+                echo "warning: xctrace is unavailable; skipping flamegraph" >&2
+                return 0
+            fi
+            xctrace_dir="$(dirname "$xctrace_bin")"
+            developer_dir="/Applications/Xcode.app/Contents/Developer"
+            if [[ ! -d "$developer_dir" ]]; then
+                developer_dir="$(dirname "$(dirname "$xctrace_dir")")"
+            fi
+            trace_file="$RUN_ROOT/par2rs-create-$label-$PROFILE_TOOL.trace"
+            xml_file="$RUN_ROOT/par2rs-create-$label-$PROFILE_TOOL.xml"
+            folded_file="$RUN_ROOT/par2rs-create-$label-$PROFILE_TOOL.folded"
+
+            echo
+            echo "Building par2rs profiling binary with frame pointers..."
+            (
+                cd "$PROJECT_ROOT"
+                RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
+                    cargo build --profile profiling --bin par2 --quiet
+            ) || {
+                echo "warning: flamegraph generation failed; benchmark results are still available" >&2
+                return 0
+            }
+
+            local profiling_bin="$PROJECT_ROOT/target/profiling/par2"
+            local -a xctrace_cmd=(
+                "$xctrace_bin" record
+                --template "Time Profiler"
+                --output "$trace_file"
+                --target-stdout /dev/null
+                --launch --
+                "$profiling_bin"
+            )
+            local env_var
+            for env_var in "${env_vars[@]}"; do
+                xctrace_cmd+=(--env "$env_var")
+            done
+            xctrace_cmd+=("${args[@]}")
+
+            echo "Recording par2rs flamegraph for case '$label' / $PROFILE_TOOL with xctrace..."
+            env DEVELOPER_DIR="$developer_dir" PATH="$xctrace_dir:$PATH" \
+                "${xctrace_cmd[@]}" >/dev/null || {
+                echo "warning: xctrace recording failed; benchmark results are still available" >&2
+                return 0
+            }
+
+            echo "Exporting xctrace profile..."
+            env DEVELOPER_DIR="$developer_dir" PATH="$xctrace_dir:$PATH" \
+                xctrace export --input "$trace_file" \
+                --xpath '/trace-toc/*/data/table[@schema="time-profile"]' > "$xml_file" || {
+                echo "warning: xctrace export failed; benchmark results are still available" >&2
+                return 0
+            }
+
+            echo "Collapsing xctrace stacks..."
+            if ! inferno-collapse-xctrace "$xml_file" > "$folded_file"; then
+                echo "warning: xctrace stack collapse failed; benchmark results are still available" >&2
+                return 0
+            fi
+
+            echo "Rendering flamegraph SVG..."
+            if ! inferno-flamegraph "$folded_file" > "$flamegraph_file"; then
+                echo "warning: inferno flamegraph rendering failed; benchmark results are still available" >&2
+                return 0
+            fi
+
+            echo "flamegraph: $flamegraph_file"
+            echo "trace:      $trace_file"
+            echo "xml:        $xml_file"
+            echo "folded:     $folded_file"
+            ;;
+        *)
+            echo "warning: flamegraph generation is unsupported on $PLATFORM; skipping flamegraph" >&2
+            ;;
+    esac
 }
 
 last_case=""

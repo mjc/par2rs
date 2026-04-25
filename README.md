@@ -193,7 +193,7 @@ cargo build --release --bins
 
 ### Create Performance Benchmarking
 
-For create-side comparisons, use the perf benchmark harness:
+For create-side comparisons, use the benchmark harness:
 
 ```bash
 nix develop --command make benchmark-create-perf
@@ -201,8 +201,10 @@ nix develop --command make benchmark-create-perf
 
 The benchmark compares `par2rs` create variants against `par2cmdline-turbo`
 (`par2` by default), runs measured iterations per case, verifies outputs across
-tools, reports wall time plus Linux `perf` counters, and writes a selected
-`par2rs` create flamegraph. Results are saved under
+tools, reports wall time, records Linux `perf` counters when available, and
+writes a selected `par2rs` create flamegraph. On macOS, the flamegraph is
+generated with `xctrace`, `inferno-collapse-xctrace`, and `inferno-flamegraph`.
+Results are saved under
 `target/perf-results/create/`.
 
 Useful overrides:
@@ -215,7 +217,8 @@ nix develop --command env ITERATIONS=10 THREADS=16 PROFILE_CASE=single_5g \
 
 The pass/fail signal is mean wall time: both `par2rs-xor-jit-port` and
 `par2rs-xor-jit-clean` must match or beat `turbo-auto` for every configured
-case. Linux `perf` counters are recorded to explain the wall-time result.
+case. Linux `perf` counters are recorded to explain the wall-time result when
+the benchmark is run on Linux.
 
 ### Testing
 

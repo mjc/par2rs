@@ -8,7 +8,7 @@ help:
 	@echo ""
 	@echo "Available targets:"
 	@echo "  test           - Run all tests"
-	@echo "  benchmark-create-perf - Compare par2rs create vs par2cmdline-turbo with perf counters"
+	@echo "  benchmark-create-perf - Compare par2rs create vs par2cmdline-turbo with profiling support"
 	@echo "  coverage       - Generate HTML coverage report"
 	@echo "  coverage-html  - Generate HTML coverage report"
 	@echo "  coverage-llvm  - Generate text, HTML, LCOV, Cobertura, and Codecov JSON reports"
