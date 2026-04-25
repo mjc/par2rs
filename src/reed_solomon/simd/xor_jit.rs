@@ -201,6 +201,26 @@ impl XorJitBitplaneKernel {
 }
 
 #[cfg(target_arch = "x86_64")]
+pub fn prepare_xor_jit_bitplane_chunks(dst: &mut [u8], src: &[u8]) -> usize {
+    bitplane::prepare_avx2(dst, src)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn finish_xor_jit_bitplane_chunks(dst: &mut [u8], prepared: &[u8]) {
+    assert_eq!(prepared.len() % bitplane::AVX2_BLOCK_BYTES, 0);
+    assert!(prepared.len() >= dst.len().next_multiple_of(bitplane::AVX2_BLOCK_BYTES));
+
+    let mut finished_block = [0u8; bitplane::AVX2_BLOCK_BYTES];
+    for (prepared_block, output_block) in prepared
+        .chunks_exact(bitplane::AVX2_BLOCK_BYTES)
+        .zip(dst.chunks_mut(bitplane::AVX2_BLOCK_BYTES))
+    {
+        bitplane::finish_avx2_block(&mut finished_block, prepared_block.try_into().unwrap());
+        output_block.copy_from_slice(&finished_block[..output_block.len()]);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
 fn assert_prepared_chunk_shape(input: &[u8], output: &[u8]) {
     assert_eq!(input.len(), output.len());
@@ -1378,6 +1398,20 @@ mod tests {
         kernel.multiply_add_chunks(&prepared_input, &mut actual);
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn public_bitplane_prepare_finish_roundtrips_partial_chunks() {
+        let input = (0..bitplane::AVX2_BLOCK_BYTES * 2 + 37)
+            .map(|idx| (idx * 29 + 17) as u8)
+            .collect::<Vec<_>>();
+        let mut prepared = vec![0u8; input.len().next_multiple_of(bitplane::AVX2_BLOCK_BYTES)];
+        let mut actual = vec![0u8; input.len()];
+
+        let prepared_len = prepare_xor_jit_bitplane_chunks(&mut prepared, &input);
+        finish_xor_jit_bitplane_chunks(&mut actual, &prepared[..prepared_len]);
+
+        assert_eq!(actual, input);
     }
 
     #[test]
