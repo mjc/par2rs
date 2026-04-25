@@ -9,6 +9,8 @@
 use std::arch::x86_64::*;
 
 #[cfg(target_arch = "x86_64")]
+mod encoder;
+#[cfg(target_arch = "x86_64")]
 mod exec_mem;
 
 const GF16_REDUCTION: u16 = 0x100b;
@@ -801,10 +803,11 @@ mod tests {
 
     #[test]
     fn executable_buffer_runs_constant_function() {
+        let generated = encoder::Program::new().mov_eax_imm32(7).ret().finish();
+        assert_eq!(generated, [0xb8, 0x07, 0x00, 0x00, 0x00, 0xc3]);
+
         let mut code = exec_mem::ExecutableBuffer::new(16).expect("executable buffer");
-        // mov eax, 7; ret
-        code.write(&[0xb8, 0x07, 0x00, 0x00, 0x00, 0xc3])
-            .expect("write generated code");
+        code.write(&generated).expect("write generated code");
         let function: extern "sysv64" fn() -> u32 = unsafe { code.function() };
 
         assert_eq!(function(), 7);
