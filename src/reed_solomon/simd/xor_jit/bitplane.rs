@@ -48,6 +48,24 @@ pub fn prepare_avx2_block(dst: &mut [u8; AVX2_BLOCK_BYTES], src: &[u8; AVX2_BLOC
     }
 }
 
+pub fn prepare_avx2(dst: &mut [u8], src: &[u8]) -> usize {
+    let prepared_len = src.len().next_multiple_of(AVX2_BLOCK_BYTES);
+    assert!(dst.len() >= prepared_len);
+
+    for block_start in (0..src.len()).step_by(AVX2_BLOCK_BYTES) {
+        let block_end = (block_start + AVX2_BLOCK_BYTES).min(src.len());
+        let mut input_block = [0u8; AVX2_BLOCK_BYTES];
+        input_block[..block_end - block_start].copy_from_slice(&src[block_start..block_end]);
+
+        let output_block = (&mut dst[block_start..block_start + AVX2_BLOCK_BYTES])
+            .try_into()
+            .expect("prepared block length");
+        prepare_avx2_block(output_block, &input_block);
+    }
+
+    prepared_len
+}
+
 pub fn mask_offset(half: ByteHalf, bit_from_msb: usize, group: usize) -> usize {
     Plane::new(half, bit_from_msb, group).offset()
 }

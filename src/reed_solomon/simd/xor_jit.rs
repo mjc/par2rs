@@ -1013,6 +1013,31 @@ mod tests {
     }
 
     #[test]
+    fn avx2_bitplane_prepare_zero_pads_partial_final_block() {
+        let input = vec![0xffu8; 33];
+        let mut prepared = vec![0x55u8; bitplane::AVX2_BLOCK_BYTES * 2];
+
+        let prepared_len = bitplane::prepare_avx2(&mut prepared, &input);
+
+        assert_eq!(prepared_len, bitplane::AVX2_BLOCK_BYTES);
+        for bit_from_msb in 0..8 {
+            assert_eq!(
+                prepared_mask_slice(&prepared, bitplane::ByteHalf::Low, bit_from_msb, 0),
+                (1 << 17) - 1
+            );
+            assert_eq!(
+                prepared_mask_slice(&prepared, bitplane::ByteHalf::High, bit_from_msb, 0),
+                (1 << 16) - 1
+            );
+            assert_eq!(
+                prepared_mask_slice(&prepared, bitplane::ByteHalf::High, bit_from_msb, 1),
+                0
+            );
+        }
+        assert!(prepared[prepared_len..].iter().all(|&byte| byte == 0x55));
+    }
+
+    #[test]
     fn xor_jit_word_multiply_matches_table() {
         let coeffs = [0, 1, 2, 7, 0x100b, 0xbeef, 0xffff];
         let values = [0, 1, 2, 0x1234, 0x8000, 0xffff];
@@ -1032,6 +1057,16 @@ mod tests {
 
     fn prepared_mask(
         prepared: &[u8; bitplane::AVX2_BLOCK_BYTES],
+        half: bitplane::ByteHalf,
+        bit_from_msb: usize,
+        group: usize,
+    ) -> u32 {
+        let offset = bitplane::mask_offset(half, bit_from_msb, group);
+        u32::from_le_bytes(prepared[offset..offset + 4].try_into().unwrap())
+    }
+
+    fn prepared_mask_slice(
+        prepared: &[u8],
         half: bitplane::ByteHalf,
         bit_from_msb: usize,
         group: usize,
