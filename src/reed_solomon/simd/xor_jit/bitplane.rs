@@ -12,6 +12,30 @@ pub enum ByteHalf {
     Low,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Plane {
+    half: ByteHalf,
+    bit_from_msb: usize,
+    group: usize,
+}
+
+impl Plane {
+    pub fn new(half: ByteHalf, bit_from_msb: usize, group: usize) -> Self {
+        debug_assert!(bit_from_msb < BITS_PER_BYTE);
+        debug_assert!(group < GROUPS_PER_BLOCK);
+        Self {
+            half,
+            bit_from_msb,
+            group,
+        }
+    }
+
+    pub fn offset(self) -> usize {
+        (self.half.base_mask_index() + self.bit_from_msb * GROUPS_PER_BLOCK + self.group)
+            * MASK_BYTES
+    }
+}
+
 pub fn prepare_avx2_block(dst: &mut [u8; AVX2_BLOCK_BYTES], src: &[u8; AVX2_BLOCK_BYTES]) {
     dst.fill(0);
 
@@ -25,9 +49,7 @@ pub fn prepare_avx2_block(dst: &mut [u8; AVX2_BLOCK_BYTES], src: &[u8; AVX2_BLOC
 }
 
 pub fn mask_offset(half: ByteHalf, bit_from_msb: usize, group: usize) -> usize {
-    debug_assert!(bit_from_msb < BITS_PER_BYTE);
-    debug_assert!(group < GROUPS_PER_BLOCK);
-    (half.base_mask_index() + bit_from_msb * GROUPS_PER_BLOCK + group) * MASK_BYTES
+    Plane::new(half, bit_from_msb, group).offset()
 }
 
 fn write_byte_planes(
@@ -39,7 +61,7 @@ fn write_byte_planes(
 ) {
     for bit_from_msb in 0..BITS_PER_BYTE {
         if byte & (0x80 >> bit_from_msb) != 0 {
-            let offset = mask_offset(half, bit_from_msb, group);
+            let offset = Plane::new(half, bit_from_msb, group).offset();
             let mut mask = u32::from_le_bytes(dst[offset..offset + MASK_BYTES].try_into().unwrap());
             mask |= 1 << lane;
             dst[offset..offset + MASK_BYTES].copy_from_slice(&mask.to_le_bytes());
