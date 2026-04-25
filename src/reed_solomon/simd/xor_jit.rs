@@ -129,11 +129,7 @@ impl CleanLaneKernel {
     }
 
     fn from_program(program: encoder::Program) -> std::io::Result<Self> {
-        let generated = program.finish();
-        let mut code = exec_mem::ExecutableBuffer::new(generated.len())?;
-        code.write(&generated)?;
-        let function = unsafe { code.function() };
-
+        let (code, function) = compile_lane_program(program)?;
         Ok(Self { code, function })
     }
 
@@ -153,11 +149,7 @@ impl CleanBitplaneKernel {
     }
 
     fn from_program(program: encoder::Program) -> std::io::Result<Self> {
-        let generated = program.finish();
-        let mut code = exec_mem::ExecutableBuffer::new(generated.len())?;
-        code.write(&generated)?;
-        let function = unsafe { code.function() };
-
+        let (code, function) = compile_lane_program(program)?;
         Ok(Self { code, function })
     }
 
@@ -165,6 +157,19 @@ impl CleanBitplaneKernel {
         debug_assert!(!self.code.is_empty());
         (self.function)(input, output);
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn compile_lane_program(
+    program: encoder::Program,
+) -> std::io::Result<(exec_mem::ExecutableBuffer, LaneKernelFn)> {
+    let generated = program.finish();
+    let mut code = exec_mem::ExecutableBuffer::new(generated.len())?;
+    code.write(&generated)?;
+    let function = unsafe { code.function() };
+
+    Ok((code, function))
 }
 
 #[cfg(target_arch = "x86_64")]
