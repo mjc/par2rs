@@ -36,7 +36,8 @@ pub use xor_jit::{
     process_slice_multiply_add_xor_jit, process_slices_multiply_add_xor_jit_x2,
     process_slices_multiply_add_xor_jit_x4,
     process_slices_multiply_add_xor_jit_x4_inputs_x2_outputs,
-    process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs, XorJitFlavor, XorJitPreparedCoeff,
+    process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs, XorJitBitplaneKernel, XorJitFlavor,
+    XorJitPreparedCoeff,
 };
 
 /// SIMD implementation to use for the current platform

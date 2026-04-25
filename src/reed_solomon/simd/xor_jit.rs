@@ -51,6 +51,10 @@ impl XorJitPreparedCoeff {
             bitplane_plan: CleanCoeffPlan::new(coefficient),
         }
     }
+
+    fn bitplane_plan(&self) -> CleanCoeffPlan {
+        self.bitplane_plan.clone()
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -187,7 +191,7 @@ impl CleanBitplaneKernel {
 impl XorJitBitplaneKernel {
     pub fn new(prepared: &XorJitPreparedCoeff) -> std::io::Result<Self> {
         Ok(Self {
-            kernel: CleanBitplaneKernel::from_plan(prepared.bitplane_plan.clone())?,
+            kernel: CleanBitplaneKernel::from_plan(prepared.bitplane_plan())?,
         })
     }
 
