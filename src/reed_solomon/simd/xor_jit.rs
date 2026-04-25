@@ -157,6 +157,20 @@ impl CleanBitplaneKernel {
         debug_assert!(!self.code.is_empty());
         (self.function)(input, output);
     }
+
+    fn multiply_add_chunks(&self, input: &[u8], output: &mut [u8]) {
+        assert_eq!(input.len(), output.len());
+        assert_eq!(input.len() % bitplane::AVX2_BLOCK_BYTES, 0);
+
+        for (input_block, output_block) in input
+            .chunks_exact(bitplane::AVX2_BLOCK_BYTES)
+            .zip(output.chunks_exact_mut(bitplane::AVX2_BLOCK_BYTES))
+        {
+            unsafe {
+                self.multiply_add(input_block.as_ptr(), output_block.as_mut_ptr());
+            }
+        }
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1253,6 +1267,44 @@ mod tests {
 
             assert_eq!(actual, expected, "coefficient={coefficient:#06x}");
         }
+    }
+
+    #[test]
+    fn generated_bitplane_multiply_add_processes_prepared_chunks() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let input = (0..bitplane::AVX2_BLOCK_BYTES * 3)
+            .map(|idx| (idx * 37 + 11) as u8)
+            .collect::<Vec<_>>();
+        let initial_output = (0..bitplane::AVX2_BLOCK_BYTES * 3)
+            .map(|idx| (idx * 17 + 3) as u8)
+            .collect::<Vec<_>>();
+        let mut prepared_input = vec![0u8; input.len()];
+        let mut expected = vec![0u8; input.len()];
+        let mut actual = vec![0u8; input.len()];
+        let coefficient = 0x100b;
+
+        bitplane::prepare_avx2(&mut prepared_input, &input);
+        bitplane::prepare_avx2(&mut expected, &initial_output);
+        bitplane::prepare_avx2(&mut actual, &initial_output);
+
+        for (input_block, output_block) in prepared_input
+            .chunks_exact(bitplane::AVX2_BLOCK_BYTES)
+            .zip(expected.chunks_exact_mut(bitplane::AVX2_BLOCK_BYTES))
+        {
+            bitplane::multiply_add_prepared_avx2_block_to_prepared(
+                input_block.try_into().unwrap(),
+                coefficient,
+                output_block.try_into().unwrap(),
+            );
+        }
+
+        let kernel = CleanBitplaneKernel::new(coefficient).expect("bitplane kernel");
+        kernel.multiply_add_chunks(&prepared_input, &mut actual);
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
