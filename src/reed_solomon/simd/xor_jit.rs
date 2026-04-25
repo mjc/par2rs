@@ -814,6 +814,39 @@ mod tests {
     }
 
     #[test]
+    fn generated_avx2_lane_xor_updates_destination() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let generated = encoder::Program::new()
+            .vmovdqu_ymm0_from_rdi()
+            .vmovdqu_ymm1_from_rsi()
+            .vpxor_ymm0_ymm0_ymm1()
+            .vmovdqu_rsi_from_ymm0()
+            .vzeroupper()
+            .ret()
+            .finish();
+        assert_eq!(
+            generated,
+            [
+                0xc5, 0xfe, 0x6f, 0x07, 0xc5, 0xfe, 0x6f, 0x0e, 0xc5, 0xfd, 0xef, 0xc1, 0xc5, 0xfe,
+                0x7f, 0x06, 0xc5, 0xf8, 0x77, 0xc3
+            ]
+        );
+
+        let input = [0xa5u8; 32];
+        let mut output = [0x5au8; 32];
+        let mut code = exec_mem::ExecutableBuffer::new(32).expect("executable buffer");
+        code.write(&generated).expect("write generated code");
+        let function: extern "sysv64" fn(*const u8, *mut u8) = unsafe { code.function() };
+
+        function(input.as_ptr(), output.as_mut_ptr());
+
+        assert_eq!(output, [0xffu8; 32]);
+    }
+
+    #[test]
     fn xor_jit_word_multiply_matches_table() {
         let coeffs = [0, 1, 2, 7, 0x100b, 0xbeef, 0xffff];
         let values = [0, 1, 2, 0x1234, 0x8000, 0xffff];
