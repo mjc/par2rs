@@ -1038,6 +1038,26 @@ mod tests {
     }
 
     #[test]
+    fn prepared_bitplane_multiply_add_matches_table_executor() {
+        let input = (0..bitplane::AVX2_BLOCK_BYTES)
+            .map(|value| (value * 37) as u8)
+            .collect::<Vec<_>>();
+        let mut prepared = vec![0u8; bitplane::AVX2_BLOCK_BYTES];
+        bitplane::prepare_avx2(&mut prepared, &input);
+
+        for coefficient in [0, 1, 2, 3, 5, 0x100b, 0xffff] {
+            let tables = build_split_mul_table(Galois16::new(coefficient));
+            let mut expected = vec![0xa5; bitplane::AVX2_BLOCK_BYTES];
+            let mut actual = expected.clone();
+
+            process_slice_multiply_add(&input, &mut expected, &tables);
+            bitplane::multiply_add_prepared_avx2_block(&prepared, coefficient, &mut actual);
+
+            assert_eq!(actual, expected, "coefficient={coefficient:#06x}");
+        }
+    }
+
+    #[test]
     fn xor_jit_word_multiply_matches_table() {
         let coeffs = [0, 1, 2, 7, 0x100b, 0xbeef, 0xffff];
         let values = [0, 1, 2, 0x1234, 0x8000, 0xffff];

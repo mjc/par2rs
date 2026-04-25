@@ -79,6 +79,22 @@ pub fn mask_offset(half: ByteHalf, bit_from_msb: usize, group: usize) -> usize {
     Plane::new(half, bit_from_msb, group).offset()
 }
 
+pub fn multiply_add_prepared_avx2_block(prepared: &[u8], coefficient: u16, output: &mut [u8]) {
+    assert!(prepared.len() >= AVX2_BLOCK_BYTES);
+    assert!(output.len() >= AVX2_BLOCK_BYTES);
+
+    for group in 0..GROUPS_PER_BLOCK {
+        for lane in 0..WORDS_PER_GROUP {
+            let word = prepared_word(prepared, group, lane);
+            let multiplied = multiply_word(word, coefficient);
+            let output_offset = (group * WORDS_PER_GROUP + lane) * 2;
+            let current = u16::from_le_bytes([output[output_offset], output[output_offset + 1]]);
+            let result = current ^ multiplied;
+            output[output_offset..output_offset + 2].copy_from_slice(&result.to_le_bytes());
+        }
+    }
+}
+
 fn write_byte_planes(
     dst: &mut [u8; AVX2_BLOCK_BYTES],
     half: ByteHalf,
@@ -94,6 +110,47 @@ fn write_byte_planes(
             dst[offset..offset + MASK_BYTES].copy_from_slice(&mask.to_le_bytes());
         }
     }
+}
+
+fn prepared_word(prepared: &[u8], group: usize, lane: usize) -> u16 {
+    let low = prepared_byte(prepared, ByteHalf::Low, group, lane);
+    let high = prepared_byte(prepared, ByteHalf::High, group, lane);
+    u16::from_le_bytes([low, high])
+}
+
+fn prepared_byte(prepared: &[u8], half: ByteHalf, group: usize, lane: usize) -> u8 {
+    (0..BITS_PER_BYTE)
+        .filter(|&bit_from_msb| {
+            let mask = read_mask(prepared, Plane::new(half, bit_from_msb, group));
+            mask & (1 << lane) != 0
+        })
+        .fold(0u8, |byte, bit_from_msb| byte | (0x80 >> bit_from_msb))
+}
+
+fn read_mask(prepared: &[u8], plane: Plane) -> u32 {
+    let offset = plane.offset();
+    u32::from_le_bytes(prepared[offset..offset + MASK_BYTES].try_into().unwrap())
+}
+
+fn multiply_word(mut input: u16, coefficient: u16) -> u16 {
+    let mut coeff = coefficient;
+    let mut result = 0u16;
+
+    while coeff != 0 {
+        if coeff & 1 != 0 {
+            result ^= input;
+        }
+        coeff >>= 1;
+        if coeff != 0 {
+            let carry = input & 0x8000 != 0;
+            input <<= 1;
+            if carry {
+                input ^= super::GF16_REDUCTION;
+            }
+        }
+    }
+
+    result
 }
 
 impl ByteHalf {
