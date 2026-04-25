@@ -799,7 +799,6 @@ while IFS= read -r case_spec; do
 done < <(split_cases)
 
 summarize_results
-enforce_pass_criteria "$RAW_CSV"
 if [[ -n "$PROFILE_CASE" && -z "$profile_case_spec" ]]; then
     echo "error: PROFILE_CASE '$PROFILE_CASE' did not match any CASES label or spec" >&2
     exit 1
@@ -810,6 +809,7 @@ fi
 if [[ -n "$profile_case_spec" ]]; then
     generate_flamegraph "$profile_case_spec"
 fi
+enforce_pass_criteria "$RAW_CSV"
 
 echo
 echo "raw data: $RAW_CSV"
