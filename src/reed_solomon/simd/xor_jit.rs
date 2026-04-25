@@ -7,6 +7,8 @@
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
+#[cfg(target_arch = "x86_64")]
+use std::sync::{Arc, OnceLock};
 
 #[cfg(target_arch = "x86_64")]
 mod bitplane;
@@ -23,7 +25,7 @@ pub struct XorJitPreparedCoeff {
     coefficient: u16,
     #[allow(dead_code)]
     clean_plan: XorJitCleanPlan,
-    bitplane_plan: CleanCoeffPlan,
+    bitplane_plan: Arc<OnceLock<CleanCoeffPlan>>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,12 +50,46 @@ impl XorJitPreparedCoeff {
         Self {
             coefficient,
             clean_plan: XorJitCleanPlan::new(coefficient),
-            bitplane_plan: CleanCoeffPlan::new(coefficient),
+            bitplane_plan: Arc::new(OnceLock::new()),
         }
     }
 
-    fn bitplane_plan(&self) -> CleanCoeffPlan {
-        self.bitplane_plan.clone()
+    fn bitplane_plan(&self) -> &CleanCoeffPlan {
+        self.bitplane_plan
+            .get_or_init(|| CleanCoeffPlan::new(self.coefficient))
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub struct XorJitPreparedCoeffCache {
+    entries: Vec<Option<XorJitPreparedCoeff>>,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl XorJitPreparedCoeffCache {
+    pub fn new() -> Self {
+        Self {
+            entries: vec![None; u16::MAX as usize + 1],
+        }
+    }
+
+    pub fn prepare(&mut self, coefficient: u16) -> XorJitPreparedCoeff {
+        let entry = &mut self.entries[coefficient as usize];
+        match entry {
+            Some(prepared) => prepared.clone(),
+            None => {
+                let prepared = XorJitPreparedCoeff::new(coefficient);
+                *entry = Some(prepared.clone());
+                prepared
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Default for XorJitPreparedCoeffCache {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -159,6 +195,10 @@ impl CleanBitplaneKernel {
     }
 
     fn from_plan(plan: CleanCoeffPlan) -> std::io::Result<Self> {
+        Self::from_program(bitplane_multiply_add_program(&plan))
+    }
+
+    fn from_plan_ref(plan: &CleanCoeffPlan) -> std::io::Result<Self> {
         Self::from_program(bitplane_multiply_add_program(plan))
     }
 
@@ -191,7 +231,7 @@ impl CleanBitplaneKernel {
 impl XorJitBitplaneKernel {
     pub fn new(prepared: &XorJitPreparedCoeff) -> std::io::Result<Self> {
         Ok(Self {
-            kernel: CleanBitplaneKernel::from_plan(prepared.bitplane_plan())?,
+            kernel: CleanBitplaneKernel::from_plan_ref(prepared.bitplane_plan())?,
         })
     }
 
@@ -254,7 +294,7 @@ fn identity_lane_program() -> encoder::Program {
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
-fn bitplane_multiply_add_program(plan: CleanCoeffPlan) -> encoder::Program {
+fn bitplane_multiply_add_program(plan: &CleanCoeffPlan) -> encoder::Program {
     (0..16)
         .filter_map(|output_bit| {
             let input_mask = plan.input_mask_for_output_bit(output_bit);

@@ -16,7 +16,7 @@ use crate::reed_solomon::simd::{
     process_slices_multiply_add_xor_jit_x4,
     process_slices_multiply_add_xor_jit_x4_inputs_x2_outputs,
     process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs, Avx2PreparedCoeff, SimdLevel,
-    XorJitFlavor, XorJitPreparedCoeff,
+    XorJitFlavor, XorJitPreparedCoeff, XorJitPreparedCoeffCache,
 };
 
 const DEFAULT_INPUT_GROUPING: usize = 12;
@@ -148,20 +148,25 @@ pub type Gf16Coeff = CreateCoeff;
 
 impl CreateCoeff {
     #[inline]
-    fn new(value: u16, prepare_pshufb: bool) -> Self {
+    #[cfg(target_arch = "x86_64")]
+    fn new(value: u16, prepare_pshufb: bool, xor_jit_cache: &mut XorJitPreparedCoeffCache) -> Self {
         let split = build_split_mul_table(Galois16::new(value));
-        #[cfg(target_arch = "x86_64")]
         let avx2 = prepare_pshufb.then(|| prepare_avx2_coeff(&split));
-        #[cfg(target_arch = "x86_64")]
-        let xor_jit = Some(XorJitPreparedCoeff::new(value));
+        let xor_jit = Some(xor_jit_cache.prepare(value));
 
         Self {
             value,
             split,
-            #[cfg(target_arch = "x86_64")]
             avx2,
-            #[cfg(target_arch = "x86_64")]
             xor_jit,
+        }
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn new(value: u16, _prepare_pshufb: bool) -> Self {
+        Self {
+            value,
+            split: build_split_mul_table(Galois16::new(value)),
         }
     }
 }
@@ -225,6 +230,8 @@ impl CreateRecoveryBackend {
             .map(|offset| (first_recovery_block + offset as u32) as u16)
             .collect::<Vec<_>>();
         let prepare_pshufb = matches!(method, CreateGf16Method::Avx2PshufbPrepared);
+        #[cfg(target_arch = "x86_64")]
+        let mut xor_jit_cache = XorJitPreparedCoeffCache::new();
         let coeffs = recovery_exponents
             .iter()
             .flat_map(|&exponent| {
@@ -232,7 +239,16 @@ impl CreateRecoveryBackend {
                     .iter()
                     .map(move |&base| Galois16::new(base).pow(exponent).value())
             })
-            .map(|value| CreateCoeff::new(value, prepare_pshufb))
+            .map(|value| {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    CreateCoeff::new(value, prepare_pshufb, &mut xor_jit_cache)
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    CreateCoeff::new(value, prepare_pshufb)
+                }
+            })
             .collect::<Vec<_>>();
         let worker_count = thread_count.max(1);
         let max_job_count = max_compute_jobs(max_chunk_len, recovery_count, worker_count, method);
