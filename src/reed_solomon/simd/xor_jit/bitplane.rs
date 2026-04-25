@@ -83,27 +83,16 @@ pub fn multiply_add_prepared_avx2_block(prepared: &[u8], coefficient: u16, outpu
     assert!(prepared.len() >= AVX2_BLOCK_BYTES);
     assert!(output.len() >= AVX2_BLOCK_BYTES);
 
-    for group in 0..GROUPS_PER_BLOCK {
-        for lane in 0..WORDS_PER_GROUP {
-            let word = prepared_word(prepared, WordLane::new(group, lane));
-            let multiplied = multiply_word(word, coefficient);
-            let output_offset = WordLane::new(group, lane).byte_offset();
-            let current = u16::from_le_bytes([output[output_offset], output[output_offset + 1]]);
-            let result = current ^ multiplied;
-            output[output_offset..output_offset + 2].copy_from_slice(&result.to_le_bytes());
-        }
+    for word_lane in WordLane::all() {
+        let multiplied = multiply_word(prepared_word(prepared, word_lane), coefficient);
+        let result = output_word(output, word_lane) ^ multiplied;
+        write_output_word(output, word_lane, result);
     }
 }
 
 pub fn finish_avx2_block(dst: &mut [u8; AVX2_BLOCK_BYTES], prepared: &[u8; AVX2_BLOCK_BYTES]) {
-    dst.fill(0);
-
-    for group in 0..GROUPS_PER_BLOCK {
-        for lane in 0..WORDS_PER_GROUP {
-            let word = prepared_word(prepared, WordLane::new(group, lane));
-            let output_offset = WordLane::new(group, lane).byte_offset();
-            dst[output_offset..output_offset + 2].copy_from_slice(&word.to_le_bytes());
-        }
+    for word_lane in WordLane::all() {
+        write_output_word(dst, word_lane, prepared_word(prepared, word_lane));
     }
 }
 
@@ -137,9 +126,24 @@ impl WordLane {
         Self { group, lane }
     }
 
+    fn all() -> impl Iterator<Item = Self> {
+        (0..GROUPS_PER_BLOCK)
+            .flat_map(|group| (0..WORDS_PER_GROUP).map(move |lane| WordLane::new(group, lane)))
+    }
+
     fn byte_offset(self) -> usize {
         (self.group * WORDS_PER_GROUP + self.lane) * 2
     }
+}
+
+fn output_word(output: &[u8], word: WordLane) -> u16 {
+    let offset = word.byte_offset();
+    u16::from_le_bytes([output[offset], output[offset + 1]])
+}
+
+fn write_output_word(output: &mut [u8], word: WordLane, value: u16) {
+    let offset = word.byte_offset();
+    output[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
 
 fn prepared_word(prepared: &[u8], word: WordLane) -> u16 {
