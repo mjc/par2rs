@@ -102,11 +102,11 @@
               inferno
               bc # for benchmark averaging calculations
               gnuplot # for criterion benchmark graphs
-              valgrind # for iai-callgrind benchmarks
               gh # GitHub CLI
               git-filter-repo # for rewriting git history
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              valgrind # for iai-callgrind benchmarks
               heaptrack
               perf
             ];
