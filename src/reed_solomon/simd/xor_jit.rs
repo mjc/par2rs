@@ -9,6 +9,8 @@
 use std::arch::x86_64::*;
 
 #[cfg(target_arch = "x86_64")]
+mod bitplane;
+#[cfg(target_arch = "x86_64")]
 mod encoder;
 #[cfg(target_arch = "x86_64")]
 mod exec_mem;
@@ -981,6 +983,36 @@ mod tests {
     }
 
     #[test]
+    fn avx2_bitplane_prepare_matches_turbo_block_layout() {
+        let mut input = [0u8; bitplane::AVX2_BLOCK_BYTES];
+        input[0] = 0b1000_0001;
+        input[1] = 0b0100_0010;
+        input[62] = 0xff;
+        input[63] = 0x80;
+        input[64] = 0x01;
+
+        let mut prepared = [0u8; bitplane::AVX2_BLOCK_BYTES];
+        bitplane::prepare_avx2_block(&mut prepared, &input);
+
+        assert_eq!(prepared_mask(&prepared, bitplane::ByteHalf::High, 1, 0), 1);
+        assert_eq!(prepared_mask(&prepared, bitplane::ByteHalf::High, 6, 0), 1);
+        assert_eq!(
+            prepared_mask(&prepared, bitplane::ByteHalf::High, 0, 0),
+            1 << 31
+        );
+        assert_eq!(
+            prepared_mask(&prepared, bitplane::ByteHalf::Low, 0, 0),
+            1 | (1 << 31)
+        );
+        assert_eq!(
+            prepared_mask(&prepared, bitplane::ByteHalf::Low, 7, 0),
+            1 | (1 << 31)
+        );
+        assert_eq!(prepared_mask(&prepared, bitplane::ByteHalf::Low, 7, 1), 1);
+        assert_eq!(prepared_mask(&prepared, bitplane::ByteHalf::High, 0, 1), 0);
+    }
+
+    #[test]
     fn xor_jit_word_multiply_matches_table() {
         let coeffs = [0, 1, 2, 7, 0x100b, 0xbeef, 0xffff];
         let values = [0, 1, 2, 0x1234, 0x8000, 0xffff];
@@ -996,6 +1028,16 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn prepared_mask(
+        prepared: &[u8; bitplane::AVX2_BLOCK_BYTES],
+        half: bitplane::ByteHalf,
+        bit_from_msb: usize,
+        group: usize,
+    ) -> u32 {
+        let offset = bitplane::mask_offset(half, bit_from_msb, group);
+        u32::from_le_bytes(prepared[offset..offset + 4].try_into().unwrap())
     }
 
     #[test]
