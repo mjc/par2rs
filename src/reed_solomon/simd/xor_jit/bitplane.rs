@@ -85,9 +85,9 @@ pub fn multiply_add_prepared_avx2_block(prepared: &[u8], coefficient: u16, outpu
 
     for group in 0..GROUPS_PER_BLOCK {
         for lane in 0..WORDS_PER_GROUP {
-            let word = prepared_word(prepared, group, lane);
+            let word = prepared_word(prepared, WordLane::new(group, lane));
             let multiplied = multiply_word(word, coefficient);
-            let output_offset = (group * WORDS_PER_GROUP + lane) * 2;
+            let output_offset = WordLane::new(group, lane).byte_offset();
             let current = u16::from_le_bytes([output[output_offset], output[output_offset + 1]]);
             let result = current ^ multiplied;
             output[output_offset..output_offset + 2].copy_from_slice(&result.to_le_bytes());
@@ -112,17 +112,35 @@ fn write_byte_planes(
     }
 }
 
-fn prepared_word(prepared: &[u8], group: usize, lane: usize) -> u16 {
-    let low = prepared_byte(prepared, ByteHalf::Low, group, lane);
-    let high = prepared_byte(prepared, ByteHalf::High, group, lane);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WordLane {
+    group: usize,
+    lane: usize,
+}
+
+impl WordLane {
+    fn new(group: usize, lane: usize) -> Self {
+        debug_assert!(group < GROUPS_PER_BLOCK);
+        debug_assert!(lane < WORDS_PER_GROUP);
+        Self { group, lane }
+    }
+
+    fn byte_offset(self) -> usize {
+        (self.group * WORDS_PER_GROUP + self.lane) * 2
+    }
+}
+
+fn prepared_word(prepared: &[u8], word: WordLane) -> u16 {
+    let low = prepared_byte(prepared, ByteHalf::Low, word);
+    let high = prepared_byte(prepared, ByteHalf::High, word);
     u16::from_le_bytes([low, high])
 }
 
-fn prepared_byte(prepared: &[u8], half: ByteHalf, group: usize, lane: usize) -> u8 {
+fn prepared_byte(prepared: &[u8], half: ByteHalf, word: WordLane) -> u8 {
     (0..BITS_PER_BYTE)
         .filter(|&bit_from_msb| {
-            let mask = read_mask(prepared, Plane::new(half, bit_from_msb, group));
-            mask & (1 << lane) != 0
+            let mask = read_mask(prepared, Plane::new(half, bit_from_msb, word.group));
+            mask & (1 << word.lane) != 0
         })
         .fold(0u8, |byte, bit_from_msb| byte | (0x80 >> bit_from_msb))
 }
