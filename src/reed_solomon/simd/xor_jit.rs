@@ -31,6 +31,13 @@ struct XorJitCleanPlan {
     tap_count: u8,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+struct CleanCoeffPlan {
+    output_masks: [u16; 16],
+}
+
 #[cfg(target_arch = "x86_64")]
 impl XorJitPreparedCoeff {
     #[inline]
@@ -55,6 +62,28 @@ impl XorJitCleanPlan {
             }
         }
         Self { taps, tap_count }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+impl CleanCoeffPlan {
+    fn new(coefficient: u16) -> Self {
+        let output_masks = std::array::from_fn(|output_bit| {
+            (0..16)
+                .filter(|&input_bit| {
+                    multiply_word(1 << input_bit, coefficient) & (1 << output_bit) != 0
+                })
+                .fold(0u16, |mask, input_bit| mask | (1 << input_bit))
+        });
+
+        Self { output_masks }
+    }
+
+    fn output_bit_depends_on(&self, output_bit: usize, input_bit: usize) -> bool {
+        debug_assert!(output_bit < 16);
+        debug_assert!(input_bit < 16);
+        self.output_masks[output_bit] & (1 << input_bit) != 0
     }
 }
 
@@ -924,6 +953,24 @@ mod tests {
         }
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn clean_coeff_plan_matches_basis_multiplication() {
+        for coefficient in [0, 1, 2, 3, 5, 0x100b, 0xffff] {
+            let plan = CleanCoeffPlan::new(coefficient);
+
+            for input_bit in 0..16 {
+                let product = multiply_word(1 << input_bit, coefficient);
+                for output_bit in 0..16 {
+                    assert_eq!(
+                        plan.output_bit_depends_on(output_bit, input_bit),
+                        product & (1 << output_bit) != 0,
+                        "coefficient={coefficient:#06x} output_bit={output_bit} input_bit={input_bit}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
