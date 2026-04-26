@@ -34,8 +34,8 @@ pub use pshufb::{
 #[doc(hidden)]
 pub use xor_jit::{
     finish_xor_jit_bitplane_chunks, prepare_xor_jit_bitplane_chunks,
-    process_slice_multiply_add_xor_jit, process_slices_multiply_add_xor_jit_x2,
-    process_slices_multiply_add_xor_jit_x4,
+    prepare_xor_jit_bitplane_segment, process_slice_multiply_add_xor_jit,
+    process_slices_multiply_add_xor_jit_x2, process_slices_multiply_add_xor_jit_x4,
     process_slices_multiply_add_xor_jit_x4_inputs_x2_outputs,
     process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs, XorJitBitplaneKernel, XorJitFlavor,
     XorJitPreparedCoeff, XorJitPreparedCoeffCache,

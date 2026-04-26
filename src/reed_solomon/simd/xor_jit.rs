@@ -1,9 +1,9 @@
 //! Tableless XOR multiply kernels for create-side forced JIT modes.
 //!
-//! This is the executable core used by the `xor-jit-port` and `xor-jit-clean`
-//! create methods. The kernels are coefficient-specialized at backend
-//! construction by storing a compact typed plan, then the hot path uses AVX2
-//! shifts and XORs only. No PSHUFB or scalar lookup table is used here.
+//! This is the executable core used by the `xor-jit` create method. The
+//! kernels are coefficient-specialized at backend construction by storing a
+//! compact typed plan, then the hot path uses generated AVX2 XOR code. No
+//! PSHUFB or scalar lookup table is used here.
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
@@ -26,23 +26,13 @@ const GF16_REDUCTION: u16 = 0x100b;
 #[cfg(target_arch = "x86_64")]
 pub struct XorJitPreparedCoeff {
     coefficient: u16,
-    #[allow(dead_code)]
-    clean_plan: XorJitCleanPlan,
-    bitplane_plan: Arc<OnceLock<CleanCoeffPlan>>,
-}
-
-#[derive(Debug, Clone)]
-#[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
-struct XorJitCleanPlan {
-    taps: [u8; 16],
-    tap_count: u8,
+    bitplane_plan: Arc<OnceLock<BitplaneCoeffPlan>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
-struct CleanCoeffPlan {
+struct BitplaneCoeffPlan {
     coefficient: u16,
     output_masks: [u16; 16],
 }
@@ -53,14 +43,13 @@ impl XorJitPreparedCoeff {
     pub fn new(coefficient: u16) -> Self {
         Self {
             coefficient,
-            clean_plan: XorJitCleanPlan::new(coefficient),
             bitplane_plan: Arc::new(OnceLock::new()),
         }
     }
 
-    fn bitplane_plan(&self) -> &CleanCoeffPlan {
+    fn bitplane_plan(&self) -> &BitplaneCoeffPlan {
         self.bitplane_plan
-            .get_or_init(|| CleanCoeffPlan::new(self.coefficient))
+            .get_or_init(|| BitplaneCoeffPlan::new(self.coefficient))
     }
 
     #[inline]
@@ -103,24 +92,8 @@ impl Default for XorJitPreparedCoeffCache {
 }
 
 #[cfg(target_arch = "x86_64")]
-impl XorJitCleanPlan {
-    #[inline]
-    fn new(coefficient: u16) -> Self {
-        let mut taps = [0u8; 16];
-        let mut tap_count = 0u8;
-        for bit in 0..16 {
-            if coefficient & (1 << bit) != 0 {
-                taps[tap_count as usize] = bit;
-                tap_count += 1;
-            }
-        }
-        Self { taps, tap_count }
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
-impl CleanCoeffPlan {
+impl BitplaneCoeffPlan {
     fn new(coefficient: u16) -> Self {
         let output_masks =
             std::array::from_fn(|output_bit| input_dependency_mask(coefficient, output_bit));
@@ -157,8 +130,7 @@ fn input_dependency_mask(coefficient: u16, output_bit: usize) -> u16 {
 #[cfg(target_arch = "x86_64")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum XorJitFlavor {
-    Port,
-    Clean,
+    Jit,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -171,27 +143,33 @@ type ChunkKernelFn = unsafe extern "sysv64" fn(*const u8, *mut u8, usize);
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
-struct CleanLaneKernel {
+type ChunkKernelPrefetchFn = unsafe extern "sysv64" fn(*const u8, *mut u8, usize, *const u8);
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+struct XorJitLaneKernel {
     code: exec_mem::ExecutableBuffer,
     function: LaneKernelFn,
 }
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
-struct CleanBitplaneKernel {
+struct XorJitGeneratedBitplaneKernel {
     code: exec_mem::ExecutableBuffer,
     function: ChunkKernelFn,
+    prefetch_code: exec_mem::ExecutableBuffer,
+    prefetch_function: ChunkKernelPrefetchFn,
 }
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub struct XorJitBitplaneKernel {
-    kernel: CleanBitplaneKernel,
+    kernel: XorJitGeneratedBitplaneKernel,
 }
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
-impl CleanLaneKernel {
+impl XorJitLaneKernel {
     fn identity() -> std::io::Result<Self> {
         Self::from_program(identity_lane_program())
     }
@@ -210,33 +188,61 @@ impl CleanLaneKernel {
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
-impl CleanBitplaneKernel {
+impl XorJitGeneratedBitplaneKernel {
     fn new(coefficient: u16) -> std::io::Result<Self> {
-        Self::from_plan(CleanCoeffPlan::new(coefficient))
+        Self::from_plan(BitplaneCoeffPlan::new(coefficient))
     }
 
-    fn from_plan(plan: CleanCoeffPlan) -> std::io::Result<Self> {
+    fn from_plan(plan: BitplaneCoeffPlan) -> std::io::Result<Self> {
         Self::from_plan_ref(&plan)
     }
 
-    fn from_plan_ref(plan: &CleanCoeffPlan) -> std::io::Result<Self> {
+    fn from_plan_ref(plan: &BitplaneCoeffPlan) -> std::io::Result<Self> {
         let (code, function) = compile_chunk_program(
             bitplane_multiply_add_body_program(plan),
             "bitplane",
             Some(plan.coefficient()),
         )?;
-        Ok(Self { code, function })
+        let (prefetch_code, prefetch_function) = compile_chunk_prefetch_program(
+            bitplane_multiply_add_body_program(plan),
+            "bitplane-pf",
+            Some(plan.coefficient()),
+        )?;
+        Ok(Self {
+            code,
+            function,
+            prefetch_code,
+            prefetch_function,
+        })
     }
 
     #[allow(dead_code)]
     fn from_program(program: encoder::Program) -> std::io::Result<Self> {
-        let (code, function) = compile_chunk_program(program, "bitplane", None)?;
-        Ok(Self { code, function })
+        let (code, function) = compile_chunk_program(program.clone(), "bitplane", None)?;
+        let (prefetch_code, prefetch_function) =
+            compile_chunk_prefetch_program(program, "bitplane-pf", None)?;
+        Ok(Self {
+            code,
+            function,
+            prefetch_code,
+            prefetch_function,
+        })
     }
 
     unsafe fn multiply_add(&self, input: *const u8, output: *mut u8, len: usize) {
         debug_assert!(!self.code.is_empty());
         (self.function)(input, output, len);
+    }
+
+    unsafe fn multiply_add_prefetch(
+        &self,
+        input: *const u8,
+        output: *mut u8,
+        len: usize,
+        prefetch: *const u8,
+    ) {
+        debug_assert!(!self.prefetch_code.is_empty());
+        (self.prefetch_function)(input, output, len, prefetch);
     }
 
     fn multiply_add_chunks(&self, input: &[u8], output: &mut [u8]) {
@@ -248,6 +254,33 @@ impl CleanBitplaneKernel {
 
         unsafe {
             self.multiply_add(input.as_ptr(), output.as_mut_ptr(), input.len());
+        }
+    }
+
+    pub fn multiply_add_chunks_with_prefetch(
+        &self,
+        input: &[u8],
+        output: &mut [u8],
+        prefetch: Option<*const u8>,
+    ) {
+        assert_prepared_chunk_shape(input, output);
+
+        if input.is_empty() {
+            return;
+        }
+
+        unsafe {
+            match prefetch {
+                Some(prefetch) => {
+                    self.multiply_add_prefetch(
+                        input.as_ptr(),
+                        output.as_mut_ptr(),
+                        input.len(),
+                        prefetch,
+                    );
+                }
+                None => self.multiply_add(input.as_ptr(), output.as_mut_ptr(), input.len()),
+            }
         }
     }
 
@@ -269,12 +302,22 @@ impl CleanBitplaneKernel {
 impl XorJitBitplaneKernel {
     pub fn new(prepared: &XorJitPreparedCoeff) -> std::io::Result<Self> {
         Ok(Self {
-            kernel: CleanBitplaneKernel::from_plan_ref(prepared.bitplane_plan())?,
+            kernel: XorJitGeneratedBitplaneKernel::from_plan_ref(prepared.bitplane_plan())?,
         })
     }
 
     pub fn multiply_add_chunks(&self, input: &[u8], output: &mut [u8]) {
         self.kernel.multiply_add_chunks(input, output);
+    }
+
+    pub fn multiply_add_chunks_with_prefetch(
+        &self,
+        input: &[u8],
+        output: &mut [u8],
+        prefetch: Option<*const u8>,
+    ) {
+        self.kernel
+            .multiply_add_chunks_with_prefetch(input, output, prefetch);
     }
 
     pub fn multiply_add_block(&self, input: &[u8], output: &mut [u8]) {
@@ -285,6 +328,16 @@ impl XorJitBitplaneKernel {
 #[cfg(target_arch = "x86_64")]
 pub fn prepare_xor_jit_bitplane_chunks(dst: &mut [u8], src: &[u8]) -> usize {
     bitplane::prepare_avx2(dst, src)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn prepare_xor_jit_bitplane_segment(dst: &mut [u8], src: &[u8]) {
+    assert_eq!(dst.len() % bitplane::AVX2_BLOCK_BYTES, 0);
+    assert!(src.len() <= dst.len());
+
+    dst.fill(0);
+    let prepared_len = bitplane::prepare_avx2(dst, src);
+    assert!(prepared_len <= dst.len());
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -334,6 +387,7 @@ fn compile_lane_program(
     dump_generated_program(label, coefficient, &generated);
     let mut code = exec_mem::ExecutableBuffer::new(generated.len())?;
     code.write(&generated)?;
+    register_perf_map_symbol(&code, label, coefficient);
     let function = unsafe { code.function() };
 
     Ok((code, function))
@@ -350,9 +404,52 @@ fn compile_chunk_program(
     dump_generated_program(label, coefficient, &generated);
     let mut code = exec_mem::ExecutableBuffer::new(generated.len())?;
     code.write(&generated)?;
+    register_perf_map_symbol(&code, label, coefficient);
     let function = unsafe { code.function() };
 
     Ok((code, function))
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn compile_chunk_prefetch_program(
+    program: encoder::Program,
+    label: &str,
+    coefficient: Option<u16>,
+) -> std::io::Result<(exec_mem::ExecutableBuffer, ChunkKernelPrefetchFn)> {
+    let generated = program.finish_block_loop_with_prefetch(bitplane::AVX2_BLOCK_BYTES as u32, 256);
+    dump_generated_program(label, coefficient, &generated);
+    let mut code = exec_mem::ExecutableBuffer::new(generated.len())?;
+    code.write(&generated)?;
+    register_perf_map_symbol(&code, label, coefficient);
+    let function = unsafe { code.function() };
+
+    Ok((code, function))
+}
+
+#[cfg(target_arch = "x86_64")]
+fn register_perf_map_symbol(
+    code: &exec_mem::ExecutableBuffer,
+    label: &str,
+    coefficient: Option<u16>,
+) {
+    if std::env::var("PAR2RS_XOR_JIT_PERF_MAP").as_deref() != Ok("1") || code.is_empty() {
+        return;
+    }
+
+    let coeff = coefficient
+        .map(|value| format!("coeff_{value:04x}"))
+        .unwrap_or_else(|| "coeff_none".to_string());
+    let name = format!("par2rs_xor_jit_{}_{}", label.replace('-', "_"), coeff);
+    let path = std::path::Path::new("/tmp").join(format!("perf-{}.map", std::process::id()));
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{:x} {:x} {name}", code.as_ptr() as usize, code.len());
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -390,23 +487,42 @@ fn identity_lane_program() -> encoder::Program {
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
 #[allow(dead_code)]
-fn bitplane_multiply_add_program(plan: &CleanCoeffPlan) -> encoder::Program {
+fn bitplane_multiply_add_program(plan: &BitplaneCoeffPlan) -> encoder::Program {
     bitplane_multiply_add_body_program(plan).vzeroupper().ret()
 }
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
-fn bitplane_multiply_add_body_program(plan: &CleanCoeffPlan) -> encoder::Program {
-    (0..8).fold(encoder::Program::new(), |program, bit| {
-        emit_output_bitplane_pair(program, plan, bit)
+fn bitplane_multiply_add_body_program(plan: &BitplaneCoeffPlan) -> encoder::Program {
+    (0..8).fold(
+        emit_input_plane_preloads(encoder::Program::new()),
+        |program, bit| emit_output_bitplane_pair(program, plan, bit),
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn emit_input_plane_preloads(program: encoder::Program) -> encoder::Program {
+    (0..14).fold(program, |program, input_bit| {
+        program.vmovdqu_ymm_from_rdi_offset(
+            preloaded_input_register(input_bit).expect("preloaded input bit"),
+            bitplane_vector_offset(input_bit),
+        )
     })
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn preloaded_input_register(input_bit: usize) -> Option<u8> {
+    debug_assert!(input_bit < 16);
+    (input_bit < 14).then_some(input_bit as u8 + 2)
 }
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
 fn emit_output_bitplane_pair(
     program: encoder::Program,
-    plan: &CleanCoeffPlan,
+    plan: &BitplaneCoeffPlan,
     bit: usize,
 ) -> encoder::Program {
     let low_output = bit;
@@ -424,28 +540,21 @@ fn emit_output_bitplane_pair(
             let high_only_mask = high_mask & !common_mask;
 
             let program = program
-                .vmovdqu_ymm0_from_rsi_offset(bitplane_vector_offset(low_output))
-                .vmovdqu_ymm1_from_rsi_offset(bitplane_vector_offset(high_output));
+                .vmovdqu_ymm_from_rsi_offset(0, bitplane_vector_offset(low_output))
+                .vmovdqu_ymm_from_rsi_offset(1, bitplane_vector_offset(high_output));
             let program = input_bits(common_mask).fold(program, |program, input_bit| {
-                program
-                    .vmovdqu_ymm2_from_rdi_offset(bitplane_vector_offset(input_bit))
-                    .vpxor_ymm0_ymm0_ymm2()
-                    .vpxor_ymm1_ymm1_ymm2()
+                xor_input_bit_into_outputs(program, input_bit, [0, 1])
             });
             let program = input_bits(low_only_mask).fold(program, |program, input_bit| {
-                program
-                    .vmovdqu_ymm2_from_rdi_offset(bitplane_vector_offset(input_bit))
-                    .vpxor_ymm0_ymm0_ymm2()
+                xor_input_bit_into_outputs(program, input_bit, [0, 0])
             });
             let program = input_bits(high_only_mask).fold(program, |program, input_bit| {
-                program
-                    .vmovdqu_ymm2_from_rdi_offset(bitplane_vector_offset(input_bit))
-                    .vpxor_ymm1_ymm1_ymm2()
+                xor_input_bit_into_outputs(program, input_bit, [1, 1])
             });
 
             program
-                .vmovdqu_rsi_offset_from_ymm0(bitplane_vector_offset(low_output))
-                .vmovdqu_rsi_offset_from_ymm1(bitplane_vector_offset(high_output))
+                .vmovdqu_rsi_offset_from_ymm(bitplane_vector_offset(low_output), 0)
+                .vmovdqu_rsi_offset_from_ymm(bitplane_vector_offset(high_output), 1)
         }
     }
 }
@@ -458,14 +567,45 @@ fn emit_output_bitplane(
 ) -> encoder::Program {
     input_bits(input_mask)
         .fold(
-            program.vmovdqu_ymm0_from_rsi_offset(bitplane_vector_offset(output_bit)),
-            |program, input_bit| {
-                program
-                    .vmovdqu_ymm2_from_rdi_offset(bitplane_vector_offset(input_bit))
-                    .vpxor_ymm0_ymm0_ymm2()
-            },
+            program.vmovdqu_ymm_from_rsi_offset(0, bitplane_vector_offset(output_bit)),
+            |program, input_bit| xor_input_bit_into_outputs(program, input_bit, [0, 0]),
         )
-        .vmovdqu_rsi_offset_from_ymm0(bitplane_vector_offset(output_bit))
+        .vmovdqu_rsi_offset_from_ymm(bitplane_vector_offset(output_bit), 0)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn xor_input_bit_into_outputs(
+    mut program: encoder::Program,
+    input_bit: usize,
+    outputs: [u8; 2],
+) -> encoder::Program {
+    let first_output = outputs[0];
+    let second_output = outputs[1];
+    match preloaded_input_register(input_bit) {
+        Some(input_reg) => {
+            program = program.vpxor_ymm(first_output, first_output, input_reg);
+            if second_output != first_output {
+                program = program.vpxor_ymm(second_output, second_output, input_reg);
+            }
+            program
+        }
+        None => {
+            program = program.vpxor_ymm_rdi_offset(
+                first_output,
+                first_output,
+                bitplane_vector_offset(input_bit),
+            );
+            if second_output != first_output {
+                program = program.vpxor_ymm_rdi_offset(
+                    second_output,
+                    second_output,
+                    bitplane_vector_offset(input_bit),
+                );
+            }
+            program
+        }
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -551,26 +691,6 @@ unsafe fn multiply_vec_port(input: __m256i, coefficient: u16) -> __m256i {
         if coeff != 0 {
             power = xtime_vec(power);
         }
-    }
-
-    result
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-#[allow(dead_code)]
-unsafe fn multiply_vec_clean(input: __m256i, plan: &XorJitCleanPlan) -> __m256i {
-    let mut power = input;
-    let mut current_round = 0u8;
-    let mut result = _mm256_setzero_si256();
-
-    for tap_idx in 0..plan.tap_count as usize {
-        let tap = plan.taps[tap_idx];
-        while current_round < tap {
-            power = xtime_vec(power);
-            current_round += 1;
-        }
-        result = _mm256_xor_si256(result, power);
     }
 
     result
@@ -667,8 +787,7 @@ unsafe fn multiply_vec(
     flavor: XorJitFlavor,
 ) -> __m256i {
     match flavor {
-        XorJitFlavor::Port => multiply_vec_clmul(input, coeff, constants),
-        XorJitFlavor::Clean => multiply_vec_clmul(input, coeff, constants),
+        XorJitFlavor::Jit => multiply_vec_clmul(input, coeff, constants),
     }
 }
 
@@ -1313,7 +1432,7 @@ mod tests {
     }
 
     #[test]
-    fn clean_identity_lane_kernel_matches_table_executor() {
+    fn xor_jit_identity_lane_kernel_matches_table_executor() {
         if !is_x86_feature_detected!("avx2") {
             return;
         }
@@ -1324,7 +1443,7 @@ mod tests {
         let tables = build_split_mul_table(Galois16::new(1));
         process_slice_multiply_add(&input, &mut expected, &tables);
 
-        let kernel = CleanLaneKernel::identity().expect("identity lane kernel");
+        let kernel = XorJitLaneKernel::identity().expect("identity lane kernel");
         unsafe {
             kernel.run(input.as_ptr(), actual.as_mut_ptr());
         }
@@ -1333,9 +1452,9 @@ mod tests {
     }
 
     #[test]
-    fn clean_coeff_plan_matches_basis_multiplication() {
+    fn bitplane_coeff_plan_matches_basis_multiplication() {
         for coefficient in [0, 1, 2, 3, 5, 0x100b, 0xffff] {
-            let plan = CleanCoeffPlan::new(coefficient);
+            let plan = BitplaneCoeffPlan::new(coefficient);
 
             for input_bit in 0..16 {
                 let product = multiply_word(1 << input_bit, coefficient);
@@ -1493,7 +1612,7 @@ mod tests {
         for coefficient in [0, 1, 2, 3, 5, 0x100b, 0xffff] {
             let mut expected = prepared_output;
             let mut actual = prepared_output;
-            let kernel = CleanBitplaneKernel::new(coefficient).expect("bitplane kernel");
+            let kernel = XorJitGeneratedBitplaneKernel::new(coefficient).expect("bitplane kernel");
 
             bitplane::multiply_add_prepared_avx2_block_to_prepared(
                 &prepared_input,
@@ -1544,8 +1663,51 @@ mod tests {
             );
         }
 
-        let kernel = CleanBitplaneKernel::new(coefficient).expect("bitplane kernel");
+        let kernel = XorJitGeneratedBitplaneKernel::new(coefficient).expect("bitplane kernel");
         kernel.multiply_add_chunks(&prepared_input, &mut actual);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn generated_bitplane_prefetch_kernel_processes_prepared_chunks() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let input = (0..bitplane::AVX2_BLOCK_BYTES * 3)
+            .map(|idx| (idx * 37 + 11) as u8)
+            .collect::<Vec<_>>();
+        let initial_output = (0..bitplane::AVX2_BLOCK_BYTES * 3)
+            .map(|idx| (idx * 17 + 3) as u8)
+            .collect::<Vec<_>>();
+        let mut prepared_input = vec![0u8; input.len()];
+        let mut expected = vec![0u8; input.len()];
+        let mut actual = vec![0u8; input.len()];
+        let prefetch = vec![0xccu8; input.len()];
+        let coefficient = 0x100b;
+
+        bitplane::prepare_avx2(&mut prepared_input, &input);
+        bitplane::prepare_avx2(&mut expected, &initial_output);
+        bitplane::prepare_avx2(&mut actual, &initial_output);
+
+        for (input_block, output_block) in prepared_input
+            .chunks_exact(bitplane::AVX2_BLOCK_BYTES)
+            .zip(expected.chunks_exact_mut(bitplane::AVX2_BLOCK_BYTES))
+        {
+            bitplane::multiply_add_prepared_avx2_block_to_prepared(
+                input_block.try_into().unwrap(),
+                coefficient,
+                output_block.try_into().unwrap(),
+            );
+        }
+
+        let kernel = XorJitGeneratedBitplaneKernel::new(coefficient).expect("bitplane kernel");
+        kernel.multiply_add_chunks_with_prefetch(
+            &prepared_input,
+            &mut actual,
+            Some(prefetch.as_ptr()),
+        );
 
         assert_eq!(actual, expected);
     }
@@ -1604,6 +1766,48 @@ mod tests {
     }
 
     #[test]
+    fn prepare_xor_jit_bitplane_segment_matches_full_prepare_for_aligned_segment() {
+        let input = (0..bitplane::AVX2_BLOCK_BYTES * 2)
+            .map(|idx| (idx * 11 + 3) as u8)
+            .collect::<Vec<_>>();
+        let mut expected = vec![0u8; input.len()];
+        let mut actual = vec![0x55u8; input.len()];
+
+        prepare_xor_jit_bitplane_chunks(&mut expected, &input);
+        prepare_xor_jit_bitplane_segment(&mut actual, &input);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn prepare_xor_jit_bitplane_segment_zero_pads_tail() {
+        let input = (0..bitplane::AVX2_BLOCK_BYTES / 2)
+            .map(|idx| (idx * 7 + 1) as u8)
+            .collect::<Vec<_>>();
+        let mut prepared = vec![0x55u8; bitplane::AVX2_BLOCK_BYTES * 2];
+
+        prepare_xor_jit_bitplane_segment(&mut prepared, &input);
+
+        assert!(prepared[bitplane::AVX2_BLOCK_BYTES..]
+            .iter()
+            .all(|&byte| byte == 0));
+    }
+
+    #[test]
+    fn finish_segment_roundtrips_partial_chunk() {
+        let input = (0..bitplane::AVX2_BLOCK_BYTES + 37)
+            .map(|idx| (idx * 5 + 9) as u8)
+            .collect::<Vec<_>>();
+        let mut prepared = vec![0u8; bitplane::AVX2_BLOCK_BYTES * 2];
+        let mut actual = vec![0u8; input.len()];
+
+        prepare_xor_jit_bitplane_segment(&mut prepared, &input);
+        finish_xor_jit_bitplane_chunks(&mut actual, &prepared);
+
+        assert_eq!(actual, input);
+    }
+
+    #[test]
     fn xor_jit_word_multiply_matches_table() {
         let coeffs = [0, 1, 2, 7, 0x100b, 0xbeef, 0xffff];
         let values = [0, 1, 2, 0x1234, 0x8000, 0xffff];
@@ -1647,19 +1851,22 @@ mod tests {
             return;
         }
 
-        for flavor in [XorJitFlavor::Port, XorJitFlavor::Clean] {
-            for coeff in [1, 2, 7, 0x100b, 0xbeef] {
-                let input = (0..257).map(|idx| (idx * 31 + 7) as u8).collect::<Vec<_>>();
-                let mut expected = (0..257).map(|idx| (idx * 17 + 3) as u8).collect::<Vec<_>>();
-                let mut actual = expected.clone();
-                let table = build_split_mul_table(Galois16::new(coeff));
-                process_slice_multiply_add(&input, &mut expected, &table);
-                let prepared = XorJitPreparedCoeff::new(coeff);
-                unsafe {
-                    process_slice_multiply_add_xor_jit(&input, &mut actual, &prepared, flavor);
-                }
-                assert_eq!(actual, expected, "flavor={flavor:?} coeff={coeff:#06x}");
+        for coeff in [1, 2, 7, 0x100b, 0xbeef] {
+            let input = (0..257).map(|idx| (idx * 31 + 7) as u8).collect::<Vec<_>>();
+            let mut expected = (0..257).map(|idx| (idx * 17 + 3) as u8).collect::<Vec<_>>();
+            let mut actual = expected.clone();
+            let table = build_split_mul_table(Galois16::new(coeff));
+            process_slice_multiply_add(&input, &mut expected, &table);
+            let prepared = XorJitPreparedCoeff::new(coeff);
+            unsafe {
+                process_slice_multiply_add_xor_jit(
+                    &input,
+                    &mut actual,
+                    &prepared,
+                    XorJitFlavor::Jit,
+                );
             }
+            assert_eq!(actual, expected, "coeff={coeff:#06x}");
         }
     }
 }

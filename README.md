@@ -215,10 +215,10 @@ nix develop --command env ITERATIONS=10 THREADS=16 PROFILE_CASE=single_5g \
   scripts/benchmark_create_perf.sh
 ```
 
-The pass/fail signal is mean wall time: both `par2rs-xor-jit-port` and
-`par2rs-xor-jit-clean` must match or beat `turbo-auto` for every configured
-case. Linux `perf` counters are recorded to explain the wall-time result when
-the benchmark is run on Linux.
+The pass/fail signal is mean wall time: `par2rs-xor-jit` must match or
+beat `turbo-auto` for every configured case. Linux `perf` counters are recorded
+to explain the wall-time result when the benchmark is run on Linux. Set
+`INCLUDE_PSHUFB=1` to add the `par2rs-pshufb` diagnostic baseline.
 
 ### Testing
 

@@ -11,7 +11,7 @@ use std::thread::JoinHandle;
 #[cfg(target_arch = "x86_64")]
 use crate::reed_solomon::simd::{
     detect_simd_support, finish_xor_jit_bitplane_chunks, prepare_avx2_coeff,
-    prepare_xor_jit_bitplane_chunks, process_slice_multiply_add_prepared_avx2,
+    prepare_xor_jit_bitplane_segment, process_slice_multiply_add_prepared_avx2,
     process_slice_multiply_add_xor_jit, process_slices_multiply_add_prepared_avx2_x2,
     process_slices_multiply_add_prepared_avx2_x4, process_slices_multiply_add_xor_jit_x2,
     process_slices_multiply_add_xor_jit_x4,
@@ -28,13 +28,20 @@ const CREATE_SEGMENT_SIZE: usize = 256 * 1024;
 const PSHUFB_PACKED_INPUTS: usize = 1;
 const AVX2_ALIGNMENT: usize = 32;
 const XOR_JIT_BITPLANE_ALIGNMENT: usize = 512;
+#[cfg(target_arch = "x86_64")]
+const XOR_JIT_SEGMENT_LEN_ENV: &str = "PAR2RS_CREATE_XOR_JIT_SEGMENT_BYTES";
+#[cfg(target_arch = "x86_64")]
+const XOR_JIT_PREFETCH_OUTPUT_ROUNDS: usize = 2;
+#[cfg(target_arch = "x86_64")]
+const XOR_JIT_PREFETCH_DOWNSCALE: usize = 1;
+#[cfg(target_arch = "x86_64")]
+const XOR_JIT_PREFETCH_SPREAD_SHIFT: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateGf16Method {
     Auto,
     Avx2PshufbPrepared,
-    Avx2XorJitPort,
-    Avx2XorJitClean,
+    Avx2XorJit,
     Scalar,
 }
 
@@ -45,8 +52,7 @@ impl CreateGf16Method {
                 "auto" => Self::Auto,
                 "pshufb" | "avx2-pshufb" | "avx2_pshufb" => Self::Avx2PshufbPrepared,
                 "xor-jit" | "xor_jit" | "xorit" | "avx2-xor-jit" | "xor-jit-port"
-                | "xor_jit_port" | "avx2-xor-jit-port" => Self::Avx2XorJitPort,
-                "xor-jit-clean" | "xor_jit_clean" | "avx2-xor-jit-clean" => Self::Avx2XorJitClean,
+                | "xor_jit_port" | "avx2-xor-jit-port" => Self::Avx2XorJit,
                 "scalar" => Self::Scalar,
                 _ => Self::Auto,
             },
@@ -74,7 +80,7 @@ impl CreateGf16Method {
                 }
                 Self::Scalar
             }
-            Self::Avx2XorJitPort | Self::Avx2XorJitClean => {
+            Self::Avx2XorJit => {
                 #[cfg(target_arch = "x86_64")]
                 {
                     if matches!(detect_simd_support(), SimdLevel::Avx2)
@@ -95,7 +101,7 @@ impl CreateGf16Method {
             Self::Auto | Self::Avx2PshufbPrepared => 4,
             // Turbo's AVX2 XOR-JIT leaves idealInputMultiple at 1, so its
             // default input batch rounds to DEFAULT_INPUT_GROUPING.
-            Self::Avx2XorJitPort | Self::Avx2XorJitClean => 1,
+            Self::Avx2XorJit => 1,
             Self::Scalar => 1,
         }
     }
@@ -105,9 +111,8 @@ impl CreateGf16Method {
         match self {
             Self::Auto | Self::Avx2PshufbPrepared => CREATE_SEGMENT_SIZE,
             // Turbo's AVX2 XOR-JIT method reports a 128KiB ideal chunk. Keep
-            // the port/clean segmentation aligned with that until the full
-            // transformed XOR-JIT kernel is ported.
-            Self::Avx2XorJitPort | Self::Avx2XorJitClean => 128 * 1024,
+            // the port segmentation aligned with that.
+            Self::Avx2XorJit => xor_jit_segment_len_override().unwrap_or(128 * 1024),
             Self::Scalar => CREATE_SEGMENT_SIZE / 2,
         }
     }
@@ -116,11 +121,37 @@ impl CreateGf16Method {
     #[inline]
     fn xor_jit_flavor(self) -> Option<XorJitFlavor> {
         match self {
-            Self::Avx2XorJitPort => Some(XorJitFlavor::Port),
-            Self::Avx2XorJitClean => Some(XorJitFlavor::Clean),
+            Self::Avx2XorJit => Some(XorJitFlavor::Jit),
             _ => None,
         }
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn xor_jit_segment_len_override() -> Option<usize> {
+    match std::env::var(XOR_JIT_SEGMENT_LEN_ENV) {
+        Ok(value) => {
+            let parsed = value.parse::<usize>().unwrap_or_else(|_| {
+                panic!(
+                    "{XOR_JIT_SEGMENT_LEN_ENV} must be a positive integer byte count, got {value:?}"
+                )
+            });
+            assert!(
+                parsed > 0,
+                "{XOR_JIT_SEGMENT_LEN_ENV} must be greater than zero"
+            );
+            Some(parsed)
+        }
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("{XOR_JIT_SEGMENT_LEN_ENV} must be valid UTF-8")
+        }
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn xor_jit_segment_len_override() -> Option<usize> {
+    None
 }
 
 /// Prepared coefficient for one `(recovery output, source input)` pair.
@@ -189,9 +220,9 @@ pub struct StagingArea {
 }
 
 impl StagingArea {
-    fn new(input_grouping: usize, aligned_chunk_len: usize) -> Self {
+    fn new(input_grouping: usize, input_storage_len: usize) -> Self {
         Self {
-            inputs: AlignedVec::new_zeroed(input_grouping * aligned_chunk_len),
+            inputs: AlignedVec::new_zeroed(input_storage_len),
             source_indices: vec![0; input_grouping],
             batch_len: 0,
         }
@@ -205,6 +236,80 @@ impl StagingArea {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct XorJitBitplaneLayout {
+    segment_len: usize,
+    segment_count: usize,
+    input_grouping: usize,
+    recovery_count: usize,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl XorJitBitplaneLayout {
+    fn new(
+        compute_len: usize,
+        segment_len: usize,
+        input_grouping: usize,
+        recovery_count: usize,
+    ) -> Self {
+        debug_assert!(segment_len > 0);
+        debug_assert!(segment_len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
+        debug_assert!(compute_len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
+        Self {
+            segment_len,
+            segment_count: compute_len.div_ceil(segment_len),
+            input_grouping,
+            recovery_count,
+        }
+    }
+
+    #[inline]
+    fn input_offset(&self, segment_idx: usize, batch_idx: usize) -> usize {
+        debug_assert!(segment_idx < self.segment_count);
+        debug_assert!(batch_idx < self.input_grouping);
+        let offset =
+            segment_idx * self.input_grouping * self.segment_len + batch_idx * self.segment_len;
+        debug_assert!(offset.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
+        offset
+    }
+
+    #[inline]
+    fn output_offset(&self, segment_idx: usize, recovery_idx: usize) -> usize {
+        debug_assert!(segment_idx < self.segment_count);
+        debug_assert!(recovery_idx < self.recovery_count);
+        let offset =
+            segment_idx * self.recovery_count * self.segment_len + recovery_idx * self.segment_len;
+        debug_assert!(offset.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
+        offset
+    }
+
+    #[inline]
+    fn segment_start(&self, segment_idx: usize) -> usize {
+        debug_assert!(segment_idx < self.segment_count);
+        segment_idx * self.segment_len
+    }
+
+    #[inline]
+    fn segment_len_for(&self, segment_idx: usize, compute_len: usize) -> usize {
+        let start = self.segment_start(segment_idx);
+        debug_assert!(start < compute_len);
+        let len = (compute_len - start).min(self.segment_len);
+        debug_assert!(len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
+        len
+    }
+
+    #[inline]
+    fn input_storage_len(&self) -> usize {
+        self.segment_count * self.input_grouping * self.segment_len
+    }
+
+    #[inline]
+    fn output_storage_len(&self) -> usize {
+        self.segment_count * self.recovery_count * self.segment_len
+    }
+}
+
 /// Create-side recovery backend with all hot-path storage owned up front.
 pub struct CreateRecoveryBackend {
     pub source_count: usize,
@@ -215,6 +320,8 @@ pub struct CreateRecoveryBackend {
     pub input_grouping: usize,
     #[cfg(target_arch = "x86_64")]
     xor_jit_bitplane: bool,
+    #[cfg(target_arch = "x86_64")]
+    xor_jit_layout: Option<XorJitBitplaneLayout>,
     transfer_buffers: [AlignedVec; TRANSFER_BUFFER_COUNT],
     pub staging: Vec<StagingArea>,
     pub output_chunks: AlignedVec,
@@ -249,6 +356,35 @@ impl CreateRecoveryBackend {
         let chunk_alignment = AVX2_ALIGNMENT;
         let aligned_chunk_len = align_up(max_chunk_len, chunk_alignment);
         let input_grouping = input_grouping(source_count, method);
+        #[cfg(target_arch = "x86_64")]
+        let xor_jit_layout = xor_jit_bitplane.then(|| {
+            let segment_len = align_down(
+                method
+                    .ideal_segment_len()
+                    .min(aligned_chunk_len)
+                    .max(XOR_JIT_BITPLANE_ALIGNMENT),
+                XOR_JIT_BITPLANE_ALIGNMENT,
+            )
+            .max(XOR_JIT_BITPLANE_ALIGNMENT);
+            XorJitBitplaneLayout::new(
+                aligned_chunk_len,
+                segment_len,
+                input_grouping,
+                recovery_count,
+            )
+        });
+        #[cfg(target_arch = "x86_64")]
+        let staging_storage_len = xor_jit_layout
+            .map(|layout| layout.input_storage_len())
+            .unwrap_or(input_grouping * aligned_chunk_len);
+        #[cfg(not(target_arch = "x86_64"))]
+        let staging_storage_len = input_grouping * aligned_chunk_len;
+        #[cfg(target_arch = "x86_64")]
+        let output_storage_len = xor_jit_layout
+            .map(|layout| layout.output_storage_len())
+            .unwrap_or(recovery_count * aligned_chunk_len);
+        #[cfg(not(target_arch = "x86_64"))]
+        let output_storage_len = recovery_count * aligned_chunk_len;
         let recovery_exponents = (0..recovery_count)
             .map(|offset| (first_recovery_block + offset as u32) as u16)
             .collect::<Vec<_>>();
@@ -298,15 +434,17 @@ impl CreateRecoveryBackend {
             input_grouping,
             #[cfg(target_arch = "x86_64")]
             xor_jit_bitplane,
+            #[cfg(target_arch = "x86_64")]
+            xor_jit_layout,
             transfer_buffers: [
                 AlignedVec::new_zeroed(aligned_chunk_len),
                 AlignedVec::new_zeroed(aligned_chunk_len),
             ],
             staging: vec![
-                StagingArea::new(input_grouping, aligned_chunk_len),
-                StagingArea::new(input_grouping, aligned_chunk_len),
+                StagingArea::new(input_grouping, staging_storage_len),
+                StagingArea::new(input_grouping, staging_storage_len),
             ],
-            output_chunks: AlignedVec::new_zeroed(recovery_count * aligned_chunk_len),
+            output_chunks: AlignedVec::new_zeroed(output_storage_len),
             coeffs,
             workers: CreateWorkerPool::new(worker_count, max_job_count),
             aligned_chunk_len,
@@ -335,6 +473,15 @@ impl CreateRecoveryBackend {
             .iter()
             .all(|staging| (staging.inputs.as_ptr() as usize).is_multiple_of(AVX2_ALIGNMENT)));
         debug_assert!((self.output_chunks.as_ptr() as usize).is_multiple_of(AVX2_ALIGNMENT));
+        #[cfg(target_arch = "x86_64")]
+        if let Some(layout) = self.xor_jit_layout {
+            debug_assert!(self.output_chunks.len() >= layout.output_storage_len());
+        } else {
+            debug_assert!(
+                self.output_chunks.len() >= self.recovery_exponents.len() * self.aligned_chunk_len
+            );
+        }
+        #[cfg(not(target_arch = "x86_64"))]
         debug_assert!(
             self.output_chunks.len() >= self.recovery_exponents.len() * self.aligned_chunk_len
         );
@@ -376,9 +523,16 @@ impl CreateRecoveryBackend {
         let slot = staging.batch_len;
         #[cfg(target_arch = "x86_64")]
         if self.xor_jit_bitplane {
-            let prepared = staging.slot_mut(slot, self.aligned_chunk_len, self.aligned_chunk_len);
-            let prepared_len = prepare_xor_jit_bitplane_chunks(prepared, input_chunk);
-            debug_assert_eq!(prepared_len, self.aligned_chunk_len);
+            let layout = self
+                .xor_jit_layout
+                .expect("XOR-JIT bitplane layout initialized");
+            prepare_xor_jit_bitplane_staging(
+                layout,
+                staging,
+                slot,
+                self.aligned_chunk_len,
+                input_chunk,
+            );
         } else {
             staging
                 .slot_mut(slot, self.aligned_chunk_len, self.chunk_len)
@@ -408,12 +562,16 @@ impl CreateRecoveryBackend {
         let slot = staging.batch_len;
         #[cfg(target_arch = "x86_64")]
         if self.xor_jit_bitplane {
-            let prepared = staging.slot_mut(slot, self.aligned_chunk_len, self.aligned_chunk_len);
-            let prepared_len = prepare_xor_jit_bitplane_chunks(
-                prepared,
+            let layout = self
+                .xor_jit_layout
+                .expect("XOR-JIT bitplane layout initialized");
+            prepare_xor_jit_bitplane_staging(
+                layout,
+                staging,
+                slot,
+                self.aligned_chunk_len,
                 &self.transfer_buffers[idx][..self.chunk_len],
             );
-            debug_assert_eq!(prepared_len, self.aligned_chunk_len);
         } else {
             staging
                 .slot_mut(slot, self.aligned_chunk_len, self.chunk_len)
@@ -447,24 +605,43 @@ impl CreateRecoveryBackend {
             .for_each(|(recovery_idx, (_, recovery_data))| {
                 debug_assert!(recovery_data.capacity() >= block_size);
                 debug_assert!(recovery_data.len() + self.chunk_len <= recovery_data.capacity());
-                let start = recovery_idx * self.aligned_chunk_len;
-                let end = start + self.chunk_len;
-                debug_assert!(end <= self.output_chunks.len());
                 #[cfg(target_arch = "x86_64")]
                 if self.xor_jit_bitplane {
-                    let prepared_end = start + self.aligned_chunk_len;
-                    debug_assert!(prepared_end <= self.output_chunks.len());
+                    let layout = self
+                        .xor_jit_layout
+                        .expect("XOR-JIT bitplane layout initialized");
                     let output_start = recovery_data.len();
                     recovery_data.resize(output_start + self.chunk_len, 0);
-                    finish_xor_jit_bitplane_chunks(
-                        &mut recovery_data[output_start..output_start + self.chunk_len],
-                        &self.output_chunks[start..prepared_end],
-                    );
+                    for segment_idx in 0..layout.segment_count {
+                        let segment_start = layout.segment_start(segment_idx);
+                        if segment_start >= self.chunk_len {
+                            break;
+                        }
+                        let prepared_len =
+                            layout.segment_len_for(segment_idx, self.aligned_chunk_len);
+                        let output_len = (self.chunk_len - segment_start).min(prepared_len);
+                        let prepared_start = layout.output_offset(segment_idx, recovery_idx);
+                        let prepared_end = prepared_start + prepared_len;
+                        debug_assert!(prepared_end <= self.output_chunks.len());
+                        let dst_start = output_start + segment_start;
+                        finish_xor_jit_bitplane_chunks(
+                            &mut recovery_data[dst_start..dst_start + output_len],
+                            &self.output_chunks[prepared_start..prepared_end],
+                        );
+                    }
                 } else {
+                    let start = recovery_idx * self.aligned_chunk_len;
+                    let end = start + self.chunk_len;
+                    debug_assert!(end <= self.output_chunks.len());
                     recovery_data.extend_from_slice(&self.output_chunks[start..end]);
                 }
                 #[cfg(not(target_arch = "x86_64"))]
-                recovery_data.extend_from_slice(&self.output_chunks[start..end]);
+                {
+                    let start = recovery_idx * self.aligned_chunk_len;
+                    let end = start + self.chunk_len;
+                    debug_assert!(end <= self.output_chunks.len());
+                    recovery_data.extend_from_slice(&self.output_chunks[start..end]);
+                }
             });
     }
 
@@ -532,10 +709,12 @@ impl CreateRecoveryBackend {
 
         #[cfg(target_arch = "x86_64")]
         if self.xor_jit_bitplane {
+            let layout = self
+                .xor_jit_layout
+                .expect("XOR-JIT bitplane layout initialized");
             return self.build_compute_jobs_xor_jit_bitplane(
                 compute_len,
-                segment_len,
-                segment_count,
+                layout,
                 worker_count,
                 recovery_count,
                 staging_idx,
@@ -570,6 +749,14 @@ impl CreateRecoveryBackend {
                     output_end,
                     #[cfg(target_arch = "x86_64")]
                     xor_jit_bitplane: self.xor_jit_bitplane,
+                    #[cfg(target_arch = "x86_64")]
+                    xor_jit_segment_len: 0,
+                    #[cfg(target_arch = "x86_64")]
+                    xor_jit_segment_count: 0,
+                    #[cfg(target_arch = "x86_64")]
+                    xor_jit_input_grouping: 0,
+                    #[cfg(target_arch = "x86_64")]
+                    xor_jit_recovery_count: 0,
                 };
                 job_count += 1;
             }
@@ -581,8 +768,7 @@ impl CreateRecoveryBackend {
     fn build_compute_jobs_xor_jit_bitplane(
         &mut self,
         compute_len: usize,
-        segment_len: usize,
-        segment_count: usize,
+        layout: XorJitBitplaneLayout,
         worker_count: usize,
         recovery_count: usize,
         staging_idx: usize,
@@ -590,10 +776,10 @@ impl CreateRecoveryBackend {
         let staging = &self.staging[staging_idx];
         let mut job_count = 0;
 
-        if segment_count >= worker_count {
-            let segment_groups = worker_count.min(segment_count).max(1);
-            let base_segments = segment_count / segment_groups;
-            let extra_segments = segment_count % segment_groups;
+        if layout.segment_count >= worker_count {
+            let segment_groups = worker_count.min(layout.segment_count).max(1);
+            let base_segments = layout.segment_count / segment_groups;
+            let extra_segments = layout.segment_count % segment_groups;
             let mut segment_idx = 0;
 
             for group_idx in 0..segment_groups {
@@ -610,12 +796,16 @@ impl CreateRecoveryBackend {
                     batch_len: staging.batch_len,
                     aligned_chunk_len: self.aligned_chunk_len,
                     compute_len,
-                    segment_start: segment_idx * segment_len,
-                    segment_len,
+                    segment_start: layout.segment_start(segment_idx),
+                    segment_len: layout.segment_len_for(segment_idx, compute_len),
                     segment_count: group_segments,
                     output_start: 0,
                     output_end: recovery_count,
                     xor_jit_bitplane: true,
+                    xor_jit_segment_len: layout.segment_len,
+                    xor_jit_segment_count: layout.segment_count,
+                    xor_jit_input_grouping: layout.input_grouping,
+                    xor_jit_recovery_count: layout.recovery_count,
                 };
                 job_count += 1;
                 segment_idx += group_segments;
@@ -624,16 +814,16 @@ impl CreateRecoveryBackend {
             return job_count;
         }
 
-        let segment_groups = segment_count.max(1);
+        let segment_groups = layout.segment_count.max(1);
         let output_groups = (worker_count / segment_groups)
             .max(1)
             .min(recovery_count)
             .max(1);
         let outputs_per_group = recovery_count.div_ceil(output_groups);
 
-        for segment_idx in 0..segment_count {
-            let start = segment_idx * segment_len;
-            let len = (compute_len - start).min(segment_len);
+        for segment_idx in 0..layout.segment_count {
+            let start = layout.segment_start(segment_idx);
+            let len = layout.segment_len_for(segment_idx, compute_len);
             for output_group in 0..output_groups {
                 let output_start = output_group * outputs_per_group;
                 let output_end = ((output_group + 1) * outputs_per_group).min(recovery_count);
@@ -658,12 +848,41 @@ impl CreateRecoveryBackend {
                     output_start,
                     output_end,
                     xor_jit_bitplane: true,
+                    xor_jit_segment_len: layout.segment_len,
+                    xor_jit_segment_count: layout.segment_count,
+                    xor_jit_input_grouping: layout.input_grouping,
+                    xor_jit_recovery_count: layout.recovery_count,
                 };
                 job_count += 1;
             }
         }
 
         job_count
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn prepare_xor_jit_bitplane_staging(
+    layout: XorJitBitplaneLayout,
+    staging: &mut StagingArea,
+    slot: usize,
+    compute_len: usize,
+    input_chunk: &[u8],
+) {
+    debug_assert!(compute_len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
+    for segment_idx in 0..layout.segment_count {
+        let segment_start = layout.segment_start(segment_idx);
+        let segment_len = layout.segment_len_for(segment_idx, compute_len);
+        let dst_start = layout.input_offset(segment_idx, slot);
+        let dst_end = dst_start + segment_len;
+        debug_assert!(dst_end <= staging.inputs.len());
+        let src = if segment_start < input_chunk.len() {
+            let src_end = (segment_start + segment_len).min(input_chunk.len());
+            &input_chunk[segment_start..src_end]
+        } else {
+            &[]
+        };
+        prepare_xor_jit_bitplane_segment(&mut staging.inputs[dst_start..dst_end], src);
     }
 }
 
@@ -685,6 +904,14 @@ struct ComputeJob {
     output_end: usize,
     #[cfg(target_arch = "x86_64")]
     xor_jit_bitplane: bool,
+    #[cfg(target_arch = "x86_64")]
+    xor_jit_segment_len: usize,
+    #[cfg(target_arch = "x86_64")]
+    xor_jit_segment_count: usize,
+    #[cfg(target_arch = "x86_64")]
+    xor_jit_input_grouping: usize,
+    #[cfg(target_arch = "x86_64")]
+    xor_jit_recovery_count: usize,
 }
 
 impl Default for CreateGf16Method {
@@ -954,9 +1181,13 @@ fn process_compute_job_xor_jit(job: ComputeJob, flavor: XorJitFlavor) {
 
 #[cfg(target_arch = "x86_64")]
 fn process_compute_job_xor_jit_bitplane(job: ComputeJob) {
-    for segment_idx in 0..job.segment_count {
-        let segment_start = job.segment_start + segment_idx * job.segment_len;
-        let segment_len = (job.compute_len - segment_start).min(job.segment_len);
+    let layout = xor_jit_bitplane_job_layout(job);
+    let first_segment_idx = job.segment_start / layout.segment_len;
+    debug_assert_eq!(job.segment_start, layout.segment_start(first_segment_idx));
+    for segment_offset in 0..job.segment_count {
+        let segment_idx = first_segment_idx + segment_offset;
+        let segment_start = layout.segment_start(segment_idx);
+        let segment_len = layout.segment_len_for(segment_idx, job.compute_len);
         process_compute_job_xor_jit_bitplane_segment(ComputeJob {
             segment_start,
             segment_len,
@@ -968,10 +1199,13 @@ fn process_compute_job_xor_jit_bitplane(job: ComputeJob) {
 
 #[cfg(target_arch = "x86_64")]
 fn process_compute_job_xor_jit_bitplane_segment(job: ComputeJob) {
+    let layout = xor_jit_bitplane_job_layout(job);
+    let segment_idx = job.segment_start / layout.segment_len;
+    debug_assert_eq!(job.segment_start, layout.segment_start(segment_idx));
     debug_assert!(job.segment_start.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
     debug_assert!(job.segment_len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
     for recovery_idx in job.output_start..job.output_end {
-        let output_start = recovery_idx * job.aligned_chunk_len + job.segment_start;
+        let output_start = layout.output_offset(segment_idx, recovery_idx);
         let output = unsafe {
             std::slice::from_raw_parts_mut(
                 (job.output_base as *mut u8).add(output_start),
@@ -982,14 +1216,143 @@ fn process_compute_job_xor_jit_bitplane_segment(job: ComputeJob) {
         for batch_idx in 0..job.batch_len {
             let source_idx = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
             let coeff = coeff_for(job, recovery_idx, source_idx);
-            let input = input_segment(job, batch_idx);
+            let input = xor_jit_bitplane_input_segment(job, layout, segment_idx, batch_idx);
 
             match &coeff.xor_jit_bitplane {
-                Some(kernel) => kernel.multiply_add_chunks(input, output),
+                Some(kernel) => kernel.multiply_add_chunks_with_prefetch(
+                    input,
+                    output,
+                    xor_jit_bitplane_prefetch_ptr(
+                        job,
+                        layout,
+                        segment_idx,
+                        recovery_idx,
+                        batch_idx,
+                    ),
+                ),
                 None => panic!("forced XOR-JIT create backend missing bitplane kernel"),
             }
         }
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn xor_jit_bitplane_job_layout(job: ComputeJob) -> XorJitBitplaneLayout {
+    XorJitBitplaneLayout {
+        segment_len: job.xor_jit_segment_len,
+        segment_count: job.xor_jit_segment_count,
+        input_grouping: job.xor_jit_input_grouping,
+        recovery_count: job.xor_jit_recovery_count,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn xor_jit_bitplane_input_segment(
+    job: ComputeJob,
+    layout: XorJitBitplaneLayout,
+    segment_idx: usize,
+    batch_idx: usize,
+) -> &'static [u8] {
+    let start = layout.input_offset(segment_idx, batch_idx);
+    unsafe { std::slice::from_raw_parts((job.input_base as *const u8).add(start), job.segment_len) }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn xor_jit_bitplane_prefetch_ptr(
+    job: ComputeJob,
+    layout: XorJitBitplaneLayout,
+    segment_idx: usize,
+    recovery_idx: usize,
+    batch_idx: usize,
+) -> Option<*const u8> {
+    if batch_idx < XOR_JIT_PREFETCH_OUTPUT_ROUNDS {
+        return xor_jit_bitplane_output_prefetch_ptr(
+            job,
+            layout,
+            segment_idx,
+            recovery_idx,
+            batch_idx,
+        );
+    }
+
+    xor_jit_bitplane_input_prefetch_ptr(job, layout, segment_idx, recovery_idx, batch_idx)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn xor_jit_bitplane_output_prefetch_ptr(
+    job: ComputeJob,
+    layout: XorJitBitplaneLayout,
+    segment_idx: usize,
+    recovery_idx: usize,
+    batch_idx: usize,
+) -> Option<*const u8> {
+    let prefetch_len = job.segment_len >> XOR_JIT_PREFETCH_DOWNSCALE;
+    let prefetch_offset = batch_idx * prefetch_len;
+
+    if recovery_idx + 1 < job.output_end {
+        let start = layout.output_offset(segment_idx, recovery_idx + 1) + prefetch_offset;
+        return Some(unsafe { (job.output_base as *const u8).add(start) });
+    }
+
+    if segment_idx + 1 < layout.segment_count {
+        let start = layout.output_offset(segment_idx + 1, recovery_idx) + prefetch_offset;
+        return Some(unsafe { (job.output_base as *const u8).add(start) });
+    }
+
+    None
+}
+
+#[cfg(target_arch = "x86_64")]
+fn xor_jit_bitplane_input_prefetch_ptr(
+    job: ComputeJob,
+    layout: XorJitBitplaneLayout,
+    segment_idx: usize,
+    recovery_idx: usize,
+    batch_idx: usize,
+) -> Option<*const u8> {
+    if segment_idx + 1 >= layout.segment_count {
+        return None;
+    }
+
+    let output_count = job.output_end - job.output_start;
+    let input_prefetch_output_start =
+        xor_jit_bitplane_input_prefetch_output_start(job, output_count);
+    let local_output_idx = recovery_idx - job.output_start;
+    if local_output_idx < input_prefetch_output_start {
+        return None;
+    }
+
+    let prefetch_output_count = output_count - input_prefetch_output_start;
+    debug_assert!(prefetch_output_count > 0);
+    let output_rank = local_output_idx - input_prefetch_output_start;
+    let prefetch_batch_idx = XOR_JIT_PREFETCH_OUTPUT_ROUNDS
+        + (batch_idx - XOR_JIT_PREFETCH_OUTPUT_ROUNDS) * prefetch_output_count
+        + output_rank;
+    if prefetch_batch_idx >= job.batch_len {
+        return None;
+    }
+
+    let start = layout.input_offset(segment_idx + 1, prefetch_batch_idx);
+    Some(unsafe { (job.input_base as *const u8).add(start) })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn xor_jit_bitplane_input_prefetch_output_start(job: ComputeJob, output_count: usize) -> usize {
+    let mut inputs_prefetched_per_output = job.batch_len;
+    let mut output_start = output_count.saturating_sub(1);
+
+    if inputs_prefetched_per_output > XOR_JIT_PREFETCH_OUTPUT_ROUNDS {
+        inputs_prefetched_per_output = (inputs_prefetched_per_output
+            - XOR_JIT_PREFETCH_OUTPUT_ROUNDS)
+            << (XOR_JIT_PREFETCH_SPREAD_SHIFT - XOR_JIT_PREFETCH_DOWNSCALE);
+        let outputs_needed =
+            (job.batch_len << XOR_JIT_PREFETCH_SPREAD_SHIFT).div_ceil(inputs_prefetched_per_output);
+        output_start = output_count.saturating_sub(outputs_needed);
+    }
+
+    output_start
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1637,20 +2000,19 @@ mod tests {
 
     #[test]
     fn forced_xor_jit_backend_matches_encoder_for_full_batch() {
-        assert_forced_backend_matches_encoder("xor-jit-port", CreateGf16Method::Avx2XorJitPort);
-        assert_forced_backend_matches_encoder("xor-jit-clean", CreateGf16Method::Avx2XorJitClean);
+        assert_forced_backend_matches_encoder("xor-jit", CreateGf16Method::Avx2XorJit);
     }
 
     #[test]
     fn forced_xor_jit_backend_uses_bitplane_without_legacy_fallback() {
         let _guard = env_lock().lock().unwrap();
-        std::env::set_var("PAR2RS_CREATE_GF16", "xor-jit-port");
+        std::env::set_var("PAR2RS_CREATE_GF16", "xor-jit");
 
         let encoder = RecoveryBlockEncoder::new(1024, 12);
         let backend = CreateRecoveryBackend::new(encoder.base_values(), 0, 5, 1024, 4);
         std::env::remove_var("PAR2RS_CREATE_GF16");
 
-        if backend.selected_method() != CreateGf16Method::Avx2XorJitPort {
+        if backend.selected_method() != CreateGf16Method::Avx2XorJit {
             return;
         }
 
@@ -1698,7 +2060,118 @@ mod tests {
     fn input_grouping_handles_non_power_of_two_multiple() {
         assert_eq!(align_up(12, 12), 12);
         assert_eq!(align_up(13, 12), 24);
-        assert_eq!(input_grouping(256, CreateGf16Method::Avx2XorJitPort), 12);
-        assert_eq!(input_grouping(256, CreateGf16Method::Avx2XorJitClean), 12);
+        assert_eq!(input_grouping(256, CreateGf16Method::Avx2XorJit), 12);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn xor_jit_bitplane_layout_offsets_are_segment_major() {
+        let layout = XorJitBitplaneLayout::new(1024, 512, 3, 4);
+
+        assert_eq!(layout.input_offset(0, 0), 0);
+        assert_eq!(layout.input_offset(0, 1), 512);
+        assert_eq!(layout.input_offset(0, 2), 1024);
+        assert_eq!(layout.input_offset(1, 0), 1536);
+        assert_eq!(layout.input_offset(1, 1), 2048);
+
+        assert_eq!(layout.output_offset(0, 0), 0);
+        assert_eq!(layout.output_offset(0, 1), 512);
+        assert_eq!(layout.output_offset(0, 3), 1536);
+        assert_eq!(layout.output_offset(1, 0), 2048);
+        assert_eq!(layout.output_offset(1, 1), 2560);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn xor_jit_bitplane_layout_offsets_do_not_overlap() {
+        use std::collections::HashSet;
+
+        let layout = XorJitBitplaneLayout::new(2048, 512, 12, 5);
+        let mut input_offsets = HashSet::new();
+        for segment_idx in 0..layout.segment_count {
+            for batch_idx in 0..layout.input_grouping {
+                assert!(input_offsets.insert(layout.input_offset(segment_idx, batch_idx)));
+            }
+        }
+        assert_eq!(
+            input_offsets.len(),
+            layout.segment_count * layout.input_grouping
+        );
+
+        let mut output_offsets = HashSet::new();
+        for segment_idx in 0..layout.segment_count {
+            for recovery_idx in 0..layout.recovery_count {
+                assert!(output_offsets.insert(layout.output_offset(segment_idx, recovery_idx)));
+            }
+        }
+        assert_eq!(
+            output_offsets.len(),
+            layout.segment_count * layout.recovery_count
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn xor_jit_bitplane_layout_handles_partial_final_segment() {
+        let layout = XorJitBitplaneLayout::new(1536, 1024, 3, 2);
+
+        assert_eq!(layout.segment_count, 2);
+        assert_eq!(layout.segment_start(0), 0);
+        assert_eq!(layout.segment_start(1), 1024);
+        assert_eq!(layout.segment_len_for(0, 1536), 1024);
+        assert_eq!(layout.segment_len_for(1, 1536), 512);
+        assert_eq!(layout.input_storage_len(), 2 * 3 * 1024);
+        assert_eq!(layout.output_storage_len(), 2 * 2 * 1024);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn forced_xor_jit_backend_uses_packed_bitplane_layout() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("PAR2RS_CREATE_GF16", "xor-jit");
+
+        let encoder = RecoveryBlockEncoder::new(1024 * 1024, 24);
+        let backend = CreateRecoveryBackend::new(encoder.base_values(), 0, 7, 1024 * 1024, 16);
+        std::env::remove_var("PAR2RS_CREATE_GF16");
+
+        if backend.selected_method() != CreateGf16Method::Avx2XorJit {
+            return;
+        }
+
+        let layout = backend
+            .xor_jit_layout
+            .expect("forced XOR-JIT should initialize packed layout");
+        assert_eq!(layout.segment_len, 128 * 1024);
+        assert_eq!(layout.segment_count, 8);
+        assert_eq!(
+            layout.input_offset(1, 0),
+            backend.input_grouping * layout.segment_len
+        );
+        assert_eq!(layout.output_offset(1, 0), 7 * layout.segment_len);
+        assert_eq!(backend.staging[0].inputs.len(), layout.input_storage_len());
+        assert_eq!(backend.output_chunks.len(), layout.output_storage_len());
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn forced_xor_jit_backend_honors_segment_len_override() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("PAR2RS_CREATE_GF16", "xor-jit");
+        std::env::set_var(XOR_JIT_SEGMENT_LEN_ENV, "65536");
+
+        let encoder = RecoveryBlockEncoder::new(1024 * 1024, 24);
+        let backend = CreateRecoveryBackend::new(encoder.base_values(), 0, 7, 1024 * 1024, 16);
+        std::env::remove_var(XOR_JIT_SEGMENT_LEN_ENV);
+        std::env::remove_var("PAR2RS_CREATE_GF16");
+
+        if backend.selected_method() != CreateGf16Method::Avx2XorJit {
+            return;
+        }
+
+        let layout = backend
+            .xor_jit_layout
+            .expect("forced XOR-JIT should initialize packed layout");
+        assert_eq!(layout.segment_len, 64 * 1024);
+        assert_eq!(layout.segment_count, 16);
     }
 }

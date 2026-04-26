@@ -25,14 +25,20 @@ PROFILE_CASE="${PROFILE_CASE:-}"
 PROFILE_TOOL="${PROFILE_TOOL:-}"
 PROFILE_FREQUENCY="${PROFILE_FREQUENCY:-997}"
 PERF_EVENTS="${PERF_EVENTS:-instructions,cycles,branches,branch-misses,cache-references,cache-misses,task-clock,context-switches,cpu-migrations,page-faults}"
+CACHE_PROFILE="${CACHE_PROFILE:-0}"
+CACHE_PROFILE_TOOL="${CACHE_PROFILE_TOOL:-}"
+CACHE_LOAD_LATENCY="${CACHE_LOAD_LATENCY:-30}"
+CACHE_STAT_EVENTS="${CACHE_STAT_EVENTS:-instructions,cycles,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses,dTLB-loads,dTLB-load-misses,cache-references,cache-misses}"
 VERIFY_OUTPUTS="${VERIFY_OUTPUTS:-1}"
 VERIFY_REPAIR="${VERIFY_REPAIR:-smoke}"
+INCLUDE_PSHUFB="${INCLUDE_PSHUFB:-0}"
 DEFAULT_BENCHMARK_TOOLS=(
-    par2rs-pshufb
-    par2rs-xor-jit-port
-    par2rs-xor-jit-clean
+    par2rs-xor-jit
     turbo-auto
 )
+if [[ "$INCLUDE_PSHUFB" == "1" ]]; then
+    DEFAULT_BENCHMARK_TOOLS=(par2rs-pshufb "${DEFAULT_BENCHMARK_TOOLS[@]}")
+fi
 
 # label:file_count:file_size_mib:block_size_bytes
 DEFAULT_CASES="single_256m:1:256:1048576,multi_1g:64:16:1048576,single_5g:1:5120:1048576"
@@ -51,6 +57,7 @@ Environment:
   REDUNDANCY=N       create redundancy percentage (default: $REDUNDANCY)
   RECOVERY_FILES=N   recovery file count via -n (default: $RECOVERY_FILES)
   PAR2CMD_BIN=PATH   par2cmdline-turbo binary (default: $PAR2CMD_BIN)
+  INCLUDE_PSHUFB=1    include the par2rs PSHUFB baseline (default: $INCLUDE_PSHUFB)
   WORK_ROOT=DIR      generated corpus and PAR2 work directory
                      default: result run directory/work
   VERIFY_OUTPUTS=0   skip cross-tool verification after each create
@@ -62,6 +69,10 @@ Environment:
   PROFILE_CASE=LABEL profile this CASES label; default profiles the last case
   PROFILE_TOOL=TOOL   par2rs tool variant to profile (default: platform-specific)
   PROFILE_FREQUENCY=N sampling frequency for flamegraph (default: $PROFILE_FREQUENCY)
+  CACHE_PROFILE=1    run Linux cache-miss attribution for the profiled case
+  CACHE_PROFILE_TOOL=TOOL par2rs variant for cache profile (default: PROFILE_TOOL)
+  CACHE_LOAD_LATENCY=N minimum load latency for precise mem-load sampling (default: $CACHE_LOAD_LATENCY)
+  CACHE_STAT_EVENTS=EVENTS comma-separated cache counter list
   KEEP_WORK=1        keep generated benchmark work directory
 
 Example:
@@ -92,7 +103,7 @@ tool_supported() {
         turbo-auto|par2rs-auto|par2rs-scalar)
             return 0
             ;;
-        par2rs-pshufb|par2rs-xor-jit-port|par2rs-xor-jit-clean|par2rs-xor-jit)
+        par2rs-pshufb|par2rs-xor-jit|par2rs-xor-jit-port)
             [[ "$ARCH" == "x86_64" ]]
             return
             ;;
@@ -114,21 +125,28 @@ if [[ "${#BENCHMARK_TOOLS[@]}" == "1" && "${BENCHMARK_TOOLS[0]}" == "turbo-auto"
 fi
 
 if [[ -z "$PROFILE_TOOL" ]]; then
-    for tool in "${BENCHMARK_TOOLS[@]}"; do
-        if [[ "$tool" == par2rs-* ]]; then
-            PROFILE_TOOL="$tool"
-            break
-        fi
-    done
-fi
-
-if [[ -z "$PROFILE_TOOL" ]]; then
-    echo "error: could not determine a par2rs PROFILE_TOOL for $PLATFORM/$ARCH" >&2
-    exit 1
+    if tool_supported "par2rs-xor-jit"; then
+        PROFILE_TOOL="par2rs-xor-jit"
+    else
+        for tool in "${BENCHMARK_TOOLS[@]}"; do
+            if [[ "$tool" == par2rs-* ]]; then
+                PROFILE_TOOL="$tool"
+                break
+            fi
+        done
+    fi
 fi
 
 if ! tool_supported "$PROFILE_TOOL"; then
     echo "error: PROFILE_TOOL '$PROFILE_TOOL' is unsupported on $PLATFORM/$ARCH" >&2
+    exit 1
+fi
+
+if [[ -z "$CACHE_PROFILE_TOOL" ]]; then
+    CACHE_PROFILE_TOOL="$PROFILE_TOOL"
+fi
+if ! tool_supported "$CACHE_PROFILE_TOOL"; then
+    echo "error: CACHE_PROFILE_TOOL '$CACHE_PROFILE_TOOL' is unsupported on $PLATFORM/$ARCH" >&2
     exit 1
 fi
 
@@ -173,7 +191,42 @@ echo "threads: $THREADS"
 echo "platform: $PLATFORM/$ARCH"
 echo "tools: ${BENCHMARK_TOOLS[*]}"
 echo "profile tool: $PROFILE_TOOL"
+if [[ "$CACHE_PROFILE" == "1" ]]; then
+    echo "cache profile tool: $CACHE_PROFILE_TOOL"
+fi
 echo
+
+probe_turbo_method() {
+    local probe_dir="$RUN_ROOT/turbo-method-probe"
+    local stdout_file="$RUN_ROOT/turbo-method-probe.stdout"
+    local stderr_file="$RUN_ROOT/turbo-method-probe.stderr"
+    rm -rf "$probe_dir"
+    mkdir -p "$probe_dir"
+
+    python3 - "$probe_dir/file.bin" <<'PY'
+import sys
+
+with open(sys.argv[1], "wb") as f:
+    for idx in range(1024):
+        f.write(bytes([(idx * 17 + 3) & 0xFF]) * 1024)
+PY
+
+    local -a probe_cmd=("$PAR2CMD_BIN" c -v -s1048576 -r10 -n1)
+    if [[ "$THREADS" != "0" ]]; then
+        probe_cmd+=("-t$THREADS")
+    fi
+
+    if ! (cd "$probe_dir" && "${probe_cmd[@]}" out.par2 file.bin >"$stdout_file" 2>"$stderr_file"); then
+        rm -rf "$probe_dir"
+        printf 'unknown'
+        return 0
+    fi
+
+    local method
+    method="$(awk -F': ' '/Multiply method:/ {print $2; exit}' "$stdout_file" "$stderr_file")"
+    rm -rf "$probe_dir"
+    printf '%s' "${method:-unknown}"
+}
 
 echo "Building par2rs release binary..."
 (cd "$PROJECT_ROOT" && cargo build --release --bin par2 --quiet)
@@ -185,6 +238,10 @@ write_csv_header() {
 
 write_csv_header "$RAW_CSV"
 write_csv_header "$SMOKE_CSV"
+
+TURBO_OBSERVED_METHOD="$(probe_turbo_method)"
+echo "turbo observed method: $TURBO_OBSERVED_METHOD"
+echo
 
 now_ns() {
     python3 - <<'PY'
@@ -289,17 +346,9 @@ run_create() {
                 selected_method="pshufb"
                 env_prefix=(env PAR2RS_CREATE_GF16=pshufb)
                 ;;
-            par2rs-xor-jit)
-                selected_method="xor-jit-port"
-                env_prefix=(env PAR2RS_CREATE_GF16=xor-jit-port PAR2RS_CREATE_XOR_JIT_FALLBACK=error)
-                ;;
-            par2rs-xor-jit-port)
-                selected_method="xor-jit-port"
-                env_prefix=(env PAR2RS_CREATE_GF16=xor-jit-port PAR2RS_CREATE_XOR_JIT_FALLBACK=error)
-                ;;
-            par2rs-xor-jit-clean)
-                selected_method="xor-jit-clean"
-                env_prefix=(env PAR2RS_CREATE_GF16=xor-jit-clean PAR2RS_CREATE_XOR_JIT_FALLBACK=error)
+            par2rs-xor-jit|par2rs-xor-jit-port)
+                selected_method="xor-jit"
+                env_prefix=(env PAR2RS_CREATE_GF16=xor-jit PAR2RS_CREATE_XOR_JIT_FALLBACK=error)
                 ;;
             par2rs-scalar)
                 selected_method="scalar"
@@ -318,7 +367,6 @@ run_create() {
     if [[ "$THREADS" != "0" ]]; then
         cmd+=("-t$THREADS")
     fi
-
     local start_ns end_ns status validation_status wall_seconds
     start_ns="$(now_ns)"
     set +e
@@ -491,14 +539,14 @@ summarize_results() {
     local warmups="${4:-$WARMUP_RUNS}"
     local title="${5:-PAR2 Create Perf Benchmark}"
 
-    python3 - "$raw_csv" "$summary_md" "$iterations" "$warmups" "$THREADS" "$REDUNDANCY" "$RECOVERY_FILES" "$title" <<'PY'
+    python3 - "$raw_csv" "$summary_md" "$iterations" "$warmups" "$THREADS" "$REDUNDANCY" "$RECOVERY_FILES" "$title" "$TURBO_OBSERVED_METHOD" <<'PY'
 import csv
 import math
 import statistics
 import sys
 from collections import defaultdict
 
-raw_csv, summary_md, iterations, warmups, threads, redundancy, recovery_files, title = sys.argv[1:]
+raw_csv, summary_md, iterations, warmups, threads, redundancy, recovery_files, title, turbo_observed_method = sys.argv[1:]
 metrics = [
     ("instructions", "instructions"),
     ("cycles", "cycles"),
@@ -545,6 +593,16 @@ def fmt(value):
         return f"{value:,.2f}"
     return f"{value:.4f}"
 
+def metric_mean(case, tool, key):
+    group = groups.get((case, tool), [])
+    s = stats(number(r, key) for r in group)
+    return s[0] if s else None
+
+def ratio(num, den):
+    if num is None or den is None or den == 0:
+        return None
+    return num / den
+
 cases = sorted({row["case"] for row in rows})
 
 with open(summary_md, "w") as out:
@@ -554,6 +612,7 @@ with open(summary_md, "w") as out:
     out.write(f"- threads: {threads}\n")
     out.write(f"- redundancy: {redundancy}%\n")
     out.write(f"- recovery files: {recovery_files}\n")
+    out.write(f"- turbo observed method: {turbo_observed_method}\n")
     out.write("- validation: par2rs output verified/repaired by turbo; turbo output verified/repaired by par2rs\n")
     out.write("- primary signal: wall seconds; Linux perf counters are recorded for diagnostics when available\n\n")
 
@@ -574,6 +633,21 @@ with open(summary_md, "w") as out:
                 f"| {case} | {tool} | {method} | {fmt(instr[0] if instr else None)} | "
                 f"{fmt(cycles[0] if cycles else None)} | {fmt(wall[0] if wall else None)} | {fmt(effective_cpu)} |\n"
             )
+
+    out.write("\n## XOR-JIT Ratios\n\n")
+    out.write("| case | wall / turbo | instructions / turbo | cache misses / turbo |\n")
+    out.write("|---|---:|---:|---:|\n")
+    for case in cases:
+        xor_wall = metric_mean(case, "par2rs-xor-jit", "wall_seconds")
+        turbo_wall = metric_mean(case, "turbo-auto", "wall_seconds")
+        xor_instr = metric_mean(case, "par2rs-xor-jit", "instructions")
+        turbo_instr = metric_mean(case, "turbo-auto", "instructions")
+        xor_cache = metric_mean(case, "par2rs-xor-jit", "cache_misses")
+        turbo_cache = metric_mean(case, "turbo-auto", "cache_misses")
+        out.write(
+            f"| {case} | {fmt(ratio(xor_wall, turbo_wall))} | "
+            f"{fmt(ratio(xor_instr, turbo_instr))} | {fmt(ratio(xor_cache, turbo_cache))} |\n"
+        )
 
     out.write("\n## Detailed Stats\n\n")
     out.write("| case | tool | metric | n | mean | stddev | cv % | min | max |\n")
@@ -600,7 +674,7 @@ PY
 enforce_pass_criteria() {
     local raw_csv="${1:-$RAW_CSV}"
 
-    if ! tool_supported "par2rs-xor-jit-port" || ! tool_supported "par2rs-xor-jit-clean"; then
+    if ! tool_supported "par2rs-xor-jit"; then
         echo "Skipping XOR-JIT pass criteria on $PLATFORM/$ARCH."
         return 0
     fi
@@ -613,7 +687,7 @@ import sys
 from collections import defaultdict
 
 raw_csv = sys.argv[1]
-required = ["par2rs-xor-jit-port", "par2rs-xor-jit-clean", "turbo-auto"]
+required = ["par2rs-xor-jit", "turbo-auto"]
 groups = defaultdict(list)
 failures = []
 
@@ -654,14 +728,14 @@ for case in cases:
         errors.append(f"{case}: missing turbo-auto wall_seconds")
         continue
 
-    for tool in ["par2rs-xor-jit-port", "par2rs-xor-jit-clean"]:
-        wall = mean_wall(groups[(case, tool)])
-        if wall is None:
-            errors.append(f"{case}: missing {tool} wall_seconds")
-        elif wall > turbo:
-            errors.append(
-                f"{case}: {tool} mean wall {wall:.6f}s is slower than turbo-auto {turbo:.6f}s"
-            )
+    tool = "par2rs-xor-jit"
+    wall = mean_wall(groups[(case, tool)])
+    if wall is None:
+        errors.append(f"{case}: missing {tool} wall_seconds")
+    elif wall > turbo:
+        errors.append(
+            f"{case}: {tool} mean wall {wall:.6f}s is slower than turbo-auto {turbo:.6f}s"
+        )
 
 if errors:
     print("error: XOR-JIT performance pass criteria failed", file=sys.stderr)
@@ -761,54 +835,54 @@ for name, count in inclusive.most_common(40):
 
 par2rs_tool_env() {
     local tool="$1"
+    local -a env_args=(env)
 
     case "$tool" in
         par2rs-auto)
-            printf '%s\0' env
             ;;
         par2rs-pshufb)
-            printf '%s\0' env PAR2RS_CREATE_GF16=pshufb
+            env_args+=(PAR2RS_CREATE_GF16=pshufb)
             ;;
         par2rs-xor-jit|par2rs-xor-jit-port)
-            printf '%s\0' env PAR2RS_CREATE_GF16=xor-jit-port PAR2RS_CREATE_XOR_JIT_FALLBACK=error
-            ;;
-        par2rs-xor-jit-clean)
-            printf '%s\0' env PAR2RS_CREATE_GF16=xor-jit-clean PAR2RS_CREATE_XOR_JIT_FALLBACK=error
+            env_args+=(PAR2RS_CREATE_GF16=xor-jit PAR2RS_CREATE_XOR_JIT_FALLBACK=error)
             ;;
         par2rs-scalar)
-            printf '%s\0' env PAR2RS_CREATE_GF16=scalar
+            env_args+=(PAR2RS_CREATE_GF16=scalar)
             ;;
         *)
             echo "error: PROFILE_TOOL must be a par2rs variant, got: $tool" >&2
             return 1
             ;;
     esac
+    env_args+=(PAR2RS_XOR_JIT_PERF_MAP=1)
+    printf '%s\0' "${env_args[@]}"
 }
 
 par2rs_tool_env_args() {
     local tool="$1"
+    local -a env_args=()
 
     case "$tool" in
         par2rs-auto)
-            return 0
             ;;
         par2rs-pshufb)
-            printf '%s\0' PAR2RS_CREATE_GF16=pshufb
+            env_args+=(PAR2RS_CREATE_GF16=pshufb)
             ;;
         par2rs-xor-jit|par2rs-xor-jit-port)
-            printf '%s\0' PAR2RS_CREATE_GF16=xor-jit-port PAR2RS_CREATE_XOR_JIT_FALLBACK=error
-            ;;
-        par2rs-xor-jit-clean)
-            printf '%s\0' PAR2RS_CREATE_GF16=xor-jit-clean PAR2RS_CREATE_XOR_JIT_FALLBACK=error
+            env_args+=(PAR2RS_CREATE_GF16=xor-jit PAR2RS_CREATE_XOR_JIT_FALLBACK=error)
             ;;
         par2rs-scalar)
-            printf '%s\0' PAR2RS_CREATE_GF16=scalar
+            env_args+=(PAR2RS_CREATE_GF16=scalar)
             ;;
         *)
             echo "error: PROFILE_TOOL must be a par2rs variant, got: $tool" >&2
             return 1
             ;;
     esac
+    env_args+=(PAR2RS_XOR_JIT_PERF_MAP=1)
+    if [[ "${#env_args[@]}" -gt 0 ]]; then
+        printf '%s\0' "${env_args[@]}"
+    fi
 }
 
 generate_flamegraph() {
@@ -980,6 +1054,131 @@ generate_flamegraph() {
     esac
 }
 
+generate_cache_profile() {
+    local case_spec="$1"
+    IFS=: read -r label file_count file_size_mib block_size <<< "$case_spec"
+    local case_dir="$WORK_ROOT/$label"
+    local corpus_dir="$case_dir/corpus"
+
+    if [[ "$CACHE_PROFILE" != "1" ]]; then
+        return 0
+    fi
+    if [[ "$PLATFORM" != "Linux" ]]; then
+        echo "warning: cache profiling is currently Linux-only; skipping cache profile" >&2
+        return 0
+    fi
+
+    echo
+    echo "Preparing cache-miss attribution for case '$label' / $CACHE_PROFILE_TOOL..."
+    (
+        cd "$PROJECT_ROOT"
+        RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
+            cargo build --profile profiling --bin par2 --quiet
+    )
+
+    local profiling_bin="$PROJECT_ROOT/target/profiling/par2"
+    local output_file="$case_dir/cache-profile-out.par2"
+    local cache_stat="$RUN_ROOT/par2rs-create-$label-$CACHE_PROFILE_TOOL.cache-stat.txt"
+    local cache_miss_data="$RUN_ROOT/par2rs-create-$label-$CACHE_PROFILE_TOOL.cache-misses.data"
+    local cache_miss_report="$RUN_ROOT/par2rs-create-$label-$CACHE_PROFILE_TOOL.cache-misses-report.txt"
+    local cache_miss_script="$RUN_ROOT/par2rs-create-$label-$CACHE_PROFILE_TOOL.cache-misses-script.txt"
+    local perf_mem_data="$RUN_ROOT/par2rs-create-$label-$CACHE_PROFILE_TOOL.perf-mem.data"
+    local perf_mem_report="$RUN_ROOT/par2rs-create-$label-$CACHE_PROFILE_TOOL.perf-mem-report.txt"
+    local precise_data="$RUN_ROOT/par2rs-create-$label-$CACHE_PROFILE_TOOL.mem-loads.data"
+    local precise_report="$RUN_ROOT/par2rs-create-$label-$CACHE_PROFILE_TOOL.mem-loads-report.txt"
+    local ibs_data="$RUN_ROOT/par2rs-create-$label-$CACHE_PROFILE_TOOL.ibs-op.data"
+    local ibs_report="$RUN_ROOT/par2rs-create-$label-$CACHE_PROFILE_TOOL.ibs-op-report.txt"
+    local ibs_script="$RUN_ROOT/par2rs-create-$label-$CACHE_PROFILE_TOOL.ibs-op-script.txt"
+    local -a env_prefix
+    local -a args=(c -q -q "-s$block_size" "-r$REDUNDANCY" "-n$RECOVERY_FILES")
+
+    mapfile -d '' -t env_prefix < <(par2rs_tool_env "$CACHE_PROFILE_TOOL")
+    if [[ "$THREADS" != "0" ]]; then
+        args+=("-t$THREADS")
+    fi
+    args+=("$output_file")
+    local file
+    for file in "$corpus_dir"/*.bin; do
+        args+=("$file")
+    done
+
+    echo "Collecting targeted cache counters..."
+    rm -f "$case_dir"/cache-profile-out*.par2
+    if ! perf stat -o "$cache_stat" -d -d -d -e "$CACHE_STAT_EVENTS" -- "${env_prefix[@]}" "$profiling_bin" "${args[@]}" >/dev/null; then
+        echo "warning: cache perf stat failed; see $cache_stat" >&2
+    fi
+
+    echo "Recording cache-miss callgraph samples..."
+    rm -f "$case_dir"/cache-profile-out*.par2
+    if perf record -g --call-graph fp -e cache-misses:u -o "$cache_miss_data" -- "${env_prefix[@]}" "$profiling_bin" "${args[@]}" >/dev/null; then
+        perf report -i "$cache_miss_data" --stdio --sort comm,dso,symbol > "$cache_miss_report" 2>/dev/null || true
+        perf script -i "$cache_miss_data" > "$cache_miss_script" 2>/dev/null || true
+        echo "cache-misses data:  $cache_miss_data"
+        echo "cache-misses text:  $cache_miss_report"
+        echo "cache-misses script:$cache_miss_script"
+    else
+        echo "warning: cache-miss callgraph sampling failed; see perf permissions/counter availability" >&2
+        rm -f "$cache_miss_data"
+    fi
+
+    echo "Recording data-source samples with perf mem..."
+    rm -f "$case_dir"/cache-profile-out*.par2
+    if perf mem record -o "$perf_mem_data" --all-user --call-graph fp -- "${env_prefix[@]}" "$profiling_bin" "${args[@]}" >/dev/null; then
+        echo "Generating perf mem report..."
+        perf mem report -i "$perf_mem_data" --stdio --sort symbol,dso,data_src,local_weight > "$perf_mem_report" 2>/dev/null || true
+        echo "perf mem data:   $perf_mem_data"
+        echo "perf mem report: $perf_mem_report"
+    else
+        echo "warning: perf mem record failed; falling back to precise mem-load sampling" >&2
+        rm -f "$perf_mem_data"
+    fi
+
+    echo "Recording high-latency load samples..."
+    rm -f "$case_dir"/cache-profile-out*.par2
+    if perf record -g --call-graph fp -e "cpu/mem-loads,ldlat=${CACHE_LOAD_LATENCY}/P" -o "$precise_data" -- "${env_prefix[@]}" "$profiling_bin" "${args[@]}" >/dev/null; then
+        echo "Generating high-latency load report..."
+        perf report -i "$precise_data" --stdio --sort comm,dso,symbol > "$precise_report" 2>/dev/null || true
+        echo "mem-loads data:  $precise_data"
+        echo "mem-loads text:  $precise_report"
+    else
+        echo "warning: precise mem-load sampling failed; trying AMD IBS op sampling" >&2
+        rm -f "$precise_data"
+        if [[ "$(perf list 2>/dev/null)" == *ibs_op* ]]; then
+            local old_perf_paranoid=""
+            if [[ -r /proc/sys/kernel/perf_event_paranoid ]]; then
+                old_perf_paranoid="$(cat /proc/sys/kernel/perf_event_paranoid)"
+            fi
+            if [[ -n "$old_perf_paranoid" && "$old_perf_paranoid" != "-1" ]]; then
+                if sudo -n true >/dev/null 2>&1; then
+                    sudo -n sysctl -w kernel.perf_event_paranoid=-1 >/dev/null || true
+                else
+                    echo "warning: AMD IBS needs system-wide perf access; sudo -n is unavailable" >&2
+                fi
+            fi
+
+            rm -f "$case_dir"/cache-profile-out*.par2
+            if perf record -a -g --call-graph fp -e ibs_op// -o "$ibs_data" -- "${env_prefix[@]}" "$profiling_bin" "${args[@]}" >/dev/null; then
+                perf report -i "$ibs_data" --stdio --sort comm,dso,symbol > "$ibs_report" 2>/dev/null || true
+                perf script -i "$ibs_data" > "$ibs_script" 2>/dev/null || true
+                echo "ibs-op data:     $ibs_data"
+                echo "ibs-op text:     $ibs_report"
+                echo "ibs-op script:   $ibs_script"
+            else
+                echo "warning: AMD IBS op sampling failed; see perf permissions and IBS PMU support" >&2
+                rm -f "$ibs_data"
+            fi
+
+            if [[ -n "$old_perf_paranoid" && "$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || true)" != "$old_perf_paranoid" ]]; then
+                sudo -n sysctl -w kernel.perf_event_paranoid="$old_perf_paranoid" >/dev/null || true
+            fi
+        else
+            echo "warning: precise mem-load sampling failed; event may be unsupported on this CPU/kernel" >&2
+        fi
+    fi
+
+    echo "cache stat:      $cache_stat"
+}
+
 last_case=""
 profile_case_spec=""
 run_smoke_benchmarks
@@ -1026,6 +1225,7 @@ if [[ -z "$profile_case_spec" ]]; then
 fi
 if [[ -n "$profile_case_spec" ]]; then
     generate_flamegraph "$profile_case_spec"
+    generate_cache_profile "$profile_case_spec"
 fi
 enforce_pass_criteria "$RAW_CSV"
 

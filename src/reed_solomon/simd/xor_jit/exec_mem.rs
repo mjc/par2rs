@@ -52,6 +52,14 @@ impl ExecutableBuffer {
         self.len == 0
     }
 
+    pub fn as_ptr(&self) -> *const u8 {
+        self.ptr.as_ptr()
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
     fn make_executable(&mut self) -> io::Result<()> {
         set_protection(self.ptr, self.capacity, Protection::Executable)?;
         self.protection = Protection::Executable;
