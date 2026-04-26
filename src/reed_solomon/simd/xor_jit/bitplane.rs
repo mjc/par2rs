@@ -37,6 +37,19 @@ impl Plane {
 }
 
 pub fn prepare_avx2_block(dst: &mut [u8; AVX2_BLOCK_BYTES], src: &[u8; AVX2_BLOCK_BYTES]) {
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: The runtime feature check above guarantees AVX2 is available.
+        unsafe {
+            prepare_avx2_block_x86_64_avx2(dst, src);
+        }
+        return;
+    }
+
+    prepare_avx2_block_scalar(dst, src);
+}
+
+fn prepare_avx2_block_scalar(dst: &mut [u8; AVX2_BLOCK_BYTES], src: &[u8; AVX2_BLOCK_BYTES]) {
     for group in 0..GROUPS_PER_BLOCK {
         let mut low_masks = [0u32; BITS_PER_BYTE];
         let mut high_masks = [0u32; BITS_PER_BYTE];
@@ -57,13 +70,27 @@ pub fn prepare_avx2(dst: &mut [u8], src: &[u8]) -> usize {
     assert!(dst.len() >= prepared_len);
 
     let full_len = src.len() / AVX2_BLOCK_BYTES * AVX2_BLOCK_BYTES;
+    #[cfg(target_arch = "x86_64")]
+    let use_avx2 = std::arch::is_x86_feature_detected!("avx2");
+    #[cfg(not(target_arch = "x86_64"))]
+    let use_avx2 = false;
+
     for (block_index, input_block) in src[..full_len].chunks_exact(AVX2_BLOCK_BYTES).enumerate() {
         let output_start = block_index * AVX2_BLOCK_BYTES;
         let output_block = prepared_block_mut(dst, output_start);
-        prepare_avx2_block(
-            output_block,
-            input_block.try_into().expect("full input block"),
-        );
+        let input_block = input_block.try_into().expect("full input block");
+
+        #[cfg(target_arch = "x86_64")]
+        if use_avx2 {
+            // SAFETY: use_avx2 is set only after a runtime AVX2 feature check.
+            unsafe {
+                prepare_avx2_block_x86_64_avx2(output_block, input_block);
+            }
+            continue;
+        }
+
+        let _ = use_avx2;
+        prepare_avx2_block_scalar(output_block, input_block);
     }
 
     if full_len < src.len() {
@@ -74,6 +101,52 @@ pub fn prepare_avx2(dst: &mut [u8], src: &[u8]) -> usize {
     }
 
     prepared_len
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn prepare_avx2_block_x86_64_avx2(
+    dst: &mut [u8; AVX2_BLOCK_BYTES],
+    src: &[u8; AVX2_BLOCK_BYTES],
+) {
+    use std::arch::x86_64::{
+        __m256i, _mm256_add_epi8, _mm256_blend_epi32, _mm256_loadu_si256, _mm256_movemask_epi8,
+        _mm256_permute4x64_epi64, _mm256_set_epi32, _mm256_shuffle_epi8,
+    };
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    unsafe fn write_plane_masks(dst: *mut u8, mut bytes: __m256i, half: ByteHalf, group: usize) {
+        for bit_from_msb in 0..BITS_PER_BYTE {
+            let offset = Plane::new(half, bit_from_msb, group).offset();
+            let mask = _mm256_movemask_epi8(bytes) as u32;
+            std::ptr::write_unaligned(dst.add(offset).cast::<u32>(), mask);
+            bytes = _mm256_add_epi8(bytes, bytes);
+        }
+    }
+
+    let shuffle_a = _mm256_set_epi32(
+        0x0f0d0b09, 0x07050301, 0x0e0c0a08, 0x06040200, 0x0f0d0b09, 0x07050301, 0x0e0c0a08,
+        0x06040200,
+    );
+    let shuffle_b = _mm256_set_epi32(
+        0x0e0c0a08, 0x06040200, 0x0f0d0b09, 0x07050301, 0x0e0c0a08, 0x06040200, 0x0f0d0b09,
+        0x07050301,
+    );
+
+    for group in 0..GROUPS_PER_BLOCK {
+        let src = src.as_ptr().add(group * WORDS_PER_GROUP * 2);
+        let a = _mm256_loadu_si256(src.cast::<__m256i>());
+        let b = _mm256_loadu_si256(src.add(32).cast::<__m256i>());
+        let a = _mm256_shuffle_epi8(a, shuffle_a);
+        let b = _mm256_shuffle_epi8(b, shuffle_b);
+
+        let low = _mm256_permute4x64_epi64::<0xd8>(_mm256_blend_epi32(b, a, 0x33));
+        let high = _mm256_permute4x64_epi64::<0x8d>(_mm256_blend_epi32(a, b, 0x33));
+
+        write_plane_masks(dst.as_mut_ptr(), high, ByteHalf::High, group);
+        write_plane_masks(dst.as_mut_ptr(), low, ByteHalf::Low, group);
+    }
 }
 
 fn prepared_block_mut(dst: &mut [u8], output_start: usize) -> &mut [u8; AVX2_BLOCK_BYTES] {
@@ -110,6 +183,19 @@ pub fn multiply_add_prepared_avx2_block_to_prepared(
 }
 
 pub fn finish_avx2_block(dst: &mut [u8; AVX2_BLOCK_BYTES], prepared: &[u8; AVX2_BLOCK_BYTES]) {
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: The runtime feature check above guarantees AVX2 is available.
+        unsafe {
+            finish_avx2_block_x86_64_avx2(dst, prepared);
+        }
+        return;
+    }
+
+    finish_avx2_block_scalar(dst, prepared);
+}
+
+fn finish_avx2_block_scalar(dst: &mut [u8; AVX2_BLOCK_BYTES], prepared: &[u8; AVX2_BLOCK_BYTES]) {
     for group in 0..GROUPS_PER_BLOCK {
         let low_masks = read_plane_group(prepared, ByteHalf::Low, group);
         let high_masks = read_plane_group(prepared, ByteHalf::High, group);
@@ -120,6 +206,114 @@ pub fn finish_avx2_block(dst: &mut [u8; AVX2_BLOCK_BYTES], prepared: &[u8; AVX2_
             let high = byte_from_planes(&high_masks, lane);
             write_output_word(dst, word, u16::from_le_bytes([low, high]));
         }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn finish_avx2_block_x86_64_avx2(
+    dst: &mut [u8; AVX2_BLOCK_BYTES],
+    prepared: &[u8; AVX2_BLOCK_BYTES],
+) {
+    use std::arch::x86_64::{
+        __m128i, __m256i, _mm256_add_epi8, _mm256_castsi128_si256, _mm256_castsi256_si128,
+        _mm256_inserti128_si256, _mm256_movemask_epi8, _mm256_permute2x128_si256,
+        _mm256_permute4x64_epi64, _mm256_slli_epi16, _mm256_unpackhi_epi16, _mm256_unpackhi_epi32,
+        _mm256_unpackhi_epi8, _mm256_unpacklo_epi16, _mm256_unpacklo_epi32, _mm256_unpacklo_epi8,
+        _mm_loadu_si128,
+    };
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    unsafe fn load_halves(src: *const u32, a: usize, b: usize, upper: usize) -> __m256i {
+        let lo = _mm_loadu_si128(src.add(120 + upper * 4 - a * 8).cast::<__m128i>());
+        let hi = _mm_loadu_si128(src.add(120 + upper * 4 - b * 8).cast::<__m128i>());
+        _mm256_inserti128_si256::<1>(_mm256_castsi128_si256(lo), hi)
+    }
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    unsafe fn load_x4(src: *const u32, offset: usize, upper: usize) -> (__m256i, __m256i) {
+        let a = load_halves(src, offset, offset + 8, upper);
+        let b = load_halves(src, offset + 1, offset + 9, upper);
+        (_mm256_unpacklo_epi8(a, b), _mm256_unpackhi_epi8(a, b))
+    }
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    unsafe fn unpack_vectors(
+        w0: __m256i,
+        w1: __m256i,
+        w2: __m256i,
+        w3: __m256i,
+        w4: __m256i,
+        w5: __m256i,
+        w6: __m256i,
+        w7: __m256i,
+    ) -> [__m256i; 8] {
+        let d0a = _mm256_unpacklo_epi16(w0, w2);
+        let d0b = _mm256_unpackhi_epi16(w0, w2);
+        let d0c = _mm256_unpacklo_epi16(w1, w3);
+        let d0d = _mm256_unpackhi_epi16(w1, w3);
+        let d4a = _mm256_unpacklo_epi16(w4, w6);
+        let d4b = _mm256_unpackhi_epi16(w4, w6);
+        let d4c = _mm256_unpacklo_epi16(w5, w7);
+        let d4d = _mm256_unpackhi_epi16(w5, w7);
+
+        [
+            _mm256_permute4x64_epi64::<0xd8>(_mm256_unpacklo_epi32(d0a, d4a)),
+            _mm256_permute4x64_epi64::<0xd8>(_mm256_unpackhi_epi32(d0a, d4a)),
+            _mm256_permute4x64_epi64::<0xd8>(_mm256_unpacklo_epi32(d0b, d4b)),
+            _mm256_permute4x64_epi64::<0xd8>(_mm256_unpackhi_epi32(d0b, d4b)),
+            _mm256_permute4x64_epi64::<0xd8>(_mm256_unpacklo_epi32(d0c, d4c)),
+            _mm256_permute4x64_epi64::<0xd8>(_mm256_unpackhi_epi32(d0c, d4c)),
+            _mm256_permute4x64_epi64::<0xd8>(_mm256_unpacklo_epi32(d0d, d4d)),
+            _mm256_permute4x64_epi64::<0xd8>(_mm256_unpackhi_epi32(d0d, d4d)),
+        ]
+    }
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    unsafe fn store_extracted_bits(dst: *mut u32, src: __m256i) {
+        let shifted = _mm256_add_epi8(src, src);
+        let mut lane = _mm256_inserti128_si256::<1>(shifted, _mm256_castsi256_si128(src));
+        std::ptr::write_unaligned(dst.add(3), _mm256_movemask_epi8(lane) as u32);
+        lane = _mm256_slli_epi16::<2>(lane);
+        std::ptr::write_unaligned(dst.add(2), _mm256_movemask_epi8(lane) as u32);
+        lane = _mm256_slli_epi16::<2>(lane);
+        std::ptr::write_unaligned(dst.add(1), _mm256_movemask_epi8(lane) as u32);
+        lane = _mm256_slli_epi16::<2>(lane);
+        std::ptr::write_unaligned(dst.add(0), _mm256_movemask_epi8(lane) as u32);
+
+        lane = _mm256_permute2x128_si256::<0x31>(shifted, src);
+        std::ptr::write_unaligned(dst.add(7), _mm256_movemask_epi8(lane) as u32);
+        lane = _mm256_slli_epi16::<2>(lane);
+        std::ptr::write_unaligned(dst.add(6), _mm256_movemask_epi8(lane) as u32);
+        lane = _mm256_slli_epi16::<2>(lane);
+        std::ptr::write_unaligned(dst.add(5), _mm256_movemask_epi8(lane) as u32);
+        lane = _mm256_slli_epi16::<2>(lane);
+        std::ptr::write_unaligned(dst.add(4), _mm256_movemask_epi8(lane) as u32);
+    }
+
+    let src = prepared.as_ptr().cast::<u32>();
+    let dst = dst.as_mut_ptr().cast::<u32>();
+
+    let (w0, w1) = load_x4(src, 0, 0);
+    let (w2, w3) = load_x4(src, 2, 0);
+    let (w4, w5) = load_x4(src, 4, 0);
+    let (w6, w7) = load_x4(src, 6, 0);
+    let unpacked = unpack_vectors(w0, w1, w2, w3, w4, w5, w6, w7);
+    for (idx, vector) in unpacked.into_iter().enumerate() {
+        store_extracted_bits(dst.add(idx * 8), vector);
+    }
+
+    let (w0, w1) = load_x4(src, 0, 1);
+    let (w2, w3) = load_x4(src, 2, 1);
+    let (w4, w5) = load_x4(src, 4, 1);
+    let (w6, w7) = load_x4(src, 6, 1);
+    let unpacked = unpack_vectors(w0, w1, w2, w3, w4, w5, w6, w7);
+    for (idx, vector) in unpacked.into_iter().enumerate() {
+        store_extracted_bits(dst.add(64 + idx * 8), vector);
     }
 }
 
