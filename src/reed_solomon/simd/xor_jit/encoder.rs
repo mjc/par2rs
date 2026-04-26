@@ -5,6 +5,153 @@ pub struct Program {
     instructions: Vec<Instruction>,
 }
 
+use super::exec_mem;
+
+pub(super) trait ByteSink {
+    fn push(&mut self, byte: u8);
+    fn extend_from_slice(&mut self, bytes: &[u8]);
+    fn len(&self) -> usize;
+}
+
+impl ByteSink for Vec<u8> {
+    fn push(&mut self, byte: u8) {
+        Vec::push(self, byte);
+    }
+
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        Vec::extend_from_slice(self, bytes);
+    }
+
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+}
+
+impl ByteSink for exec_mem::MutableExecutableBuffer {
+    fn push(&mut self, byte: u8) {
+        self.append_byte(byte)
+            .expect("append byte to mutable executable buffer");
+    }
+
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        self.append_bytes(bytes)
+            .expect("append bytes to mutable executable buffer");
+    }
+
+    fn len(&self) -> usize {
+        exec_mem::MutableExecutableBuffer::len(self)
+    }
+}
+
+pub(super) struct ProgramSink<'a, S: ByteSink> {
+    encoded: &'a mut S,
+}
+
+impl<'a, S: ByteSink> ProgramSink<'a, S> {
+    fn new(encoded: &'a mut S) -> Self {
+        Self { encoded }
+    }
+
+    pub fn vmovdqa_ymm_from_rdi_offset(self, reg: u8, offset: i32) -> Self {
+        encode_vmovdqa_load_into(
+            self.encoded,
+            Ymm::new(reg),
+            Memory::base_offset(BaseReg::Rdi, offset),
+        );
+        self
+    }
+
+    pub fn vmovdqa_ymm_from_rax_offset(self, reg: u8, offset: i32) -> Self {
+        encode_vmovdqa_load_into(
+            self.encoded,
+            Ymm::new(reg),
+            Memory::base_offset(BaseReg::Rax, offset),
+        );
+        self
+    }
+
+    pub fn vmovdqa_ymm_from_rdx_offset(self, reg: u8, offset: i32) -> Self {
+        encode_vmovdqa_load_into(
+            self.encoded,
+            Ymm::new(reg),
+            Memory::base_offset(BaseReg::Rdx, offset),
+        );
+        self
+    }
+
+    pub fn vmovdqa_ymm_from_rsi_offset(self, reg: u8, offset: i32) -> Self {
+        encode_vmovdqa_load_into(
+            self.encoded,
+            Ymm::new(reg),
+            Memory::base_offset(BaseReg::Rsi, offset),
+        );
+        self
+    }
+
+    pub fn vpxor_ymm(self, dst: u8, lhs: u8, rhs: u8) -> Self {
+        encode_vpxor_into(self.encoded, Ymm::new(dst), Ymm::new(lhs), Ymm::new(rhs));
+        self
+    }
+
+    pub fn vpxor_ymm_rdi_offset(self, dst: u8, lhs: u8, offset: i32) -> Self {
+        encode_vpxor_memory_into(
+            self.encoded,
+            Ymm::new(dst),
+            Ymm::new(lhs),
+            Memory::base_offset(BaseReg::Rdi, offset),
+        );
+        self
+    }
+
+    pub fn vpxor_ymm_rsi_offset(self, dst: u8, lhs: u8, offset: i32) -> Self {
+        encode_vpxor_memory_into(
+            self.encoded,
+            Ymm::new(dst),
+            Ymm::new(lhs),
+            Memory::base_offset(BaseReg::Rsi, offset),
+        );
+        self
+    }
+
+    pub fn vpxor_ymm_rax_offset(self, dst: u8, lhs: u8, offset: i32) -> Self {
+        encode_vpxor_memory_into(
+            self.encoded,
+            Ymm::new(dst),
+            Ymm::new(lhs),
+            Memory::base_offset(BaseReg::Rax, offset),
+        );
+        self
+    }
+
+    pub fn vpxor_ymm_rdx_offset(self, dst: u8, lhs: u8, offset: i32) -> Self {
+        encode_vpxor_memory_into(
+            self.encoded,
+            Ymm::new(dst),
+            Ymm::new(lhs),
+            Memory::base_offset(BaseReg::Rdx, offset),
+        );
+        self
+    }
+
+    pub fn vmovdqa_rsi_offset_from_ymm(self, offset: i32, reg: u8) -> Self {
+        encode_vmovdqa_store_into(
+            self.encoded,
+            Memory::base_offset(BaseReg::Rsi, offset),
+            Ymm::new(reg),
+        );
+        self
+    }
+
+    pub fn vmovdqa_rdx_offset_from_ymm(self, offset: i32, reg: u8) -> Self {
+        encode_vmovdqa_store_into(
+            self.encoded,
+            Memory::base_offset(BaseReg::Rdx, offset),
+            Ymm::new(reg),
+        );
+        self
+    }
+}
+
 impl Program {
     pub fn new() -> Self {
         Self::default()
@@ -75,6 +222,16 @@ impl Program {
         self
     }
 
+    pub fn vmovdqa_ymm_from_rax_offset(mut self, reg: u8, offset: i32) -> Self {
+        self.push_vmovdqa_load(Ymm::new(reg), Memory::base_offset(BaseReg::Rax, offset));
+        self
+    }
+
+    pub fn vmovdqa_ymm_from_rdx_offset(mut self, reg: u8, offset: i32) -> Self {
+        self.push_vmovdqa_load(Ymm::new(reg), Memory::base_offset(BaseReg::Rdx, offset));
+        self
+    }
+
     pub fn vpxor_ymm0_ymm0_ymm1(mut self) -> Self {
         self.push_vpxor(Ymm::Ymm0, Ymm::Ymm0, Ymm::Ymm1);
         self
@@ -113,6 +270,24 @@ impl Program {
         self
     }
 
+    pub fn vpxor_ymm_rax_offset(mut self, dst: u8, lhs: u8, offset: i32) -> Self {
+        self.instructions.push(Instruction::VpxorMemory {
+            dst: Ymm::new(dst),
+            lhs: Ymm::new(lhs),
+            memory: Memory::base_offset(BaseReg::Rax, offset),
+        });
+        self
+    }
+
+    pub fn vpxor_ymm_rdx_offset(mut self, dst: u8, lhs: u8, offset: i32) -> Self {
+        self.instructions.push(Instruction::VpxorMemory {
+            dst: Ymm::new(dst),
+            lhs: Ymm::new(lhs),
+            memory: Memory::base_offset(BaseReg::Rdx, offset),
+        });
+        self
+    }
+
     pub fn vmovdqu_rsi_from_ymm0(mut self) -> Self {
         self.push_vmovdqu_store(Memory::base(BaseReg::Rsi), Ymm::Ymm0);
         self
@@ -138,14 +313,73 @@ impl Program {
         self
     }
 
+    pub fn vmovdqa_rdx_offset_from_ymm(mut self, offset: i32, reg: u8) -> Self {
+        self.push_vmovdqa_store(Memory::base_offset(BaseReg::Rdx, offset), Ymm::new(reg));
+        self
+    }
+
     pub fn vzeroupper(mut self) -> Self {
         self.instructions.push(Instruction::Vzeroupper);
         self
     }
 
     pub fn finish(self) -> Vec<u8> {
-        let len = self.instructions.iter().map(Instruction::encoded_len).sum();
+        let len = encoded_len(&self.instructions);
         let mut encoded = Vec::with_capacity(len);
+        self.instructions
+            .into_iter()
+            .for_each(|instruction| instruction.encode_into(&mut encoded));
+        encoded
+    }
+
+    pub fn finish_block_loop_prefix(
+        self,
+        prefetch_step: Option<u32>,
+        pointer_bias: u32,
+    ) -> Vec<u8> {
+        let pointer_bias_header = block_loop_pointer_bias_header(pointer_bias);
+        let pointer_bias_len = pointer_bias_header.as_ref().map_or(0, |v| encoded_len(v));
+        let prefetch_header = block_loop_prefetch_header(prefetch_step);
+        let prefetch_len = prefetch_header.as_ref().map_or(0, |v| encoded_len(v));
+        let body_len = encoded_len(&self.instructions);
+        let total_len = pointer_bias_len + prefetch_len + body_len;
+        let mut encoded = Vec::with_capacity(total_len);
+
+        if let Some(pointer_bias_header) = pointer_bias_header {
+            pointer_bias_header
+                .into_iter()
+                .for_each(|instruction| instruction.encode_into(&mut encoded));
+        }
+        if let Some(prefetch_header) = prefetch_header {
+            prefetch_header
+                .into_iter()
+                .for_each(|instruction| instruction.encode_into(&mut encoded));
+        }
+        self.instructions
+            .into_iter()
+            .for_each(|instruction| instruction.encode_into(&mut encoded));
+        debug_assert_eq!(encoded.len(), total_len);
+        encoded
+    }
+
+    pub fn finish_turbo_block_loop_prefix(self) -> Vec<u8> {
+        let pointer_header = [
+            Instruction::AddRegImm32 {
+                reg: GpReg::Rax,
+                value: 512,
+            },
+            Instruction::AddRegImm32 {
+                reg: GpReg::Rdx,
+                value: 512,
+            },
+        ];
+        let pointer_len = encoded_len(&pointer_header);
+        let body_len = encoded_len(&self.instructions);
+        let mut encoded = Vec::with_capacity(pointer_len + body_len);
+
+        pointer_header
+            .into_iter()
+            .for_each(|instruction| instruction.encode_into(&mut encoded));
         self.instructions
             .into_iter()
             .for_each(|instruction| instruction.encode_into(&mut encoded));
@@ -177,72 +411,172 @@ impl Program {
         self.finish_block_loop_inner(block_bytes, Some(prefetch_step), pointer_bias)
     }
 
+    pub fn finish_block_loop_with_static_prefix(
+        self,
+        static_prefix: &[u8],
+        block_bytes: u32,
+        prefetch_step: Option<u32>,
+    ) -> Vec<u8> {
+        self.finish_block_loop_with_static_prefix_inner(
+            static_prefix,
+            block_bytes,
+            prefetch_step,
+            true,
+        )
+    }
+
+    pub fn finish_block_loop_with_static_prefix_no_vzeroupper(
+        self,
+        static_prefix: &[u8],
+        block_bytes: u32,
+        prefetch_step: Option<u32>,
+    ) -> Vec<u8> {
+        self.finish_block_loop_with_static_prefix_inner(
+            static_prefix,
+            block_bytes,
+            prefetch_step,
+            false,
+        )
+    }
+
+    pub fn finish_block_loop_dynamic_after_static_prefix_no_vzeroupper_into(
+        self,
+        static_prefix_len: usize,
+        block_bytes: u32,
+        prefetch_step: Option<u32>,
+        encoded: &mut impl ByteSink,
+    ) -> usize {
+        self.finish_block_loop_dynamic_after_static_prefix_into(
+            static_prefix_len,
+            block_bytes,
+            prefetch_step,
+            false,
+            encoded,
+        )
+    }
+
+    fn finish_block_loop_with_static_prefix_inner(
+        self,
+        static_prefix: &[u8],
+        _block_bytes: u32,
+        prefetch_step: Option<u32>,
+        vzeroupper: bool,
+    ) -> Vec<u8> {
+        let body_len = encoded_len(&self.instructions);
+        if static_prefix.is_empty() && body_len == 0 {
+            return if vzeroupper {
+                Self::new().vzeroupper().ret().finish()
+            } else {
+                Self::new().ret().finish()
+            };
+        }
+
+        let prefetch_header = block_loop_prefetch_header_for(prefetch_step, BaseReg::Rsi);
+        let prefetch_len = prefetch_header.as_ref().map_or(0, |v| encoded_len(v));
+        let loop_footer = block_loop_turbo_cmp_footer();
+        let footer_len = encoded_len(&loop_footer);
+        let jump_len = Instruction::JlRel32(0).encoded_len();
+        let back_edge =
+            -((static_prefix.len() + prefetch_len + body_len + footer_len + jump_len) as i32);
+        let total_len = static_prefix.len()
+            + prefetch_len
+            + body_len
+            + footer_len
+            + jump_len
+            + if vzeroupper {
+                Instruction::Vzeroupper.encoded_len()
+            } else {
+                0
+            }
+            + Instruction::Ret.encoded_len();
+        let mut encoded = Vec::with_capacity(total_len);
+
+        encoded.extend_from_slice(static_prefix);
+        if let Some(prefetch_header) = prefetch_header {
+            prefetch_header
+                .into_iter()
+                .for_each(|instruction| instruction.encode_into(&mut encoded));
+        }
+        self.instructions
+            .into_iter()
+            .for_each(|instruction| instruction.encode_into(&mut encoded));
+        loop_footer
+            .into_iter()
+            .for_each(|instruction| instruction.encode_into(&mut encoded));
+        Instruction::JlRel32(back_edge).encode_into(&mut encoded);
+        if vzeroupper {
+            Instruction::Vzeroupper.encode_into(&mut encoded);
+        }
+        Instruction::Ret.encode_into(&mut encoded);
+        debug_assert_eq!(encoded.len(), total_len);
+        encoded
+    }
+
+    fn finish_block_loop_dynamic_after_static_prefix_into(
+        self,
+        static_prefix_len: usize,
+        _block_bytes: u32,
+        prefetch_step: Option<u32>,
+        vzeroupper: bool,
+        encoded: &mut impl ByteSink,
+    ) -> usize {
+        let body_len = encoded_len(&self.instructions);
+        let prefetch_header = block_loop_prefetch_header_for(prefetch_step, BaseReg::Rsi);
+        let prefetch_len = prefetch_header.as_ref().map_or(0, |v| encoded_len(v));
+        let loop_footer = block_loop_turbo_cmp_footer();
+        let footer_len = encoded_len(&loop_footer);
+        let jump_len = Instruction::JlRel32(0).encoded_len();
+        let back_edge =
+            -((static_prefix_len + prefetch_len + body_len + footer_len + jump_len) as i32);
+        let dynamic_len = prefetch_len
+            + body_len
+            + footer_len
+            + jump_len
+            + if vzeroupper {
+                Instruction::Vzeroupper.encoded_len()
+            } else {
+                0
+            }
+            + Instruction::Ret.encoded_len();
+        let start_len = encoded.len();
+
+        if let Some(prefetch_header) = prefetch_header {
+            prefetch_header
+                .into_iter()
+                .for_each(|instruction| instruction.encode_into(encoded));
+        }
+        self.instructions
+            .into_iter()
+            .for_each(|instruction| instruction.encode_into(encoded));
+        loop_footer
+            .into_iter()
+            .for_each(|instruction| instruction.encode_into(encoded));
+        Instruction::JlRel32(back_edge).encode_into(encoded);
+        if vzeroupper {
+            Instruction::Vzeroupper.encode_into(encoded);
+        }
+        Instruction::Ret.encode_into(encoded);
+        debug_assert_eq!(encoded.len(), start_len + dynamic_len);
+        dynamic_len
+    }
+
     fn finish_block_loop_inner(
         self,
         block_bytes: u32,
         prefetch_step: Option<u32>,
         pointer_bias: u32,
     ) -> Vec<u8> {
-        let body_len: usize = self.instructions.iter().map(Instruction::encoded_len).sum();
+        let body_len = encoded_len(&self.instructions);
         if body_len == 0 {
             return Self::new().vzeroupper().ret().finish();
         }
 
-        let pointer_bias_header = (pointer_bias != 0).then(|| {
-            [
-                Instruction::AddRegImm32 {
-                    reg: GpReg::Rdi,
-                    value: pointer_bias,
-                },
-                Instruction::AddRegImm32 {
-                    reg: GpReg::Rsi,
-                    value: pointer_bias,
-                },
-            ]
-        });
-        let pointer_bias_len: usize = pointer_bias_header
-            .as_ref()
-            .map(|instructions| instructions.iter().map(Instruction::encoded_len).sum())
-            .unwrap_or(0);
-        let prefetch_header = prefetch_step.map(|step| {
-            [
-                Instruction::AddRegImm32 {
-                    reg: GpReg::Rcx,
-                    value: step,
-                },
-                Instruction::PrefetchT1 {
-                    memory: Memory::base_offset(BaseReg::Rcx, -128),
-                },
-                Instruction::PrefetchT1 {
-                    memory: Memory::base_offset(BaseReg::Rcx, -64),
-                },
-                Instruction::PrefetchT1 {
-                    memory: Memory::base(BaseReg::Rcx),
-                },
-                Instruction::PrefetchT1 {
-                    memory: Memory::base_offset(BaseReg::Rcx, 64),
-                },
-            ]
-        });
-        let prefetch_len: usize = prefetch_header
-            .as_ref()
-            .map(|instructions| instructions.iter().map(Instruction::encoded_len).sum())
-            .unwrap_or(0);
-        let loop_footer = [
-            Instruction::AddRegImm32 {
-                reg: GpReg::Rdi,
-                value: block_bytes,
-            },
-            Instruction::AddRegImm32 {
-                reg: GpReg::Rsi,
-                value: block_bytes,
-            },
-            Instruction::SubRegImm32 {
-                reg: GpReg::Rdx,
-                value: block_bytes,
-            },
-        ];
-        let footer_len: usize = loop_footer.iter().map(Instruction::encoded_len).sum();
+        let pointer_bias_header = block_loop_pointer_bias_header(pointer_bias);
+        let pointer_bias_len = pointer_bias_header.as_ref().map_or(0, |v| encoded_len(v));
+        let prefetch_header = block_loop_prefetch_header(prefetch_step);
+        let prefetch_len = prefetch_header.as_ref().map_or(0, |v| encoded_len(v));
+        let loop_footer = block_loop_footer(block_bytes);
+        let footer_len = encoded_len(&loop_footer);
         let jump_len = Instruction::JneRel32(0).encoded_len();
         let back_edge = -((prefetch_len + body_len + footer_len + jump_len) as i32);
         let total_len = pointer_bias_len
@@ -302,11 +636,134 @@ impl Program {
     }
 }
 
+pub(super) fn encode_block_loop_dynamic_after_static_prefix_no_vzeroupper_into<S, F>(
+    static_prefix_len: usize,
+    _block_bytes: u32,
+    prefetch_step: Option<u32>,
+    encoded: &mut S,
+    build_body: F,
+) -> usize
+where
+    S: ByteSink,
+    F: for<'a> FnOnce(ProgramSink<'a, S>) -> ProgramSink<'a, S>,
+{
+    let start_len = encoded.len();
+    let prefetch_header = block_loop_prefetch_header_for(prefetch_step, BaseReg::Rsi);
+
+    if let Some(prefetch_header) = prefetch_header {
+        prefetch_header
+            .into_iter()
+            .for_each(|instruction| instruction.encode_into(encoded));
+    }
+
+    let body_start_len = encoded.len();
+    let body = ProgramSink::new(encoded);
+    let _body = build_body(body);
+    let body_end_len = _body.encoded.len();
+    drop(_body);
+    let body_len = body_end_len - body_start_len;
+
+    let prefetch_len = body_start_len - start_len;
+    let loop_footer = block_loop_turbo_cmp_footer();
+    let footer_len = encoded_len(&loop_footer);
+    let jump_len = Instruction::JlRel32(0).encoded_len();
+    let back_edge = -((static_prefix_len + prefetch_len + body_len + footer_len + jump_len) as i32);
+
+    loop_footer
+        .into_iter()
+        .for_each(|instruction| instruction.encode_into(encoded));
+    Instruction::JlRel32(back_edge).encode_into(encoded);
+    Instruction::Ret.encode_into(encoded);
+
+    encoded.len() - start_len
+}
+
+fn block_loop_pointer_bias_header(pointer_bias: u32) -> Option<[Instruction; 2]> {
+    (pointer_bias != 0).then(|| {
+        [
+            Instruction::AddRegImm32 {
+                reg: GpReg::Rdi,
+                value: pointer_bias,
+            },
+            Instruction::AddRegImm32 {
+                reg: GpReg::Rsi,
+                value: pointer_bias,
+            },
+        ]
+    })
+}
+
+fn block_loop_prefetch_header(prefetch_step: Option<u32>) -> Option<[Instruction; 5]> {
+    block_loop_prefetch_header_for(prefetch_step, BaseReg::Rcx)
+}
+
+fn block_loop_prefetch_header_for(
+    prefetch_step: Option<u32>,
+    reg: BaseReg,
+) -> Option<[Instruction; 5]> {
+    prefetch_step.map(|step| {
+        [
+            Instruction::AddRegImm32 {
+                reg: GpReg::from_base(reg),
+                value: step,
+            },
+            Instruction::PrefetchT1 {
+                memory: Memory::base_offset(reg, -128),
+            },
+            Instruction::PrefetchT1 {
+                memory: Memory::base_offset(reg, -64),
+            },
+            Instruction::PrefetchT1 {
+                memory: Memory::base(reg),
+            },
+            Instruction::PrefetchT1 {
+                memory: Memory::base_offset(reg, 64),
+            },
+        ]
+    })
+}
+
+fn block_loop_footer(block_bytes: u32) -> [Instruction; 3] {
+    [
+        Instruction::AddRegImm32 {
+            reg: GpReg::Rdi,
+            value: block_bytes,
+        },
+        Instruction::AddRegImm32 {
+            reg: GpReg::Rsi,
+            value: block_bytes,
+        },
+        Instruction::SubRegImm32 {
+            reg: GpReg::Rdx,
+            value: block_bytes,
+        },
+    ]
+}
+
+fn block_loop_len_footer(block_bytes: u32) -> [Instruction; 1] {
+    [Instruction::SubRegImm32 {
+        reg: GpReg::Rdx,
+        value: block_bytes,
+    }]
+}
+
+fn block_loop_turbo_cmp_footer() -> [Instruction; 1] {
+    [Instruction::CmpRegReg {
+        lhs: GpReg::Rdx,
+        rhs: GpReg::Rcx,
+    }]
+}
+
+fn encoded_len(instructions: &[Instruction]) -> usize {
+    instructions.iter().map(Instruction::encoded_len).sum()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Instruction {
     MovEaxImm32(u32),
     AddRegImm32 { reg: GpReg, value: u32 },
     SubRegImm32 { reg: GpReg, value: u32 },
+    CmpRegReg { lhs: GpReg, rhs: GpReg },
     PrefetchT1 { memory: Memory },
     VmovdqaLoad { dst: Ymm, memory: Memory },
     VmovdqaStore { memory: Memory, src: Ymm },
@@ -315,6 +772,7 @@ enum Instruction {
     Vpxor { dst: Ymm, lhs: Ymm, rhs: Ymm },
     VpxorMemory { dst: Ymm, lhs: Ymm, memory: Memory },
     JneRel32(i32),
+    JlRel32(i32),
     Vzeroupper,
     Ret,
 }
@@ -324,6 +782,7 @@ impl Instruction {
         match self {
             Self::MovEaxImm32(_) => 5,
             Self::AddRegImm32 { .. } | Self::SubRegImm32 { .. } => 7,
+            Self::CmpRegReg { .. } => 3,
             Self::PrefetchT1 { memory } => 2 + memory.encoded_len(),
             Self::VmovdqaLoad { memory, .. } | Self::VmovdqaStore { memory, .. } => {
                 3 + memory.encoded_len()
@@ -339,13 +798,13 @@ impl Instruction {
                 }
             }
             Self::VpxorMemory { memory, .. } => 3 + memory.encoded_len(),
-            Self::JneRel32(_) => 6,
+            Self::JneRel32(_) | Self::JlRel32(_) => 6,
             Self::Vzeroupper => 3,
             Self::Ret => 1,
         }
     }
 
-    fn encode_into(self, encoded: &mut Vec<u8>) {
+    fn encode_into(self, encoded: &mut impl ByteSink) {
         match self {
             Self::MovEaxImm32(value) => {
                 encoded.push(0xb8);
@@ -353,6 +812,11 @@ impl Instruction {
             }
             Self::AddRegImm32 { reg, value } => encode_reg_imm32(encoded, 0x81, 0, reg, value),
             Self::SubRegImm32 { reg, value } => encode_reg_imm32(encoded, 0x81, 5, reg, value),
+            Self::CmpRegReg { lhs, rhs } => {
+                encoded.push(0x48);
+                encoded.push(0x39);
+                encoded.push(modrm_register(rhs.code(), lhs.code()));
+            }
             Self::PrefetchT1 { memory } => {
                 encoded.extend_from_slice(&[0x0f, 0x18]);
                 memory.encode_into(encoded, 2);
@@ -389,6 +853,10 @@ impl Instruction {
             }
             Self::JneRel32(offset) => {
                 encoded.extend_from_slice(&[0x0f, 0x85]);
+                encoded.extend_from_slice(&offset.to_le_bytes());
+            }
+            Self::JlRel32(offset) => {
+                encoded.extend_from_slice(&[0x0f, 0x8c]);
                 encoded.extend_from_slice(&offset.to_le_bytes());
             }
             Self::Vzeroupper => encoded.extend_from_slice(&[0xc5, 0xf8, 0x77]),
@@ -468,7 +936,9 @@ impl Ymm {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BaseReg {
+    Rax,
     Rcx,
+    Rdx,
     Rdi,
     Rsi,
 }
@@ -476,7 +946,9 @@ enum BaseReg {
 impl BaseReg {
     const fn code(self) -> u8 {
         match self {
+            Self::Rax => 0,
             Self::Rcx => 1,
+            Self::Rdx => 2,
             Self::Rsi => 6,
             Self::Rdi => 7,
         }
@@ -485,6 +957,7 @@ impl BaseReg {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GpReg {
+    Rax,
     Rcx,
     Rdx,
     Rsi,
@@ -494,10 +967,21 @@ enum GpReg {
 impl GpReg {
     const fn code(self) -> u8 {
         match self {
+            Self::Rax => 0,
             Self::Rcx => 1,
             Self::Rdx => 2,
             Self::Rsi => 6,
             Self::Rdi => 7,
+        }
+    }
+
+    const fn from_base(reg: BaseReg) -> Self {
+        match reg {
+            BaseReg::Rax => Self::Rax,
+            BaseReg::Rcx => Self::Rcx,
+            BaseReg::Rdx => Self::Rdx,
+            BaseReg::Rsi => Self::Rsi,
+            BaseReg::Rdi => Self::Rdi,
         }
     }
 }
@@ -528,7 +1012,7 @@ impl Memory {
         }
     }
 
-    fn encode_into(self, encoded: &mut Vec<u8>, reg: u8) {
+    fn encode_into(self, encoded: &mut impl ByteSink, reg: u8) {
         let rm = self.base.code();
         match displacement_size(self.displacement) {
             DisplacementSize::None => encoded.push(modrm_memory(0b00, reg, rm)),
@@ -571,15 +1055,39 @@ const fn modrm_register(reg: u8, rm: u8) -> u8 {
     0xc0 | ((reg & 7) << 3) | (rm & 7)
 }
 
-fn encode_vex_256_66_0f(encoded: &mut Vec<u8>, reg: Ymm, vvvv: Ymm, rm: Option<u8>) {
+fn encode_vex_256_66_0f(encoded: &mut impl ByteSink, reg: Ymm, vvvv: Ymm, rm: Option<u8>) {
     encode_vex_256_0f(encoded, reg, vvvv, rm, 0x01);
 }
 
-fn encode_vex_256_f3_0f(encoded: &mut Vec<u8>, reg: Ymm, vvvv: Ymm, rm: Option<u8>) {
+fn encode_vmovdqa_load_into(encoded: &mut impl ByteSink, dst: Ymm, memory: Memory) {
+    encode_vex_256_66_0f(encoded, dst, Ymm::Ymm0, memory.base_code());
+    encoded.push(0x6f);
+    memory.encode_into(encoded, dst.code());
+}
+
+fn encode_vmovdqa_store_into(encoded: &mut impl ByteSink, memory: Memory, src: Ymm) {
+    encode_vex_256_66_0f(encoded, src, Ymm::Ymm0, memory.base_code());
+    encoded.push(0x7f);
+    memory.encode_into(encoded, src.code());
+}
+
+fn encode_vpxor_into(encoded: &mut impl ByteSink, dst: Ymm, lhs: Ymm, rhs: Ymm) {
+    encode_vex_256_66_0f(encoded, dst, lhs, Some(rhs.code()));
+    encoded.push(0xef);
+    encoded.push(modrm_register(dst.code(), rhs.code()));
+}
+
+fn encode_vpxor_memory_into(encoded: &mut impl ByteSink, dst: Ymm, lhs: Ymm, memory: Memory) {
+    encode_vex_256_66_0f(encoded, dst, lhs, memory.base_code());
+    encoded.push(0xef);
+    memory.encode_into(encoded, dst.code());
+}
+
+fn encode_vex_256_f3_0f(encoded: &mut impl ByteSink, reg: Ymm, vvvv: Ymm, rm: Option<u8>) {
     encode_vex_256_0f(encoded, reg, vvvv, rm, 0x02);
 }
 
-fn encode_vex_256_0f(encoded: &mut Vec<u8>, reg: Ymm, vvvv: Ymm, rm: Option<u8>, pp: u8) {
+fn encode_vex_256_0f(encoded: &mut impl ByteSink, reg: Ymm, vvvv: Ymm, rm: Option<u8>, pp: u8) {
     let reg_code = reg.code();
     let rm_code = rm.unwrap_or(0);
     let r = ((reg_code >> 3) & 1) == 0;
@@ -595,7 +1103,13 @@ fn encode_vex_256_0f(encoded: &mut Vec<u8>, reg: Ymm, vvvv: Ymm, rm: Option<u8>,
     }
 }
 
-fn encode_reg_imm32(encoded: &mut Vec<u8>, opcode: u8, extension: u8, reg: GpReg, value: u32) {
+fn encode_reg_imm32(
+    encoded: &mut impl ByteSink,
+    opcode: u8,
+    extension: u8,
+    reg: GpReg,
+    value: u32,
+) {
     encoded.push(0x48);
     encoded.push(opcode);
     encoded.push(modrm_register(extension, reg.code()));
