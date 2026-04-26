@@ -49,6 +49,9 @@ struct InputPreloadPlan {
 const COMMON_INPUT_REG: u8 = 2;
 #[cfg(target_arch = "x86_64")]
 const XOR_JIT_PREFETCH_STUB_BIAS_BYTES: usize = 128;
+#[cfg(target_arch = "x86_64")]
+// Keep memory operands in signed-byte displacement range where possible.
+const XOR_JIT_BODY_POINTER_BIAS_BYTES: u32 = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg(target_arch = "x86_64")]
@@ -625,9 +628,16 @@ fn compile_chunk_prefetch_program(
 #[cfg(target_arch = "x86_64")]
 fn emit_chunk_program_bytes(program: encoder::Program, prefetch: bool) -> Vec<u8> {
     if prefetch {
-        program.finish_block_loop_with_prefetch(bitplane::AVX2_BLOCK_BYTES as u32, 256)
+        program.finish_block_loop_with_prefetch_and_pointer_bias(
+            bitplane::AVX2_BLOCK_BYTES as u32,
+            256,
+            XOR_JIT_BODY_POINTER_BIAS_BYTES,
+        )
     } else {
-        program.finish_block_loop(bitplane::AVX2_BLOCK_BYTES as u32)
+        program.finish_block_loop_with_pointer_bias(
+            bitplane::AVX2_BLOCK_BYTES as u32,
+            XOR_JIT_BODY_POINTER_BIAS_BYTES,
+        )
     }
 }
 
@@ -1058,7 +1068,7 @@ fn bitplane_vector_offset(word_bit: usize) -> i32 {
     };
     let bit_from_msb = 7 - (word_bit & 7);
 
-    bitplane::mask_offset(half, bit_from_msb, 0) as i32
+    bitplane::mask_offset(half, bit_from_msb, 0) as i32 - XOR_JIT_BODY_POINTER_BIAS_BYTES as i32
 }
 
 #[cfg(target_arch = "x86_64")]

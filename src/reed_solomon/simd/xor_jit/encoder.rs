@@ -153,19 +153,57 @@ impl Program {
     }
 
     pub fn finish_block_loop(self, block_bytes: u32) -> Vec<u8> {
-        self.finish_block_loop_inner(block_bytes, None)
+        self.finish_block_loop_inner(block_bytes, None, 0)
     }
 
     pub fn finish_block_loop_with_prefetch(self, block_bytes: u32, prefetch_step: u32) -> Vec<u8> {
-        self.finish_block_loop_inner(block_bytes, Some(prefetch_step))
+        self.finish_block_loop_inner(block_bytes, Some(prefetch_step), 0)
     }
 
-    fn finish_block_loop_inner(self, block_bytes: u32, prefetch_step: Option<u32>) -> Vec<u8> {
+    pub fn finish_block_loop_with_pointer_bias(
+        self,
+        block_bytes: u32,
+        pointer_bias: u32,
+    ) -> Vec<u8> {
+        self.finish_block_loop_inner(block_bytes, None, pointer_bias)
+    }
+
+    pub fn finish_block_loop_with_prefetch_and_pointer_bias(
+        self,
+        block_bytes: u32,
+        prefetch_step: u32,
+        pointer_bias: u32,
+    ) -> Vec<u8> {
+        self.finish_block_loop_inner(block_bytes, Some(prefetch_step), pointer_bias)
+    }
+
+    fn finish_block_loop_inner(
+        self,
+        block_bytes: u32,
+        prefetch_step: Option<u32>,
+        pointer_bias: u32,
+    ) -> Vec<u8> {
         let body_len: usize = self.instructions.iter().map(Instruction::encoded_len).sum();
         if body_len == 0 {
             return Self::new().vzeroupper().ret().finish();
         }
 
+        let pointer_bias_header = (pointer_bias != 0).then(|| {
+            [
+                Instruction::AddRegImm32 {
+                    reg: GpReg::Rdi,
+                    value: pointer_bias,
+                },
+                Instruction::AddRegImm32 {
+                    reg: GpReg::Rsi,
+                    value: pointer_bias,
+                },
+            ]
+        });
+        let pointer_bias_len: usize = pointer_bias_header
+            .as_ref()
+            .map(|instructions| instructions.iter().map(Instruction::encoded_len).sum())
+            .unwrap_or(0);
         let prefetch_header = prefetch_step.map(|step| {
             [
                 Instruction::AddRegImm32 {
@@ -207,7 +245,8 @@ impl Program {
         let footer_len: usize = loop_footer.iter().map(Instruction::encoded_len).sum();
         let jump_len = Instruction::JneRel32(0).encoded_len();
         let back_edge = -((prefetch_len + body_len + footer_len + jump_len) as i32);
-        let total_len = prefetch_len
+        let total_len = pointer_bias_len
+            + prefetch_len
             + body_len
             + footer_len
             + jump_len
@@ -215,6 +254,11 @@ impl Program {
             + Instruction::Ret.encoded_len();
         let mut encoded = Vec::with_capacity(total_len);
 
+        if let Some(pointer_bias_header) = pointer_bias_header {
+            pointer_bias_header
+                .into_iter()
+                .for_each(|instruction| instruction.encode_into(&mut encoded));
+        }
         if let Some(prefetch_header) = prefetch_header {
             prefetch_header
                 .into_iter()
