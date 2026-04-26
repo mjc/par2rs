@@ -4,7 +4,7 @@
 //! It includes utilities for finding PAR2 files in a directory and parsing their
 //! packet structures from disk with minimal memory overhead.
 
-use crate::domain::Md5Hash;
+use crate::domain::{Md5Hash, RecoverySetId};
 use crate::Packet;
 use rayon::prelude::*;
 use rustc_hash::FxHashSet as HashSet;
@@ -253,14 +253,15 @@ pub fn collect_par2_files(file_path: &Path) -> Vec<PathBuf> {
 
     let base_stem = par2_base_stem(file_path);
 
-    let mut par2_files = vec![file_path.to_path_buf()];
-    par2_files.extend(
-        find_par2_files_in_directory(folder_path, file_path)
-            .into_iter()
-            .filter(|p| par2_base_stem(p) == base_stem),
-    );
+    let mut related_files: Vec<PathBuf> = find_par2_files_in_directory(folder_path, file_path)
+        .into_iter()
+        .filter(|p| par2_base_stem(p) == base_stem)
+        .collect();
+    related_files.sort();
 
-    par2_files.sort();
+    let mut par2_files = vec![file_path.to_path_buf()];
+    par2_files.extend(related_files);
+    sort_dedup_preserving_first(&mut par2_files);
     par2_files
 }
 
@@ -291,6 +292,21 @@ pub fn collect_par1_files(file_path: &Path) -> Vec<PathBuf> {
     par1_files.sort();
     par1_files.dedup();
     par1_files
+}
+
+/// Sort and deduplicate paths while keeping the first path in front.
+pub fn sort_dedup_preserving_first(paths: &mut Vec<PathBuf>) {
+    let Some(first) = paths.first().cloned() else {
+        return;
+    };
+
+    let mut rest = paths[1..].to_vec();
+    rest.sort();
+    rest.dedup();
+
+    paths.clear();
+    paths.push(first.clone());
+    paths.extend(rest.into_iter().filter(|path| path != &first));
 }
 
 /// Get a unique hash for a packet to detect duplicates
@@ -444,11 +460,12 @@ pub fn load_par2_packets(
     include_recovery_slices: bool,
     show_progress: bool,
 ) -> PacketSet {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    if show_progress {
+        return load_par2_packets_with_progress(par2_files, include_recovery_slices);
+    }
 
     // Parse files in parallel and collect results
     // Use mutex for thread-safe output (like par2cmdline-turbo's output_lock)
-    let total_recovery_blocks = AtomicUsize::new(0);
     let output_lock = Mutex::new(());
 
     let all_packets: Vec<Vec<Packet>> = par2_files
@@ -460,11 +477,7 @@ pub fn load_par2_packets(
                 show_progress,
                 &output_lock,
             )
-            .map(|result| {
-                // Accumulate recovery block count atomically
-                total_recovery_blocks.fetch_add(result.recovery_block_count, Ordering::Relaxed);
-                result.packets
-            })
+            .map(|result| result.packets)
             .map_err(|e| {
                 let _guard = output_lock.lock().unwrap();
                 eprintln!(
@@ -478,9 +491,16 @@ pub fn load_par2_packets(
         })
         .collect();
 
-    // Deduplicate packets in a single pass and check for mixed recovery sets
+    let primary_set_id = all_packets
+        .iter()
+        .flatten()
+        .next()
+        .map(packet_recovery_set_id);
+
+    // Deduplicate packets in a single pass, keeping only the primary recovery
+    // set. par2cmdline-turbo treats packets from explicit foreign PAR2 files as
+    // "no new packets" rather than merging recovery sets.
     let mut seen_hashes = HashSet::default();
-    let mut recovery_set_ids: HashSet<crate::domain::RecoverySetId> = HashSet::default();
 
     let packets: Vec<Packet> = all_packets
         .into_iter()
@@ -491,16 +511,9 @@ pub fn load_par2_packets(
                 return false;
             }
 
-            // Track recovery set IDs to detect mixed PAR2 files
-            let set_id = match packet {
-                Packet::Main(p) => p.set_id,
-                Packet::PackedMain(p) => p.set_id,
-                Packet::FileDescription(p) => p.set_id,
-                Packet::InputFileSliceChecksum(p) => p.set_id,
-                Packet::RecoverySlice(p) => p.set_id,
-                Packet::Creator(p) => p.set_id,
-            };
-            recovery_set_ids.insert(set_id);
+            if primary_set_id.is_some_and(|set_id| packet_recovery_set_id(packet) != set_id) {
+                return false;
+            }
 
             // Deduplicate based on packet hash
             let packet_hash = get_packet_hash(packet);
@@ -508,22 +521,21 @@ pub fn load_par2_packets(
         })
         .collect();
 
-    // Check for mixed recovery sets (common user error)
-    if show_progress && recovery_set_ids.len() > 1 {
-        eprintln!("\nWarning: Multiple recovery sets detected.");
-        eprintln!(
-            "Found {} different recovery set IDs in the PAR2 files.",
-            recovery_set_ids.len()
-        );
-        eprintln!(
-            "This usually means you're trying to verify/repair files from different PAR2 sets."
-        );
-        eprintln!("Please specify only PAR2 files that belong to the same recovery set.\n");
-        eprintln!("Hint: Each PAR2 set has a unique base filename (e.g., 'myfile.par2', 'myfile.vol*.par2')");
-        eprintln!(
-            "      Don't mix files like 'file1.par2' and 'file2.par2' in the same operation.\n"
-        );
-    }
+    let recovery_block_count = if let Some(set_id) = primary_set_id {
+        if include_recovery_slices {
+            packets
+                .iter()
+                .filter(|packet| matches!(packet, Packet::RecoverySlice(_)))
+                .count()
+        } else {
+            parse_recovery_slice_metadata(par2_files, false)
+                .into_iter()
+                .filter(|metadata| metadata.set_id == set_id)
+                .count()
+        }
+    } else {
+        0
+    };
 
     // Determine base directory from the first PAR2 file
     let base_dir = par2_files
@@ -532,7 +544,150 @@ pub fn load_par2_packets(
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| PathBuf::from("."));
 
-    PacketSet::new(packets, total_recovery_blocks.into_inner(), base_dir)
+    PacketSet::new(packets, recovery_block_count, base_dir)
+}
+
+fn load_par2_packets_with_progress(
+    par2_files: &[PathBuf],
+    include_recovery_slices: bool,
+) -> PacketSet {
+    let output_lock = Mutex::new(());
+    let mut primary_set_id = None;
+    let mut seen_hashes = HashSet::default();
+    let mut packets = Vec::new();
+
+    for par2_file in loading_progress_order(par2_files) {
+        let filename = par2_file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown");
+        {
+            let _guard = output_lock.lock().unwrap();
+            println!("Loading \"{}\".", filename);
+        }
+
+        let result =
+            match parse_single_file(par2_file, include_recovery_slices, false, &output_lock) {
+                Ok(result) => result,
+                Err(e) => {
+                    let _guard = output_lock.lock().unwrap();
+                    eprintln!(
+                        "Warning: Failed to parse PAR2 file {}: {}",
+                        par2_file.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+
+        let file_set_id = result.packets.first().map(packet_recovery_set_id);
+        if primary_set_id.is_none() {
+            primary_set_id = file_set_id;
+        }
+
+        let mut new_packets = Vec::new();
+        for packet in result.packets {
+            if !include_recovery_slices && matches!(packet, Packet::RecoverySlice(_)) {
+                continue;
+            }
+
+            if primary_set_id.is_some_and(|set_id| packet_recovery_set_id(&packet) != set_id) {
+                continue;
+            }
+
+            let packet_hash = get_packet_hash(&packet);
+            if seen_hashes.insert(packet_hash) {
+                new_packets.push(packet);
+            }
+        }
+
+        let recovery_blocks = if include_recovery_slices {
+            new_packets
+                .iter()
+                .filter(|packet| matches!(packet, Packet::RecoverySlice(_)))
+                .count()
+        } else if file_set_id == primary_set_id {
+            result.recovery_block_count
+        } else {
+            0
+        };
+
+        let loaded_packet_count = new_packets.len()
+            + if include_recovery_slices {
+                0
+            } else {
+                recovery_blocks
+            };
+        print_packet_load_result(loaded_packet_count, recovery_blocks, &output_lock);
+
+        packets.extend(new_packets.into_iter().filter(|packet| {
+            include_recovery_slices || !matches!(packet, Packet::RecoverySlice(_))
+        }));
+    }
+
+    let recovery_block_count = if let Some(set_id) = primary_set_id {
+        if include_recovery_slices {
+            packets
+                .iter()
+                .filter(|packet| matches!(packet, Packet::RecoverySlice(_)))
+                .count()
+        } else {
+            parse_recovery_slice_metadata(par2_files, false)
+                .into_iter()
+                .filter(|metadata| metadata.set_id == set_id)
+                .count()
+        }
+    } else {
+        0
+    };
+
+    let base_dir = par2_files
+        .first()
+        .and_then(|p| p.parent())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    PacketSet::new(packets, recovery_block_count, base_dir)
+}
+
+fn loading_progress_order(par2_files: &[PathBuf]) -> Vec<&PathBuf> {
+    let Some(first) = par2_files.first() else {
+        return Vec::new();
+    };
+
+    let first_filename = loading_filename(first);
+    let mut ordered = Vec::with_capacity(par2_files.len());
+    ordered.push(first);
+    ordered.extend(
+        par2_files
+            .iter()
+            .skip(1)
+            .filter(|path| loading_filename(path) != first_filename),
+    );
+    ordered.extend(
+        par2_files
+            .iter()
+            .skip(1)
+            .filter(|path| loading_filename(path) == first_filename),
+    );
+    ordered
+}
+
+fn loading_filename(path: &Path) -> &str {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
+}
+
+fn packet_recovery_set_id(packet: &Packet) -> RecoverySetId {
+    match packet {
+        Packet::Main(p) => p.set_id,
+        Packet::PackedMain(p) => p.set_id,
+        Packet::FileDescription(p) => p.set_id,
+        Packet::InputFileSliceChecksum(p) => p.set_id,
+        Packet::RecoverySlice(p) => p.set_id,
+        Packet::Creator(p) => p.set_id,
+    }
 }
 
 /// Load all PAR2 packets INCLUDING recovery slices (in parallel)

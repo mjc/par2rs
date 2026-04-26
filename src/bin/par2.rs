@@ -691,6 +691,19 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         .map(Path::new)
         .unwrap_or(&file_path);
     let par2_files = par2rs::par2_files::collect_par2_files(file_name);
+    let mut par2_files = par2_files;
+    par2_files.extend(
+        verify_config
+            .extra_files
+            .iter()
+            .filter(|path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("par2"))
+            })
+            .cloned(),
+    );
+    par2rs::par2_files::sort_dedup_preserving_first(&mut par2_files);
 
     // Parse packets excluding recovery slices but validate and count them
     // Recovery slice data is NOT loaded into memory (saves gigabytes for large PAR2 sets)
@@ -744,16 +757,13 @@ fn handle_verify(matches: &clap::ArgMatches) -> Result<()> {
         );
     }
 
-    if results.missing_block_count == 0 {
+    let repair_required = results.renamed_file_count > 0
+        || results.corrupted_file_count > 0
+        || results.missing_block_count > 0;
+
+    if !repair_required {
         if purge {
-            let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false, false);
-            let context = par2rs::repair::RepairContextBuilder::new()
-                .packets(packet_set.packets)
-                .base_path(base_dir)
-                .reporter(Box::new(par2rs::repair::ConsoleReporter::new(quiet)))
-                .build()
-                .context("Failed to initialize purge context")?;
-            context.purge_files(&file_name.to_string_lossy())?;
+            par2rs::repair::RepairContext::purge_par_files_for(&file_name.to_string_lossy())?;
         }
         Ok(())
     } else if results.repair_possible {
@@ -819,6 +829,8 @@ fn handle_repair(matches: &clap::ArgMatches) -> Result<()> {
     let verify_config =
         par2rs::verify::VerificationConfig::try_from_args(matches).map_err(anyhow::Error::msg)?;
 
+    par2rs::reed_solomon::codec::set_repair_progress_output(!quiet);
+
     let resolved_par2_file =
         par2rs::par2_files::resolve_par2_file_argument(Path::new(par2_file))
             .with_context(|| format!("Failed to locate PAR2 file for {}", par2_file))?;
@@ -838,13 +850,22 @@ fn handle_repair(matches: &clap::ArgMatches) -> Result<()> {
         result.print_result();
     }
 
-    if purge && result.is_success() {
-        context.purge_files(&resolved_par2_file)?;
+    if purge {
+        match &result {
+            par2rs::repair::RepairResult::Success { .. } => {
+                context.purge_files(&resolved_par2_file)?
+            }
+            par2rs::repair::RepairResult::NoRepairNeeded { .. } => {
+                context.purge_par_files(&resolved_par2_file)?
+            }
+            par2rs::repair::RepairResult::Failed { .. } => {}
+        }
     }
 
-    if result.is_success() {
+    let exit_code = result.exit_code();
+    if exit_code == 0 {
         Ok(())
     } else {
-        std::process::exit(2);
+        std::process::exit(exit_code);
     }
 }

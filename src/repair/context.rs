@@ -8,7 +8,7 @@ use crate::domain::{BlockCount, BlockSize, FileId, FileSize, GlobalSliceIndex};
 use crate::packets::{FileDescriptionPacket, Packet, RecoverySliceMetadata};
 use log::{debug, warn};
 use rustc_hash::FxHashMap as HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Main repair context containing all necessary information for repair operations
@@ -182,19 +182,11 @@ impl RepairContext {
         })
     }
 
-    /// Purge backup files and PAR2 files after successful repair
-    /// Matches par2cmdline's -p flag behavior
+    /// Purge backup files and PAR2 files after an actual successful repair.
+    /// Matches par2cmdline's -p repair behavior.
     pub fn purge_files(&self, par2_file: &str) -> Result<()> {
-        use std::fs;
-        use std::path::Path;
-
-        let par2_path = Path::new(par2_file);
-        let par2_dir = par2_path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-
         self.reporter.report_purge_backup_files();
+        self.purge_backup_files()?;
 
         let backups = self
             .repair_created_backups
@@ -213,22 +205,52 @@ impl RepairContext {
             }
         }
 
-        self.reporter.report_purge_par_files();
+        self.purge_par_files(par2_file)
+    }
 
-        // Remove all PAR2 files in the directory
-        if let Ok(entries) = fs::read_dir(par2_dir) {
-            for entry in entries.flatten() {
-                if let Some(ext) = entry.path().extension() {
-                    if ext
-                        .to_str()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("par2"))
-                    {
-                        fs::remove_file(entry.path()).map_err(|e| {
-                            RepairError::FileDeleteError {
-                                file: entry.path(),
-                                source: e,
-                            }
-                        })?;
+    /// Purge PAR2 files without removing backups.
+    ///
+    /// par2cmdline-turbo uses this path for `verify -p` and for `repair -p`
+    /// when all files are already correct.
+    pub fn purge_par_files(&self, par2_file: &str) -> Result<()> {
+        self.reporter.report_purge_par_files();
+        Self::purge_par_files_for(par2_file)
+    }
+
+    /// Purge PAR2 files without a repair context.
+    pub fn purge_par_files_for(par2_file: &str) -> Result<()> {
+        for path in crate::par2_files::collect_par2_files(Path::new(par2_file)) {
+            if path.exists() {
+                delete_file(&path)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn purge_backup_files(&self) -> Result<()> {
+        for file_info in &self.recovery_set.files {
+            let file_path = self.base_path.join(&file_info.file_name);
+            let Some(parent) = file_path.parent() else {
+                continue;
+            };
+            let Some(file_name) = file_path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+
+            if let Ok(entries) = std::fs::read_dir(parent) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+
+                    let Some(candidate) = path.file_name().and_then(|name| name.to_str()) else {
+                        continue;
+                    };
+
+                    if is_numeric_backup_for(candidate, file_name) {
+                        delete_file(&path)?;
 
                         self.reporter
                             .report_purge_remove(&entry.file_name().to_string_lossy());
@@ -239,6 +261,16 @@ impl RepairContext {
 
         Ok(())
     }
+}
+
+fn is_numeric_backup_for(candidate: &str, original_name: &str) -> bool {
+    let Some(suffix) = candidate.strip_prefix(original_name) else {
+        return false;
+    };
+
+    suffix.strip_prefix('.').is_some_and(|digits| {
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    })
 }
 
 #[cfg(test)]

@@ -187,6 +187,7 @@ fn test_repair_result_methods() {
         files_failed: vec!["bad_file.txt".to_string()],
         files_verified: 1,
         verified_files: vec!["good_file.txt".to_string()],
+        exit_code: 1,
         message: "Something went wrong".to_string(),
     };
     result.print_result();

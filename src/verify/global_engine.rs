@@ -7,8 +7,8 @@
 use super::global_table::{GlobalBlockTable, GlobalBlockTableBuilder};
 use super::scanner_state::ScannerState;
 use super::types::{
-    BlockCount, BlockNumber, BlockVerificationResult, FileScanMetadata, FileSize, FileStatus,
-    FileVerificationResult, VerificationResults,
+    BlockCount, BlockNumber, BlockSource, BlockVerificationResult, FileScanMetadata, FileSize,
+    FileStatus, FileVerificationResult, VerificationResults,
 };
 use super::utils::extract_file_name;
 
@@ -28,6 +28,8 @@ type AvailableBlocksMap = HashMap<(Md5Hash, Crc32Value), Vec<(FileId, u32)>>;
 type FileStatusMap = HashMap<FileId, FileStatus>;
 /// Map of file IDs to wrong-name paths that exactly matched them.
 type RenamedFileMatches = HashMap<FileId, PathBuf>;
+/// Concrete source locations for blocks found during scanning.
+type BlockLocationMap = HashMap<(FileId, u32), BlockSource>;
 
 /// Result of attempting to match a block against the global table
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +100,8 @@ pub struct GlobalVerificationEngine {
     skip_leeway: usize,
     /// Only scan extra files that can be exact renamed matches.
     rename_only: bool,
+    /// Additional non-PAR2 files to scan for renamed or misplaced data.
+    extra_files: Vec<PathBuf>,
 }
 
 /// Result of verifying a single file using global block table
@@ -175,6 +179,7 @@ impl GlobalVerificationEngine {
             data_skipping: config.data_skipping,
             skip_leeway: config.skip_leeway,
             rename_only: config.rename_only,
+            extra_files: config.extra_files.clone(),
         })
     }
 
@@ -189,7 +194,7 @@ impl GlobalVerificationEngine {
     /// 1. Scanning all available files and building a map of available blocks
     /// 2. Comparing against the global block table to determine what's missing
     /// 3. Computing file-level status based on block availability
-    pub fn verify_recovery_set<R: VerificationReporter>(
+    pub fn verify_recovery_set<R: VerificationReporter + ?Sized>(
         &self,
         reporter: &R,
         parallel: bool,
@@ -202,17 +207,32 @@ impl GlobalVerificationEngine {
     /// Extra files are not target filters. They are scanned for blocks that match
     /// protected files, matching par2cmdline's `[files]` behavior for renamed or
     /// misplaced data files.
-    pub fn verify_recovery_set_with_extra_files<R: VerificationReporter>(
+    pub fn verify_recovery_set_with_extra_files<R: VerificationReporter + ?Sized>(
         &self,
         reporter: &R,
         parallel: bool,
         extra_files: &[PathBuf],
     ) -> VerificationResults {
         // Note: report_verification_start and report_files_found should be called by the caller
+        let mut combined_extra_files;
+        let scan_extra_files = if self.extra_files.is_empty() {
+            extra_files
+        } else if extra_files.is_empty() {
+            &self.extra_files
+        } else {
+            combined_extra_files = self
+                .extra_files
+                .iter()
+                .chain(extra_files.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            combined_extra_files = Self::dedupe_extra_files(&combined_extra_files);
+            &combined_extra_files
+        };
 
         // Step 1: Scan all available files to build availability map
-        let (available_blocks, file_statuses, scan_metadatas, renamed_matches) =
-            self.scan_available_blocks_with_extra_files(reporter, parallel, extra_files);
+        let (available_blocks, file_statuses, scan_metadatas, renamed_matches, block_locations) =
+            self.scan_available_blocks_with_extra_files(reporter, parallel, scan_extra_files);
 
         // Step 2: Create aggregate results (individual file reporting already done in scan_available_blocks)
         let file_results = self.create_file_results(
@@ -220,6 +240,7 @@ impl GlobalVerificationEngine {
             &file_statuses,
             &scan_metadatas,
             &renamed_matches,
+            &block_locations,
         );
         let block_results = self.create_block_verification_results(&available_blocks);
 
@@ -237,7 +258,7 @@ impl GlobalVerificationEngine {
     /// Scan all available files and build a global map of which blocks exist where
     /// This is the core of the global block table approach - we scan every file
     /// and index every block we find by its checksum, regardless of filename
-    fn scan_available_blocks_with_extra_files<R: VerificationReporter>(
+    fn scan_available_blocks_with_extra_files<R: VerificationReporter + ?Sized>(
         &self,
         reporter: &R,
         parallel: bool,
@@ -247,6 +268,7 @@ impl GlobalVerificationEngine {
         FileStatusMap,
         HashMap<FileId, FileScanMetadata>,
         RenamedFileMatches,
+        BlockLocationMap,
     ) {
         // Wrap reporter in Mutex for thread-safe output (like par2cmdline-turbo's output_lock)
         let reporter_lock = Mutex::new(reporter);
@@ -279,10 +301,13 @@ impl GlobalVerificationEngine {
         let mut global_block_map = HashMap::default();
         let mut file_statuses = HashMap::default();
         let mut scan_metadatas = HashMap::default();
+        let mut block_locations = HashMap::default();
 
-        for (local_map, _file_size, file_id, status, metadata) in file_results {
+        for (local_map, _file_size, file_id, status, metadata, source_path) in file_results {
             // Store the computed status
             file_statuses.insert(file_id, status);
+
+            Self::merge_block_locations(&mut block_locations, &metadata, &source_path);
 
             // Store the scan metadata
             scan_metadatas.insert(file_id, metadata);
@@ -339,6 +364,8 @@ impl GlobalVerificationEngine {
                     .record_block_found(*offset, *file_id, *block_number);
             }
 
+            Self::merge_block_locations(&mut block_locations, &metadata, &extra_path);
+
             for (key, entries) in local_map {
                 global_block_map
                     .entry(key)
@@ -352,10 +379,11 @@ impl GlobalVerificationEngine {
             file_statuses,
             scan_metadatas,
             renamed_matches,
+            block_locations,
         )
     }
 
-    fn process_extra_file<R: VerificationReporter>(
+    fn process_extra_file<R: VerificationReporter + ?Sized>(
         &self,
         file_path: &Path,
         reporter_lock: &Mutex<&R>,
@@ -394,7 +422,7 @@ impl GlobalVerificationEngine {
     }
 
     /// Process a single file: scan blocks and report status
-    fn process_single_file<R: VerificationReporter>(
+    fn process_single_file<R: VerificationReporter + ?Sized>(
         &self,
         file_description: &FileDescriptionPacket,
         reporter_lock: &Mutex<&R>,
@@ -404,6 +432,7 @@ impl GlobalVerificationEngine {
         FileId,
         FileStatus,
         FileScanMetadata,
+        PathBuf,
     ) {
         use crate::verify::types::FileSize;
 
@@ -453,11 +482,27 @@ impl GlobalVerificationEngine {
             file_description.file_id,
             status,
             scan_metadata,
+            file_path,
         )
     }
 
+    fn merge_block_locations(
+        block_locations: &mut BlockLocationMap,
+        metadata: &FileScanMetadata,
+        source_path: &Path,
+    ) {
+        for (offset, file_id, block_number) in &metadata.found_blocks {
+            block_locations
+                .entry((*file_id, *block_number))
+                .or_insert_with(|| BlockSource {
+                    file_path: source_path.to_path_buf(),
+                    offset: *offset,
+                });
+        }
+    }
+
     /// Scan a single file and return its local block map with progress reporting
-    fn scan_single_file_with_progress<R: VerificationReporter>(
+    fn scan_single_file_with_progress<R: VerificationReporter + ?Sized>(
         &self,
         file_path: &Path,
         file_size: FileSize,
@@ -915,7 +960,7 @@ impl GlobalVerificationEngine {
     }
 
     /// Report scanning progress to the reporter
-    fn report_progress<R: VerificationReporter>(
+    fn report_progress<R: VerificationReporter + ?Sized>(
         reporter_lock: &Mutex<&R>,
         state: &crate::verify::scanner_state::ScannerState,
         file_size: crate::verify::types::FileSize,
@@ -1166,7 +1211,7 @@ impl GlobalVerificationEngine {
     }
 
     /// Report file verification status to the reporter
-    fn report_file_status<R: VerificationReporter>(
+    fn report_file_status<R: VerificationReporter + ?Sized>(
         reporter_lock: &Mutex<&R>,
         file_name: &str,
         status: FileStatus,
@@ -1202,6 +1247,7 @@ impl GlobalVerificationEngine {
         file_statuses: &FileStatusMap,
         scan_metadatas: &HashMap<FileId, FileScanMetadata>,
         renamed_matches: &RenamedFileMatches,
+        block_locations: &BlockLocationMap,
     ) -> Vec<FileVerificationResult> {
         let mut file_results = Vec::new();
 
@@ -1270,6 +1316,18 @@ impl GlobalVerificationEngine {
                         .collect()
                 })
                 .unwrap_or_default();
+            let mut block_sources = HashMap::default();
+            if let Some(metadata) = scan_metadatas.get(&file_description.file_id) {
+                for (_, fid, block_number) in metadata
+                    .found_blocks
+                    .iter()
+                    .filter(|(_, fid, _)| *fid == file_description.file_id)
+                {
+                    if let Some(source) = block_locations.get(&(*fid, *block_number)) {
+                        block_sources.insert(*block_number, source.clone());
+                    }
+                }
+            }
 
             // Just create the result record (reporting already done inline)
 
@@ -1284,6 +1342,7 @@ impl GlobalVerificationEngine {
                 matched_path: (status == FileStatus::Renamed)
                     .then(|| renamed_matches.get(&file_description.file_id).cloned())
                     .flatten(),
+                block_sources,
             });
         }
 
@@ -1427,6 +1486,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut local_map = HashMap::default();
@@ -1507,6 +1567,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut local_map = HashMap::default();
@@ -1564,6 +1625,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut local_map = HashMap::default();
@@ -1628,6 +1690,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         // Test 1: Direct insertion
@@ -2002,6 +2065,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         // Case 1: All blocks available
@@ -2151,6 +2215,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         // Create a buffer with the matching block
@@ -2217,6 +2282,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let block_size = BlockSize::new(1024);
@@ -2279,6 +2345,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let block_size = BlockSize::new(1024);
@@ -2331,6 +2398,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let block_size = BlockSize::new(1024);
@@ -2385,6 +2453,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let block_size = BlockSize::new(1024);
@@ -2440,6 +2509,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         // Create a buffer with 2MB worth of data
@@ -2562,6 +2632,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let block_size = BlockSize::new(1024);
@@ -2626,6 +2697,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut state = ScannerState::new(3072);
@@ -2705,6 +2777,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut local_map = HashMap::default();
@@ -2775,6 +2848,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let block_size = BlockSize::new(1024);
@@ -2825,6 +2899,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         // Simulate finding only 2 of 3 blocks
@@ -2898,6 +2973,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut local_map = HashMap::default();
@@ -3077,6 +3153,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut state = ScannerState::new(64);
@@ -3132,6 +3209,7 @@ mod tests {
             base_dir: std::path::PathBuf::from("."),
             file_order: Vec::new(),
             rename_only: false,
+            extra_files: Vec::new(),
         };
 
         let mut state = ScannerState::new(64);

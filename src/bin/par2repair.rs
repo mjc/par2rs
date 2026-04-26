@@ -61,6 +61,8 @@ fn main() -> Result<()> {
     // Create verification config from command line arguments
     let verify_config = VerificationConfig::try_from_args(&matches).map_err(anyhow::Error::msg)?;
 
+    par2rs::reed_solomon::codec::set_repair_progress_output(!quiet);
+
     let resolved_par2_file =
         par2rs::par2_files::resolve_par2_file_argument(Path::new(par2_file))
             .with_context(|| format!("Failed to locate PAR2 file for {}", par2_file))?;
@@ -81,15 +83,25 @@ fn main() -> Result<()> {
         result.print_result();
     }
 
-    // Purge backup and PAR2 files on successful repair if -p flag is set
-    if purge && result.is_success() {
-        context.purge_files(&resolved_par2_file)?;
+    // par2cmdline-turbo purges backups only after an actual repair. If no
+    // repair was needed, -p removes PAR2 files and leaves existing backups.
+    if purge {
+        match &result {
+            par2rs::repair::RepairResult::Success { .. } => {
+                context.purge_files(&resolved_par2_file)?
+            }
+            par2rs::repair::RepairResult::NoRepairNeeded { .. } => {
+                context.purge_par_files(&resolved_par2_file)?
+            }
+            par2rs::repair::RepairResult::Failed { .. } => {}
+        }
     }
 
     // Exit with success if repair was successful or not needed, error otherwise
-    if result.is_success() {
+    let exit_code = result.exit_code();
+    if exit_code == 0 {
         Ok(())
     } else {
-        std::process::exit(2);
+        std::process::exit(exit_code);
     }
 }

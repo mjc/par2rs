@@ -1,6 +1,7 @@
 //! Configuration for verification operations
 
 use crate::cli::compat::{parse_memory_mb, parse_positive_usize, parse_skip_options};
+use std::path::PathBuf;
 
 /// Configuration for file verification operations
 #[derive(Debug, Clone)]
@@ -21,6 +22,10 @@ pub struct VerificationConfig {
     pub skip_leeway: usize,
     /// Turbo-compatible rename-only mode for verify/repair.
     pub rename_only: bool,
+    /// Additional data files to scan for misplaced or renamed source data.
+    pub extra_files: Vec<PathBuf>,
+    /// Base directory for resolving protected data files.
+    pub base_path: Option<PathBuf>,
 }
 
 impl Default for VerificationConfig {
@@ -34,6 +39,8 @@ impl Default for VerificationConfig {
             data_skipping: false,
             skip_leeway: 0,
             rename_only: false,
+            extra_files: Vec::new(),
+            base_path: None,
         }
     }
 }
@@ -49,6 +56,8 @@ impl VerificationConfig {
             data_skipping: false,
             skip_leeway: 0,
             rename_only: false,
+            extra_files: Vec::new(),
+            base_path: None,
         }
     }
 
@@ -63,7 +72,19 @@ impl VerificationConfig {
             data_skipping: false,
             skip_leeway: 0,
             rename_only: false,
+            extra_files: Vec::new(),
+            base_path: None,
         }
+    }
+
+    pub fn with_extra_files(mut self, extra_files: Vec<PathBuf>) -> Self {
+        self.extra_files = extra_files;
+        self
+    }
+
+    pub fn with_base_path(mut self, base_path: Option<PathBuf>) -> Self {
+        self.base_path = base_path;
+        self
     }
 
     pub fn from_args(matches: &clap::ArgMatches) -> Self {
@@ -128,6 +149,18 @@ impl VerificationConfig {
                 .map_err(|e| e.to_string())?
                 .map(String::as_str),
         )?;
+        let extra_files = matches
+            .try_get_many::<String>("files")
+            .ok()
+            .flatten()
+            .map(|files| files.map(|file| Self::normalize_arg_path(file)).collect())
+            .unwrap_or_default();
+
+        let base_path = matches
+            .try_get_one::<String>("basepath")
+            .ok()
+            .flatten()
+            .map(|path| Self::normalize_arg_path(path));
 
         Ok(Self {
             threads,
@@ -143,7 +176,20 @@ impl VerificationConfig {
                 .flatten()
                 .copied()
                 .unwrap_or(false),
+            extra_files,
+            base_path,
         })
+    }
+
+    fn normalize_arg_path(value: &str) -> PathBuf {
+        let path = PathBuf::from(value);
+        if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(&path))
+                .unwrap_or(path)
+        }
     }
 
     /// Get effective thread count (auto-detect if 0)

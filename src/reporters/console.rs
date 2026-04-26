@@ -5,6 +5,7 @@
 
 use super::{RepairReporter, Reporter, VerificationReporter};
 use crate::verify::{FileStatus, VerificationResults};
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 /// Console implementation for verification operations
@@ -13,6 +14,39 @@ pub struct ConsoleVerificationReporter {
     /// Mutex to ensure atomic printing from multiple threads
     /// Reference: par2cmdline-turbo uses output_lock for thread-safe console output
     output_lock: Mutex<()>,
+    reported_files: Mutex<HashSet<String>>,
+}
+
+/// Concise verification output used for a single `-q`, matching
+/// par2cmdline-turbo's quiet-but-not-silent mode.
+pub struct ConciseVerificationReporter {
+    output_lock: Mutex<()>,
+    reported_files: Mutex<HashSet<String>>,
+}
+
+impl Default for ConciseVerificationReporter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ConciseVerificationReporter {
+    pub fn new() -> Self {
+        Self {
+            output_lock: Mutex::new(()),
+            reported_files: Mutex::new(HashSet::new()),
+        }
+    }
+
+    fn repair_required(results: &VerificationResults) -> bool {
+        results.missing_block_count > 0
+            || results.files.iter().any(|file| {
+                matches!(
+                    file.status,
+                    FileStatus::Missing | FileStatus::Corrupted | FileStatus::Renamed
+                )
+            })
+    }
 }
 
 impl Default for ConsoleVerificationReporter {
@@ -25,6 +59,7 @@ impl ConsoleVerificationReporter {
     pub fn new() -> Self {
         Self {
             output_lock: Mutex::new(()),
+            reported_files: Mutex::new(HashSet::new()),
         }
     }
 }
@@ -76,12 +111,17 @@ impl VerificationReporter for ConsoleVerificationReporter {
         // par2cmdline doesn't print this
     }
 
-    fn report_verifying_file(&self, _file_name: &str) {
-        // par2cmdline doesn't print individual file verification start
+    fn report_verifying_file(&self, file_name: &str) {
+        let _lock = self.output_lock.lock().unwrap();
+        println!("Opening: \"{}\"", file_name);
     }
 
     fn report_file_status(&self, file_name: &str, status: FileStatus) {
         let _lock = self.output_lock.lock().unwrap();
+        self.reported_files
+            .lock()
+            .unwrap()
+            .insert(file_name.to_string());
         match status {
             FileStatus::Present => println!("Target: \"{}\" - found.", file_name),
             FileStatus::Missing => println!("Target: \"{}\" - missing.", file_name),
@@ -102,6 +142,10 @@ impl VerificationReporter for ConsoleVerificationReporter {
     ) {
         let _lock = self.output_lock.lock().unwrap();
         if !damaged_blocks.is_empty() {
+            self.reported_files
+                .lock()
+                .unwrap()
+                .insert(file_name.to_string());
             println!(
                 "Target: \"{}\" - damaged. Found {} of {} data blocks.",
                 file_name, available_blocks, total_blocks
@@ -111,6 +155,24 @@ impl VerificationReporter for ConsoleVerificationReporter {
 
     fn report_verification_results(&self, results: &VerificationResults) {
         let _lock = self.output_lock.lock().unwrap();
+        let mut reported_files = self.reported_files.lock().unwrap();
+        for file in &results.files {
+            if !reported_files.insert(file.file_name.clone()) {
+                continue;
+            }
+
+            match file.status {
+                FileStatus::Present => println!("Target: \"{}\" - found.", file.file_name),
+                FileStatus::Missing => println!("Target: \"{}\" - missing.", file.file_name),
+                FileStatus::Corrupted => println!(
+                    "Target: \"{}\" - damaged. Found {} of {} data blocks.",
+                    file.file_name, file.blocks_available, file.total_blocks
+                ),
+                FileStatus::Renamed => println!("Target: \"{}\" - renamed.", file.file_name),
+            }
+        }
+        drop(reported_files);
+
         // Use the Display implementation for main summary
         // par2cmdline doesn't print detailed block lists in normal mode
         print!("{}", results);
@@ -125,6 +187,103 @@ impl VerificationReporter for ConsoleVerificationReporter {
         print!("Scanning: {}.{}%\r", percent / 10, percent % 10);
         let _ = io::stdout().flush();
     }
+}
+
+impl Reporter for ConciseVerificationReporter {
+    fn report_progress(&self, _message: &str, _progress: f64) {}
+
+    fn report_error(&self, error: &str) {
+        let _lock = self.output_lock.lock().unwrap();
+        eprintln!("Error: {}", error);
+    }
+
+    fn report_complete(&self, message: &str) {
+        let _lock = self.output_lock.lock().unwrap();
+        println!("{}", message);
+    }
+}
+
+impl VerificationReporter for ConciseVerificationReporter {
+    fn report_verification_start(&self, _parallel: bool) {}
+
+    fn report_files_found(&self, _count: usize) {}
+
+    fn report_verifying_file(&self, _file_name: &str) {}
+
+    fn report_file_status(&self, file_name: &str, status: FileStatus) {
+        let _lock = self.output_lock.lock().unwrap();
+        self.reported_files
+            .lock()
+            .unwrap()
+            .insert(file_name.to_string());
+        match status {
+            FileStatus::Present => println!("Target: \"{}\" - found.", file_name),
+            FileStatus::Missing => println!("Target: \"{}\" - missing.", file_name),
+            FileStatus::Corrupted => {}
+            FileStatus::Renamed => println!("Target: \"{}\" - renamed.", file_name),
+        }
+    }
+
+    fn report_damaged_blocks(
+        &self,
+        file_name: &str,
+        damaged_blocks: &[u32],
+        available_blocks: usize,
+        total_blocks: usize,
+    ) {
+        let _lock = self.output_lock.lock().unwrap();
+        if !damaged_blocks.is_empty() {
+            self.reported_files
+                .lock()
+                .unwrap()
+                .insert(file_name.to_string());
+            println!(
+                "Target: \"{}\" - damaged. Found {} of {} data blocks.",
+                file_name, available_blocks, total_blocks
+            );
+        }
+    }
+
+    fn report_verification_results(&self, results: &VerificationResults) {
+        let _lock = self.output_lock.lock().unwrap();
+        let mut reported_files = self.reported_files.lock().unwrap();
+        for file in &results.files {
+            if !reported_files.insert(file.file_name.clone()) {
+                continue;
+            }
+
+            match file.status {
+                FileStatus::Present => println!("Target: \"{}\" - found.", file.file_name),
+                FileStatus::Missing => println!("Target: \"{}\" - missing.", file.file_name),
+                FileStatus::Corrupted => println!(
+                    "Target: \"{}\" - damaged. Found {} of {} data blocks.",
+                    file.file_name, file.blocks_available, file.total_blocks
+                ),
+                FileStatus::Renamed => println!("Target: \"{}\" - renamed.", file.file_name),
+            }
+        }
+        drop(reported_files);
+
+        println!();
+
+        if !Self::repair_required(results) {
+            println!("All files are correct, repair is not required.");
+        } else if results.repair_possible {
+            println!("Repair is required.");
+            println!("Repair is possible.");
+        } else {
+            println!("Repair is required.");
+            println!("Repair is not possible.");
+            println!(
+                "You need {} more recovery blocks to be able to repair.",
+                results
+                    .missing_block_count
+                    .saturating_sub(results.recovery_blocks_available)
+            );
+        }
+    }
+
+    fn report_scanning_progress(&self, _fraction: f64) {}
 }
 
 // Base Reporter implementation for ConsoleRepairReporter
@@ -186,8 +345,55 @@ impl RepairReporter for ConsoleRepairReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::FileId;
+    use crate::verify::FileVerificationResult;
     use std::sync::Arc;
     use std::thread;
+
+    fn verification_results(status: FileStatus, missing_block_count: usize) -> VerificationResults {
+        let file = FileVerificationResult {
+            file_name: "data.bin".to_string(),
+            file_id: FileId::new([1; 16]),
+            status,
+            blocks_available: 1,
+            total_blocks: 1,
+            damaged_blocks: Vec::new(),
+            block_positions: Default::default(),
+            matched_path: None,
+            block_sources: Default::default(),
+        };
+
+        VerificationResults {
+            files: vec![file],
+            blocks: Vec::new(),
+            present_file_count: usize::from(status == FileStatus::Present),
+            renamed_file_count: usize::from(status == FileStatus::Renamed),
+            corrupted_file_count: usize::from(status == FileStatus::Corrupted),
+            missing_file_count: usize::from(status == FileStatus::Missing),
+            available_block_count: 1,
+            missing_block_count,
+            total_block_count: 1,
+            recovery_blocks_available: 1,
+            repair_possible: true,
+            blocks_needed_for_repair: missing_block_count,
+        }
+    }
+
+    #[test]
+    fn concise_summary_requires_repair_for_non_present_file_with_no_missing_blocks() {
+        let corrupted = verification_results(FileStatus::Corrupted, 0);
+        let renamed = verification_results(FileStatus::Renamed, 0);
+
+        assert!(ConciseVerificationReporter::repair_required(&corrupted));
+        assert!(ConciseVerificationReporter::repair_required(&renamed));
+    }
+
+    #[test]
+    fn concise_summary_does_not_require_repair_for_present_file_with_no_missing_blocks() {
+        let present = verification_results(FileStatus::Present, 0);
+
+        assert!(!ConciseVerificationReporter::repair_required(&present));
+    }
 
     #[test]
     fn test_console_reporter_thread_safe() {

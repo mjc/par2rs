@@ -125,7 +125,6 @@ fn encode_and_hash_files(
         .map_err(|err| CreateError::Other(format!("failed to create thread pool: {err}")))?;
 
     let mut file_handles: Vec<File> = Vec::with_capacity(source_files.len());
-    let mut file_md5_states: Vec<Md5> = Vec::with_capacity(source_files.len());
     let mut file_16k_buffers: Vec<Vec<u8>> = Vec::with_capacity(source_files.len());
 
     let mut block_md5_states: Vec<Md5> = Vec::with_capacity(source_block_count as usize);
@@ -137,7 +136,6 @@ fn encode_and_hash_files(
 
     for file in source_files {
         file_handles.push(open_for_reading(&file.path)?);
-        file_md5_states.push(Md5::new());
         file_16k_buffers.push(vec![0u8; (file.size as usize).min(16 * 1024)]);
 
         let block_count = file.calculate_block_count(block_size);
@@ -204,7 +202,6 @@ fn encode_and_hash_files(
                                 file_16k_buffers[file_idx][capture_start..capture_end]
                                     .copy_from_slice(&chunk[..capture_len]);
                             }
-                            file_md5_states[file_idx].update(&chunk[..bytes_to_read]);
                         }
                         block_md5_states[file_block_idx].update(&chunk[..chunk_len]);
                         block_crc32_states[file_block_idx].update(&chunk[..chunk_len]);
@@ -228,17 +225,6 @@ fn encode_and_hash_files(
         Ok::<_, CreateError>(recovery_blocks)
     })?;
 
-    // Finalize file MD5s and block checksums
-    let finalized_file_md5s: Vec<[u8; 16]> = file_md5_states
-        .into_iter()
-        .map(|s| {
-            let h = s.finalize();
-            let mut b = [0u8; 16];
-            b.copy_from_slice(&h);
-            b
-        })
-        .collect();
-
     let file_16k_hashes = file_16k_buffers
         .iter()
         .map(|bytes| crate::domain::Md5Hash::new(Md5::digest(bytes).into()))
@@ -249,7 +235,12 @@ fn encode_and_hash_files(
 
     for (file_idx, file) in source_files.iter().enumerate() {
         let (block_count, g_offset) = file_block_meta[file_idx];
-        let full_md5 = crate::domain::Md5Hash::new(finalized_file_md5s[file_idx]);
+        let full_md5 = crate::checksum::calculate_file_md5(&file.path).map_err(|e| {
+            CreateError::FileReadError {
+                file: file.path.to_string_lossy().to_string(),
+                source: e,
+            }
+        })?;
         let hash_16k = file_16k_hashes[file_idx];
         let filename = file.packet_name().as_bytes();
         let file_id = compute_file_id(&hash_16k, file.size, filename);

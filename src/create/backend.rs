@@ -375,6 +375,40 @@ mod tests {
     }
 
     #[test]
+    fn backend_output_matches_encoder_across_multiple_chunks() {
+        let block_size = 64;
+        let chunk_size = 16;
+        let source_count = 4;
+        let encoder = RecoveryBlockEncoder::new(block_size, source_count);
+        let inputs = (0..source_count)
+            .map(|src| {
+                (0..block_size)
+                    .map(|byte| (src * 17 + byte * 3) as u8)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        let mut backend = CreateRecoveryBackend::new(encoder.base_values(), 0, 2, chunk_size);
+        let mut recovery_blocks = backend.recovery_blocks(block_size);
+
+        for offset in (0..block_size).step_by(chunk_size) {
+            backend.begin_chunk(chunk_size);
+            inputs.iter().enumerate().for_each(|(idx, input)| {
+                backend.add_input(idx, &input[offset..offset + chunk_size]);
+            });
+            backend.finish_chunk(&mut recovery_blocks, block_size);
+        }
+
+        recovery_blocks
+            .iter()
+            .for_each(|(exponent, recovery_data)| {
+                let refs = inputs.iter().map(Vec::as_slice).collect::<Vec<_>>();
+                let expected = encoder.encode_recovery_block(*exponent, &refs).unwrap();
+                assert_eq!(recovery_data, &expected);
+            });
+    }
+
+    #[test]
     fn backend_reuses_fixed_transfer_buffers() {
         let encoder = RecoveryBlockEncoder::new(64, 2);
         let mut backend = CreateRecoveryBackend::new(encoder.base_values(), 7, 1, 64);

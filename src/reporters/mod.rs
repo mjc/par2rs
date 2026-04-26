@@ -7,7 +7,9 @@
 mod console;
 mod silent;
 
-pub use console::{ConsoleRepairReporter, ConsoleVerificationReporter};
+pub use console::{
+    ConciseVerificationReporter, ConsoleRepairReporter, ConsoleVerificationReporter,
+};
 pub use silent::{SilentRepairReporter, SilentVerificationReporter};
 
 use crate::verify::{FileStatus, VerificationResults};

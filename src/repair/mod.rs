@@ -43,6 +43,7 @@ pub use types::{
 pub use validate::validate_blocks_md5_crc32;
 
 use crate::domain::{FileId, LocalSliceIndex, Md5Hash};
+use crate::verify::BlockSource;
 use crate::RecoverySlicePacket;
 use error_helpers::*;
 use log::debug;
@@ -216,7 +217,7 @@ impl RepairContext {
         // Convert FileVerificationResult to ValidationCache
         let mut validation_cache = ValidationCache::new();
         let mut file_status = HashMap::default();
-        let mut block_positions_map: HashMap<FileId, HashMap<u32, usize>> = HashMap::default();
+        let mut block_sources_map: HashMap<FileId, HashMap<u32, BlockSource>> = HashMap::default();
 
         for file_result in &verification_results.files {
             // Build set of valid block indices
@@ -233,13 +234,30 @@ impl RepairContext {
 
             validation_cache.insert(file_result.file_id, valid_slices);
 
-            // Store block positions for this file (maps block_number -> file_offset)
-            block_positions_map.insert(file_result.file_id, file_result.block_positions.clone());
+            let target_path = self.base_path.join(&file_result.file_name);
+            let block_sources = if file_result.block_sources.is_empty() {
+                file_result
+                    .block_positions
+                    .iter()
+                    .map(|(block_number, offset)| {
+                        (
+                            *block_number,
+                            BlockSource {
+                                file_path: target_path.clone(),
+                                offset: *offset,
+                            },
+                        )
+                    })
+                    .collect()
+            } else {
+                file_result.block_sources.clone()
+            };
+            block_sources_map.insert(file_result.file_id, block_sources);
 
-            // Convert verify::FileStatus to repair::FileStatus
             let status = match file_result.status {
                 crate::verify::FileStatus::Present => FileStatus::Present,
-                crate::verify::FileStatus::Renamed => FileStatus::Corrupted, // Treat renamed as corrupted for repair
+                crate::verify::FileStatus::Renamed if target_path.exists() => FileStatus::Corrupted,
+                crate::verify::FileStatus::Renamed => FileStatus::Missing,
                 crate::verify::FileStatus::Corrupted => FileStatus::Corrupted,
                 crate::verify::FileStatus::Missing => FileStatus::Missing,
             };
@@ -268,8 +286,15 @@ impl RepairContext {
             self.recovery_set.recovery_slices_metadata.len()
         );
 
-        // Check if repair is needed
-        if total_damaged_blocks == 0 {
+        let all_files_present = verification_results
+            .files
+            .iter()
+            .all(|file| matches!(file.status, crate::verify::FileStatus::Present));
+
+        // Check if repair is needed. A corrupted file can still have every
+        // protected slice available at shifted offsets, in which case repair
+        // rewrites it without consuming recovery slices.
+        if total_damaged_blocks == 0 && all_files_present {
             let verified_files: Vec<String> = file_status.keys().cloned().collect();
             let files_verified = verified_files.len();
             return Ok(RepairResult::NoRepairNeeded {
@@ -290,6 +315,7 @@ impl RepairContext {
                 files_failed: file_status.keys().cloned().collect(),
                 files_verified: 0,
                 verified_files: Vec::new(),
+                exit_code: 2,
                 message: format!(
                     "Insufficient recovery data: need {} blocks but only have {}",
                     total_damaged_blocks,
@@ -299,7 +325,7 @@ impl RepairContext {
         }
 
         // Perform the actual repair with validation cache from comprehensive verification
-        self.perform_reed_solomon_repair(&file_status, &validation_cache, &block_positions_map)
+        self.perform_reed_solomon_repair(&file_status, &validation_cache, &block_sources_map)
     }
 
     /// Perform Reed-Solomon repair
@@ -325,7 +351,7 @@ impl RepairContext {
         &self,
         file_status: &HashMap<String, FileStatus>,
         validation_cache: &ValidationCache,
-        block_positions_map: &HashMap<FileId, HashMap<u32, usize>>,
+        block_sources_map: &HashMap<FileId, HashMap<u32, BlockSource>>,
     ) -> Result<RepairResult> {
         debug!(
             "perform_reed_solomon_repair: processing {} files",
@@ -374,14 +400,17 @@ impl RepairContext {
                 .collect();
 
             if missing_slices.is_empty() {
-                // All slices validated, but file status says not Present
-                if *status == FileStatus::Corrupted {
+                if *status != FileStatus::Present
+                    && self.file_needs_rewrite_without_missing_slices(file_info, block_sources_map)
+                {
                     debug!(
-                        "File {} has all valid slices but MD5 doesn't match",
-                        file_info.file_name
+                        "File {} has all valid slices but status is {:?}; rewriting",
+                        file_info.file_name, status
                     );
+                    files_to_repair.push((file_info, missing_slices));
+                } else {
+                    verified_files.push(file_info.file_name.clone());
                 }
-                verified_files.push(file_info.file_name.clone());
                 continue;
             }
 
@@ -405,7 +434,7 @@ impl RepairContext {
         let reconstructed_data: HashMap<usize, Vec<u8>> = self.reconstruct_all_missing_slices(
             &files_to_repair,
             validation_cache,
-            block_positions_map,
+            block_sources_map,
         )?;
 
         // STEP 3: Write reconstructed data to each file
@@ -428,8 +457,7 @@ impl RepairContext {
                 .get(&file_info.file_id)
                 .ok_or_else(|| RepairError::NoValidationCache(file_info.file_name.clone()))?;
 
-            // Get block positions for this file (maps block_number -> file_offset)
-            let block_positions = block_positions_map
+            let block_sources = block_sources_map
                 .get(&file_info.file_id)
                 .cloned()
                 .unwrap_or_default();
@@ -440,7 +468,7 @@ impl RepairContext {
                 file_info,
                 valid_slice_indices,
                 &file_reconstructed,
-                &block_positions,
+                &block_sources,
             ) {
                 Ok(()) => {
                     self.reporter()
@@ -474,6 +502,7 @@ impl RepairContext {
                 files_failed,
                 files_verified: files_verified_count,
                 verified_files,
+                exit_code: 1,
                 message,
             });
         }
@@ -503,6 +532,15 @@ impl RepairContext {
                         ))
                     })?;
 
+                self.reporter().report_file_opening(&file_info.file_name);
+                let file_length = file_info.file_length.as_u64();
+                self.reporter()
+                    .report_scanning_progress(&file_info.file_name, 0, file_length);
+                self.reporter().report_scanning_progress(
+                    &file_info.file_name,
+                    self.recovery_set.slice_size.as_u64().min(file_length),
+                    file_length,
+                );
                 self.reporter()
                     .report_verification(&file_info.file_name, VerificationResult::Verified);
             }
@@ -539,7 +577,7 @@ impl RepairContext {
         &self,
         files_to_repair: &[(&FileInfo, Vec<usize>)],
         validation_cache: &ValidationCache,
-        block_positions_map: &HashMap<FileId, HashMap<u32, usize>>,
+        block_sources_map: &HashMap<FileId, HashMap<u32, BlockSource>>,
     ) -> Result<HashMap<usize, Vec<u8>>> {
         use self::slice_provider::{ChunkedSliceProvider, RecoverySliceProvider, SliceLocation};
         use std::io::Cursor;
@@ -593,18 +631,7 @@ impl RepairContext {
                 valid_slices.len()
             );
 
-            // CRITICAL FIX: Get actual file size to handle truncated files
-            // If the file is shorter than expected (e.g., truncated), we need to
-            // use the ACTUAL file size, not the expected size from PAR2 metadata.
-            // Otherwise we'll try to read past EOF when adding slices to the provider.
-            let actual_file_size = if file_path.exists() {
-                fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0)
-            } else {
-                0
-            };
-
-            // Get block positions for this file (maps block_number -> actual file_offset)
-            let file_block_positions = block_positions_map
+            let file_block_sources = block_sources_map
                 .get(&file_info.file_id)
                 .cloned()
                 .unwrap_or_default();
@@ -616,11 +643,21 @@ impl RepairContext {
 
                 let global_index = file_info.local_to_global(LocalSliceIndex::new(slice_index));
 
-                // CRITICAL: Use actual block position from verification if available (handles displaced blocks)
-                // Otherwise fall back to expected position
-                let offset = file_block_positions
-                    .get(&(slice_index as u32))
-                    .map(|&pos| pos as u64)
+                let block_source = file_block_sources.get(&(slice_index as u32));
+                let source_path = block_source
+                    .map(|source| source.file_path.clone())
+                    .unwrap_or_else(|| file_path.clone());
+
+                let source_file_size = if source_path.exists() {
+                    fs::metadata(&source_path).map(|m| m.len()).unwrap_or(0)
+                } else {
+                    0
+                };
+
+                // CRITICAL: Use actual source location from verification if available.
+                // Otherwise fall back to expected target-file position.
+                let offset = block_source
+                    .map(|source| source.offset as u64)
                     .unwrap_or_else(|| {
                         (slice_index * self.recovery_set.slice_size.as_usize()) as u64
                     });
@@ -639,15 +676,15 @@ impl RepairContext {
 
                 // CRITICAL FIX: Calculate ACTUAL available bytes in the file for this slice
                 // Handles truncated files where actual_file_size < expected file_length
-                let actual_size = if offset >= actual_file_size {
+                let actual_size = if offset >= source_file_size {
                     // Slice is entirely beyond EOF (file severely truncated)
                     debug!(
                         "  Slice {} is beyond EOF (offset {} >= file size {}), skipping",
-                        slice_index, offset, actual_file_size
+                        slice_index, offset, source_file_size
                     );
                     continue; // Skip this slice entirely
                 } else {
-                    let bytes_available = (actual_file_size - offset) as usize;
+                    let bytes_available = (source_file_size - offset) as usize;
                     bytes_available.min(expected_slice_size)
                 };
 
@@ -661,7 +698,7 @@ impl RepairContext {
                 input_provider.add_slice(
                     global_index.as_usize(),
                     SliceLocation {
-                        file_path: file_path.clone(),
+                        file_path: source_path,
                         offset,
                         actual_size: ActualDataSize::new(actual_size),
                         logical_size: LogicalSliceSize::new(
@@ -707,6 +744,7 @@ impl RepairContext {
             total_input_slices,
             dummy_recovery_slices,
         );
+        self.reporter().report_constructing();
 
         // Create output buffers for all missing slices
         let mut output_buffers: HashMap<usize, Cursor<Vec<u8>>> = HashMap::default();
@@ -812,7 +850,7 @@ impl RepairContext {
         file_info: &FileInfo,
         valid_slice_indices: &HashSet<usize>,
         reconstructed_slices: &ReconstructedSlices,
-        block_positions: &HashMap<u32, usize>,
+        block_sources: &HashMap<u32, BlockSource>,
     ) -> Result<()> {
         debug!("Writing repaired file with streaming I/O: {:?}", file_path);
 
@@ -839,13 +877,8 @@ impl RepairContext {
             keep: false,
         };
 
-        // Open source file for reading valid slices
-        let source_path = self.base_path.join(&file_info.file_name);
-        let mut source_file = if source_path.exists() {
-            Some(open_for_reading(&source_path)?)
-        } else {
-            None
-        };
+        let target_source_path = self.base_path.join(&file_info.file_name);
+        let mut source_files: HashMap<PathBuf, (std::fs::File, Option<u64>)> = HashMap::default();
 
         // Create temp output file
         let file = create_file(&temp_path)?;
@@ -855,7 +888,6 @@ impl RepairContext {
         let slice_size = self.recovery_set.slice_size.as_usize();
         let mut slice_buffer = vec![0u8; slice_size];
         let mut bytes_written = 0u64;
-        let mut next_expected_offset: Option<u64> = Some(0);
 
         for slice_index in 0..file_info.slice_count.as_usize() {
             let actual_size = if slice_index == file_info.slice_count - 1 {
@@ -885,40 +917,48 @@ impl RepairContext {
                     slice_index,
                 )?;
                 bytes_written += actual_size as u64;
-                // Mark that we've broken the sequential read pattern
-                next_expected_offset = None;
             } else if valid_slice_indices.contains(&slice_index) {
-                // Read from source file
-                if let Some(ref mut file) = source_file {
-                    // CRITICAL: Use actual block position from verification if available.
-                    // Comprehensive verification finds blocks via byte-by-byte scanning,
-                    // so blocks may be at DISPLACED positions (not at expected aligned offsets).
-                    // block_positions maps block_number -> actual_file_offset where the block was found.
-                    let offset = block_positions
-                        .get(&(slice_index as u32))
-                        .map(|&pos| pos as u64)
-                        .unwrap_or_else(|| (slice_index * slice_size) as u64);
+                let source = block_sources
+                    .get(&(slice_index as u32))
+                    .cloned()
+                    .unwrap_or_else(|| BlockSource {
+                        file_path: target_source_path.clone(),
+                        offset: slice_index * slice_size,
+                    });
 
+                if source.file_path.exists() {
+                    if !source_files.contains_key(&source.file_path) {
+                        source_files.insert(
+                            source.file_path.clone(),
+                            (open_for_reading(&source.file_path)?, Some(0)),
+                        );
+                    }
+                    let (file, next_expected_offset) = source_files
+                        .get_mut(&source.file_path)
+                        .ok_or(RepairError::ValidSliceMissingSource(slice_index))?;
+
+                    let offset = source.offset as u64;
                     debug!(
-                        "Reading slice {} from offset {} ({})",
+                        "Reading slice {} from {:?} offset {} ({})",
                         slice_index,
+                        source.file_path,
                         offset,
-                        if block_positions.contains_key(&(slice_index as u32)) {
-                            "displaced position from verification"
+                        if block_sources.contains_key(&(slice_index as u32)) {
+                            "source location from verification"
                         } else {
-                            "expected aligned position"
+                            "expected aligned target position"
                         }
                     );
 
                     // Only seek if we're not already at the right position (optimize sequential reads)
-                    if next_expected_offset != Some(offset) {
-                        seek_file(file, SeekFrom::Start(offset), file_path)?;
+                    if *next_expected_offset != Some(offset) {
+                        seek_file(file, SeekFrom::Start(offset), &source.file_path)?;
                     }
 
                     read_slice_exact(
                         file,
                         &mut slice_buffer[..actual_size],
-                        file_path,
+                        &source.file_path,
                         slice_index,
                     )?;
                     write_slice_all(
@@ -928,22 +968,26 @@ impl RepairContext {
                         slice_index,
                     )?;
                     bytes_written += actual_size as u64;
-                    next_expected_offset = Some(offset + actual_size as u64);
+                    *next_expected_offset = Some(offset + actual_size as u64);
                 } else {
                     return Err(RepairError::ValidSliceMissingSource(slice_index));
                 }
             } else {
                 return Err(RepairError::SliceNotAvailable(slice_index));
             }
+
+            self.reporter()
+                .report_computing_progress(slice_index + 1, file_info.slice_count.as_usize());
         }
 
+        self.reporter().report_writing_recovered_data();
         flush_writer(&mut writer, &temp_path)?;
 
         // Finalize MD5 computation and get the hash
         let (mut buffered_writer, computed_md5) = writer.finalize();
         flush_writer(&mut buffered_writer, &temp_path)?;
         drop(buffered_writer); // Close the file before rename
-        drop(source_file); // Close source file before rename
+        drop(source_files); // Close source files before rename
 
         if bytes_written != file_info.file_length.as_u64() {
             return Err(RepairError::ByteCountMismatch {
@@ -972,8 +1016,49 @@ impl RepairContext {
             "✓ Wrote {} bytes to {:?}, MD5 verified: {:02x?}",
             bytes_written, file_path, computed_md5
         );
+        self.reporter().report_bytes_written(bytes_written);
 
         Ok(())
+    }
+
+    fn file_needs_rewrite_without_missing_slices(
+        &self,
+        file_info: &FileInfo,
+        block_sources_map: &HashMap<FileId, HashMap<u32, BlockSource>>,
+    ) -> bool {
+        self.has_noncanonical_block_sources(file_info, block_sources_map)
+            || self.target_file_size_differs(file_info)
+    }
+
+    fn has_noncanonical_block_sources(
+        &self,
+        file_info: &FileInfo,
+        block_sources_map: &HashMap<FileId, HashMap<u32, BlockSource>>,
+    ) -> bool {
+        let Some(block_sources) = block_sources_map.get(&file_info.file_id) else {
+            return false;
+        };
+
+        let target_path = self.base_path.join(&file_info.file_name);
+        let slice_size = self.recovery_set.slice_size.as_usize();
+
+        (0..file_info.slice_count.as_usize()).any(|slice_index| {
+            let Ok(block_number) = u32::try_from(slice_index) else {
+                return true;
+            };
+            let Some(source) = block_sources.get(&block_number) else {
+                return false;
+            };
+
+            source.file_path != target_path || source.offset != slice_index * slice_size
+        })
+    }
+
+    fn target_file_size_differs(&self, file_info: &FileInfo) -> bool {
+        let target_path = self.base_path.join(&file_info.file_name);
+        fs::metadata(target_path)
+            .map(|metadata| metadata.len() != file_info.file_length.as_u64())
+            .unwrap_or(true)
     }
 }
 
@@ -1006,12 +1091,14 @@ pub fn repair_files_with_base_path(
     verify_config: &crate::verify::VerificationConfig,
     base_path_override: Option<&Path>,
 ) -> Result<(RepairContext, RepairResult)> {
-    repair_files_with_base_path_and_extra_files(
+    let silent_reporter = crate::reporters::SilentVerificationReporter;
+    repair_files_with_base_path_and_extra_files_and_verification_reporter(
         par2_file,
         reporter,
         verify_config,
         base_path_override,
         &[],
+        &silent_reporter,
     )
 }
 
@@ -1023,6 +1110,48 @@ pub fn repair_files_with_base_path_and_extra_files(
     base_path_override: Option<&Path>,
     extra_files: &[PathBuf],
 ) -> Result<(RepairContext, RepairResult)> {
+    let silent_reporter = crate::reporters::SilentVerificationReporter;
+    repair_files_with_base_path_and_extra_files_and_verification_reporter(
+        par2_file,
+        reporter,
+        verify_config,
+        base_path_override,
+        extra_files,
+        &silent_reporter,
+    )
+}
+
+/// Repair files while reporting the pre-repair verification pass.
+pub fn repair_files_with_base_path_and_extra_files_and_verification_reporter(
+    par2_file: &str,
+    reporter: Box<dyn ProgressReporter>,
+    verify_config: &crate::verify::VerificationConfig,
+    base_path_override: Option<&Path>,
+    extra_files: &[PathBuf],
+    verification_reporter: &dyn crate::reporters::VerificationReporter,
+) -> Result<(RepairContext, RepairResult)> {
+    repair_files_with_verification_reporter_and_loading_progress(
+        par2_file,
+        reporter,
+        verify_config,
+        base_path_override,
+        extra_files,
+        verification_reporter,
+        false,
+    )
+}
+
+/// Repair files while reporting pre-repair verification, optionally showing
+/// packet loading output.
+pub fn repair_files_with_verification_reporter_and_loading_progress(
+    par2_file: &str,
+    reporter: Box<dyn ProgressReporter>,
+    verify_config: &crate::verify::VerificationConfig,
+    base_path_override: Option<&Path>,
+    extra_files: &[PathBuf],
+    verification_reporter: &dyn crate::reporters::VerificationReporter,
+    show_loading_progress: bool,
+) -> Result<(RepairContext, RepairResult)> {
     let par2_path = Path::new(par2_file);
 
     // Validate file exists
@@ -1030,8 +1159,17 @@ pub fn repair_files_with_base_path_and_extra_files(
         return Err(RepairError::FileNotFound(par2_file.to_string()));
     }
 
-    // Collect all PAR2 files in the set
-    let par2_files = crate::par2_files::collect_par2_files(par2_path);
+    // Collect all PAR2 files in the set. Explicit PAR2 inputs are allowed here,
+    // but packet loading filters out packets from foreign recovery sets.
+    let mut par2_files = crate::par2_files::collect_par2_files(par2_path);
+    par2_files.extend(
+        verify_config
+            .extra_files
+            .iter()
+            .filter(|path| is_par2_path(path))
+            .cloned(),
+    );
+    crate::par2_files::sort_dedup_preserving_first(&mut par2_files);
 
     // Load metadata for memory-efficient recovery slice loading
     let metadata = crate::par2_files::parse_recovery_slice_metadata(&par2_files, false);
@@ -1039,15 +1177,34 @@ pub fn repair_files_with_base_path_and_extra_files(
     // Load packets WITHOUT recovery slices (use metadata for lazy loading instead)
     // This saves ~1.5GB of memory for large PAR2 sets since recovery data is
     // loaded on-demand during reconstruction via RecoverySliceProvider
-    let initial_packet_set = crate::par2_files::load_par2_packets(&par2_files, false, false);
-    if initial_packet_set.packets.is_empty() {
+    let context_packet_set =
+        crate::par2_files::load_par2_packets(&par2_files, false, show_loading_progress);
+    if context_packet_set.packets.is_empty() {
         return Err(RepairError::NoValidPackets);
     }
 
-    // Get the base directory for file resolution
+    // Get the base directory for file resolution. An explicit caller override
+    // wins over the CLI/configured base path.
     let base_path = base_path_override
         .map(Path::to_path_buf)
+        .or_else(|| verify_config.base_path.clone())
         .unwrap_or_else(|| par2_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+
+    // Create repair context before verification so normal repair output prints
+    // the set summary once before source verification.
+    let mut repair_builder = RepairContextBuilder::new()
+        .packets(context_packet_set.packets)
+        .metadata(metadata)
+        .base_path(base_path.clone())
+        .reporter(reporter);
+    if let Some(memory_limit) = verify_config.memory_limit {
+        repair_builder = repair_builder.memory_limit(memory_limit);
+    }
+    let repair_context = repair_builder.build()?;
+
+    repair_context
+        .reporter()
+        .report_statistics(&repair_context.recovery_set);
 
     // CRITICAL FIX: Run comprehensive verification to get accurate block availability
     // Reference: par2cmdline-turbo uses byte-by-byte sliding window scanning (FileCheckSummer)
@@ -1065,6 +1222,8 @@ pub fn repair_files_with_base_path_and_extra_files(
         verify_config.threads,
         verify_config.parallel,
     );
+    repair_verify_config.extra_files = verify_config.extra_files.clone();
+    repair_verify_config.base_path = Some(base_path.clone());
     repair_verify_config.file_threads = verify_config.file_threads;
     repair_verify_config.data_skipping = verify_config.data_skipping;
     repair_verify_config.skip_leeway = verify_config.skip_leeway;
@@ -1072,33 +1231,28 @@ pub fn repair_files_with_base_path_and_extra_files(
     if !extra_files.is_empty() || verify_config.rename_only {
         repair_verify_config.skip_full_file_md5 = false;
     }
-    let mut verification_results =
-        run_repair_verification(&par2_files, &repair_verify_config, &base_path, extra_files);
+    let mut verification_results = run_repair_verification(
+        &par2_files,
+        &repair_verify_config,
+        &base_path,
+        extra_files,
+        verification_reporter,
+    );
+    verification_reporter.report_verification_results(&verification_results);
 
-    // Re-load packets for repair context (verification consumed them)
-    // This is acceptable since packet parsing is fast (no recovery slice data)
-    let packet_set = crate::par2_files::load_par2_packets(&par2_files, false, false);
-
-    // Create repair context using builder
-    let mut repair_builder = RepairContextBuilder::new()
-        .packets(packet_set.packets)
-        .metadata(metadata)
-        .base_path(base_path.clone())
-        .reporter(reporter);
-    if let Some(memory_limit) = verify_config.memory_limit {
-        repair_builder = repair_builder.memory_limit(memory_limit);
-    }
-    let repair_context = repair_builder.build()?;
-
-    // Report statistics before starting
-    repair_context
-        .reporter()
-        .report_statistics(&repair_context.recovery_set);
-
-    let renamed_files = repair_context.restore_renamed_files(&verification_results)?;
+    let renamed_files = if verify_config.rename_only {
+        repair_context.restore_renamed_files(&verification_results)?
+    } else {
+        Vec::new()
+    };
     if !renamed_files.is_empty() {
-        verification_results =
-            run_repair_verification(&par2_files, &repair_verify_config, &base_path, extra_files);
+        verification_results = run_repair_verification(
+            &par2_files,
+            &repair_verify_config,
+            &base_path,
+            extra_files,
+            verification_reporter,
+        );
 
         if repair_verification_is_complete(&verification_results) {
             return Ok((
@@ -1138,22 +1292,22 @@ fn run_repair_verification(
     repair_verify_config: &crate::verify::VerificationConfig,
     base_path: &Path,
     extra_files: &[PathBuf],
+    verification_reporter: &dyn crate::reporters::VerificationReporter,
 ) -> crate::verify::VerificationResults {
     let packet_set = crate::par2_files::load_par2_packets(par2_files, false, false);
-    let silent_reporter = crate::reporters::SilentVerificationReporter;
 
     if extra_files.is_empty() {
         crate::verify::comprehensive_verify_files(
             packet_set,
             repair_verify_config,
-            &silent_reporter,
+            verification_reporter,
             base_path,
         )
     } else {
         crate::verify::comprehensive_verify_files_with_extra_files(
             packet_set,
             repair_verify_config,
-            &silent_reporter,
+            verification_reporter,
             base_path,
             extra_files,
         )
@@ -1164,6 +1318,12 @@ fn repair_verification_is_complete(results: &crate::verify::VerificationResults)
     results.renamed_file_count == 0
         && results.corrupted_file_count == 0
         && results.missing_file_count == 0
+}
+
+fn is_par2_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("par2"))
 }
 
 fn rename_only_repair_result(
@@ -1206,6 +1366,7 @@ fn rename_only_repair_result(
                 .collect(),
             files_verified: verified_files.len(),
             verified_files,
+            exit_code: 1,
             message: "Rename-only repair could not restore all files.".to_string(),
         }
     }

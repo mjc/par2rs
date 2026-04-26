@@ -121,6 +121,31 @@ fn create_renamed_file_test_set(temp_dir: &TempDir) -> (PathBuf, PathBuf, PathBu
     (par2_file, source, renamed)
 }
 
+fn create_misaligned_corrupted_test_set(temp_dir: &TempDir) -> (PathBuf, PathBuf) {
+    let source = temp_dir.path().join("sample.dat");
+    create_test_file(&source, b"abcdefghijkl").expect("Failed to create source file");
+
+    let par2_file = temp_dir.path().join("archive.par2");
+    let output = Command::new(get_binary_path("par2create"))
+        .arg("-q")
+        .arg("-s4")
+        .arg("-c1")
+        .arg(&par2_file)
+        .arg(&source)
+        .output()
+        .expect("Failed to execute par2create");
+
+    assert!(
+        output.status.success(),
+        "par2create failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    fs::write(&source, b"Xabcdefghijkl").expect("Failed to corrupt source file");
+
+    (par2_file, source)
+}
+
 fn create_par1_verify_test_set(temp_dir: &TempDir) -> PathBuf {
     const PAR1_HEADER_SIZE: usize = 96;
     const PAR1_ENTRY_FIXED_SIZE: usize = 56;
@@ -714,6 +739,30 @@ fn test_par2_verify_rename_only_accepts_renamed_extra() {
 }
 
 #[test]
+fn test_par2_verify_reports_repair_required_for_corrupted_file_without_missing_blocks() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let (par2_file, source) = create_misaligned_corrupted_test_set(&temp_dir);
+
+    let output = Command::new(get_binary_path("par2"))
+        .arg("verify")
+        .arg("-q")
+        .arg("-p")
+        .arg(&par2_file)
+        .output()
+        .expect("Failed to execute par2 verify");
+
+    assert!(
+        !output.status.success(),
+        "verify should report repair required for corrupted files even when blocks are available"
+    );
+    assert!(source.exists(), "verify must remain non-mutating");
+    assert!(
+        par2_file.exists(),
+        "verify -p must not purge PAR2 files when corruption requires repair"
+    );
+}
+
+#[test]
 fn test_par2_repair_with_test_fixtures() {
     let par2_file = Path::new("tests/fixtures/repair_scenarios/testfile.par2");
     if !par2_file.exists() {
@@ -930,13 +979,14 @@ fn test_par2_repair_scans_extra_file_arguments() {
     );
     assert!(
         source.exists(),
-        "repair should restore the protected filename from the renamed extra"
+        "repair should recreate the protected filename from the extra scan source"
     );
     assert!(
-        !renamed.exists(),
-        "repair should consume the renamed extra by moving it into place"
+        renamed.exists(),
+        "normal repair should not consume the user-supplied extra file"
     );
     assert_eq!(fs::read(&source).unwrap(), b"renamed-file-scan-data");
+    assert_eq!(fs::read(&renamed).unwrap(), b"renamed-file-scan-data");
 }
 
 #[test]
@@ -1027,15 +1077,16 @@ fn test_par2_repair_renamed_extra_backs_up_corrupted_target() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(fs::read(&source).unwrap(), b"renamed-file-scan-data");
-    assert!(!renamed.exists());
+    assert_eq!(fs::read(&renamed).unwrap(), b"renamed-file-scan-data");
     assert_eq!(
-        fs::read(temp_dir.path().join("sample.dat.1")).unwrap(),
-        b"corrupted target"
+        fs::read(temp_dir.path().join("sample.dat.1")).ok(),
+        None,
+        "normal repair should not create rename backups for scan-only extras"
     );
 }
 
 #[test]
-fn test_par2_repair_renamed_extra_uses_first_free_backup_suffix() {
+fn test_par2_repair_scan_extra_leaves_existing_backup_suffixes_untouched() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let source = temp_dir.path().join("sample.dat");
     create_test_file(&source, b"renamed-file-scan-data").expect("Failed to create source file");
@@ -1066,13 +1117,15 @@ fn test_par2_repair_renamed_extra_uses_first_free_backup_suffix() {
 
     assert!(output.status.success());
     assert_eq!(fs::read(&source).unwrap(), b"renamed-file-scan-data");
+    assert_eq!(fs::read(&renamed).unwrap(), b"renamed-file-scan-data");
     assert_eq!(
         fs::read(temp_dir.path().join("sample.dat.1")).unwrap(),
         b"existing backup"
     );
     assert_eq!(
-        fs::read(temp_dir.path().join("sample.dat.2")).unwrap(),
-        b"corrupted target"
+        fs::read(temp_dir.path().join("sample.dat.2")).ok(),
+        None,
+        "normal repair should not allocate a rename backup suffix for scan-only extras"
     );
 }
 
@@ -1119,7 +1172,10 @@ fn test_par2_repair_purge_after_rename_removes_recovery_files() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(source.exists(), "protected data should remain after purge");
-    assert!(!renamed.exists());
+    assert!(
+        renamed.exists(),
+        "normal repair -p should not consume the user-supplied extra file"
+    );
     assert_no_par2_files(temp_dir.path());
 }
 
@@ -1232,6 +1288,30 @@ fn test_par2_verify_repair_accept_scan_compat_flags() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[test]
+fn test_verify_repair_reject_skip_leeway_without_data_skipping() {
+    let par2_file = Path::new("tests/fixtures/edge_cases/test_valid.par2");
+    if !par2_file.exists() {
+        eprintln!("Skipping test - fixture not found");
+        return;
+    }
+
+    let verify_output = Command::new(get_binary_path("par2"))
+        .arg("verify")
+        .arg("-S10")
+        .arg(par2_file)
+        .output()
+        .expect("Failed to execute par2 verify");
+    assert!(!verify_output.status.success());
+
+    let repair_output = Command::new(get_binary_path("par2repair"))
+        .arg("-S10")
+        .arg(par2_file)
+        .output()
+        .expect("Failed to execute par2repair");
+    assert!(!repair_output.status.success());
 }
 
 #[test]
@@ -1547,6 +1627,117 @@ fn test_par2verify_scans_extra_file_arguments() {
 }
 
 #[test]
+fn test_par2verify_reports_repair_required_for_corrupted_file_without_missing_blocks() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let (par2_file, source) = create_misaligned_corrupted_test_set(&temp_dir);
+
+    let output = Command::new(get_binary_path("par2verify"))
+        .arg("-q")
+        .arg("-p")
+        .arg(&par2_file)
+        .output()
+        .expect("Failed to execute par2verify");
+
+    assert!(
+        !output.status.success(),
+        "par2verify should report repair required for corrupted files even when blocks are available"
+    );
+    assert!(source.exists(), "par2verify must remain non-mutating");
+    assert!(
+        par2_file.exists(),
+        "par2verify -p must not purge PAR2 files when corruption requires repair"
+    );
+}
+
+#[test]
+fn test_par2verify_ignores_foreign_extra_par2_set() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let data1 = temp_dir.path().join("data1.bin");
+    let data2 = temp_dir.path().join("data2.bin");
+    create_test_file(&data1, b"abcdefghijkl").expect("Failed to create first data file");
+    create_test_file(&data2, b"mnopqrstuvwx").expect("Failed to create second data file");
+
+    let par2_file1 = temp_dir.path().join("data1.bin.par2");
+    let par2_file2 = temp_dir.path().join("data2.bin.par2");
+    for (par2_file, data_file) in [(&par2_file1, &data1), (&par2_file2, &data2)] {
+        let create_output = Command::new(get_binary_path("par2create"))
+            .arg("-q")
+            .arg("-s4")
+            .arg("-c1")
+            .arg(par2_file)
+            .arg(data_file)
+            .output()
+            .expect("Failed to execute par2create");
+        assert!(
+            create_output.status.success(),
+            "par2create failed: {}",
+            String::from_utf8_lossy(&create_output.stderr)
+        );
+    }
+
+    let verify_output = Command::new(get_binary_path("par2verify"))
+        .arg(&par2_file1)
+        .arg(&par2_file2)
+        .output()
+        .expect("Failed to execute par2verify");
+
+    assert!(
+        verify_output.status.success(),
+        "par2verify failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&verify_output.stdout),
+        String::from_utf8_lossy(&verify_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&verify_output.stdout);
+    let stderr = String::from_utf8_lossy(&verify_output.stderr);
+    assert!(
+        !stdout.contains("Target: \"data2.bin\"") && !stderr.contains("Multiple recovery sets"),
+        "foreign PAR2 set was not ignored: stdout={}, stderr={}",
+        stdout,
+        stderr
+    );
+}
+
+#[test]
+fn test_par2verify_exit_codes_match_repair_possibility() {
+    for (recovery_blocks, expected_code) in [(1, 2), (3, 1)] {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let data_file = temp_dir.path().join("data.bin");
+        create_test_file(&data_file, b"abcdefghijkl").expect("Failed to create test file");
+
+        let par2_file = temp_dir.path().join("data.bin.par2");
+        let create_output = Command::new(get_binary_path("par2create"))
+            .arg("-q")
+            .arg("-s4")
+            .arg("-c")
+            .arg(recovery_blocks.to_string())
+            .arg(&par2_file)
+            .arg(&data_file)
+            .output()
+            .expect("Failed to execute par2create");
+        assert!(
+            create_output.status.success(),
+            "par2create failed: {}",
+            String::from_utf8_lossy(&create_output.stderr)
+        );
+
+        fs::remove_file(&data_file).expect("Failed to remove data file");
+
+        let verify_output = Command::new(get_binary_path("par2verify"))
+            .arg(&par2_file)
+            .output()
+            .expect("Failed to execute par2verify");
+        assert_eq!(
+            verify_output.status.code(),
+            Some(expected_code),
+            "par2verify exit mismatch for -c {}: stdout={}, stderr={}",
+            recovery_blocks,
+            String::from_utf8_lossy(&verify_output.stdout),
+            String::from_utf8_lossy(&verify_output.stderr)
+        );
+    }
+}
+
+#[test]
 fn test_par2verify_purge_removes_par_files_when_valid() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let (par2_file, source) = create_purge_test_set(&temp_dir);
@@ -1767,6 +1958,55 @@ fn test_par1_repair_rejects_zero_memory_flag() {
 }
 
 #[test]
+fn test_par2repair_insufficient_recovery_exits_two() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let data_file = temp_dir.path().join("data.bin");
+    create_test_file(&data_file, b"abcdefghijkl").expect("Failed to create test file");
+
+    let par2_file = temp_dir.path().join("data.bin.par2");
+    let create_output = Command::new(get_binary_path("par2create"))
+        .arg("-q")
+        .arg("-s4")
+        .arg("-c1")
+        .arg(&par2_file)
+        .arg(&data_file)
+        .output()
+        .expect("Failed to execute par2create");
+    assert!(
+        create_output.status.success(),
+        "par2create failed: {}",
+        String::from_utf8_lossy(&create_output.stderr)
+    );
+
+    fs::remove_file(&data_file).expect("Failed to remove data file");
+
+    let combined_repair = Command::new(get_binary_path("par2"))
+        .arg("repair")
+        .arg(&par2_file)
+        .output()
+        .expect("Failed to execute par2 repair");
+    assert_eq!(
+        combined_repair.status.code(),
+        Some(2),
+        "par2 repair exit mismatch: stdout={}, stderr={}",
+        String::from_utf8_lossy(&combined_repair.stdout),
+        String::from_utf8_lossy(&combined_repair.stderr)
+    );
+
+    let standalone_repair = Command::new(get_binary_path("par2repair"))
+        .arg(&par2_file)
+        .output()
+        .expect("Failed to execute par2repair");
+    assert_eq!(
+        standalone_repair.status.code(),
+        Some(2),
+        "par2repair exit mismatch: stdout={}, stderr={}",
+        String::from_utf8_lossy(&standalone_repair.stdout),
+        String::from_utf8_lossy(&standalone_repair.stderr)
+    );
+}
+
+#[test]
 fn test_par2repair_with_fixtures() {
     let par2_file = Path::new("tests/fixtures/repair_scenarios/testfile.par2");
     if !par2_file.exists() {
@@ -1867,13 +2107,14 @@ fn test_par2repair_scans_extra_file_arguments() {
     );
     assert!(
         source.exists(),
-        "repair should restore the protected filename from the renamed extra"
+        "repair should recreate the protected filename from the extra scan source"
     );
     assert!(
-        !renamed.exists(),
-        "repair should consume the renamed extra by moving it into place"
+        renamed.exists(),
+        "normal repair should not consume the user-supplied extra file"
     );
     assert_eq!(fs::read(&source).unwrap(), b"renamed-file-scan-data");
+    assert_eq!(fs::read(&renamed).unwrap(), b"renamed-file-scan-data");
 }
 
 #[test]

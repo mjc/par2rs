@@ -88,7 +88,21 @@ fn main() -> Result<()> {
         .and_then(|name| name.to_str())
         .map(Path::new)
         .unwrap_or(&file_path);
-    let par2_files = par2_files::collect_par2_files(file_name);
+
+    // Collect all PAR2 files in the set, plus explicit extra PAR2 files.
+    let mut par2_files = par2_files::collect_par2_files(file_name);
+    par2_files.extend(
+        verify_config
+            .extra_files
+            .iter()
+            .filter(|path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("par2"))
+            })
+            .cloned(),
+    );
+    par2_files::sort_dedup_preserving_first(&mut par2_files);
 
     // Parse packets excluding recovery slices but validate and count them
     if !quiet {
@@ -134,27 +148,23 @@ fn main() -> Result<()> {
         reporter.report_verification_results(&verification_results);
     }
 
-    // Return success if no repair is needed, error if repair is required
-    anyhow::ensure!(
-        verification_results.renamed_file_count == 0,
-        "Repair required: {} files are renamed",
-        verification_results.renamed_file_count
-    );
-    anyhow::ensure!(
-        verification_results.missing_block_count == 0,
-        "Repair required: {} blocks are missing or damaged",
-        verification_results.missing_block_count
-    );
-
-    if purge {
-        let packet_set = par2_files::load_par2_packets(&par2_files, false, false);
-        let context = par2rs::repair::RepairContextBuilder::new()
-            .packets(packet_set.packets)
-            .base_path(base_dir)
-            .reporter(Box::new(par2rs::repair::ConsoleReporter::new(quiet)))
-            .build()
-            .context("Failed to initialize purge context")?;
-        context.purge_files(&file_name.to_string_lossy())?;
+    let repair_required = verification_results.renamed_file_count > 0
+        || verification_results.corrupted_file_count > 0
+        || verification_results.missing_block_count > 0;
+    if !repair_required {
+        if purge {
+            par2rs::repair::RepairContext::purge_par_files_for(&file_name.to_string_lossy())?;
+        }
+    } else if verification_results.repair_possible {
+        if !quiet {
+            eprintln!("\nRepair is required.");
+        }
+        std::process::exit(1);
+    } else {
+        if !quiet {
+            eprintln!("\nRepair is not possible.");
+        }
+        std::process::exit(2);
     }
 
     Ok(())

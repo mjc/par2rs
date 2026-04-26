@@ -128,6 +128,7 @@ pub enum RepairResult {
         files_failed: Vec<String>,
         files_verified: usize,
         verified_files: Vec<String>,
+        exit_code: i32,
         message: String,
     },
 }
@@ -139,6 +140,14 @@ impl RepairResult {
             self,
             RepairResult::Success { .. } | RepairResult::NoRepairNeeded { .. }
         )
+    }
+
+    /// Process exit code matching par2cmdline-turbo's common repair outcomes.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            RepairResult::Success { .. } | RepairResult::NoRepairNeeded { .. } => 0,
+            RepairResult::Failed { exit_code, .. } => *exit_code,
+        }
     }
 
     /// Get the files that were successfully repaired

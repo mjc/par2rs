@@ -331,6 +331,34 @@ fn test_console_reporter_report_writing_progress_quiet() {
 }
 
 #[test]
+fn test_console_reporter_report_writing_recovered_data() {
+    let reporter = ConsoleReporter::new(false);
+    reporter.report_writing_recovered_data();
+    // Should not panic
+}
+
+#[test]
+fn test_console_reporter_report_writing_recovered_data_quiet() {
+    let reporter = ConsoleReporter::new(true);
+    reporter.report_writing_recovered_data();
+    // Should not panic
+}
+
+#[test]
+fn test_console_reporter_report_bytes_written() {
+    let reporter = ConsoleReporter::new(false);
+    reporter.report_bytes_written(12345);
+    // Should not panic
+}
+
+#[test]
+fn test_console_reporter_report_bytes_written_quiet() {
+    let reporter = ConsoleReporter::new(true);
+    reporter.report_bytes_written(12345);
+    // Should not panic
+}
+
+#[test]
 fn test_console_reporter_report_repair_complete_repaired() {
     let reporter = ConsoleReporter::new(false);
     reporter.report_repair_complete("file.txt", true);
@@ -461,6 +489,8 @@ fn test_silent_reporter_all_methods() {
     reporter.report_computing_progress(50, 100);
     reporter.report_repair_start("test.txt");
     reporter.report_writing_progress("test.txt", 500, 1000);
+    reporter.report_writing_recovered_data();
+    reporter.report_bytes_written(1000);
     reporter.report_repair_complete("test.txt", true);
     reporter.report_repair_failed("test.txt", "error");
     reporter.report_verification_header();

@@ -397,14 +397,19 @@ fn test_repair_context_purge_files_with_backups() {
     let dir = TempDir::new().unwrap();
     let file_id = FileId::new([1; 16]);
 
-    // Create main file and backups with replaced extensions
+    // par2cmdline-turbo creates numeric backups by appending to the full file
+    // name, for example "test.txt.1".
     let main_file = dir.path().join("test.txt");
-    let backup_1 = dir.path().join("test.1"); // with_extension replaces .txt with .1
-    let backup_bak = dir.path().join("test.bak"); // with_extension replaces .txt with .bak
+    let backup_1 = dir.path().join("test.txt.1");
+    let backup_2 = dir.path().join("test.txt.2");
+    let replaced_extension_backup = dir.path().join("test.1");
+    let bak_file = dir.path().join("test.txt.bak");
 
     fs::write(&main_file, b"main").unwrap();
     fs::write(&backup_1, b"backup1").unwrap();
-    fs::write(&backup_bak, b"backup bak").unwrap();
+    fs::write(&backup_2, b"backup2").unwrap();
+    fs::write(&replaced_extension_backup, b"legacy backup").unwrap();
+    fs::write(&bak_file, b"bak").unwrap();
 
     // Create PAR2 file
     let par2_file = dir.path().join("test.par2");
@@ -420,15 +425,50 @@ fn test_repair_context_purge_files_with_backups() {
     let result = context.purge_files(par2_file.to_str().unwrap());
     assert!(result.is_ok());
 
-    // Existing user-created backup files are not deleted by generic purge.
-    assert!(backup_1.exists());
-    assert!(backup_bak.exists());
+    // Generated numeric backups should be deleted.
+    assert!(!backup_1.exists());
+    assert!(!backup_2.exists());
+
+    // Replaced-extension and .bak files are not par2cmdline-turbo purge targets.
+    assert!(replaced_extension_backup.exists());
+    assert!(bak_file.exists());
 
     // Main file should still exist
     assert!(main_file.exists());
 
     // PAR2 file should be deleted
     assert!(!par2_file.exists());
+}
+
+#[test]
+fn test_repair_context_purge_par_files_keeps_backups() {
+    let dir = TempDir::new().unwrap();
+    let file_id = FileId::new([1; 16]);
+
+    let backup_file = dir.path().join("test.txt.1");
+    fs::write(&backup_file, b"backup1").unwrap();
+
+    let par2_file = dir.path().join("test.par2");
+    let par2_vol = dir.path().join("test.vol0+1.par2");
+    let foreign_par2 = dir.path().join("foreign.par2");
+    fs::write(&par2_file, b"dummy par2").unwrap();
+    fs::write(&par2_vol, b"dummy volume").unwrap();
+    fs::write(&foreign_par2, b"foreign").unwrap();
+
+    let packets = vec![
+        Packet::Main(create_main_packet(vec![file_id])),
+        Packet::FileDescription(create_file_desc(file_id, "test.txt", 1024)),
+    ];
+
+    let context = RepairContext::new(packets, dir.path().to_path_buf()).unwrap();
+
+    let result = context.purge_par_files(par2_file.to_str().unwrap());
+    assert!(result.is_ok());
+
+    assert!(backup_file.exists());
+    assert!(!par2_file.exists());
+    assert!(!par2_vol.exists());
+    assert!(foreign_par2.exists());
 }
 
 #[test]
@@ -440,10 +480,12 @@ fn test_repair_context_purge_multiple_par2_files() {
     let par2_main = dir.path().join("test.par2");
     let par2_vol1 = dir.path().join("test.vol01+02.par2");
     let par2_vol2 = dir.path().join("test.vol03+04.par2");
+    let foreign_par2 = dir.path().join("other.par2");
 
     fs::write(&par2_main, b"main").unwrap();
     fs::write(&par2_vol1, b"vol1").unwrap();
     fs::write(&par2_vol2, b"vol2").unwrap();
+    fs::write(&foreign_par2, b"foreign").unwrap();
 
     let packets = vec![
         Packet::Main(create_main_packet(vec![file_id])),
@@ -455,10 +497,11 @@ fn test_repair_context_purge_multiple_par2_files() {
     let result = context.purge_files(par2_main.to_str().unwrap());
     assert!(result.is_ok());
 
-    // All PAR2 files should be deleted
+    // All PAR2 files from the same set should be deleted.
     assert!(!par2_main.exists());
     assert!(!par2_vol1.exists());
     assert!(!par2_vol2.exists());
+    assert!(foreign_par2.exists());
 }
 
 #[test]

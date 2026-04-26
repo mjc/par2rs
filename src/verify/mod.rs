@@ -27,7 +27,7 @@ pub use global_table::{
     GlobalBlockEntry, GlobalBlockPosition, GlobalBlockTable, GlobalBlockTableBuilder,
 };
 pub use types::{
-    BlockVerificationResult, FileScanMetadata, FileStatus, FileVerificationResult,
+    BlockSource, BlockVerificationResult, FileScanMetadata, FileStatus, FileVerificationResult,
     VerificationResults,
 };
 pub use utils::extract_file_name;
@@ -52,7 +52,7 @@ use std::path::{Path, PathBuf};
 /// * `config` - Verification configuration (threading, parallel/sequential)
 /// * `reporter` - Progress reporter for verification events
 /// * `base_dir` - Base directory for resolving file paths
-pub fn comprehensive_verify_files<R: VerificationReporter>(
+pub fn comprehensive_verify_files<R: VerificationReporter + ?Sized>(
     packet_set: crate::par2_files::PacketSet,
     config: &VerificationConfig,
     reporter: &R,
@@ -65,7 +65,7 @@ pub fn comprehensive_verify_files<R: VerificationReporter>(
 ///
 /// Extra files are scanned for matching data blocks but do not limit the target
 /// recovery set. This mirrors par2cmdline's optional `[files]` arguments.
-pub fn comprehensive_verify_files_with_extra_files<R: VerificationReporter>(
+pub fn comprehensive_verify_files_with_extra_files<R: VerificationReporter + ?Sized>(
     packet_set: crate::par2_files::PacketSet,
     config: &VerificationConfig,
     reporter: &R,

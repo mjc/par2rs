@@ -51,6 +51,12 @@ pub trait ProgressReporter: Send + Sync {
     /// Report file writing progress
     fn report_writing_progress(&self, file_name: &str, bytes_written: u64, total_bytes: u64);
 
+    /// Report the start of writing recovered data
+    fn report_writing_recovered_data(&self);
+
+    /// Report the number of repaired bytes written to disk
+    fn report_bytes_written(&self, bytes_written: u64);
+
     /// Report repair completion for a file
     fn report_repair_complete(&self, file_name: &str, repaired: bool);
 
@@ -79,12 +85,24 @@ pub trait ProgressReporter: Send + Sync {
 /// Console reporter - standard par2cmdline-style output
 pub struct ConsoleReporter {
     quiet: bool,
+    show_recovery_info: bool,
 }
 
 impl ConsoleReporter {
     /// Create a new console reporter
     pub fn new(quiet: bool) -> Self {
-        Self { quiet }
+        Self {
+            quiet,
+            show_recovery_info: true,
+        }
+    }
+
+    /// Create a new console reporter with control over recovery summary output.
+    pub fn with_recovery_info(quiet: bool, show_recovery_info: bool) -> Self {
+        Self {
+            quiet,
+            show_recovery_info,
+        }
     }
 }
 
@@ -94,13 +112,7 @@ impl ProgressReporter for ConsoleReporter {
             return;
         }
 
-        println!(
-            "There are {} recoverable files and {} recovery blocks.",
-            recovery_set.files.len(),
-            recovery_set.recovery_slices_metadata.len()
-        );
-        println!("The block size used was {} bytes.", recovery_set.slice_size);
-        println!();
+        recovery_set.print_statistics();
     }
 
     fn report_file_opening(&self, file_name: &str) {
@@ -135,18 +147,13 @@ impl ProgressReporter for ConsoleReporter {
             return;
         }
 
-        // Calculate percentage with higher precision: (10000 * progress / total) for 0.01% precision
-        let percentage_100x = ((10000 * bytes_processed) / total_bytes) as u32;
-        let percentage = percentage_100x as f64 / 100.0;
-
-        // Format as "Scanning: "filename": XX.XX%\r" with two decimal places
-        let truncated_name = if file_name.len() > 45 {
-            format!("{}...", &file_name[..42])
-        } else {
-            file_name.to_string()
-        };
-
-        print!("Scanning: \"{}\": {:.2}%\r", truncated_name, percentage);
+        let _ = file_name;
+        let percentage_10x = ((1000 * bytes_processed) / total_bytes) as u32;
+        print!(
+            "Scanning: {}.{}%\r",
+            percentage_10x / 10,
+            percentage_10x % 10
+        );
         std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
     }
 
@@ -158,7 +165,7 @@ impl ProgressReporter for ConsoleReporter {
     }
 
     fn report_recovery_info(&self, available: usize, needed: usize) {
-        if self.quiet {
+        if self.quiet || !self.show_recovery_info {
             return;
         }
 
@@ -199,8 +206,8 @@ impl ProgressReporter for ConsoleReporter {
 
     fn report_repair_header(&self) {
         if !self.quiet {
-            // Don't print a separate header - sabnzbd expects only "Repairing: XX.X%" format
-            // The first progress update will show the repair status
+            println!();
+            println!("Computing Reed Solomon matrix.");
         }
     }
 
@@ -224,16 +231,20 @@ impl ProgressReporter for ConsoleReporter {
         if self.quiet {
             return;
         }
+        print!("Constructing: 0.0%\r");
         println!("Constructing: done.");
     }
 
     fn report_computing_progress(&self, blocks_processed: usize, total_blocks: usize) {
-        if self.quiet {
+        if self.quiet || total_blocks == 0 {
             return;
         }
-        let percentage = (blocks_processed as f64 / total_blocks as f64) * 100.0;
-        // Output format compatible with sabnzbd: "Repairing: XX.X%"
-        print!("\rRepairing: {:.1}%", percentage);
+        let percentage_10x = (blocks_processed * 1000) / total_blocks;
+        print!(
+            "\rRepairing: {}.{}%",
+            percentage_10x / 10,
+            percentage_10x % 10
+        );
         std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
         if blocks_processed == total_blocks {
             println!();
@@ -257,21 +268,32 @@ impl ProgressReporter for ConsoleReporter {
         }
     }
 
+    fn report_writing_recovered_data(&self) {
+        if self.quiet {
+            return;
+        }
+        println!("Writing recovered data");
+    }
+
+    fn report_bytes_written(&self, bytes_written: u64) {
+        if self.quiet {
+            return;
+        }
+        println!("Wrote {} bytes to disk", bytes_written);
+    }
+
     fn report_repair_start(&self, file_name: &str) {
         if self.quiet {
             return;
         }
-        print!("Repairing \"{}\"... ", file_name);
-        std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
+        let _ = file_name;
     }
 
     fn report_repair_complete(&self, _file_name: &str, repaired: bool) {
         if self.quiet {
             return;
         }
-        if repaired {
-            println!("done.");
-        } else {
+        if !repaired {
             println!("already valid.");
         }
     }
@@ -368,6 +390,8 @@ impl ProgressReporter for SilentReporter {
     fn report_computing_progress(&self, _blocks_processed: usize, _total_blocks: usize) {}
     fn report_repair_start(&self, _file_name: &str) {}
     fn report_writing_progress(&self, _file_name: &str, _bytes_written: u64, _total_bytes: u64) {}
+    fn report_writing_recovered_data(&self) {}
+    fn report_bytes_written(&self, _bytes_written: u64) {}
     fn report_repair_complete(&self, _file_name: &str, _repaired: bool) {}
     fn report_repair_failed(&self, _file_name: &str, _error: &str) {}
     fn report_verification_header(&self) {}
