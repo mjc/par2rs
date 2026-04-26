@@ -1093,6 +1093,7 @@ generate_cache_profile() {
     local -a args=(c -q -q "-s$block_size" "-r$REDUNDANCY" "-n$RECOVERY_FILES")
 
     mapfile -d '' -t env_prefix < <(par2rs_tool_env "$CACHE_PROFILE_TOOL")
+    env_prefix+=(PAR2RS_XOR_JIT_DUMP_DIR="$RUN_ROOT/xor-jit-dumps")
     if [[ "$THREADS" != "0" ]]; then
         args+=("-t$THREADS")
     fi
@@ -1123,9 +1124,9 @@ generate_cache_profile() {
 
     echo "Recording data-source samples with perf mem..."
     rm -f "$case_dir"/cache-profile-out*.par2
-    if perf mem record -o "$perf_mem_data" --all-user --call-graph fp -- "${env_prefix[@]}" "$profiling_bin" "${args[@]}" >/dev/null; then
+    if perf mem record -a -o "$perf_mem_data" --call-graph fp -- "${env_prefix[@]}" "$profiling_bin" "${args[@]}" >/dev/null; then
         echo "Generating perf mem report..."
-        perf mem report -i "$perf_mem_data" --stdio --sort symbol,dso,data_src,local_weight > "$perf_mem_report" 2>/dev/null || true
+        perf mem report -i "$perf_mem_data" --stdio --sort symbol,dso,mem,local_weight > "$perf_mem_report" 2>/dev/null || true
         echo "perf mem data:   $perf_mem_data"
         echo "perf mem report: $perf_mem_report"
     else

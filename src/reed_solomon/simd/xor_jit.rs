@@ -45,6 +45,9 @@ struct InputPreloadPlan {
     registers: [Option<u8>; 16],
 }
 
+#[cfg(target_arch = "x86_64")]
+const COMMON_INPUT_REG: u8 = 2;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg(target_arch = "x86_64")]
 struct BitplaneEmittedCode {
@@ -255,8 +258,9 @@ impl XorJitBitplaneScratch {
         }
 
         let emitted = prepared.bitplane_code();
+        let coefficient = prepared.coefficient();
         if let Some(prefetch_ptr) = prefetch {
-            self.load_prefetch(&emitted.prefetch)
+            self.load_prefetch(coefficient, &emitted.prefetch)
                 .expect("load mutable prefetch xor-jit code");
             unsafe {
                 (self.prefetch_function)(
@@ -267,7 +271,7 @@ impl XorJitBitplaneScratch {
                 );
             }
         } else {
-            self.load_body(&emitted.body)
+            self.load_body(coefficient, &emitted.body)
                 .expect("load mutable xor-jit code");
             unsafe {
                 (self.function)(input.as_ptr(), output.as_mut_ptr(), input.len());
@@ -275,7 +279,7 @@ impl XorJitBitplaneScratch {
         }
     }
 
-    fn load_body(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+    fn load_body(&mut self, coefficient: u16, bytes: &[u8]) -> std::io::Result<()> {
         if self.code.capacity() < bytes.len() {
             self.code = exec_mem::MutableExecutableBuffer::new(bytes.len())?;
             register_perf_map_range(
@@ -284,12 +288,18 @@ impl XorJitBitplaneScratch {
                 "par2rs_xor_jit_bitplane_scratch_body",
             );
         }
+        dump_scratch_program("body", coefficient, bytes);
         self.code.overwrite(bytes)?;
+        register_perf_map_range(
+            self.code.as_ptr(),
+            bytes.len(),
+            &format!("par2rs_xor_jit_bitplane_scratch_body_coeff_{coefficient:04x}"),
+        );
         self.function = unsafe { self.code.function() };
         Ok(())
     }
 
-    fn load_prefetch(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+    fn load_prefetch(&mut self, coefficient: u16, bytes: &[u8]) -> std::io::Result<()> {
         if self.prefetch_code.capacity() < bytes.len() {
             self.prefetch_code = exec_mem::MutableExecutableBuffer::new(bytes.len())?;
             register_perf_map_range(
@@ -298,7 +308,13 @@ impl XorJitBitplaneScratch {
                 "par2rs_xor_jit_bitplane_scratch_prefetch",
             );
         }
+        dump_scratch_program("prefetch", coefficient, bytes);
         self.prefetch_code.overwrite(bytes)?;
+        register_perf_map_range(
+            self.prefetch_code.as_ptr(),
+            bytes.len(),
+            &format!("par2rs_xor_jit_bitplane_scratch_prefetch_coeff_{coefficient:04x}"),
+        );
         self.prefetch_function = unsafe { self.prefetch_code.function() };
         Ok(())
     }
@@ -640,6 +656,24 @@ fn dump_generated_program(label: &str, coefficient: Option<u16>, generated: &[u8
 }
 
 #[cfg(target_arch = "x86_64")]
+fn dump_scratch_program(label: &str, coefficient: u16, generated: &[u8]) {
+    let Ok(dir) = std::env::var("PAR2RS_XOR_JIT_DUMP_DIR") else {
+        return;
+    };
+
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+
+    static SCRATCH_DUMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let index = SCRATCH_DUMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::path::Path::new(&dir).join(format!(
+        "{index:06}-scratch-{label}-coeff-{coefficient:04x}.bin"
+    ));
+    let _ = std::fs::write(path, generated);
+}
+
+#[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
 fn identity_lane_program() -> encoder::Program {
     encoder::Program::new()
@@ -738,9 +772,7 @@ fn emit_output_bitplane_pair(
             let low_only_mask = low_mask & !common_mask;
             let high_only_mask = high_mask & !common_mask;
 
-            let program = input_bits(common_mask).fold(program, |program, input_bit| {
-                xor_input_bit_into_outputs(program, preloads, input_bit, [0, 1])
-            });
+            let program = emit_common_input_mask(program, preloads, common_mask, [0, 1]);
             let program = input_bits(low_only_mask).fold(program, |program, input_bit| {
                 xor_input_bit_into_outputs(program, preloads, input_bit, [0, 0])
             });
@@ -753,6 +785,102 @@ fn emit_output_bitplane_pair(
                 .vmovdqa_rsi_offset_from_ymm(bitplane_vector_offset(high_output), 1)
         }
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn emit_common_input_mask(
+    program: encoder::Program,
+    preloads: &InputPreloadPlan,
+    input_mask: u16,
+    outputs: [u8; 2],
+) -> encoder::Program {
+    if input_mask == 0 {
+        return program;
+    }
+
+    let (program, common_reg) =
+        emit_input_mask_accumulator(program, preloads, COMMON_INPUT_REG, input_mask);
+    program
+        .vpxor_ymm(outputs[0], outputs[0], common_reg)
+        .vpxor_ymm(outputs[1], outputs[1], common_reg)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn emit_input_mask_accumulator(
+    program: encoder::Program,
+    preloads: &InputPreloadPlan,
+    accumulator_reg: u8,
+    input_mask: u16,
+) -> (encoder::Program, u8) {
+    debug_assert_ne!(input_mask, 0);
+
+    let lowest_bit = input_mask.trailing_zeros() as usize;
+    let mask_without_lowest = input_mask & !(1 << lowest_bit);
+    let highest_bit =
+        (mask_without_lowest != 0).then(|| 15usize - mask_without_lowest.leading_zeros() as usize);
+
+    let (program, common_reg, remaining_mask) = match highest_bit {
+        Some(highest_bit) => {
+            let remaining_mask = mask_without_lowest & !(1 << highest_bit);
+            match (
+                preloads.register(lowest_bit),
+                preloads.register(highest_bit),
+            ) {
+                (Some(lowest_reg), Some(highest_reg)) => (
+                    program.vpxor_ymm(accumulator_reg, highest_reg, lowest_reg),
+                    accumulator_reg,
+                    remaining_mask,
+                ),
+                (None, Some(highest_reg)) => (
+                    program.vpxor_ymm_rdi_offset(
+                        accumulator_reg,
+                        highest_reg,
+                        bitplane_vector_offset(lowest_bit),
+                    ),
+                    accumulator_reg,
+                    remaining_mask,
+                ),
+                (None, None) => (
+                    program
+                        .vmovdqa_ymm_from_rdi_offset(
+                            accumulator_reg,
+                            bitplane_vector_offset(highest_bit),
+                        )
+                        .vpxor_ymm_rdi_offset(
+                            accumulator_reg,
+                            accumulator_reg,
+                            bitplane_vector_offset(lowest_bit),
+                        ),
+                    accumulator_reg,
+                    remaining_mask,
+                ),
+                (Some(_), None) => unreachable!("input bits 0..2 are always lower than preloads"),
+            }
+        }
+        None => match preloads.register(lowest_bit) {
+            Some(lowest_reg) => (program, lowest_reg, 0),
+            None => (
+                program.vmovdqa_ymm_from_rdi_offset(
+                    accumulator_reg,
+                    bitplane_vector_offset(lowest_bit),
+                ),
+                accumulator_reg,
+                0,
+            ),
+        },
+    };
+
+    let program = input_bits(remaining_mask).fold(program, |program, input_bit| {
+        xor_input_bit_into_outputs(
+            program,
+            preloads,
+            input_bit,
+            [accumulator_reg, accumulator_reg],
+        )
+    });
+    (program, common_reg)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1700,7 +1828,7 @@ mod tests {
 
     #[test]
     fn bitplane_coeff_plan_matches_basis_multiplication() {
-        for coefficient in [0, 1, 2, 3, 5, 0x100b, 0xffff] {
+        for coefficient in [0, 1, 2, 3, 5, 0x100b, 0x678b, 0xffff] {
             let plan = BitplaneCoeffPlan::new(coefficient);
 
             for input_bit in 0..16 {
@@ -1779,7 +1907,7 @@ mod tests {
         let mut prepared = vec![0u8; bitplane::AVX2_BLOCK_BYTES];
         bitplane::prepare_avx2(&mut prepared, &input);
 
-        for coefficient in [0, 1, 2, 3, 5, 0x100b, 0xffff] {
+        for coefficient in [0, 1, 2, 3, 5, 0x100b, 0x678b, 0xffff] {
             let tables = build_split_mul_table(Galois16::new(coefficient));
             let mut expected = vec![0xa5; bitplane::AVX2_BLOCK_BYTES];
             let mut actual = expected.clone();
@@ -1820,7 +1948,7 @@ mod tests {
             initial_output.as_slice().try_into().unwrap(),
         );
 
-        for coefficient in [0, 1, 2, 3, 5, 0x100b, 0xffff] {
+        for coefficient in [0, 1, 2, 3, 5, 0x100b, 0x678b, 0xffff] {
             let tables = build_split_mul_table(Galois16::new(coefficient));
             let mut expected = initial_output.clone();
             let mut actual = [0u8; bitplane::AVX2_BLOCK_BYTES];
@@ -1859,7 +1987,7 @@ mod tests {
             &initial_output,
         );
 
-        for coefficient in [0, 1, 2, 3, 5, 0x100b, 0xffff] {
+        for coefficient in [0, 1, 2, 3, 5, 0x100b, 0x678b, 0xffff] {
             let mut expected = aligned_copy(&prepared_output);
             let mut actual = aligned_copy(&prepared_output);
             let kernel = XorJitGeneratedBitplaneKernel::new(coefficient).expect("bitplane kernel");
