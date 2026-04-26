@@ -381,6 +381,16 @@ pub fn finish_xor_jit_bitplane_chunks(dst: &mut [u8], prepared: &[u8]) {
 fn assert_prepared_chunk_shape(input: &[u8], output: &[u8]) {
     assert_eq!(input.len(), output.len());
     assert_eq!(input.len() % bitplane::AVX2_BLOCK_BYTES, 0);
+    assert_eq!(
+        input.as_ptr() as usize % 32,
+        0,
+        "prepared input must be 32-byte aligned"
+    );
+    assert_eq!(
+        output.as_ptr() as usize % 32,
+        0,
+        "prepared output must be 32-byte aligned"
+    );
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -518,9 +528,9 @@ fn bitplane_identity_multiply_add_body_program() -> encoder::Program {
     (0..16).fold(encoder::Program::new(), |program, output_bit| {
         let offset = bitplane_vector_offset(output_bit);
         program
-            .vmovdqu_ymm_from_rsi_offset(0, offset)
+            .vmovdqa_ymm_from_rsi_offset(0, offset)
             .vpxor_ymm_rdi_offset(0, 0, offset)
-            .vmovdqu_rsi_offset_from_ymm(offset, 0)
+            .vmovdqa_rsi_offset_from_ymm(offset, 0)
     })
 }
 
@@ -547,7 +557,7 @@ impl InputPreloadPlan {
             .enumerate()
             .filter_map(|(input_bit, &register)| register.map(|register| (input_bit, register)))
             .fold(program, |program, (input_bit, register)| {
-                program.vmovdqu_ymm_from_rdi_offset(register, bitplane_vector_offset(input_bit))
+                program.vmovdqa_ymm_from_rdi_offset(register, bitplane_vector_offset(input_bit))
             })
     }
 }
@@ -589,8 +599,8 @@ fn emit_output_bitplane_pair(
             });
 
             program
-                .vmovdqu_rsi_offset_from_ymm(bitplane_vector_offset(low_output), 0)
-                .vmovdqu_rsi_offset_from_ymm(bitplane_vector_offset(high_output), 1)
+                .vmovdqa_rsi_offset_from_ymm(bitplane_vector_offset(low_output), 0)
+                .vmovdqa_rsi_offset_from_ymm(bitplane_vector_offset(high_output), 1)
         }
     }
 }
@@ -608,7 +618,7 @@ fn emit_output_bitplane(
         .fold(program, |program, input_bit| {
             xor_input_bit_into_outputs(program, preloads, input_bit, [0, 0])
         })
-        .vmovdqu_rsi_offset_from_ymm(bitplane_vector_offset(output_bit), 0)
+        .vmovdqa_rsi_offset_from_ymm(bitplane_vector_offset(output_bit), 0)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -623,7 +633,7 @@ fn emit_seeded_output_load(
     let output_offset = bitplane_vector_offset(output_bit);
     let Some(input_bit) = seed_input_bit(input_mask, preloads) else {
         return (
-            program.vmovdqu_ymm_from_rsi_offset(output_reg, output_offset),
+            program.vmovdqa_ymm_from_rsi_offset(output_reg, output_offset),
             input_mask,
         );
     };
@@ -636,7 +646,7 @@ fn emit_seeded_output_load(
         ),
         None => (
             program
-                .vmovdqu_ymm_from_rsi_offset(output_reg, output_offset)
+                .vmovdqa_ymm_from_rsi_offset(output_reg, output_offset)
                 .vpxor_ymm_rdi_offset(output_reg, output_reg, bitplane_vector_offset(input_bit)),
             input_mask,
         ),
@@ -1426,6 +1436,7 @@ pub unsafe fn process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs(
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use super::*;
+    use crate::reed_solomon::aligned::alloc_aligned_vec;
     use crate::reed_solomon::codec::{build_split_mul_table, process_slice_multiply_add};
     use crate::reed_solomon::galois::Galois16;
 
@@ -1689,21 +1700,24 @@ mod tests {
 
         let input = core::array::from_fn(|idx| (idx * 37 + 11) as u8);
         let initial_output = core::array::from_fn(|idx| (idx * 17 + 3) as u8);
-        let mut prepared_input = [0u8; bitplane::AVX2_BLOCK_BYTES];
-        let mut prepared_output = [0u8; bitplane::AVX2_BLOCK_BYTES];
+        let mut prepared_input = alloc_aligned_vec(bitplane::AVX2_BLOCK_BYTES);
+        let mut prepared_output = alloc_aligned_vec(bitplane::AVX2_BLOCK_BYTES);
 
-        bitplane::prepare_avx2_block(&mut prepared_input, &input);
-        bitplane::prepare_avx2_block(&mut prepared_output, &initial_output);
+        bitplane::prepare_avx2_block(prepared_input.as_mut_slice().try_into().unwrap(), &input);
+        bitplane::prepare_avx2_block(
+            prepared_output.as_mut_slice().try_into().unwrap(),
+            &initial_output,
+        );
 
         for coefficient in [0, 1, 2, 3, 5, 0x100b, 0xffff] {
-            let mut expected = prepared_output;
-            let mut actual = prepared_output;
+            let mut expected = prepared_output.clone();
+            let mut actual = prepared_output.clone();
             let kernel = XorJitGeneratedBitplaneKernel::new(coefficient).expect("bitplane kernel");
 
             bitplane::multiply_add_prepared_avx2_block_to_prepared(
-                &prepared_input,
+                prepared_input.as_slice().try_into().unwrap(),
                 coefficient,
-                &mut expected,
+                expected.as_mut_slice().try_into().unwrap(),
             );
             unsafe {
                 kernel.multiply_add(
@@ -1729,9 +1743,9 @@ mod tests {
         let initial_output = (0..bitplane::AVX2_BLOCK_BYTES * 3)
             .map(|idx| (idx * 17 + 3) as u8)
             .collect::<Vec<_>>();
-        let mut prepared_input = vec![0u8; input.len()];
+        let mut prepared_input = alloc_aligned_vec(input.len());
         let mut expected = vec![0u8; input.len()];
-        let mut actual = vec![0u8; input.len()];
+        let mut actual = alloc_aligned_vec(input.len());
         let coefficient = 0x100b;
 
         bitplane::prepare_avx2(&mut prepared_input, &input);
@@ -1767,9 +1781,9 @@ mod tests {
         let initial_output = (0..bitplane::AVX2_BLOCK_BYTES * 3)
             .map(|idx| (idx * 17 + 3) as u8)
             .collect::<Vec<_>>();
-        let mut prepared_input = vec![0u8; input.len()];
+        let mut prepared_input = alloc_aligned_vec(input.len());
         let mut expected = vec![0u8; input.len()];
-        let mut actual = vec![0u8; input.len()];
+        let mut actual = alloc_aligned_vec(input.len());
         let prefetch = vec![0xccu8; input.len()];
         let coefficient = 0x100b;
 
@@ -1810,9 +1824,9 @@ mod tests {
         let initial_output = (0..bitplane::AVX2_BLOCK_BYTES * 2)
             .map(|idx| (idx * 19 + 5) as u8)
             .collect::<Vec<_>>();
-        let mut prepared_input = vec![0u8; input.len()];
+        let mut prepared_input = alloc_aligned_vec(input.len());
         let mut expected = vec![0u8; input.len()];
-        let mut actual = vec![0u8; input.len()];
+        let mut actual = alloc_aligned_vec(input.len());
         let coefficient = 0xbeef;
         let prepared = XorJitPreparedCoeff::new(coefficient);
 
