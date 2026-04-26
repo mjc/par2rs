@@ -2457,4 +2457,41 @@ mod tests {
         assert_eq!(layout.segment_len, 64 * 1024);
         assert_eq!(layout.segment_count, 16);
     }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    #[ignore]
+    fn dump_xor_jit_prepared_staging_for_compare() {
+        let output_path = std::env::var("PAR2RS_XOR_JIT_PREPARED_DUMP_PATH")
+            .expect("PAR2RS_XOR_JIT_PREPARED_DUMP_PATH");
+        let slice_len = std::env::var("PAR2RS_XOR_JIT_PREPARED_SLICE_LEN")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1024 * 1024);
+        let chunk_len = std::env::var("PAR2RS_XOR_JIT_PREPARED_CHUNK_LEN")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(128 * 1024);
+        let input_grouping = std::env::var("PAR2RS_XOR_JIT_PREPARED_INPUT_GROUPING")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(12);
+        let slot = std::env::var("PAR2RS_XOR_JIT_PREPARED_SLOT")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(5);
+        let src_len = std::env::var("PAR2RS_XOR_JIT_PREPARED_SRC_LEN")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(slice_len);
+
+        let layout = XorJitBitplaneLayout::new(slice_len, chunk_len, input_grouping, 1);
+        let mut staging = StagingArea::new(input_grouping, layout.input_storage_len());
+        let input = (0..src_len)
+            .map(|idx| ((idx * 37 + 11) & 0xff) as u8)
+            .collect::<Vec<_>>();
+
+        prepare_xor_jit_bitplane_staging(layout, &mut staging, slot, slice_len, &input);
+        std::fs::write(output_path, &staging.inputs[..]).expect("write prepared staging dump");
+    }
 }

@@ -179,10 +179,7 @@ const XOR_JIT_PREFETCH_STUB_BIAS_BYTES: usize = 128;
 // Keep memory operands in signed-byte displacement range where possible.
 const XOR_JIT_BODY_POINTER_BIAS_BYTES: u32 = 128;
 #[cfg(target_arch = "x86_64")]
-#[cfg(target_arch = "x86_64")]
 const XOR_JIT_TURBO_JIT_SIZE: usize = 4096;
-#[cfg(target_arch = "x86_64")]
-const XOR_JIT_TURBO_CODE_SIZE: usize = 1280;
 #[cfg(target_arch = "x86_64")]
 const XOR_JIT_TURBO_STUB_BIAS_BYTES: usize =
     bitplane::AVX2_BLOCK_BYTES - XOR_JIT_BODY_POINTER_BIAS_BYTES as usize;
@@ -437,8 +434,6 @@ impl XorJitBitplaneScratch {
             self.code.overwrite_at(0, static_prefix)?;
             self.body_static_prefix_loaded = true;
         }
-        self.code
-            .clear_cacheline_bytes_at(static_prefix.len(), XOR_JIT_TURBO_CODE_SIZE)?;
         self.code.set_len_for_overwrite(static_prefix.len())?;
         let dynamic_len = emit_bitplane_chunk_program_dynamic_into(
             plan,
@@ -3750,5 +3745,57 @@ mod tests {
             }
             assert_eq!(actual, expected, "coeff={coeff:#06x}");
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn dump_xor_jit_finished_output_for_compare() {
+        let output_path = std::env::var("PAR2RS_XOR_JIT_FINISH_DUMP_PATH")
+            .expect("PAR2RS_XOR_JIT_FINISH_DUMP_PATH");
+        let slice_len = std::env::var("PAR2RS_XOR_JIT_FINISH_SLICE_LEN")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1024 * 1024);
+        let chunk_len = std::env::var("PAR2RS_XOR_JIT_FINISH_CHUNK_LEN")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(128 * 1024);
+        let num_outputs = std::env::var("PAR2RS_XOR_JIT_FINISH_OUTPUTS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(7);
+        let output_num = std::env::var("PAR2RS_XOR_JIT_FINISH_OUTPUT_NUM")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(3);
+
+        let segment_count = slice_len.div_ceil(chunk_len);
+        let mut prepared = alloc_aligned_vec(segment_count * num_outputs * chunk_len);
+
+        for segment_idx in 0..segment_count {
+            let segment_start = segment_idx * chunk_len;
+            let segment_len = (slice_len - segment_start).min(chunk_len);
+            let input = (0..segment_len)
+                .map(|idx| (((idx + segment_start) * 29 + 7) & 0xff) as u8)
+                .collect::<Vec<_>>();
+            let prepared_offset = segment_idx * num_outputs * chunk_len + output_num * chunk_len;
+            prepare_xor_jit_bitplane_segment(
+                &mut prepared[prepared_offset..prepared_offset + chunk_len],
+                &input,
+            );
+        }
+
+        let mut finished = vec![0u8; slice_len];
+        for segment_idx in 0..segment_count {
+            let segment_start = segment_idx * chunk_len;
+            let segment_len = (slice_len - segment_start).min(chunk_len);
+            let prepared_offset = segment_idx * num_outputs * chunk_len + output_num * chunk_len;
+            finish_xor_jit_bitplane_chunks(
+                &mut finished[segment_start..segment_start + segment_len],
+                &prepared[prepared_offset..prepared_offset + chunk_len],
+            );
+        }
+
+        std::fs::write(output_path, &finished).expect("write finished compare dump");
     }
 }
