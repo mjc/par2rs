@@ -47,6 +47,8 @@ struct InputPreloadPlan {
 
 #[cfg(target_arch = "x86_64")]
 const COMMON_INPUT_REG: u8 = 2;
+#[cfg(target_arch = "x86_64")]
+const XOR_JIT_PREFETCH_STUB_BIAS_BYTES: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg(target_arch = "x86_64")]
@@ -201,6 +203,8 @@ pub struct XorJitBitplaneScratch {
     function: ChunkKernelFn,
     prefetch_code: exec_mem::MutableExecutableBuffer,
     prefetch_function: ChunkKernelPrefetchFn,
+    loaded_body: Option<(u16, usize)>,
+    loaded_prefetch: Option<(u16, usize)>,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -241,6 +245,8 @@ impl XorJitBitplaneScratch {
             function,
             prefetch_code,
             prefetch_function,
+            loaded_body: None,
+            loaded_prefetch: None,
         })
     }
 
@@ -257,8 +263,12 @@ impl XorJitBitplaneScratch {
             return;
         }
 
-        let emitted = prepared.bitplane_code();
         let coefficient = prepared.coefficient();
+        if coefficient == 0 {
+            return;
+        }
+
+        let emitted = prepared.bitplane_code();
         if let Some(prefetch_ptr) = prefetch {
             self.load_prefetch(coefficient, &emitted.prefetch)
                 .expect("load mutable prefetch xor-jit code");
@@ -267,7 +277,7 @@ impl XorJitBitplaneScratch {
                     input.as_ptr(),
                     output.as_mut_ptr(),
                     input.len(),
-                    prefetch_ptr,
+                    xor_jit_biased_prefetch_ptr(prefetch_ptr),
                 );
             }
         } else {
@@ -280,8 +290,13 @@ impl XorJitBitplaneScratch {
     }
 
     fn load_body(&mut self, coefficient: u16, bytes: &[u8]) -> std::io::Result<()> {
+        if self.loaded_body == Some((coefficient, bytes.len())) {
+            return Ok(());
+        }
+
         if self.code.capacity() < bytes.len() {
             self.code = exec_mem::MutableExecutableBuffer::new(bytes.len())?;
+            self.loaded_body = None;
             register_perf_map_range(
                 self.code.as_ptr(),
                 self.code.capacity(),
@@ -298,12 +313,18 @@ impl XorJitBitplaneScratch {
             );
         }
         self.function = unsafe { self.code.function() };
+        self.loaded_body = Some((coefficient, bytes.len()));
         Ok(())
     }
 
     fn load_prefetch(&mut self, coefficient: u16, bytes: &[u8]) -> std::io::Result<()> {
+        if self.loaded_prefetch == Some((coefficient, bytes.len())) {
+            return Ok(());
+        }
+
         if self.prefetch_code.capacity() < bytes.len() {
             self.prefetch_code = exec_mem::MutableExecutableBuffer::new(bytes.len())?;
+            self.loaded_prefetch = None;
             register_perf_map_range(
                 self.prefetch_code.as_ptr(),
                 self.prefetch_code.capacity(),
@@ -320,8 +341,15 @@ impl XorJitBitplaneScratch {
             );
         }
         self.prefetch_function = unsafe { self.prefetch_code.function() };
+        self.loaded_prefetch = Some((coefficient, bytes.len()));
         Ok(())
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn xor_jit_biased_prefetch_ptr(prefetch: *const u8) -> *const u8 {
+    prefetch.wrapping_sub(XOR_JIT_PREFETCH_STUB_BIAS_BYTES)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -786,19 +814,19 @@ fn emit_output_bitplane_pair(
         (mask, 0) => emit_output_bitplane(program, preloads, (low_output, mask)),
         (0, mask) => emit_output_bitplane(program, preloads, (high_output, mask)),
         (low_mask, high_mask) => {
-            let (program, low_mask) =
-                emit_seeded_output_load(program, preloads, 0, low_output, low_mask);
-            let (program, high_mask) =
-                emit_seeded_output_load(program, preloads, 1, high_output, high_mask);
             let common_mask = low_mask & high_mask;
             let low_only_mask = low_mask & !common_mask;
             let high_only_mask = high_mask & !common_mask;
+            let (program, low_mask) =
+                emit_seeded_output_load(program, preloads, 0, low_output, low_only_mask);
+            let (program, high_mask) =
+                emit_seeded_output_load(program, preloads, 1, high_output, high_only_mask);
 
             let program = emit_common_input_mask(program, preloads, common_mask, [0, 1]);
-            let program = input_bits(low_only_mask).fold(program, |program, input_bit| {
+            let program = input_bits(low_mask).fold(program, |program, input_bit| {
                 xor_input_bit_into_outputs(program, preloads, input_bit, [0, 0])
             });
-            let program = input_bits(high_only_mask).fold(program, |program, input_bit| {
+            let program = input_bits(high_mask).fold(program, |program, input_bit| {
                 xor_input_bit_into_outputs(program, preloads, input_bit, [1, 1])
             });
 
@@ -2110,6 +2138,78 @@ mod tests {
         );
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn biased_prefetch_pointer_matches_turbo_stub_bias() {
+        let ptr = 1024usize as *const u8;
+        assert_eq!(
+            xor_jit_biased_prefetch_ptr(ptr) as usize,
+            1024 - XOR_JIT_PREFETCH_STUB_BIAS_BYTES
+        );
+    }
+
+    #[test]
+    fn scratch_zero_coefficient_leaves_output_unloaded_and_unchanged() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let input = alloc_aligned_vec(bitplane::AVX2_BLOCK_BYTES);
+        let mut output = alloc_aligned_vec(bitplane::AVX2_BLOCK_BYTES);
+        output
+            .iter_mut()
+            .enumerate()
+            .for_each(|(idx, byte)| *byte = (idx * 17 + 3) as u8);
+        let expected = output.clone();
+        let prefetch = vec![0xccu8; input.len()];
+        let prepared = XorJitPreparedCoeff::new(0);
+        let mut scratch = XorJitBitplaneScratch::new().expect("scratch");
+
+        scratch.multiply_add_chunks_with_prefetch(&prepared, &input, &mut output, None);
+        scratch.multiply_add_chunks_with_prefetch(
+            &prepared,
+            &input,
+            &mut output,
+            Some(prefetch.as_ptr()),
+        );
+
+        assert_eq!(output, expected);
+        assert_eq!(scratch.loaded_body, None);
+        assert_eq!(scratch.loaded_prefetch, None);
+    }
+
+    #[test]
+    fn scratch_reuses_loaded_code_for_repeated_coefficient_and_mode() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let input = alloc_aligned_vec(bitplane::AVX2_BLOCK_BYTES);
+        let mut output = alloc_aligned_vec(bitplane::AVX2_BLOCK_BYTES);
+        let prefetch = vec![0xccu8; input.len()];
+        let prepared = XorJitPreparedCoeff::new(0x100b);
+        let mut scratch = XorJitBitplaneScratch::new().expect("scratch");
+
+        scratch.multiply_add_chunks_with_prefetch(&prepared, &input, &mut output, None);
+        let loaded_body = scratch.loaded_body;
+        scratch.multiply_add_chunks_with_prefetch(&prepared, &input, &mut output, None);
+        assert_eq!(scratch.loaded_body, loaded_body);
+
+        scratch.multiply_add_chunks_with_prefetch(
+            &prepared,
+            &input,
+            &mut output,
+            Some(prefetch.as_ptr()),
+        );
+        let loaded_prefetch = scratch.loaded_prefetch;
+        scratch.multiply_add_chunks_with_prefetch(
+            &prepared,
+            &input,
+            &mut output,
+            Some(prefetch.as_ptr()),
+        );
+        assert_eq!(scratch.loaded_prefetch, loaded_prefetch);
     }
 
     #[test]
