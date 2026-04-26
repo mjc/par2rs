@@ -17,7 +17,7 @@ use crate::reed_solomon::simd::{
     process_slices_multiply_add_xor_jit_x4,
     process_slices_multiply_add_xor_jit_x4_inputs_x2_outputs,
     process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs, Avx2PreparedCoeff, SimdLevel,
-    XorJitBitplaneKernel, XorJitFlavor, XorJitPreparedCoeff, XorJitPreparedCoeffCache,
+    XorJitBitplaneScratch, XorJitFlavor, XorJitPreparedCoeff, XorJitPreparedCoeffCache,
 };
 
 const DEFAULT_INPUT_GROUPING: usize = 12;
@@ -163,7 +163,7 @@ pub struct CreateCoeff {
     #[cfg(target_arch = "x86_64")]
     pub xor_jit: Option<XorJitPreparedCoeff>,
     #[cfg(target_arch = "x86_64")]
-    pub xor_jit_bitplane: Option<Arc<XorJitBitplaneKernel>>,
+    pub xor_jit_bitplane: Option<XorJitPreparedCoeff>,
 }
 
 pub type Gf16Coeff = CreateCoeff;
@@ -176,30 +176,21 @@ impl CreateCoeff {
         prepare_pshufb: bool,
         prepare_bitplane: bool,
         xor_jit_cache: &mut XorJitPreparedCoeffCache,
-        bitplane_cache: &mut [Option<Arc<XorJitBitplaneKernel>>],
     ) -> Self {
         let split = build_split_mul_table(Galois16::new(value));
         let avx2 = prepare_pshufb.then(|| prepare_avx2_coeff(&split));
-        let xor_jit_bitplane = prepare_bitplane.then(|| {
+        let xor_jit = prepare_bitplane.then(|| {
             let prepared = xor_jit_cache.prepare(value);
-            let bitplane_idx = prepared.coefficient() as usize;
-            if bitplane_cache[bitplane_idx].is_none() {
-                bitplane_cache[bitplane_idx] = Some(Arc::new(
-                    XorJitBitplaneKernel::new(&prepared)
-                        .expect("forced XOR-JIT bitplane kernel compilation failed"),
-                ));
-            }
-            bitplane_cache[bitplane_idx]
-                .as_ref()
-                .expect("bitplane kernel just initialized")
-                .clone()
+            prepared.ensure_bitplane_emitted();
+            prepared
         });
+        let xor_jit_bitplane = xor_jit.clone();
 
         Self {
             value,
             split,
             avx2,
-            xor_jit: None,
+            xor_jit,
             xor_jit_bitplane,
         }
     }
@@ -391,8 +382,6 @@ impl CreateRecoveryBackend {
         let prepare_pshufb = matches!(method, CreateGf16Method::Avx2PshufbPrepared);
         #[cfg(target_arch = "x86_64")]
         let mut xor_jit_cache = XorJitPreparedCoeffCache::new();
-        #[cfg(target_arch = "x86_64")]
-        let mut bitplane_cache = vec![None; u16::MAX as usize + 1];
         let coeffs = recovery_exponents
             .iter()
             .flat_map(|&exponent| {
@@ -403,13 +392,7 @@ impl CreateRecoveryBackend {
             .map(|value| {
                 #[cfg(target_arch = "x86_64")]
                 {
-                    CreateCoeff::new(
-                        value,
-                        prepare_pshufb,
-                        xor_jit_bitplane,
-                        &mut xor_jit_cache,
-                        &mut bitplane_cache,
-                    )
+                    CreateCoeff::new(value, prepare_pshufb, xor_jit_bitplane, &mut xor_jit_cache)
                 }
                 #[cfg(not(target_arch = "x86_64"))]
                 {
@@ -940,6 +923,12 @@ struct WorkerState {
     stop: bool,
 }
 
+#[cfg(target_arch = "x86_64")]
+#[derive(Default)]
+struct WorkerContext {
+    xor_jit_bitplane_scratch: Option<XorJitBitplaneScratch>,
+}
+
 impl CreateWorkerPool {
     fn new(worker_count: usize, max_jobs: usize) -> Self {
         let shared = Arc::new(WorkerShared {
@@ -1014,6 +1003,8 @@ impl Drop for CreateWorkerPool {
 }
 
 fn worker_loop(shared: Arc<WorkerShared>) {
+    #[cfg(target_arch = "x86_64")]
+    let mut context = WorkerContext::default();
     let mut seen_generation = 0u64;
     loop {
         let job = {
@@ -1034,6 +1025,9 @@ fn worker_loop(shared: Arc<WorkerShared>) {
             }
         };
 
+        #[cfg(target_arch = "x86_64")]
+        process_compute_job(job, &mut context);
+        #[cfg(not(target_arch = "x86_64"))]
         process_compute_job(job);
 
         let mut state = shared.state.lock().unwrap();
@@ -1045,10 +1039,44 @@ fn worker_loop(shared: Arc<WorkerShared>) {
     }
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 fn process_compute_job(job: ComputeJob) {
+    for recovery_idx in job.output_start..job.output_end {
+        let output_start = recovery_idx * job.aligned_chunk_len + job.segment_start;
+        let output = unsafe {
+            std::slice::from_raw_parts_mut(
+                (job.output_base as *mut u8).add(output_start),
+                job.segment_len,
+            )
+        };
+        debug_assert!(output.as_ptr() as usize >= job.output_base);
+
+        for batch_idx in 0..job.batch_len {
+            let source_idx = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
+            let coeff = unsafe {
+                &*(job.coeffs as *const CreateCoeff).add(gf_coeff_index(
+                    recovery_idx,
+                    source_idx,
+                    job.source_count,
+                ))
+            };
+            let input_start = batch_idx * job.aligned_chunk_len + job.segment_start;
+            let input = unsafe {
+                std::slice::from_raw_parts(
+                    (job.input_base as *const u8).add(input_start),
+                    job.segment_len,
+                )
+            };
+            process_slice_multiply_add(input, output, &coeff.split);
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn process_compute_job(job: ComputeJob, context: &mut WorkerContext) {
     #[cfg(target_arch = "x86_64")]
     if let Some(flavor) = job.method.xor_jit_flavor() {
-        process_compute_job_xor_jit(job, flavor);
+        process_compute_job_xor_jit(job, flavor, context);
         return;
     }
 
@@ -1062,7 +1090,6 @@ fn process_compute_job(job: ComputeJob) {
         };
         debug_assert!(output.as_ptr() as usize >= job.output_base);
 
-        #[cfg(target_arch = "x86_64")]
         if matches!(job.method, CreateGf16Method::Avx2PshufbPrepared) {
             process_batch_add_avx2_pshufb(job, recovery_idx, output);
             continue;
@@ -1090,9 +1117,9 @@ fn process_compute_job(job: ComputeJob) {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn process_compute_job_xor_jit(job: ComputeJob, flavor: XorJitFlavor) {
+fn process_compute_job_xor_jit(job: ComputeJob, flavor: XorJitFlavor, context: &mut WorkerContext) {
     if job.xor_jit_bitplane {
-        process_compute_job_xor_jit_bitplane(job);
+        process_compute_job_xor_jit_bitplane(job, context);
         return;
     }
 
@@ -1180,7 +1207,7 @@ fn process_compute_job_xor_jit(job: ComputeJob, flavor: XorJitFlavor) {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn process_compute_job_xor_jit_bitplane(job: ComputeJob) {
+fn process_compute_job_xor_jit_bitplane(job: ComputeJob, context: &mut WorkerContext) {
     let layout = xor_jit_bitplane_job_layout(job);
     let first_segment_idx = job.segment_start / layout.segment_len;
     debug_assert_eq!(job.segment_start, layout.segment_start(first_segment_idx));
@@ -1188,22 +1215,28 @@ fn process_compute_job_xor_jit_bitplane(job: ComputeJob) {
         let segment_idx = first_segment_idx + segment_offset;
         let segment_start = layout.segment_start(segment_idx);
         let segment_len = layout.segment_len_for(segment_idx, job.compute_len);
-        process_compute_job_xor_jit_bitplane_segment(ComputeJob {
-            segment_start,
-            segment_len,
-            segment_count: 1,
-            ..job
-        });
+        process_compute_job_xor_jit_bitplane_segment(
+            ComputeJob {
+                segment_start,
+                segment_len,
+                segment_count: 1,
+                ..job
+            },
+            context,
+        );
     }
 }
 
 #[cfg(target_arch = "x86_64")]
-fn process_compute_job_xor_jit_bitplane_segment(job: ComputeJob) {
+fn process_compute_job_xor_jit_bitplane_segment(job: ComputeJob, context: &mut WorkerContext) {
     let layout = xor_jit_bitplane_job_layout(job);
     let segment_idx = job.segment_start / layout.segment_len;
     debug_assert_eq!(job.segment_start, layout.segment_start(segment_idx));
     debug_assert!(job.segment_start.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
     debug_assert!(job.segment_len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
+    let scratch = context
+        .xor_jit_bitplane_scratch
+        .get_or_insert_with(|| XorJitBitplaneScratch::new().expect("allocate xor-jit scratch"));
     for recovery_idx in job.output_start..job.output_end {
         let output_start = layout.output_offset(segment_idx, recovery_idx);
         let output = unsafe {
@@ -1219,7 +1252,8 @@ fn process_compute_job_xor_jit_bitplane_segment(job: ComputeJob) {
             let input = xor_jit_bitplane_input_segment(job, layout, segment_idx, batch_idx);
 
             match &coeff.xor_jit_bitplane {
-                Some(kernel) => kernel.multiply_add_chunks_with_prefetch(
+                Some(prepared) => scratch.multiply_add_chunks_with_prefetch(
+                    prepared,
                     input,
                     output,
                     xor_jit_bitplane_prefetch_ptr(
@@ -2016,7 +2050,7 @@ mod tests {
             return;
         }
 
-        assert!(backend.coeffs.iter().all(|coeff| coeff.xor_jit.is_none()));
+        assert!(backend.coeffs.iter().all(|coeff| coeff.xor_jit.is_some()));
         assert!(backend
             .coeffs
             .iter()

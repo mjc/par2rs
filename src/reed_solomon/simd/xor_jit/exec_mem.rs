@@ -11,6 +11,12 @@ pub struct ExecutableBuffer {
     protection: Protection,
 }
 
+pub struct MutableExecutableBuffer {
+    ptr: NonNull<u8>,
+    capacity: usize,
+    len: usize,
+}
+
 impl ExecutableBuffer {
     pub fn new(capacity: usize) -> io::Result<Self> {
         let capacity = round_to_page_size(capacity.max(1));
@@ -67,6 +73,53 @@ impl ExecutableBuffer {
     }
 }
 
+impl MutableExecutableBuffer {
+    pub fn new(capacity: usize) -> io::Result<Self> {
+        let capacity = round_to_page_size(capacity.max(1));
+        Ok(Self {
+            ptr: map_writable_executable(capacity)?,
+            capacity,
+            len: 0,
+        })
+    }
+
+    pub fn overwrite(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if bytes.len() > self.capacity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "generated code exceeds mutable executable buffer capacity",
+            ));
+        }
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.ptr.as_ptr(), bytes.len());
+        }
+        self.len = bytes.len();
+        Ok(())
+    }
+
+    pub unsafe fn function<F: Copy>(&self) -> F {
+        debug_assert!(self.len > 0);
+        function_from_ptr(self.ptr)
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn as_ptr(&self) -> *const u8 {
+        self.ptr.as_ptr()
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Protection {
     Writable,
@@ -83,6 +136,14 @@ impl Protection {
 }
 
 impl Drop for ExecutableBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.ptr.as_ptr().cast::<c_void>(), self.capacity);
+        }
+    }
+}
+
+impl Drop for MutableExecutableBuffer {
     fn drop(&mut self) {
         unsafe {
             libc::munmap(self.ptr.as_ptr().cast::<c_void>(), self.capacity);
@@ -108,6 +169,26 @@ fn map_writable(capacity: usize) -> io::Result<NonNull<u8>> {
 
     NonNull::new(ptr.cast::<u8>())
         .ok_or_else(|| io::Error::other("mmap returned null executable buffer"))
+}
+
+fn map_writable_executable(capacity: usize) -> io::Result<NonNull<u8>> {
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            capacity,
+            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+
+    if ptr == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+
+    NonNull::new(ptr.cast::<u8>())
+        .ok_or_else(|| io::Error::other("mmap returned null mutable executable buffer"))
 }
 
 fn set_protection(ptr: NonNull<u8>, capacity: usize, protection: Protection) -> io::Result<()> {

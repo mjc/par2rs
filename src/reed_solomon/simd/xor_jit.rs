@@ -27,6 +27,7 @@ const GF16_REDUCTION: u16 = 0x100b;
 pub struct XorJitPreparedCoeff {
     coefficient: u16,
     bitplane_plan: Arc<OnceLock<BitplaneCoeffPlan>>,
+    bitplane_code: Arc<OnceLock<BitplaneEmittedCode>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +45,13 @@ struct InputPreloadPlan {
     registers: [Option<u8>; 16],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(target_arch = "x86_64")]
+struct BitplaneEmittedCode {
+    body: Box<[u8]>,
+    prefetch: Box<[u8]>,
+}
+
 #[cfg(target_arch = "x86_64")]
 impl XorJitPreparedCoeff {
     #[inline]
@@ -51,6 +59,7 @@ impl XorJitPreparedCoeff {
         Self {
             coefficient,
             bitplane_plan: Arc::new(OnceLock::new()),
+            bitplane_code: Arc::new(OnceLock::new()),
         }
     }
 
@@ -59,9 +68,18 @@ impl XorJitPreparedCoeff {
             .get_or_init(|| BitplaneCoeffPlan::new(self.coefficient))
     }
 
+    fn bitplane_code(&self) -> &BitplaneEmittedCode {
+        self.bitplane_code
+            .get_or_init(|| BitplaneEmittedCode::from_plan(self.bitplane_plan()))
+    }
+
     #[inline]
     pub fn coefficient(&self) -> u16 {
         self.coefficient
+    }
+
+    pub fn ensure_bitplane_emitted(&self) {
+        let _ = self.bitplane_code();
     }
 }
 
@@ -172,6 +190,98 @@ struct XorJitGeneratedBitplaneKernel {
 #[cfg_attr(not(test), allow(dead_code))]
 pub struct XorJitBitplaneKernel {
     kernel: XorJitGeneratedBitplaneKernel,
+}
+
+#[cfg(target_arch = "x86_64")]
+pub struct XorJitBitplaneScratch {
+    code: exec_mem::MutableExecutableBuffer,
+    function: ChunkKernelFn,
+    prefetch_code: exec_mem::MutableExecutableBuffer,
+    prefetch_function: ChunkKernelPrefetchFn,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl BitplaneEmittedCode {
+    fn from_plan(plan: &BitplaneCoeffPlan) -> Self {
+        Self {
+            body: emit_chunk_program_bytes(bitplane_multiply_add_body_program(plan), false)
+                .into_boxed_slice(),
+            prefetch: emit_chunk_program_bytes(bitplane_multiply_add_body_program(plan), true)
+                .into_boxed_slice(),
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl XorJitBitplaneScratch {
+    pub fn new() -> std::io::Result<Self> {
+        let mut code = exec_mem::MutableExecutableBuffer::new(1024)?;
+        code.overwrite(&[0xc5, 0xf8, 0x77, 0xc3])?;
+        let function = unsafe { code.function() };
+
+        let mut prefetch_code = exec_mem::MutableExecutableBuffer::new(1024)?;
+        prefetch_code.overwrite(&[0xc5, 0xf8, 0x77, 0xc3])?;
+        let prefetch_function = unsafe { prefetch_code.function() };
+
+        Ok(Self {
+            code,
+            function,
+            prefetch_code,
+            prefetch_function,
+        })
+    }
+
+    pub fn multiply_add_chunks_with_prefetch(
+        &mut self,
+        prepared: &XorJitPreparedCoeff,
+        input: &[u8],
+        output: &mut [u8],
+        prefetch: Option<*const u8>,
+    ) {
+        assert_prepared_chunk_shape(input, output);
+
+        if input.is_empty() {
+            return;
+        }
+
+        let emitted = prepared.bitplane_code();
+        if let Some(prefetch_ptr) = prefetch {
+            self.load_prefetch(&emitted.prefetch)
+                .expect("load mutable prefetch xor-jit code");
+            unsafe {
+                (self.prefetch_function)(
+                    input.as_ptr(),
+                    output.as_mut_ptr(),
+                    input.len(),
+                    prefetch_ptr,
+                );
+            }
+        } else {
+            self.load_body(&emitted.body)
+                .expect("load mutable xor-jit code");
+            unsafe {
+                (self.function)(input.as_ptr(), output.as_mut_ptr(), input.len());
+            }
+        }
+    }
+
+    fn load_body(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        if self.code.capacity() < bytes.len() {
+            self.code = exec_mem::MutableExecutableBuffer::new(bytes.len())?;
+        }
+        self.code.overwrite(bytes)?;
+        self.function = unsafe { self.code.function() };
+        Ok(())
+    }
+
+    fn load_prefetch(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        if self.prefetch_code.capacity() < bytes.len() {
+            self.prefetch_code = exec_mem::MutableExecutableBuffer::new(bytes.len())?;
+        }
+        self.prefetch_code.overwrite(bytes)?;
+        self.prefetch_function = unsafe { self.prefetch_code.function() };
+        Ok(())
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -417,7 +527,7 @@ fn compile_chunk_program(
     label: &str,
     coefficient: Option<u16>,
 ) -> std::io::Result<(exec_mem::ExecutableBuffer, ChunkKernelFn)> {
-    let generated = program.finish_block_loop(bitplane::AVX2_BLOCK_BYTES as u32);
+    let generated = emit_chunk_program_bytes(program, false);
     dump_generated_program(label, coefficient, &generated);
     let mut code = exec_mem::ExecutableBuffer::new(generated.len())?;
     code.write(&generated)?;
@@ -434,7 +544,7 @@ fn compile_chunk_prefetch_program(
     label: &str,
     coefficient: Option<u16>,
 ) -> std::io::Result<(exec_mem::ExecutableBuffer, ChunkKernelPrefetchFn)> {
-    let generated = program.finish_block_loop_with_prefetch(bitplane::AVX2_BLOCK_BYTES as u32, 256);
+    let generated = emit_chunk_program_bytes(program, true);
     dump_generated_program(label, coefficient, &generated);
     let mut code = exec_mem::ExecutableBuffer::new(generated.len())?;
     code.write(&generated)?;
@@ -442,6 +552,15 @@ fn compile_chunk_prefetch_program(
     let function = unsafe { code.function() };
 
     Ok((code, function))
+}
+
+#[cfg(target_arch = "x86_64")]
+fn emit_chunk_program_bytes(program: encoder::Program, prefetch: bool) -> Vec<u8> {
+    if prefetch {
+        program.finish_block_loop_with_prefetch(bitplane::AVX2_BLOCK_BYTES as u32, 256)
+    } else {
+        program.finish_block_loop(bitplane::AVX2_BLOCK_BYTES as u32)
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1710,8 +1829,8 @@ mod tests {
         );
 
         for coefficient in [0, 1, 2, 3, 5, 0x100b, 0xffff] {
-            let mut expected = prepared_output.clone();
-            let mut actual = prepared_output.clone();
+            let mut expected = aligned_copy(&prepared_output);
+            let mut actual = aligned_copy(&prepared_output);
             let kernel = XorJitGeneratedBitplaneKernel::new(coefficient).expect("bitplane kernel");
 
             bitplane::multiply_add_prepared_avx2_block_to_prepared(
@@ -1943,6 +2062,12 @@ mod tests {
     ) -> u32 {
         let offset = bitplane::mask_offset(half, bit_from_msb, group);
         u32::from_le_bytes(prepared[offset..offset + 4].try_into().unwrap())
+    }
+
+    fn aligned_copy(src: &[u8]) -> Vec<u8> {
+        let mut dst = alloc_aligned_vec(src.len());
+        dst.copy_from_slice(src);
+        dst
     }
 
     #[test]
