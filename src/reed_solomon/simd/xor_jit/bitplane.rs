@@ -116,36 +116,49 @@ unsafe fn prepare_avx2_block_x86_64_avx2(
 
     #[inline]
     #[target_feature(enable = "avx2")]
-    unsafe fn write_plane_masks(dst: *mut u8, mut bytes: __m256i, half: ByteHalf, group: usize) {
-        for bit_from_msb in 0..BITS_PER_BYTE {
-            let offset = Plane::new(half, bit_from_msb, group).offset();
-            let mask = _mm256_movemask_epi8(bytes) as u32;
-            std::ptr::write_unaligned(dst.add(offset).cast::<u32>(), mask);
+    unsafe fn prep_split(bytes_a: __m256i, bytes_b: __m256i) -> (__m256i, __m256i) {
+        let tmp1 = _mm256_shuffle_epi8(
+            bytes_a,
+            _mm256_set_epi32(
+                0x0f0d0b09, 0x07050301, 0x0e0c0a08, 0x06040200, 0x0f0d0b09, 0x07050301, 0x0e0c0a08,
+                0x06040200,
+            ),
+        );
+        let tmp2 = _mm256_shuffle_epi8(
+            bytes_b,
+            _mm256_set_epi32(
+                0x0e0c0a08, 0x06040200, 0x0f0d0b09, 0x07050301, 0x0e0c0a08, 0x06040200, 0x0f0d0b09,
+                0x07050301,
+            ),
+        );
+        let high = _mm256_permute4x64_epi64::<0x8d>(_mm256_blend_epi32(tmp1, tmp2, 0x33));
+        let low = _mm256_permute4x64_epi64::<0xd8>(_mm256_blend_epi32(tmp2, tmp1, 0x33));
+        (low, high)
+    }
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    unsafe fn prep_write(dst: *mut u32, mut bytes: __m256i) {
+        std::ptr::write_unaligned(dst, _mm256_movemask_epi8(bytes) as u32);
+        for bit in 1..BITS_PER_BYTE {
             bytes = _mm256_add_epi8(bytes, bytes);
+            std::ptr::write_unaligned(
+                dst.add(bit * GROUPS_PER_BLOCK),
+                _mm256_movemask_epi8(bytes) as u32,
+            );
         }
     }
 
-    let shuffle_a = _mm256_set_epi32(
-        0x0f0d0b09, 0x07050301, 0x0e0c0a08, 0x06040200, 0x0f0d0b09, 0x07050301, 0x0e0c0a08,
-        0x06040200,
-    );
-    let shuffle_b = _mm256_set_epi32(
-        0x0e0c0a08, 0x06040200, 0x0f0d0b09, 0x07050301, 0x0e0c0a08, 0x06040200, 0x0f0d0b09,
-        0x07050301,
-    );
-
+    let src_ptr = src.as_ptr();
+    let dst_ptr = dst.as_mut_ptr().cast::<u32>();
     for group in 0..GROUPS_PER_BLOCK {
-        let src = src.as_ptr().add(group * WORDS_PER_GROUP * 2);
-        let a = _mm256_loadu_si256(src.cast::<__m256i>());
-        let b = _mm256_loadu_si256(src.add(32).cast::<__m256i>());
-        let a = _mm256_shuffle_epi8(a, shuffle_a);
-        let b = _mm256_shuffle_epi8(b, shuffle_b);
+        let src_offset = group * WORDS_PER_GROUP * 2;
+        let bytes_a = _mm256_loadu_si256(src_ptr.add(src_offset).cast::<__m256i>());
+        let bytes_b = _mm256_loadu_si256(src_ptr.add(src_offset + 32).cast::<__m256i>());
+        let (low, high) = prep_split(bytes_a, bytes_b);
 
-        let low = _mm256_permute4x64_epi64::<0xd8>(_mm256_blend_epi32(b, a, 0x33));
-        let high = _mm256_permute4x64_epi64::<0x8d>(_mm256_blend_epi32(a, b, 0x33));
-
-        write_plane_masks(dst.as_mut_ptr(), high, ByteHalf::High, group);
-        write_plane_masks(dst.as_mut_ptr(), low, ByteHalf::Low, group);
+        prep_write(dst_ptr.add(group), high);
+        prep_write(dst_ptr.add(64 + group), low);
     }
 }
 

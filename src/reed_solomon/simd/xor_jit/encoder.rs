@@ -52,6 +52,11 @@ impl<'a, S: ByteSink> ProgramSink<'a, S> {
         Self { encoded }
     }
 
+    pub fn emit_bytes(self, bytes: &[u8]) -> Self {
+        self.encoded.extend_from_slice(bytes);
+        self
+    }
+
     pub fn vmovdqa_ymm_from_rdi_offset(self, reg: u8, offset: i32) -> Self {
         encode_vmovdqa_load_into(
             self.encoded,
@@ -795,7 +800,14 @@ impl Instruction {
     fn encoded_len(&self) -> usize {
         match self {
             Self::MovEaxImm32(_) => 5,
-            Self::AddRegImm32 { .. } | Self::SubRegImm32 { .. } => 7,
+            Self::AddRegImm32 { reg, .. } => {
+                if *reg == GpReg::Rax {
+                    6
+                } else {
+                    7
+                }
+            }
+            Self::SubRegImm32 { .. } => 7,
             Self::CmpRegReg { .. } => 3,
             Self::PrefetchT1 { memory } => 2 + memory.encoded_len(),
             Self::Vmovdqa { src, .. } => {
@@ -831,7 +843,7 @@ impl Instruction {
                 encoded.push(0xb8);
                 encoded.extend_from_slice(&value.to_le_bytes());
             }
-            Self::AddRegImm32 { reg, value } => encode_reg_imm32(encoded, 0x81, 0, reg, value),
+            Self::AddRegImm32 { reg, value } => encode_add_reg_imm32(encoded, reg, value),
             Self::SubRegImm32 { reg, value } => encode_reg_imm32(encoded, 0x81, 5, reg, value),
             Self::CmpRegReg { lhs, rhs } => {
                 encoded.push(0x48);
@@ -1141,5 +1153,16 @@ fn encode_reg_imm32(
     encoded.push(0x48);
     encoded.push(opcode);
     encoded.push(modrm_register(extension, reg.code()));
+    encoded.extend_from_slice(&value.to_le_bytes());
+}
+
+fn encode_add_reg_imm32(encoded: &mut impl ByteSink, reg: GpReg, value: u32) {
+    encoded.push(0x48);
+    if reg == GpReg::Rax {
+        encoded.push(0x05);
+    } else {
+        encoded.push(0x81);
+        encoded.push(modrm_register(0, reg.code()));
+    }
     encoded.extend_from_slice(&value.to_le_bytes());
 }

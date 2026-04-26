@@ -48,6 +48,7 @@ struct TurboOutputPairPlan {
     second_seed: Option<usize>,
     first_remaining_mask: u16,
     second_remaining_mask: u16,
+    deps: TurboDepPlan,
     common: TurboCommonPlan,
 }
 
@@ -58,6 +59,36 @@ struct TurboCommonPlan {
     lowest: Option<usize>,
     highest: Option<usize>,
     eliminated_mask: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+struct TurboDepPlan {
+    mem_deps: u8,
+    dep1_low: u8,
+    dep1_high: u8,
+    dep2_low: u8,
+    dep2_high: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(target_arch = "x86_64")]
+struct TurboMemDepOp {
+    target_reg: u8,
+    physical_bit: u8,
+}
+
+#[derive(Debug, Clone)]
+#[cfg(target_arch = "x86_64")]
+struct TurboDepTables {
+    mem_ops: [[TurboMemDepOp; 3]; 64],
+    mem_len: [u8; 64],
+    nums: [[u8; 8]; 128],
+    rmask: [[u8; 8]; 128],
+    mem_bytes: Vec<Box<[u8]>>,
+    main_bytes_low: Vec<Box<[u8]>>,
+    main_bytes_high: Vec<Box<[u8]>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,9 +179,10 @@ const XOR_JIT_PREFETCH_STUB_BIAS_BYTES: usize = 128;
 // Keep memory operands in signed-byte displacement range where possible.
 const XOR_JIT_BODY_POINTER_BIAS_BYTES: u32 = 128;
 #[cfg(target_arch = "x86_64")]
-const XOR_JIT_TURBO_CODE_SIZE: usize = 1280;
 #[cfg(target_arch = "x86_64")]
 const XOR_JIT_TURBO_JIT_SIZE: usize = 4096;
+#[cfg(target_arch = "x86_64")]
+const XOR_JIT_TURBO_CODE_SIZE: usize = 1280;
 #[cfg(target_arch = "x86_64")]
 const XOR_JIT_TURBO_STUB_BIAS_BYTES: usize =
     bitplane::AVX2_BLOCK_BYTES - XOR_JIT_BODY_POINTER_BIAS_BYTES as usize;
@@ -685,6 +717,56 @@ pub fn finish_xor_jit_bitplane_chunks(dst: &mut [u8], prepared: &[u8]) {
 }
 
 #[cfg(target_arch = "x86_64")]
+pub fn xor_prepared_bitplane_chunks(
+    input: &[u8],
+    output: &mut [u8],
+    prefetch: Option<(*const u8, BitplaneAddPrefetchKind)>,
+) {
+    assert_prepared_chunk_shape(input, output);
+
+    if input.is_empty() {
+        return;
+    }
+
+    unsafe {
+        xor_prepared_bitplane_chunks_avx2_one(
+            input.as_ptr(),
+            output.as_mut_ptr(),
+            input.len(),
+            prefetch,
+        );
+        xor_jit_zeroupper();
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn xor_prepared_bitplane_multi_chunks(
+    inputs: &[*const u8],
+    len: usize,
+    output: &mut [u8],
+    prefetch_in: Option<*const u8>,
+    prefetch_out: Option<*const u8>,
+) {
+    assert_eq!(output.len(), len);
+    assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
+    assert_eq!(output.as_ptr() as usize % 32, 0);
+
+    if inputs.is_empty() || len == 0 {
+        return;
+    }
+
+    unsafe {
+        xor_prepared_bitplane_multi_chunks_avx2(
+            inputs,
+            output.as_mut_ptr(),
+            len,
+            prefetch_in,
+            prefetch_out,
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
 fn assert_prepared_chunk_shape(input: &[u8], output: &[u8]) {
     assert_eq!(input.len(), output.len());
@@ -803,11 +885,12 @@ fn emit_chunk_program_bytes(program: encoder::Program, prefetch: bool) -> Vec<u8
 
 #[cfg(target_arch = "x86_64")]
 fn emit_bitplane_chunk_program_bytes(plan: &BitplaneCoeffPlan, prefetch: bool) -> Vec<u8> {
-    bitplane_multiply_add_dynamic_program(plan).finish_block_loop_with_static_prefix_no_vzeroupper(
-        xor_jit_body_static_prefix(),
-        bitplane::AVX2_BLOCK_BYTES as u32,
-        prefetch.then_some(256),
-    )
+    let static_prefix = xor_jit_body_static_prefix();
+    let mut encoded = Vec::with_capacity(static_prefix.len() + 1024);
+    encoded.extend_from_slice(static_prefix);
+    let _ =
+        emit_bitplane_chunk_program_dynamic_into(plan, prefetch, static_prefix.len(), &mut encoded);
+    encoded
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -817,8 +900,6 @@ fn emit_bitplane_chunk_program_dynamic_into<S: encoder::ByteSink>(
     static_prefix_len: usize,
     encoded: &mut S,
 ) -> usize {
-    let preloads = InputPreloadPlan::new(plan);
-
     encoder::encode_block_loop_dynamic_after_static_prefix_no_vzeroupper_into(
         static_prefix_len,
         bitplane::AVX2_BLOCK_BYTES as u32,
@@ -826,7 +907,7 @@ fn emit_bitplane_chunk_program_dynamic_into<S: encoder::ByteSink>(
         encoded,
         |program| {
             (0..8).fold(program, |program, bit| {
-                emit_output_bitplane_pair(program, plan, &preloads, bit)
+                emit_output_pair_turbo_sink(program, plan.turbo_pair(bit))
             })
         },
     )
@@ -979,7 +1060,7 @@ fn bitplane_multiply_add_body_program(plan: &BitplaneCoeffPlan) -> encoder::Prog
 }
 
 #[cfg(target_arch = "x86_64")]
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 fn bitplane_multiply_add_dynamic_program(plan: &BitplaneCoeffPlan) -> encoder::Program {
     let preloads = InputPreloadPlan::new(plan);
     (0..8).fold(encoder::Program::new(), |program, bit| {
@@ -1072,6 +1153,133 @@ fn physical_bitplane_vector_offset(physical_bit: usize) -> i32 {
 }
 
 #[cfg(target_arch = "x86_64")]
+fn turbo_dep_tables() -> &'static TurboDepTables {
+    static TABLES: OnceLock<TurboDepTables> = OnceLock::new();
+    TABLES.get_or_init(build_turbo_dep_tables)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn build_turbo_dep_tables() -> TurboDepTables {
+    let mut mem_ops = [[TurboMemDepOp {
+        target_reg: 0xff,
+        physical_bit: 0xff,
+    }; 3]; 64];
+    let mut mem_len = [0u8; 64];
+    for (i, ops) in mem_ops.iter_mut().enumerate() {
+        let mut interleaved =
+            (i & 1) | ((i & 8) >> 2) | ((i & 2) << 1) | ((i & 16) >> 1) | ((i & 4) << 2) | (i & 32);
+        let mut len = 0usize;
+        for physical_bit in 0..3u8 {
+            let mask = (interleaved & 0b11) as u8;
+            if mask != 0 {
+                ops[len] = TurboMemDepOp {
+                    target_reg: mask - 1,
+                    physical_bit,
+                };
+                len += 1;
+            }
+            interleaved >>= 2;
+        }
+        mem_len[i] = len as u8;
+    }
+
+    let mut nums = [[0xffu8; 8]; 128];
+    let mut rmask = [[0u8; 8]; 128];
+    for dep in 0..128usize {
+        let mut pos = 0usize;
+        for bit in 0..8usize {
+            if dep & (1 << bit) != 0 {
+                nums[dep][pos] = bit as u8;
+                rmask[dep][bit] = (1 << 3) + 1;
+                pos += 1;
+            }
+        }
+    }
+
+    let mem_bytes = (0..64usize)
+        .map(|dep| {
+            turbo_mem_template_bytes(&mem_ops[dep], mem_len[dep] as usize).into_boxed_slice()
+        })
+        .collect::<Vec<_>>();
+    let main_bytes_low = (0..(128usize * 128))
+        .map(|key| {
+            let dep1 = (key >> 7) as u8;
+            let dep2 = (key & 0x7f) as u8;
+            turbo_main_template_bytes(&nums, &rmask, dep1, dep2, false).into_boxed_slice()
+        })
+        .collect::<Vec<_>>();
+    let main_bytes_high = (0..(64usize * 64))
+        .map(|key| {
+            let dep1 = (key >> 6) as u8;
+            let dep2 = (key & 0x3f) as u8;
+            turbo_main_template_bytes(&nums, &rmask, dep1, dep2, true).into_boxed_slice()
+        })
+        .collect::<Vec<_>>();
+
+    TurboDepTables {
+        mem_ops,
+        mem_len,
+        nums,
+        rmask,
+        mem_bytes,
+        main_bytes_low,
+        main_bytes_high,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn turbo_mem_template_bytes(ops: &[TurboMemDepOp; 3], len: usize) -> Vec<u8> {
+    let mut program = encoder::Program::new();
+    for op in &ops[..len] {
+        program = program.vpxor_ymm_rax_offset(
+            op.target_reg,
+            op.target_reg,
+            physical_bitplane_vector_offset(op.physical_bit as usize),
+        );
+    }
+    program.finish()
+}
+
+#[cfg(target_arch = "x86_64")]
+fn turbo_main_template_bytes(
+    nums: &[[u8; 8]; 128],
+    rmask: &[[u8; 8]; 128],
+    dep1: u8,
+    dep2: u8,
+    high: bool,
+) -> Vec<u8> {
+    let dep = (dep1 | dep2) as usize;
+    let reg_base = if high { 10 } else { 3 };
+    nums[dep]
+        .iter()
+        .copied()
+        .take_while(|&bit| bit != 0xff)
+        .fold(encoder::Program::new(), |program, bit| {
+            let reg_code =
+                rmask[dep1 as usize][bit as usize] | (rmask[dep2 as usize][bit as usize] << 1);
+            let target_reg = match reg_code {
+                9 => 0,
+                18 => 1,
+                27 => COMMON_INPUT_REG,
+                _ => unreachable!("unexpected turbo dep register code {reg_code}"),
+            };
+            program.vpxor_ymm(target_reg, reg_base + bit, target_reg)
+        })
+        .finish()
+}
+
+#[cfg(target_arch = "x86_64")]
+fn turbo_dep_plan(first_remaining_mask: u16, second_remaining_mask: u16) -> TurboDepPlan {
+    TurboDepPlan {
+        mem_deps: ((first_remaining_mask & 0x7) | ((second_remaining_mask & 0x7) << 3)) as u8,
+        dep1_low: ((first_remaining_mask >> 3) & 0x7f) as u8,
+        dep1_high: ((first_remaining_mask >> 10) & 0x3f) as u8,
+        dep2_low: ((second_remaining_mask >> 3) & 0x7f) as u8,
+        dep2_high: ((second_remaining_mask >> 10) & 0x3f) as u8,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
 fn turbo_output_pair_plan(output_masks: &[u16; 16], physical_pair: usize) -> TurboOutputPairPlan {
     let first_output = turbo_physical_word_bit(physical_pair * 2);
@@ -1092,6 +1300,7 @@ fn turbo_output_pair_plan(output_masks: &[u16; 16], physical_pair: usize) -> Tur
     if let Some(seed) = second_seed {
         second_mask &= !physical_bit_mask(seed);
     }
+    let deps = turbo_dep_plan(first_mask, second_mask);
 
     TurboOutputPairPlan {
         first_output,
@@ -1100,6 +1309,7 @@ fn turbo_output_pair_plan(output_masks: &[u16; 16], physical_pair: usize) -> Tur
         second_seed,
         first_remaining_mask: first_mask,
         second_remaining_mask: second_mask,
+        deps,
         common,
     }
 }
@@ -1135,15 +1345,12 @@ fn emit_output_pair_turbo_plan<P: XorJitBitplaneProgram>(
     let program = emit_turbo_seeded_output_load(program, 0, pair.first_output, pair.first_seed);
     let program = emit_turbo_seeded_output_load(program, 1, pair.second_output, pair.second_seed);
 
-    let (program, common_reg, common_elim) =
+    let (program, common_reg, common_active) =
         emit_turbo_common_accumulator(program, COMMON_INPUT_REG, pair.common);
-
-    let program = emit_turbo_remaining_physical_deps(
-        program,
-        pair.first_remaining_mask,
-        pair.second_remaining_mask,
-    );
-    let program = if common_elim {
+    let program = emit_turbo_mem_deps(program, pair.deps.mem_deps);
+    let program = emit_turbo_main_deps(program, pair.deps.dep1_low, pair.deps.dep2_low, false);
+    let program = emit_turbo_main_deps(program, pair.deps.dep1_high, pair.deps.dep2_high, true);
+    let program = if common_active {
         program
             .vpxor_ymm(0, common_reg, 0)
             .vpxor_ymm(1, common_reg, 1)
@@ -1154,6 +1361,140 @@ fn emit_output_pair_turbo_plan<P: XorJitBitplaneProgram>(
     program
         .vmovdqa_output_offset_from_ymm(bitplane_vector_offset(pair.first_output), 0)
         .vmovdqa_output_offset_from_ymm(bitplane_vector_offset(pair.second_output), 1)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn emit_output_pair_turbo_sink<'a, S: encoder::ByteSink>(
+    program: encoder::ProgramSink<'a, S>,
+    pair: TurboOutputPairPlan,
+) -> encoder::ProgramSink<'a, S> {
+    let program =
+        emit_turbo_muladd_output_seed_sink(program, 0, pair.first_output, pair.first_seed);
+    let program =
+        emit_turbo_muladd_output_seed_sink(program, 1, pair.second_output, pair.second_seed);
+    let (program, common_reg, common_active) = emit_turbo_load_part_sink(
+        program,
+        COMMON_INPUT_REG,
+        pair.common.lowest,
+        pair.common.highest,
+    );
+    let tables = turbo_dep_tables();
+    let dep_key = ((pair.deps.dep1_low as usize) << 7) | pair.deps.dep2_low as usize;
+    let dep_key_high = ((pair.deps.dep1_high as usize) << 6) | pair.deps.dep2_high as usize;
+    let program = program
+        .emit_bytes(&tables.mem_bytes[pair.deps.mem_deps as usize])
+        .emit_bytes(&tables.main_bytes_low[dep_key])
+        .emit_bytes(&tables.main_bytes_high[dep_key_high]);
+    let program = if common_active {
+        program
+            .vpxor_ymm(0, common_reg, 0)
+            .vpxor_ymm(1, common_reg, 1)
+    } else {
+        program
+    };
+    program
+        .vmovdqa_output_offset_from_ymm(bitplane_vector_offset(pair.first_output), 0)
+        .vmovdqa_output_offset_from_ymm(bitplane_vector_offset(pair.second_output), 1)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn emit_turbo_muladd_output_seed_sink<'a, S: encoder::ByteSink>(
+    program: encoder::ProgramSink<'a, S>,
+    output_reg: u8,
+    output_bit: usize,
+    highest: Option<usize>,
+) -> encoder::ProgramSink<'a, S> {
+    let output_offset = bitplane_vector_offset(output_bit);
+    match highest {
+        Some(highest) if highest > 2 => {
+            program.vpxor_ymm_output_offset(output_reg, highest as u8, output_offset)
+        }
+        Some(highest) => program
+            .vmovdqa_ymm_from_output_offset(output_reg, output_offset)
+            .vpxor_ymm_input_offset(
+                output_reg,
+                output_reg,
+                physical_bitplane_vector_offset(highest),
+            ),
+        None => program.vmovdqa_ymm_from_output_offset(output_reg, output_offset),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn emit_turbo_load_part_sink<'a, S: encoder::ByteSink>(
+    program: encoder::ProgramSink<'a, S>,
+    reg: u8,
+    lowest: Option<usize>,
+    highest: Option<usize>,
+) -> (encoder::ProgramSink<'a, S>, u8, bool) {
+    let Some(lowest) = lowest else {
+        return (program, reg, false);
+    };
+
+    let result = if lowest < 3 {
+        match highest {
+            Some(highest) if highest > 2 => program.vpxor_ymm_input_offset(
+                reg,
+                highest as u8,
+                physical_bitplane_vector_offset(lowest),
+            ),
+            Some(highest) => program
+                .vmovdqa_ymm_from_input_offset(reg, physical_bitplane_vector_offset(highest))
+                .vpxor_ymm_input_offset(reg, reg, physical_bitplane_vector_offset(lowest)),
+            None => {
+                program.vmovdqa_ymm_from_input_offset(reg, physical_bitplane_vector_offset(lowest))
+            }
+        }
+    } else {
+        match highest {
+            Some(highest) => program.vpxor_ymm(reg, highest as u8, lowest as u8),
+            None => program.vmovdqa_ymm(reg, lowest as u8),
+        }
+    };
+
+    (result, reg, true)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn emit_turbo_mem_deps<P: XorJitBitplaneProgram>(mut program: P, mem_deps: u8) -> P {
+    let tables = turbo_dep_tables();
+    let idx = mem_deps as usize;
+    for op in &tables.mem_ops[idx][..tables.mem_len[idx] as usize] {
+        program = xor_physical_input_bit(
+            program,
+            op.target_reg,
+            op.target_reg,
+            op.physical_bit as usize,
+        );
+    }
+    program
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn emit_turbo_main_deps<P: XorJitBitplaneProgram>(program: P, dep1: u8, dep2: u8, high: bool) -> P {
+    let tables = turbo_dep_tables();
+    let dep = (dep1 | dep2) as usize;
+    let reg_base = if high { 10 } else { 3 };
+    tables.nums[dep]
+        .iter()
+        .copied()
+        .take_while(|&bit| bit != 0xff)
+        .fold(program, |program, bit| {
+            let reg_code = tables.rmask[dep1 as usize][bit as usize]
+                | (tables.rmask[dep2 as usize][bit as usize] << 1);
+            let target_reg = match reg_code {
+                9 => 0,
+                18 => 1,
+                27 => COMMON_INPUT_REG,
+                _ => unreachable!("unexpected turbo dep register code {reg_code}"),
+            };
+            program.vpxor_ymm(target_reg, reg_base + bit, target_reg)
+        })
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1240,48 +1581,6 @@ fn emit_turbo_common_accumulator<P: XorJitBitplaneProgram>(
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
-fn emit_turbo_remaining_physical_deps<P: XorJitBitplaneProgram>(
-    program: P,
-    first_mask: u16,
-    second_mask: u16,
-) -> P {
-    let emit_range = |program, range: std::ops::Range<usize>| {
-        range.fold(program, |program, physical_bit| {
-            emit_turbo_remaining_physical_dep(program, first_mask, second_mask, physical_bit)
-        })
-    };
-
-    let program = emit_range(program, 0..3);
-    let program = emit_range(program, 3..10);
-    emit_range(program, 10..16)
-}
-
-#[cfg(target_arch = "x86_64")]
-#[cfg_attr(not(test), allow(dead_code))]
-fn emit_turbo_remaining_physical_dep<P: XorJitBitplaneProgram>(
-    program: P,
-    first_mask: u16,
-    second_mask: u16,
-    physical_bit: usize,
-) -> P {
-    match (
-        first_mask & physical_bit_mask(physical_bit) != 0,
-        second_mask & physical_bit_mask(physical_bit) != 0,
-    ) {
-        (true, true) => xor_physical_input_bit(
-            xor_physical_input_bit(program, 0, 0, physical_bit),
-            1,
-            1,
-            physical_bit,
-        ),
-        (true, false) => xor_physical_input_bit(program, 0, 0, physical_bit),
-        (false, true) => xor_physical_input_bit(program, 1, 1, physical_bit),
-        (false, false) => program,
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[cfg_attr(not(test), allow(dead_code))]
 fn xor_physical_input_bit<P: XorJitBitplaneProgram>(
     program: P,
     output_reg: u8,
@@ -1329,6 +1628,13 @@ struct XorJitConstants {
 struct XorJitCoeffVectors {
     even: __m256i,
     odd: __m256i,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitplaneAddPrefetchKind {
+    Output,
+    Input,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1492,6 +1798,134 @@ unsafe fn load_vec(ptr: *const u8, pos: usize) -> __m256i {
 #[target_feature(enable = "avx2", enable = "vpclmulqdq")]
 unsafe fn store_vec(ptr: *mut u8, pos: usize, value: __m256i) {
     _mm256_storeu_si256(ptr.add(pos) as *mut __m256i, value);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_prepared_bitplane_chunks_avx2_one(
+    input: *const u8,
+    output: *mut u8,
+    len: usize,
+    prefetch: Option<(*const u8, BitplaneAddPrefetchKind)>,
+) {
+    use std::arch::x86_64::{
+        __m256i, _mm256_load_si256, _mm256_store_si256, _mm256_xor_si256, _mm_prefetch,
+        _MM_HINT_ET1, _MM_HINT_T1,
+    };
+
+    debug_assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
+    debug_assert_eq!(input as usize % 32, 0);
+    debug_assert_eq!(output as usize % 32, 0);
+
+    let mut pos = 0usize;
+    while pos < len {
+        for vec_idx in 0..16usize {
+            let offset = pos + vec_idx * 32;
+            let in_vec = _mm256_load_si256(input.add(offset).cast::<__m256i>());
+            let out_vec = _mm256_load_si256(output.add(offset).cast::<__m256i>());
+            _mm256_store_si256(
+                output.add(offset).cast::<__m256i>(),
+                _mm256_xor_si256(out_vec, in_vec),
+            );
+        }
+
+        if let Some((prefetch_ptr, kind)) = prefetch {
+            let pf_base = prefetch_ptr.add(pos >> 1).cast::<i8>();
+            match kind {
+                BitplaneAddPrefetchKind::Output => {
+                    _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base);
+                    _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(64));
+                    _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(128));
+                    _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(192));
+                }
+                BitplaneAddPrefetchKind::Input => {
+                    _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base);
+                    _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(64));
+                    _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(128));
+                    _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(192));
+                }
+            }
+        }
+
+        pos += bitplane::AVX2_BLOCK_BYTES;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_prepared_bitplane_multi_chunks_avx2(
+    inputs: &[*const u8],
+    output: *mut u8,
+    len: usize,
+    prefetch_in: Option<*const u8>,
+    prefetch_out: Option<*const u8>,
+) {
+    use std::arch::x86_64::{
+        __m256i, _mm256_load_si256, _mm256_store_si256, _mm256_xor_si256, _mm_prefetch,
+        _MM_HINT_ET1, _MM_HINT_T1,
+    };
+
+    const TURBO_ADD_REGIONS_PER_CALL: usize = 6;
+
+    debug_assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
+    debug_assert_eq!(output as usize % 32, 0);
+    for &input in inputs {
+        debug_assert!(!input.is_null());
+        debug_assert_eq!(input as usize % 32, 0);
+    }
+
+    let mut region_base = 0usize;
+    while region_base < inputs.len() {
+        let chunk_len = (inputs.len() - region_base).min(TURBO_ADD_REGIONS_PER_CALL);
+        let chunk = &inputs[region_base..region_base + chunk_len];
+        let prefetch = if region_base == 0 {
+            prefetch_out.map(|ptr| (ptr, BitplaneAddPrefetchKind::Output))
+        } else {
+            prefetch_in.map(|ptr| {
+                (
+                    ptr.wrapping_add((region_base / TURBO_ADD_REGIONS_PER_CALL) * len),
+                    BitplaneAddPrefetchKind::Input,
+                )
+            })
+        };
+
+        let mut pos = 0usize;
+        while pos < len {
+            for vec_idx in 0..16usize {
+                let offset = pos + vec_idx * 32;
+                let mut data = _mm256_load_si256(output.add(offset).cast::<__m256i>());
+                for &input in chunk {
+                    let in_vec = _mm256_load_si256(input.add(offset).cast::<__m256i>());
+                    data = _mm256_xor_si256(data, in_vec);
+                }
+                _mm256_store_si256(output.add(offset).cast::<__m256i>(), data);
+            }
+
+            if let Some((prefetch_ptr, kind)) = prefetch {
+                let pf_base = prefetch_ptr.add(pos >> 1).cast::<i8>();
+                match kind {
+                    BitplaneAddPrefetchKind::Output => {
+                        _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base);
+                        _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(64));
+                        _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(128));
+                        _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(192));
+                    }
+                    BitplaneAddPrefetchKind::Input => {
+                        _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base);
+                        _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(64));
+                        _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(128));
+                        _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(192));
+                    }
+                }
+            }
+
+            pos += bitplane::AVX2_BLOCK_BYTES;
+        }
+
+        region_base += chunk_len;
+    }
+
+    xor_jit_zeroupper();
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -2063,6 +2497,15 @@ mod tests {
     }
 
     #[test]
+    fn add_rax_imm32_uses_accumulator_encoding() {
+        let encoded = encoder::Program::new().finish_turbo_block_loop_prefix();
+        assert_eq!(
+            &encoded[..13],
+            [0x48, 0x05, 0x00, 0x02, 0x00, 0x00, 0x48, 0x81, 0xc2, 0x00, 0x02, 0x00, 0x00]
+        );
+    }
+
+    #[test]
     fn generated_avx2_lane_xor_updates_destination() {
         if !is_x86_feature_detected!("avx2") {
             return;
@@ -2457,6 +2900,42 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    #[ignore = "debug helper for dumping one generated body for byte comparison"]
+    fn dump_selected_bitplane_program_for_byte_compare() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let coefficient = std::env::var("PAR2RS_XOR_JIT_COMPARE_COEFF")
+            .ok()
+            .and_then(|value| {
+                value
+                    .strip_prefix("0x")
+                    .map(|hex| u16::from_str_radix(hex, 16).ok())
+                    .unwrap_or_else(|| value.parse::<u16>().ok())
+            })
+            .unwrap_or(0xc814);
+        let prefetch = std::env::var("PAR2RS_XOR_JIT_COMPARE_PREFETCH")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
+        let plan = BitplaneCoeffPlan::new(coefficient);
+        let generated = emit_bitplane_chunk_program_bytes(&plan, prefetch);
+
+        if prefetch {
+            let _ = compile_bitplane_chunk_prefetch_program(&plan, "par2rs-xor-jit-compare")
+                .expect("compile compare prefetch body");
+        } else {
+            let _ = compile_bitplane_chunk_program(&plan, "par2rs-xor-jit-compare", false)
+                .expect("compile compare body");
+        }
+
+        eprintln!(
+            "dumped par2rs xor-jit compare body coeff={coefficient:#06x} prefetch={prefetch} len={}",
+            generated.len()
+        );
     }
 
     #[test]
