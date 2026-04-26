@@ -851,8 +851,8 @@ fn emit_output_bitplane_pair(
             let (program, high_mask) =
                 emit_seeded_output_load(program, preloads, 1, high_output, high_only_mask);
 
-            let program = emit_common_input_mask(program, preloads, common_mask, [0, 1]);
-            let program = emit_output_pair_remaining_masks(program, preloads, low_mask, high_mask);
+            let program =
+                emit_output_pair_mixed_masks(program, preloads, common_mask, low_mask, high_mask);
 
             program
                 .vmovdqa_rsi_offset_from_ymm(bitplane_vector_offset(low_output), 0)
@@ -884,31 +884,51 @@ fn emit_output_pair_remaining_masks(
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
-fn emit_common_input_mask(
+fn emit_output_pair_mixed_masks(
     program: encoder::Program,
     preloads: &InputPreloadPlan,
-    input_mask: u16,
-    outputs: [u8; 2],
+    common_mask: u16,
+    low_mask: u16,
+    high_mask: u16,
 ) -> encoder::Program {
-    if input_mask == 0 {
-        return program;
+    if common_mask == 0 {
+        return emit_output_pair_remaining_masks(program, preloads, low_mask, high_mask);
     }
 
-    let (program, common_reg) =
-        emit_input_mask_accumulator(program, preloads, COMMON_INPUT_REG, input_mask);
+    let (program, common_reg, common_mask) =
+        emit_input_mask_accumulator_seed(program, preloads, COMMON_INPUT_REG, common_mask);
+    let program =
+        input_bits(common_mask | low_mask | high_mask).fold(program, |program, input_bit| {
+            let program = if common_mask & (1 << input_bit) != 0 {
+                xor_input_bit_into_outputs(program, preloads, input_bit, [common_reg, common_reg])
+            } else {
+                program
+            };
+
+            match (
+                low_mask & (1 << input_bit) != 0,
+                high_mask & (1 << input_bit) != 0,
+            ) {
+                (true, true) => xor_input_bit_into_outputs(program, preloads, input_bit, [0, 1]),
+                (true, false) => xor_input_bit_into_outputs(program, preloads, input_bit, [0, 0]),
+                (false, true) => xor_input_bit_into_outputs(program, preloads, input_bit, [1, 1]),
+                (false, false) => program,
+            }
+        });
+
     program
-        .vpxor_ymm(outputs[0], outputs[0], common_reg)
-        .vpxor_ymm(outputs[1], outputs[1], common_reg)
+        .vpxor_ymm(0, 0, common_reg)
+        .vpxor_ymm(1, 1, common_reg)
 }
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
-fn emit_input_mask_accumulator(
+fn emit_input_mask_accumulator_seed(
     program: encoder::Program,
     preloads: &InputPreloadPlan,
     accumulator_reg: u8,
     input_mask: u16,
-) -> (encoder::Program, u8) {
+) -> (encoder::Program, u8, u16) {
     debug_assert_ne!(input_mask, 0);
 
     let lowest_bit = input_mask.trailing_zeros() as usize;
@@ -967,15 +987,7 @@ fn emit_input_mask_accumulator(
         },
     };
 
-    let program = input_bits(remaining_mask).fold(program, |program, input_bit| {
-        xor_input_bit_into_outputs(
-            program,
-            preloads,
-            input_bit,
-            [accumulator_reg, accumulator_reg],
-        )
-    });
-    (program, common_reg)
+    (program, common_reg, remaining_mask)
 }
 
 #[cfg(target_arch = "x86_64")]
