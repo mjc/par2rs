@@ -27,6 +27,7 @@ PROFILE_FREQUENCY="${PROFILE_FREQUENCY:-997}"
 PERF_EVENTS="${PERF_EVENTS:-instructions,cycles,branches,branch-misses,cache-references,cache-misses,task-clock,context-switches,cpu-migrations,page-faults}"
 CACHE_PROFILE="${CACHE_PROFILE:-0}"
 CACHE_PROFILE_TOOL="${CACHE_PROFILE_TOOL:-}"
+CACHE_PROFILE_JIT_DUMPS="${CACHE_PROFILE_JIT_DUMPS:-1}"
 CACHE_LOAD_LATENCY="${CACHE_LOAD_LATENCY:-30}"
 CACHE_STAT_EVENTS="${CACHE_STAT_EVENTS:-instructions,cycles,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses,dTLB-loads,dTLB-load-misses,cache-references,cache-misses}"
 VERIFY_OUTPUTS="${VERIFY_OUTPUTS:-1}"
@@ -71,6 +72,8 @@ Environment:
   PROFILE_FREQUENCY=N sampling frequency for flamegraph (default: $PROFILE_FREQUENCY)
   CACHE_PROFILE=1    run Linux cache-miss attribution for the profiled case
   CACHE_PROFILE_TOOL=TOOL par2rs variant for cache profile (default: PROFILE_TOOL)
+  CACHE_PROFILE_JIT_DUMPS=0 skip xor-jit byte dumps during cache profiles (default: $CACHE_PROFILE_JIT_DUMPS)
+                     also disables per-overwrite coefficient perf-map labels
   CACHE_LOAD_LATENCY=N minimum load latency for precise mem-load sampling (default: $CACHE_LOAD_LATENCY)
   CACHE_STAT_EVENTS=EVENTS comma-separated cache counter list
   KEEP_WORK=1        keep generated benchmark work directory
@@ -1093,7 +1096,11 @@ generate_cache_profile() {
     local -a args=(c -q -q "-s$block_size" "-r$REDUNDANCY" "-n$RECOVERY_FILES")
 
     mapfile -d '' -t env_prefix < <(par2rs_tool_env "$CACHE_PROFILE_TOOL")
-    env_prefix+=(PAR2RS_XOR_JIT_DUMP_DIR="$RUN_ROOT/xor-jit-dumps")
+    if [[ "$CACHE_PROFILE_JIT_DUMPS" == "1" ]]; then
+        env_prefix+=(PAR2RS_XOR_JIT_DUMP_DIR="$RUN_ROOT/xor-jit-dumps")
+    else
+        env_prefix+=(PAR2RS_XOR_JIT_PERF_COEFF_LABELS=0)
+    fi
     if [[ "$THREADS" != "0" ]]; then
         args+=("-t$THREADS")
     fi
@@ -1124,7 +1131,7 @@ generate_cache_profile() {
 
     echo "Recording data-source samples with perf mem..."
     rm -f "$case_dir"/cache-profile-out*.par2
-    if perf mem record -a -o "$perf_mem_data" --call-graph fp -- "${env_prefix[@]}" "$profiling_bin" "${args[@]}" >/dev/null; then
+    if perf mem record -o "$perf_mem_data" --call-graph fp -- "${env_prefix[@]}" "$profiling_bin" "${args[@]}" >/dev/null; then
         echo "Generating perf mem report..."
         perf mem report -i "$perf_mem_data" --stdio --sort symbol,dso,mem,local_weight > "$perf_mem_report" 2>/dev/null || true
         echo "perf mem data:   $perf_mem_data"
@@ -1158,7 +1165,7 @@ generate_cache_profile() {
             fi
 
             rm -f "$case_dir"/cache-profile-out*.par2
-            if perf record -a -g --call-graph fp -e ibs_op// -o "$ibs_data" -- "${env_prefix[@]}" "$profiling_bin" "${args[@]}" >/dev/null; then
+            if perf record -g --call-graph fp -e ibs_op// -o "$ibs_data" -- "${env_prefix[@]}" "$profiling_bin" "${args[@]}" >/dev/null; then
                 perf report -i "$ibs_data" --stdio --sort comm,dso,symbol > "$ibs_report" 2>/dev/null || true
                 perf script -i "$ibs_data" > "$ibs_script" 2>/dev/null || true
                 echo "ibs-op data:     $ibs_data"

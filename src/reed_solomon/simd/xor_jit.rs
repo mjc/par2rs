@@ -305,7 +305,7 @@ impl XorJitBitplaneScratch {
         }
         dump_scratch_program("body", coefficient, bytes);
         self.code.overwrite(bytes)?;
-        if perf_map_enabled() {
+        if perf_map_coefficient_labels_enabled() {
             register_perf_map_range(
                 self.code.as_ptr(),
                 bytes.len(),
@@ -333,7 +333,7 @@ impl XorJitBitplaneScratch {
         }
         dump_scratch_program("prefetch", coefficient, bytes);
         self.prefetch_code.overwrite(bytes)?;
-        if perf_map_enabled() {
+        if perf_map_coefficient_labels_enabled() {
             register_perf_map_range(
                 self.prefetch_code.as_ptr(),
                 bytes.len(),
@@ -675,6 +675,15 @@ fn register_perf_map_range(addr: *const u8, len: usize, name: &str) {
 fn perf_map_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("PAR2RS_XOR_JIT_PERF_MAP").as_deref() == Ok("1"))
+}
+
+#[cfg(target_arch = "x86_64")]
+fn perf_map_coefficient_labels_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        perf_map_enabled()
+            && std::env::var("PAR2RS_XOR_JIT_PERF_COEFF_LABELS").as_deref() != Ok("0")
+    })
 }
 
 #[cfg(target_arch = "x86_64")]
