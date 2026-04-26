@@ -290,11 +290,13 @@ impl XorJitBitplaneScratch {
         }
         dump_scratch_program("body", coefficient, bytes);
         self.code.overwrite(bytes)?;
-        register_perf_map_range(
-            self.code.as_ptr(),
-            bytes.len(),
-            &format!("par2rs_xor_jit_bitplane_scratch_body_coeff_{coefficient:04x}"),
-        );
+        if perf_map_enabled() {
+            register_perf_map_range(
+                self.code.as_ptr(),
+                bytes.len(),
+                &format!("par2rs_xor_jit_bitplane_scratch_body_coeff_{coefficient:04x}"),
+            );
+        }
         self.function = unsafe { self.code.function() };
         Ok(())
     }
@@ -310,11 +312,13 @@ impl XorJitBitplaneScratch {
         }
         dump_scratch_program("prefetch", coefficient, bytes);
         self.prefetch_code.overwrite(bytes)?;
-        register_perf_map_range(
-            self.prefetch_code.as_ptr(),
-            bytes.len(),
-            &format!("par2rs_xor_jit_bitplane_scratch_prefetch_coeff_{coefficient:04x}"),
-        );
+        if perf_map_enabled() {
+            register_perf_map_range(
+                self.prefetch_code.as_ptr(),
+                bytes.len(),
+                &format!("par2rs_xor_jit_bitplane_scratch_prefetch_coeff_{coefficient:04x}"),
+            );
+        }
         self.prefetch_function = unsafe { self.prefetch_code.function() };
         Ok(())
     }
@@ -605,6 +609,10 @@ fn register_perf_map_symbol(
     label: &str,
     coefficient: Option<u16>,
 ) {
+    if !perf_map_enabled() {
+        return;
+    }
+
     let coeff = coefficient
         .map(|value| format!("coeff_{value:04x}"))
         .unwrap_or_else(|| "coeff_none".to_string());
@@ -614,7 +622,7 @@ fn register_perf_map_symbol(
 
 #[cfg(target_arch = "x86_64")]
 fn register_perf_map_range(addr: *const u8, len: usize, name: &str) {
-    if std::env::var("PAR2RS_XOR_JIT_PERF_MAP").as_deref() != Ok("1") || len == 0 {
+    if !perf_map_enabled() || len == 0 {
         return;
     }
 
@@ -636,13 +644,27 @@ fn register_perf_map_range(addr: *const u8, len: usize, name: &str) {
 }
 
 #[cfg(target_arch = "x86_64")]
+fn perf_map_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("PAR2RS_XOR_JIT_PERF_MAP").as_deref() == Ok("1"))
+}
+
+#[cfg(target_arch = "x86_64")]
+fn xor_jit_dump_dir() -> Option<&'static std::path::Path> {
+    static DUMP_DIR: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    DUMP_DIR
+        .get_or_init(|| std::env::var_os("PAR2RS_XOR_JIT_DUMP_DIR").map(std::path::PathBuf::from))
+        .as_deref()
+}
+
+#[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
 fn dump_generated_program(label: &str, coefficient: Option<u16>, generated: &[u8]) {
-    let Ok(dir) = std::env::var("PAR2RS_XOR_JIT_DUMP_DIR") else {
+    let Some(dir) = xor_jit_dump_dir() else {
         return;
     };
 
-    if std::fs::create_dir_all(&dir).is_err() {
+    if std::fs::create_dir_all(dir).is_err() {
         return;
     }
 
@@ -651,23 +673,23 @@ fn dump_generated_program(label: &str, coefficient: Option<u16>, generated: &[u8
     let coeff = coefficient
         .map(|value| format!("coeff-{value:04x}"))
         .unwrap_or_else(|| "coeff-none".to_string());
-    let path = std::path::Path::new(&dir).join(format!("{index:06}-{label}-{coeff}.bin"));
+    let path = dir.join(format!("{index:06}-{label}-{coeff}.bin"));
     let _ = std::fs::write(path, generated);
 }
 
 #[cfg(target_arch = "x86_64")]
 fn dump_scratch_program(label: &str, coefficient: u16, generated: &[u8]) {
-    let Ok(dir) = std::env::var("PAR2RS_XOR_JIT_DUMP_DIR") else {
+    let Some(dir) = xor_jit_dump_dir() else {
         return;
     };
 
-    if std::fs::create_dir_all(&dir).is_err() {
+    if std::fs::create_dir_all(dir).is_err() {
         return;
     }
 
     static SCRATCH_DUMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
     let index = SCRATCH_DUMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = std::path::Path::new(&dir).join(format!(
+    let path = dir.join(format!(
         "{index:06}-scratch-{label}-coeff-{coefficient:04x}.bin"
     ));
     let _ = std::fs::write(path, generated);
