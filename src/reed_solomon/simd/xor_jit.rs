@@ -805,10 +805,16 @@ impl InputPreloadPlan {
     }
 
     fn emit_preloads(&self, program: encoder::Program) -> encoder::Program {
-        self.registers
+        let mut preloads = self
+            .registers
             .iter()
             .enumerate()
             .filter_map(|(input_bit, &register)| register.map(|register| (input_bit, register)))
+            .collect::<Vec<_>>();
+        preloads.sort_by_key(|&(input_bit, _)| bitplane_vector_offset(input_bit));
+
+        preloads
+            .into_iter()
             .fold(program, |program, (input_bit, register)| {
                 program.vmovdqa_ymm_from_rdi_offset(register, bitplane_vector_offset(input_bit))
             })
@@ -842,18 +848,34 @@ fn emit_output_bitplane_pair(
                 emit_seeded_output_load(program, preloads, 1, high_output, high_only_mask);
 
             let program = emit_common_input_mask(program, preloads, common_mask, [0, 1]);
-            let program = input_bits(low_mask).fold(program, |program, input_bit| {
-                xor_input_bit_into_outputs(program, preloads, input_bit, [0, 0])
-            });
-            let program = input_bits(high_mask).fold(program, |program, input_bit| {
-                xor_input_bit_into_outputs(program, preloads, input_bit, [1, 1])
-            });
+            let program = emit_output_pair_remaining_masks(program, preloads, low_mask, high_mask);
 
             program
                 .vmovdqa_rsi_offset_from_ymm(bitplane_vector_offset(low_output), 0)
                 .vmovdqa_rsi_offset_from_ymm(bitplane_vector_offset(high_output), 1)
         }
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn emit_output_pair_remaining_masks(
+    program: encoder::Program,
+    preloads: &InputPreloadPlan,
+    low_mask: u16,
+    high_mask: u16,
+) -> encoder::Program {
+    input_bits(low_mask | high_mask).fold(program, |program, input_bit| {
+        match (
+            low_mask & (1 << input_bit) != 0,
+            high_mask & (1 << input_bit) != 0,
+        ) {
+            (true, true) => xor_input_bit_into_outputs(program, preloads, input_bit, [0, 1]),
+            (true, false) => xor_input_bit_into_outputs(program, preloads, input_bit, [0, 0]),
+            (false, true) => xor_input_bit_into_outputs(program, preloads, input_bit, [1, 1]),
+            (false, false) => unreachable!("input bit is sourced from the union mask"),
+        }
+    })
 }
 
 #[cfg(target_arch = "x86_64")]
