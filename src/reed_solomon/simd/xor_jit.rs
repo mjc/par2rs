@@ -767,6 +767,64 @@ pub fn xor_prepared_bitplane_multi_chunks(
 }
 
 #[cfg(target_arch = "x86_64")]
+pub fn xor_prepared_bitplane_multi_chunks_v1i6(
+    inputs: &[*const u8],
+    len: usize,
+    output: &mut [u8],
+    prefetch_in: Option<*const u8>,
+    prefetch_out: Option<*const u8>,
+) {
+    assert_eq!(output.len(), len);
+    assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
+    assert_eq!(output.as_ptr() as usize % 32, 0);
+
+    if inputs.is_empty() || len == 0 {
+        return;
+    }
+
+    unsafe {
+        xor_prepared_bitplane_multi_chunks_v1i6_avx2(
+            inputs,
+            output.as_mut_ptr(),
+            len,
+            prefetch_in,
+            prefetch_out,
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn xor_packed_multi_region_v16i1(
+    src: *const u8,
+    regions: usize,
+    len: usize,
+    output: &mut [u8],
+    prefetch_in: Option<*const u8>,
+    prefetch_out: Option<*const u8>,
+) {
+    assert_eq!(output.len(), len);
+    assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
+    assert_eq!(output.as_ptr() as usize % 32, 0);
+
+    if regions == 0 || len == 0 {
+        return;
+    }
+
+    assert!(!src.is_null());
+
+    unsafe {
+        xor_packed_multi_region_v16i1_avx2(
+            src,
+            regions,
+            output.as_mut_ptr(),
+            len,
+            prefetch_in,
+            prefetch_out,
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
 fn assert_prepared_chunk_shape(input: &[u8], output: &[u8]) {
     assert_eq!(input.len(), output.len());
@@ -1853,6 +1911,109 @@ unsafe fn xor_prepared_bitplane_chunks_avx2_one(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
+unsafe fn prefetch_prepared_bitplane_add(
+    prefetch_ptr: *const u8,
+    pos: usize,
+    kind: BitplaneAddPrefetchKind,
+) {
+    use std::arch::x86_64::{_mm_prefetch, _MM_HINT_ET1, _MM_HINT_T1};
+
+    let pf_base = prefetch_ptr.add(pos >> 1).cast::<i8>();
+    match kind {
+        BitplaneAddPrefetchKind::Output => {
+            _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base);
+            _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(64));
+            _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(128));
+            _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(192));
+        }
+        BitplaneAddPrefetchKind::Input => {
+            _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base);
+            _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(64));
+            _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(128));
+            _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(192));
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_prepared_bitplane_multi_chunks_avx2_core(
+    inputs: &[*const u8],
+    output: *mut u8,
+    len: usize,
+    prefetch: Option<(*const u8, BitplaneAddPrefetchKind)>,
+) {
+    use std::arch::x86_64::{__m256i, _mm256_load_si256, _mm256_store_si256, _mm256_xor_si256};
+
+    const TURBO_ADD_MAX_SRCS: usize = 18;
+
+    debug_assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
+    debug_assert_eq!(output as usize % 32, 0);
+    debug_assert!(inputs.len() <= TURBO_ADD_MAX_SRCS);
+    for &input in inputs {
+        debug_assert!(!input.is_null());
+        debug_assert_eq!(input as usize % 32, 0);
+    }
+
+    let mut input_ends = [std::ptr::null::<u8>(); TURBO_ADD_MAX_SRCS];
+    for (idx, &input) in inputs.iter().enumerate() {
+        input_ends[idx] = input.add(len);
+    }
+    let src_count = inputs.len();
+    let output_end = output.add(len);
+
+    let mut ptr = -(len as isize);
+    while ptr != 0 {
+        let out_block = output_end.offset(ptr);
+        for vec_idx in 0..16usize {
+            let out_ptr = out_block.add(vec_idx * 32).cast::<__m256i>();
+            let mut data = _mm256_load_si256(out_ptr);
+            macro_rules! add_input {
+                ($idx:expr) => {
+                    if src_count >= $idx + 1 {
+                        data = _mm256_xor_si256(
+                            data,
+                            _mm256_load_si256(
+                                input_ends[$idx]
+                                    .offset(ptr)
+                                    .add(vec_idx * 32)
+                                    .cast::<__m256i>(),
+                            ),
+                        );
+                    }
+                };
+            }
+            add_input!(0);
+            add_input!(1);
+            add_input!(2);
+            add_input!(3);
+            add_input!(4);
+            add_input!(5);
+            add_input!(6);
+            add_input!(7);
+            add_input!(8);
+            add_input!(9);
+            add_input!(10);
+            add_input!(11);
+            add_input!(12);
+            add_input!(13);
+            add_input!(14);
+            add_input!(15);
+            add_input!(16);
+            add_input!(17);
+            _mm256_store_si256(out_ptr, data);
+        }
+
+        if let Some((prefetch_ptr, kind)) = prefetch {
+            prefetch_prepared_bitplane_add(prefetch_ptr, (len as isize + ptr) as usize, kind);
+        }
+
+        ptr += bitplane::AVX2_BLOCK_BYTES as isize;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
 unsafe fn xor_prepared_bitplane_multi_chunks_avx2(
     inputs: &[*const u8],
     output: *mut u8,
@@ -1860,11 +2021,143 @@ unsafe fn xor_prepared_bitplane_multi_chunks_avx2(
     prefetch_in: Option<*const u8>,
     prefetch_out: Option<*const u8>,
 ) {
-    use std::arch::x86_64::{
-        __m256i, _mm256_load_si256, _mm256_store_si256, _mm256_xor_si256, _mm_prefetch,
-        _MM_HINT_ET1, _MM_HINT_T1,
-    };
+    const TURBO_ADD_INTERLEAVE: usize = 1;
+    const TURBO_ADD_REGIONS_PER_CALL: usize = 6;
+    const TURBO_ADD_PREFETCH_FACTOR: usize = 1;
+    const TURBO_ADD_OUTPUT_PREFETCH_ROUNDS: usize = 1 << TURBO_ADD_PREFETCH_FACTOR;
 
+    let pf_len = len >> TURBO_ADD_PREFETCH_FACTOR;
+    let mut region = 0usize;
+    let mut output_pf_rounds = TURBO_ADD_OUTPUT_PREFETCH_ROUNDS;
+    let mut prefetch_out_ptr = prefetch_out.map(|ptr| ptr.wrapping_add(pf_len));
+
+    while output_pf_rounds > 0 && inputs.len().saturating_sub(region) >= TURBO_ADD_REGIONS_PER_CALL
+    {
+        xor_prepared_bitplane_multi_chunks_avx2_core(
+            &inputs[region..region + TURBO_ADD_REGIONS_PER_CALL],
+            output,
+            len,
+            prefetch_out_ptr.map(|ptr| (ptr, BitplaneAddPrefetchKind::Output)),
+        );
+        region += TURBO_ADD_REGIONS_PER_CALL;
+        output_pf_rounds -= 1;
+        prefetch_out_ptr = if output_pf_rounds > 0 {
+            prefetch_out_ptr.map(|ptr| ptr.wrapping_add(pf_len))
+        } else {
+            None
+        };
+    }
+
+    let remaining = inputs.len().saturating_sub(region);
+    if let Some(prefetch_ptr) = prefetch_out_ptr {
+        if remaining >= TURBO_ADD_INTERLEAVE {
+            xor_prepared_bitplane_multi_chunks_avx2_core(
+                &inputs[region..],
+                output,
+                len,
+                Some((prefetch_ptr, BitplaneAddPrefetchKind::Output)),
+            );
+            xor_jit_zeroupper();
+            return;
+        }
+    }
+
+    if let Some(prefetch_in_ptr) = prefetch_in {
+        let mut prefetch_ptr = prefetch_in_ptr.wrapping_add(pf_len);
+        while inputs.len().saturating_sub(region) >= TURBO_ADD_REGIONS_PER_CALL {
+            xor_prepared_bitplane_multi_chunks_avx2_core(
+                &inputs[region..region + TURBO_ADD_REGIONS_PER_CALL],
+                output,
+                len,
+                Some((prefetch_ptr, BitplaneAddPrefetchKind::Input)),
+            );
+            region += TURBO_ADD_REGIONS_PER_CALL;
+            prefetch_ptr = prefetch_ptr.wrapping_add(pf_len);
+        }
+    } else {
+        while inputs.len().saturating_sub(region) >= TURBO_ADD_REGIONS_PER_CALL {
+            xor_prepared_bitplane_multi_chunks_avx2_core(
+                &inputs[region..region + TURBO_ADD_REGIONS_PER_CALL],
+                output,
+                len,
+                None,
+            );
+            region += TURBO_ADD_REGIONS_PER_CALL;
+        }
+    }
+
+    if region < inputs.len() {
+        xor_prepared_bitplane_multi_chunks_avx2_core(&inputs[region..], output, len, None);
+    }
+    xor_jit_zeroupper();
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_prepared_bitplane_multi_chunks_v1i6_core(
+    inputs: [*const u8; 6],
+    output: *mut u8,
+    len: usize,
+    prefetch: Option<(*const u8, BitplaneAddPrefetchKind)>,
+) {
+    use std::arch::x86_64::{__m256i, _mm256_load_si256, _mm256_store_si256, _mm256_xor_si256};
+
+    let [input0, input1, input2, input3, input4, input5] = inputs;
+    debug_assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
+    debug_assert_eq!(output as usize % 32, 0);
+    for input in inputs {
+        debug_assert_eq!(input as usize % 32, 0);
+    }
+
+    let mut pos = 0usize;
+    while pos < len {
+        for vec_idx in 0..16usize {
+            let offset = pos + vec_idx * 32;
+            let mut data = _mm256_load_si256(output.add(offset).cast::<__m256i>());
+            data = _mm256_xor_si256(
+                data,
+                _mm256_load_si256(input0.add(offset).cast::<__m256i>()),
+            );
+            data = _mm256_xor_si256(
+                data,
+                _mm256_load_si256(input1.add(offset).cast::<__m256i>()),
+            );
+            data = _mm256_xor_si256(
+                data,
+                _mm256_load_si256(input2.add(offset).cast::<__m256i>()),
+            );
+            data = _mm256_xor_si256(
+                data,
+                _mm256_load_si256(input3.add(offset).cast::<__m256i>()),
+            );
+            data = _mm256_xor_si256(
+                data,
+                _mm256_load_si256(input4.add(offset).cast::<__m256i>()),
+            );
+            data = _mm256_xor_si256(
+                data,
+                _mm256_load_si256(input5.add(offset).cast::<__m256i>()),
+            );
+            _mm256_store_si256(output.add(offset).cast::<__m256i>(), data);
+        }
+
+        if let Some((prefetch_ptr, kind)) = prefetch {
+            prefetch_prepared_bitplane_add(prefetch_ptr, pos, kind);
+        }
+
+        pos += bitplane::AVX2_BLOCK_BYTES;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_prepared_bitplane_multi_chunks_v1i6_avx2(
+    inputs: &[*const u8],
+    output: *mut u8,
+    len: usize,
+    prefetch_in: Option<*const u8>,
+    prefetch_out: Option<*const u8>,
+) {
     const TURBO_ADD_REGIONS_PER_CALL: usize = 6;
 
     debug_assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
@@ -1875,9 +2168,15 @@ unsafe fn xor_prepared_bitplane_multi_chunks_avx2(
     }
 
     let mut region_base = 0usize;
-    while region_base < inputs.len() {
-        let chunk_len = (inputs.len() - region_base).min(TURBO_ADD_REGIONS_PER_CALL);
-        let chunk = &inputs[region_base..region_base + chunk_len];
+    while region_base + TURBO_ADD_REGIONS_PER_CALL <= inputs.len() {
+        let chunk = [
+            inputs[region_base],
+            inputs[region_base + 1],
+            inputs[region_base + 2],
+            inputs[region_base + 3],
+            inputs[region_base + 4],
+            inputs[region_base + 5],
+        ];
         let prefetch = if region_base == 0 {
             prefetch_out.map(|ptr| (ptr, BitplaneAddPrefetchKind::Output))
         } else {
@@ -1888,41 +2187,197 @@ unsafe fn xor_prepared_bitplane_multi_chunks_avx2(
                 )
             })
         };
+        xor_prepared_bitplane_multi_chunks_v1i6_core(chunk, output, len, prefetch);
+        region_base += TURBO_ADD_REGIONS_PER_CALL;
+    }
 
-        let mut pos = 0usize;
-        while pos < len {
-            for vec_idx in 0..16usize {
-                let offset = pos + vec_idx * 32;
-                let mut data = _mm256_load_si256(output.add(offset).cast::<__m256i>());
-                for &input in chunk {
-                    let in_vec = _mm256_load_si256(input.add(offset).cast::<__m256i>());
-                    data = _mm256_xor_si256(data, in_vec);
-                }
-                _mm256_store_si256(output.add(offset).cast::<__m256i>(), data);
-            }
+    if region_base < inputs.len() {
+        let prefetch = if region_base == 0 {
+            prefetch_out.map(|ptr| (ptr, BitplaneAddPrefetchKind::Output))
+        } else {
+            prefetch_in.map(|ptr| {
+                (
+                    ptr.wrapping_add((region_base / TURBO_ADD_REGIONS_PER_CALL) * len),
+                    BitplaneAddPrefetchKind::Input,
+                )
+            })
+        };
+        xor_prepared_bitplane_multi_chunks_avx2_core(&inputs[region_base..], output, len, prefetch);
+    }
 
-            if let Some((prefetch_ptr, kind)) = prefetch {
-                let pf_base = prefetch_ptr.add(pos >> 1).cast::<i8>();
-                match kind {
-                    BitplaneAddPrefetchKind::Output => {
-                        _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base);
-                        _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(64));
-                        _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(128));
-                        _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(192));
+    xor_jit_zeroupper();
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_packed_multi_region_v16i1_core(
+    src_end: *const u8,
+    src_count: usize,
+    output: *mut u8,
+    len: usize,
+    prefetch: Option<(*const u8, BitplaneAddPrefetchKind)>,
+) {
+    use std::arch::x86_64::{__m256i, _mm256_load_si256, _mm256_store_si256, _mm256_xor_si256};
+
+    const TURBO_ADD_MAX_SRCS: usize = 18;
+
+    debug_assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
+    debug_assert_eq!(output as usize % 32, 0);
+    debug_assert!(src_count <= TURBO_ADD_MAX_SRCS);
+
+    let output_end = output.add(len);
+    let src0 = src_end;
+    let src1 = src0.add(len);
+    let src2 = src1.add(len);
+    let src3 = src2.add(len);
+    let src4 = src3.add(len);
+    let src5 = src4.add(len);
+    let src6 = src5.add(len);
+    let src7 = src6.add(len);
+    let src8 = src7.add(len);
+    let src9 = src8.add(len);
+    let src10 = src9.add(len);
+    let src11 = src10.add(len);
+    let src12 = src11.add(len);
+    let src13 = src12.add(len);
+    let src14 = src13.add(len);
+    let src15 = src14.add(len);
+    let src16 = src15.add(len);
+    let src17 = src16.add(len);
+
+    let mut ptr = -(len as isize);
+    while ptr != 0 {
+        let out_block = output_end.offset(ptr);
+        for vec_idx in 0..16usize {
+            let out_ptr = out_block.add(vec_idx * 32).cast::<__m256i>();
+            let mut data = _mm256_load_si256(out_ptr);
+            macro_rules! add_src {
+                ($count:expr, $src:expr) => {
+                    if src_count >= $count {
+                        data = _mm256_xor_si256(
+                            data,
+                            _mm256_load_si256($src.offset(ptr).add(vec_idx * 32).cast::<__m256i>()),
+                        );
                     }
-                    BitplaneAddPrefetchKind::Input => {
-                        _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base);
-                        _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(64));
-                        _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(128));
-                        _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(192));
-                    }
-                }
+                };
             }
-
-            pos += bitplane::AVX2_BLOCK_BYTES;
+            add_src!(1, src0);
+            add_src!(2, src1);
+            add_src!(3, src2);
+            add_src!(4, src3);
+            add_src!(5, src4);
+            add_src!(6, src5);
+            add_src!(7, src6);
+            add_src!(8, src7);
+            add_src!(9, src8);
+            add_src!(10, src9);
+            add_src!(11, src10);
+            add_src!(12, src11);
+            add_src!(13, src12);
+            add_src!(14, src13);
+            add_src!(15, src14);
+            add_src!(16, src15);
+            add_src!(17, src16);
+            add_src!(18, src17);
+            _mm256_store_si256(out_ptr, data);
         }
 
-        region_base += chunk_len;
+        if let Some((prefetch_ptr, kind)) = prefetch {
+            prefetch_prepared_bitplane_add(prefetch_ptr, (len as isize + ptr) as usize, kind);
+        }
+
+        ptr += bitplane::AVX2_BLOCK_BYTES as isize;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_packed_multi_region_v16i1_avx2(
+    src: *const u8,
+    regions: usize,
+    output: *mut u8,
+    len: usize,
+    prefetch_in: Option<*const u8>,
+    prefetch_out: Option<*const u8>,
+) {
+    const TURBO_ADD_INTERLEAVE: usize = 1;
+    const TURBO_ADD_REGIONS_PER_CALL: usize = 6;
+    const TURBO_ADD_PREFETCH_FACTOR: usize = 1;
+    const TURBO_ADD_OUTPUT_PREFETCH_ROUNDS: usize = 1 << TURBO_ADD_PREFETCH_FACTOR;
+
+    debug_assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
+    debug_assert_eq!(output as usize % 32, 0);
+
+    let pf_len = len >> TURBO_ADD_PREFETCH_FACTOR;
+    let mut region = 0usize;
+    let mut output_pf_rounds = TURBO_ADD_OUTPUT_PREFETCH_ROUNDS;
+    let mut prefetch_out_ptr = prefetch_out.map(|ptr| ptr.wrapping_add(pf_len));
+
+    while output_pf_rounds > 0 && regions.saturating_sub(region) >= TURBO_ADD_REGIONS_PER_CALL {
+        let src_end = src.add(region * len + len * TURBO_ADD_INTERLEAVE);
+        xor_packed_multi_region_v16i1_core(
+            src_end,
+            TURBO_ADD_REGIONS_PER_CALL,
+            output,
+            len,
+            prefetch_out_ptr.map(|ptr| (ptr, BitplaneAddPrefetchKind::Output)),
+        );
+        region += TURBO_ADD_REGIONS_PER_CALL;
+        output_pf_rounds -= 1;
+        prefetch_out_ptr = if output_pf_rounds > 0 {
+            prefetch_out_ptr.map(|ptr| ptr.wrapping_add(pf_len))
+        } else {
+            None
+        };
+    }
+
+    let remaining = regions.saturating_sub(region);
+    if let Some(prefetch_ptr) = prefetch_out_ptr {
+        if remaining >= TURBO_ADD_INTERLEAVE {
+            let src_end = src.add(region * len + len * TURBO_ADD_INTERLEAVE);
+            xor_packed_multi_region_v16i1_core(
+                src_end,
+                remaining,
+                output,
+                len,
+                Some((prefetch_ptr, BitplaneAddPrefetchKind::Output)),
+            );
+            xor_jit_zeroupper();
+            return;
+        }
+    }
+
+    if let Some(prefetch_in_ptr) = prefetch_in {
+        let mut prefetch_ptr = prefetch_in_ptr.wrapping_add(pf_len);
+        while regions.saturating_sub(region) >= TURBO_ADD_REGIONS_PER_CALL {
+            let src_end = src.add(region * len + len * TURBO_ADD_INTERLEAVE);
+            xor_packed_multi_region_v16i1_core(
+                src_end,
+                TURBO_ADD_REGIONS_PER_CALL,
+                output,
+                len,
+                Some((prefetch_ptr, BitplaneAddPrefetchKind::Input)),
+            );
+            region += TURBO_ADD_REGIONS_PER_CALL;
+            prefetch_ptr = prefetch_ptr.wrapping_add(pf_len);
+        }
+    } else {
+        while regions.saturating_sub(region) >= TURBO_ADD_REGIONS_PER_CALL {
+            let src_end = src.add(region * len + len * TURBO_ADD_INTERLEAVE);
+            xor_packed_multi_region_v16i1_core(
+                src_end,
+                TURBO_ADD_REGIONS_PER_CALL,
+                output,
+                len,
+                None,
+            );
+            region += TURBO_ADD_REGIONS_PER_CALL;
+        }
+    }
+
+    if region < regions {
+        let src_end = src.add(region * len + len * TURBO_ADD_INTERLEAVE);
+        xor_packed_multi_region_v16i1_core(src_end, regions - region, output, len, None);
     }
 
     xor_jit_zeroupper();
@@ -2697,6 +3152,130 @@ mod tests {
             bitplane::multiply_add_prepared_avx2_block(&prepared, coefficient, &mut actual);
 
             assert_eq!(actual, expected, "coefficient={coefficient:#06x}");
+        }
+    }
+
+    #[test]
+    fn xor_prepared_bitplane_multi_chunks_v1i6_matches_single_input_xors() {
+        let len = bitplane::AVX2_BLOCK_BYTES * 2;
+
+        for input_count in [6usize, 7, 12] {
+            let prepared_inputs = (0..input_count)
+                .map(|input_idx| {
+                    let mut prepared = alloc_aligned_vec(len);
+                    for (byte_idx, byte) in prepared.iter_mut().enumerate() {
+                        *byte = (byte_idx as u8)
+                            .wrapping_mul(17)
+                            .wrapping_add((input_idx as u8).wrapping_mul(29))
+                            .wrapping_add(3);
+                    }
+                    prepared
+                })
+                .collect::<Vec<_>>();
+            let input_ptrs = prepared_inputs
+                .iter()
+                .map(|input| input.as_ptr())
+                .collect::<Vec<_>>();
+            let mut expected = alloc_aligned_vec(len);
+            let mut actual = alloc_aligned_vec(len);
+
+            for (byte_idx, byte) in expected.iter_mut().enumerate() {
+                *byte = (byte_idx as u8).wrapping_mul(11).wrapping_add(5);
+            }
+            actual.copy_from_slice(&expected);
+
+            for input in &prepared_inputs {
+                xor_prepared_bitplane_chunks(input, &mut expected, None);
+            }
+
+            xor_prepared_bitplane_multi_chunks_v1i6(&input_ptrs, len, &mut actual, None, None);
+
+            assert_eq!(actual, expected, "input_count={input_count}");
+        }
+    }
+
+    #[test]
+    fn xor_prepared_bitplane_multi_chunks_matches_single_input_xors() {
+        let len = bitplane::AVX2_BLOCK_BYTES * 2;
+
+        for input_count in [6usize, 7, 12] {
+            let prepared_inputs = (0..input_count)
+                .map(|input_idx| {
+                    let mut prepared = alloc_aligned_vec(len);
+                    for (byte_idx, byte) in prepared.iter_mut().enumerate() {
+                        *byte = (byte_idx as u8)
+                            .wrapping_mul(23)
+                            .wrapping_add((input_idx as u8).wrapping_mul(31))
+                            .wrapping_add(7);
+                    }
+                    prepared
+                })
+                .collect::<Vec<_>>();
+            let input_ptrs = prepared_inputs
+                .iter()
+                .map(|input| input.as_ptr())
+                .collect::<Vec<_>>();
+            let mut expected = alloc_aligned_vec(len);
+            let mut actual = alloc_aligned_vec(len);
+
+            for (byte_idx, byte) in expected.iter_mut().enumerate() {
+                *byte = (byte_idx as u8).wrapping_mul(13).wrapping_add(9);
+            }
+            actual.copy_from_slice(&expected);
+
+            for input in &prepared_inputs {
+                xor_prepared_bitplane_chunks(input, &mut expected, None);
+            }
+
+            xor_prepared_bitplane_multi_chunks(&input_ptrs, len, &mut actual, None, None);
+
+            assert_eq!(actual, expected, "input_count={input_count}");
+        }
+    }
+
+    #[test]
+    fn xor_packed_multi_region_v16i1_matches_single_input_xors() {
+        let len = bitplane::AVX2_BLOCK_BYTES * 2;
+
+        for input_count in [6usize, 7, 12] {
+            let mut packed_inputs = alloc_aligned_vec(len * input_count);
+            for input_idx in 0..input_count {
+                let start = input_idx * len;
+                for (byte_idx, byte) in packed_inputs[start..start + len].iter_mut().enumerate() {
+                    *byte = (byte_idx as u8)
+                        .wrapping_mul(7)
+                        .wrapping_add((input_idx as u8).wrapping_mul(17))
+                        .wrapping_add(11);
+                }
+            }
+
+            let mut expected = alloc_aligned_vec(len);
+            let mut actual = alloc_aligned_vec(len);
+
+            for (byte_idx, byte) in expected.iter_mut().enumerate() {
+                *byte = (byte_idx as u8).wrapping_mul(5).wrapping_add(13);
+            }
+            actual.copy_from_slice(&expected);
+
+            for input_idx in 0..input_count {
+                let start = input_idx * len;
+                xor_prepared_bitplane_chunks(
+                    &packed_inputs[start..start + len],
+                    &mut expected,
+                    None,
+                );
+            }
+
+            xor_packed_multi_region_v16i1(
+                packed_inputs.as_ptr(),
+                input_count,
+                len,
+                &mut actual,
+                None,
+                None,
+            );
+
+            assert_eq!(actual, expected, "input_count={input_count}");
         }
     }
 

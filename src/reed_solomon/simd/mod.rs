@@ -37,8 +37,9 @@ pub use xor_jit::{
     prepare_xor_jit_bitplane_segment, process_slice_multiply_add_xor_jit,
     process_slices_multiply_add_xor_jit_x2, process_slices_multiply_add_xor_jit_x4,
     process_slices_multiply_add_xor_jit_x4_inputs_x2_outputs,
-    process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs, xor_prepared_bitplane_chunks,
-    xor_prepared_bitplane_multi_chunks, BitplaneAddPrefetchKind, XorJitBitplaneKernel,
+    process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs, xor_packed_multi_region_v16i1,
+    xor_prepared_bitplane_chunks, xor_prepared_bitplane_multi_chunks,
+    xor_prepared_bitplane_multi_chunks_v1i6, BitplaneAddPrefetchKind, XorJitBitplaneKernel,
     XorJitBitplaneScratch, XorJitFlavor, XorJitPreparedCoeff, XorJitPreparedCoeffCache,
 };
 
