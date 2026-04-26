@@ -792,8 +792,12 @@ fn bitplane_identity_multiply_add_body_program() -> encoder::Program {
 impl InputPreloadPlan {
     fn new(_plan: &BitplaneCoeffPlan) -> Self {
         let mut registers = [None; 16];
-        for input_bit in 3..16 {
-            registers[input_bit] = Some(input_bit as u8);
+
+        let mut input_bits = (3..16).collect::<Vec<_>>();
+        input_bits.sort_by_key(|&input_bit| bitplane_vector_offset(input_bit));
+
+        for (index, input_bit) in input_bits.into_iter().enumerate() {
+            registers[input_bit] = Some(3 + index as u8);
         }
 
         Self { registers }
