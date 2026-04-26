@@ -10,7 +10,7 @@ use std::arch::x86_64::*;
 #[cfg(target_arch = "x86_64")]
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc, OnceLock,
+    Arc, Mutex, OnceLock,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -601,6 +601,12 @@ fn register_perf_map_range(addr: *const u8, len: usize, name: &str) {
     if std::env::var("PAR2RS_XOR_JIT_PERF_MAP").as_deref() != Ok("1") || len == 0 {
         return;
     }
+
+    static PERF_MAP_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = PERF_MAP_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("lock perf map writer");
 
     let path = std::path::Path::new("/tmp").join(format!("perf-{}.map", std::process::id()));
     if let Ok(mut file) = std::fs::OpenOptions::new()
