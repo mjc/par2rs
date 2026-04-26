@@ -1982,6 +1982,22 @@ mod tests {
     }
 
     #[test]
+    fn avx2_bitplane_layout_pairs_low_high_vectors() {
+        for word_bit in 0..8 {
+            let bit_from_msb = 7 - word_bit;
+            let low = bitplane::mask_offset(bitplane::ByteHalf::Low, bit_from_msb, 0);
+            let high = bitplane::mask_offset(bitplane::ByteHalf::High, bit_from_msb, 0);
+
+            assert_eq!(low, word_bit * 64);
+            assert_eq!(high, low + 32);
+            assert_eq!(
+                bitplane::mask_offset(bitplane::ByteHalf::Low, bit_from_msb, 7),
+                low + 28
+            );
+        }
+    }
+
+    #[test]
     fn avx2_bitplane_prepare_zero_pads_partial_final_block() {
         let input = vec![0xffu8; 33];
         let mut prepared = vec![0x55u8; bitplane::AVX2_BLOCK_BYTES * 2];

@@ -31,7 +31,9 @@ impl Plane {
     }
 
     pub fn offset(self) -> usize {
-        (self.half.base_mask_index() + self.bit_from_msb * GROUPS_PER_BLOCK + self.group)
+        ((BITS_PER_BYTE - 1 - self.bit_from_msb) * GROUPS_PER_BLOCK * 2
+            + self.half.paired_mask_index()
+            + self.group)
             * MASK_BYTES
     }
 }
@@ -226,8 +228,11 @@ unsafe fn finish_avx2_block_x86_64_avx2(
     #[inline]
     #[target_feature(enable = "avx2")]
     unsafe fn load_halves(src: *const u32, a: usize, b: usize, upper: usize) -> __m256i {
-        let lo = _mm_loadu_si128(src.add(120 + upper * 4 - a * 8).cast::<__m128i>());
-        let hi = _mm_loadu_si128(src.add(120 + upper * 4 - b * 8).cast::<__m128i>());
+        let lo = _mm_loadu_si128(src.add(a * 16 + upper * 4).cast::<__m128i>());
+        let hi = _mm_loadu_si128(
+            src.add((b - 8) * 16 + GROUPS_PER_BLOCK + upper * 4)
+                .cast::<__m128i>(),
+        );
         _mm256_inserti128_si256::<1>(_mm256_castsi128_si256(lo), hi)
     }
 
@@ -453,10 +458,10 @@ fn multiply_word(mut input: u16, coefficient: u16) -> u16 {
 }
 
 impl ByteHalf {
-    const fn base_mask_index(self) -> usize {
+    const fn paired_mask_index(self) -> usize {
         match self {
-            Self::High => 0,
-            Self::Low => 64,
+            Self::Low => 0,
+            Self::High => GROUPS_PER_BLOCK,
         }
     }
 }
