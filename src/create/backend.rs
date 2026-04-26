@@ -1262,7 +1262,8 @@ fn process_compute_job_xor_jit_bitplane_segment(job: ComputeJob, context: &mut W
                         segment_idx,
                         recovery_idx,
                         batch_idx,
-                    ),
+                    )
+                    .or(Some(output.as_ptr())),
                 ),
                 None => panic!("forced XOR-JIT create backend missing bitplane kernel"),
             }
