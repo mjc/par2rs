@@ -217,10 +217,20 @@ impl XorJitBitplaneScratch {
     pub fn new() -> std::io::Result<Self> {
         let mut code = exec_mem::MutableExecutableBuffer::new(1024)?;
         code.overwrite(&[0xc5, 0xf8, 0x77, 0xc3])?;
+        register_perf_map_range(
+            code.as_ptr(),
+            code.capacity(),
+            "par2rs_xor_jit_bitplane_scratch_body",
+        );
         let function = unsafe { code.function() };
 
         let mut prefetch_code = exec_mem::MutableExecutableBuffer::new(1024)?;
         prefetch_code.overwrite(&[0xc5, 0xf8, 0x77, 0xc3])?;
+        register_perf_map_range(
+            prefetch_code.as_ptr(),
+            prefetch_code.capacity(),
+            "par2rs_xor_jit_bitplane_scratch_prefetch",
+        );
         let prefetch_function = unsafe { prefetch_code.function() };
 
         Ok(Self {
@@ -268,6 +278,11 @@ impl XorJitBitplaneScratch {
     fn load_body(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         if self.code.capacity() < bytes.len() {
             self.code = exec_mem::MutableExecutableBuffer::new(bytes.len())?;
+            register_perf_map_range(
+                self.code.as_ptr(),
+                self.code.capacity(),
+                "par2rs_xor_jit_bitplane_scratch_body",
+            );
         }
         self.code.overwrite(bytes)?;
         self.function = unsafe { self.code.function() };
@@ -277,6 +292,11 @@ impl XorJitBitplaneScratch {
     fn load_prefetch(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         if self.prefetch_code.capacity() < bytes.len() {
             self.prefetch_code = exec_mem::MutableExecutableBuffer::new(bytes.len())?;
+            register_perf_map_range(
+                self.prefetch_code.as_ptr(),
+                self.prefetch_code.capacity(),
+                "par2rs_xor_jit_bitplane_scratch_prefetch",
+            );
         }
         self.prefetch_code.overwrite(bytes)?;
         self.prefetch_function = unsafe { self.prefetch_code.function() };
@@ -569,14 +589,19 @@ fn register_perf_map_symbol(
     label: &str,
     coefficient: Option<u16>,
 ) {
-    if std::env::var("PAR2RS_XOR_JIT_PERF_MAP").as_deref() != Ok("1") || code.is_empty() {
-        return;
-    }
-
     let coeff = coefficient
         .map(|value| format!("coeff_{value:04x}"))
         .unwrap_or_else(|| "coeff_none".to_string());
     let name = format!("par2rs_xor_jit_{}_{}", label.replace('-', "_"), coeff);
+    register_perf_map_range(code.as_ptr(), code.len(), &name);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn register_perf_map_range(addr: *const u8, len: usize, name: &str) {
+    if std::env::var("PAR2RS_XOR_JIT_PERF_MAP").as_deref() != Ok("1") || len == 0 {
+        return;
+    }
+
     let path = std::path::Path::new("/tmp").join(format!("perf-{}.map", std::process::id()));
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
@@ -584,7 +609,7 @@ fn register_perf_map_symbol(
         .open(path)
     {
         use std::io::Write;
-        let _ = writeln!(file, "{:x} {:x} {name}", code.as_ptr() as usize, code.len());
+        let _ = writeln!(file, "{:x} {:x} {name}", addr as usize, len);
     }
 }
 
