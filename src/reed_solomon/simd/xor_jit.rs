@@ -71,6 +71,7 @@ struct InputPreloadPlan {
 trait XorJitBitplaneProgram: Sized {
     fn vmovdqa_ymm_from_input_offset(self, reg: u8, offset: i32) -> Self;
     fn vmovdqa_ymm_from_output_offset(self, reg: u8, offset: i32) -> Self;
+    fn vmovdqa_ymm(self, dst: u8, src: u8) -> Self;
     fn vpxor_ymm(self, dst: u8, lhs: u8, rhs: u8) -> Self;
     fn vpxor_ymm_input_offset(self, dst: u8, lhs: u8, offset: i32) -> Self;
     fn vpxor_ymm_output_offset(self, dst: u8, lhs: u8, offset: i32) -> Self;
@@ -85,6 +86,10 @@ impl XorJitBitplaneProgram for encoder::Program {
 
     fn vmovdqa_ymm_from_output_offset(self, reg: u8, offset: i32) -> Self {
         self.vmovdqa_ymm_from_rdx_offset(reg, offset)
+    }
+
+    fn vmovdqa_ymm(self, dst: u8, src: u8) -> Self {
+        self.vmovdqa_ymm(dst, src)
     }
 
     fn vpxor_ymm(self, dst: u8, lhs: u8, rhs: u8) -> Self {
@@ -112,6 +117,10 @@ impl<'a, S: encoder::ByteSink> XorJitBitplaneProgram for encoder::ProgramSink<'a
 
     fn vmovdqa_ymm_from_output_offset(self, reg: u8, offset: i32) -> Self {
         self.vmovdqa_ymm_from_rdx_offset(reg, offset)
+    }
+
+    fn vmovdqa_ymm(self, dst: u8, src: u8) -> Self {
+        self.vmovdqa_ymm(dst, src)
     }
 
     fn vpxor_ymm(self, dst: u8, lhs: u8, rhs: u8) -> Self {
@@ -1136,8 +1145,8 @@ fn emit_output_pair_turbo_plan<P: XorJitBitplaneProgram>(
     );
     let program = if common_elim {
         program
-            .vpxor_ymm(0, 0, common_reg)
-            .vpxor_ymm(1, 1, common_reg)
+            .vpxor_ymm(0, common_reg, 0)
+            .vpxor_ymm(1, common_reg, 1)
     } else {
         program
     };
@@ -1221,7 +1230,11 @@ fn emit_turbo_common_accumulator<P: XorJitBitplaneProgram>(
             accumulator_reg,
             true,
         ),
-        (_, None) => (program, lowest as u8, true),
+        (_, None) => (
+            program.vmovdqa_ymm(accumulator_reg, lowest as u8),
+            accumulator_reg,
+            true,
+        ),
     }
 }
 

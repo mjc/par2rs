@@ -93,6 +93,11 @@ impl<'a, S: ByteSink> ProgramSink<'a, S> {
         self
     }
 
+    pub fn vmovdqa_ymm(self, dst: u8, src: u8) -> Self {
+        encode_vmovdqa_reg_into(self.encoded, Ymm::new(dst), Ymm::new(src));
+        self
+    }
+
     pub fn vpxor_ymm_rdi_offset(self, dst: u8, lhs: u8, offset: i32) -> Self {
         encode_vpxor_memory_into(
             self.encoded,
@@ -249,6 +254,14 @@ impl Program {
 
     pub fn vpxor_ymm(mut self, dst: u8, lhs: u8, rhs: u8) -> Self {
         self.push_vpxor(Ymm::new(dst), Ymm::new(lhs), Ymm::new(rhs));
+        self
+    }
+
+    pub fn vmovdqa_ymm(mut self, dst: u8, src: u8) -> Self {
+        self.instructions.push(Instruction::Vmovdqa {
+            dst: Ymm::new(dst),
+            src: Ymm::new(src),
+        });
         self
     }
 
@@ -765,6 +778,7 @@ enum Instruction {
     SubRegImm32 { reg: GpReg, value: u32 },
     CmpRegReg { lhs: GpReg, rhs: GpReg },
     PrefetchT1 { memory: Memory },
+    Vmovdqa { dst: Ymm, src: Ymm },
     VmovdqaLoad { dst: Ymm, memory: Memory },
     VmovdqaStore { memory: Memory, src: Ymm },
     VmovdquLoad { dst: Ymm, memory: Memory },
@@ -784,6 +798,13 @@ impl Instruction {
             Self::AddRegImm32 { .. } | Self::SubRegImm32 { .. } => 7,
             Self::CmpRegReg { .. } => 3,
             Self::PrefetchT1 { memory } => 2 + memory.encoded_len(),
+            Self::Vmovdqa { src, .. } => {
+                if src.needs_extension() {
+                    5
+                } else {
+                    4
+                }
+            }
             Self::VmovdqaLoad { memory, .. } | Self::VmovdqaStore { memory, .. } => {
                 3 + memory.encoded_len()
             }
@@ -821,6 +842,7 @@ impl Instruction {
                 encoded.extend_from_slice(&[0x0f, 0x18]);
                 memory.encode_into(encoded, 2);
             }
+            Self::Vmovdqa { dst, src } => encode_vmovdqa_reg_into(encoded, dst, src),
             Self::VmovdqaLoad { dst, memory } => {
                 encode_vex_256_66_0f(encoded, dst, Ymm::Ymm0, memory.base_code());
                 encoded.push(0x6f);
@@ -1069,6 +1091,12 @@ fn encode_vmovdqa_store_into(encoded: &mut impl ByteSink, memory: Memory, src: Y
     encode_vex_256_66_0f(encoded, src, Ymm::Ymm0, memory.base_code());
     encoded.push(0x7f);
     memory.encode_into(encoded, src.code());
+}
+
+fn encode_vmovdqa_reg_into(encoded: &mut impl ByteSink, dst: Ymm, src: Ymm) {
+    encode_vex_256_66_0f(encoded, dst, Ymm::Ymm0, Some(src.code()));
+    encoded.push(0x6f);
+    encoded.push(modrm_register(dst.code(), src.code()));
 }
 
 fn encode_vpxor_into(encoded: &mut impl ByteSink, dst: Ymm, lhs: Ymm, rhs: Ymm) {
