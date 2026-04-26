@@ -207,20 +207,14 @@ impl CreateCoeff {
 
 pub struct StagingArea {
     inputs: AlignedVec,
-    packed_inputs: AlignedVec,
     source_indices: Vec<usize>,
     batch_len: usize,
 }
 
 impl StagingArea {
-    fn new(
-        input_grouping: usize,
-        input_storage_len: usize,
-        packed_input_storage_len: usize,
-    ) -> Self {
+    fn new(input_grouping: usize, input_storage_len: usize) -> Self {
         Self {
             inputs: AlignedVec::new_zeroed(input_storage_len),
-            packed_inputs: AlignedVec::new_zeroed(packed_input_storage_len),
             source_indices: vec![0; input_grouping],
             batch_len: 0,
         }
@@ -377,10 +371,6 @@ impl CreateRecoveryBackend {
         let staging_storage_len = xor_jit_layout
             .map(|layout| layout.input_storage_len())
             .unwrap_or(input_grouping * aligned_chunk_len);
-        #[cfg(target_arch = "x86_64")]
-        let packed_staging_storage_len = xor_jit_layout
-            .map(|layout| layout.input_storage_len())
-            .unwrap_or(0);
         #[cfg(not(target_arch = "x86_64"))]
         let staging_storage_len = input_grouping * aligned_chunk_len;
         #[cfg(target_arch = "x86_64")]
@@ -437,16 +427,8 @@ impl CreateRecoveryBackend {
                 AlignedVec::new_zeroed(aligned_chunk_len),
             ],
             staging: vec![
-                StagingArea::new(
-                    input_grouping,
-                    staging_storage_len,
-                    packed_staging_storage_len,
-                ),
-                StagingArea::new(
-                    input_grouping,
-                    staging_storage_len,
-                    packed_staging_storage_len,
-                ),
+                StagingArea::new(input_grouping, staging_storage_len),
+                StagingArea::new(input_grouping, staging_storage_len),
             ],
             output_chunks: AlignedVec::new_zeroed(output_storage_len),
             coeffs,
@@ -482,15 +464,6 @@ impl CreateRecoveryBackend {
             .staging
             .iter()
             .all(|staging| (staging.inputs.as_ptr() as usize).is_multiple_of(AVX2_ALIGNMENT)));
-        #[cfg(target_arch = "x86_64")]
-        debug_assert!(
-            !self.xor_jit_bitplane
-                || self
-                    .staging
-                    .iter()
-                    .all(|staging| (staging.packed_inputs.as_ptr() as usize)
-                        .is_multiple_of(AVX2_ALIGNMENT))
-        );
         debug_assert!((self.output_chunks.as_ptr() as usize).is_multiple_of(AVX2_ALIGNMENT));
         #[cfg(target_arch = "x86_64")]
         if let Some(layout) = self.xor_jit_layout {
@@ -645,21 +618,13 @@ impl CreateRecoveryBackend {
                             layout.segment_len_for(segment_idx, self.aligned_chunk_len);
                         let output_len = (self.chunk_len - segment_start).min(prepared_len);
                         let dst_start = output_start + segment_start;
-                        if self.recovery_exponents[recovery_idx] == 0 {
-                            let packed_start = layout.output_offset(segment_idx, recovery_idx);
-                            let packed_end = packed_start + output_len;
-                            debug_assert!(packed_end <= self.output_chunks.len());
-                            recovery_data[dst_start..dst_start + output_len]
-                                .copy_from_slice(&self.output_chunks[packed_start..packed_end]);
-                        } else {
-                            let prepared_start = layout.output_offset(segment_idx, recovery_idx);
-                            let prepared_end = prepared_start + prepared_len;
-                            debug_assert!(prepared_end <= self.output_chunks.len());
-                            finish_xor_jit_bitplane_chunks(
-                                &mut recovery_data[dst_start..dst_start + output_len],
-                                &self.output_chunks[prepared_start..prepared_end],
-                            );
-                        }
+                        let prepared_start = layout.output_offset(segment_idx, recovery_idx);
+                        let prepared_end = prepared_start + prepared_len;
+                        debug_assert!(prepared_end <= self.output_chunks.len());
+                        finish_xor_jit_bitplane_chunks(
+                            &mut recovery_data[dst_start..dst_start + output_len],
+                            &self.output_chunks[prepared_start..prepared_end],
+                        );
                     }
                 } else {
                     let start = recovery_idx * self.aligned_chunk_len;
@@ -767,9 +732,7 @@ impl CreateRecoveryBackend {
                 self.job_storage[job_count] = ComputeJob {
                     method: self.method,
                     input_base: staging.inputs.as_ptr() as usize,
-                    packed_input_base: 0,
                     output_base: self.output_chunks.as_ptr() as usize,
-                    packed_output_base: 0,
                     coeffs: self.coeffs.as_ptr() as usize,
                     recovery_exponents: self.recovery_exponents.as_ptr() as usize,
                     source_indices: staging.source_indices.as_ptr() as usize,
@@ -828,9 +791,7 @@ impl CreateRecoveryBackend {
                 self.job_storage[job_count] = ComputeJob {
                     method: self.method,
                     input_base: staging.inputs.as_ptr() as usize,
-                    packed_input_base: staging.packed_inputs.as_ptr() as usize,
                     output_base: self.output_chunks.as_ptr() as usize,
-                    packed_output_base: self.output_chunks.as_ptr() as usize,
                     coeffs: self.coeffs.as_ptr() as usize,
                     recovery_exponents: self.recovery_exponents.as_ptr() as usize,
                     source_indices: staging.source_indices.as_ptr() as usize,
@@ -878,9 +839,7 @@ impl CreateRecoveryBackend {
                 self.job_storage[job_count] = ComputeJob {
                     method: self.method,
                     input_base: staging.inputs.as_ptr() as usize,
-                    packed_input_base: staging.packed_inputs.as_ptr() as usize,
                     output_base: self.output_chunks.as_ptr() as usize,
-                    packed_output_base: self.output_chunks.as_ptr() as usize,
                     coeffs: self.coeffs.as_ptr() as usize,
                     recovery_exponents: self.recovery_exponents.as_ptr() as usize,
                     source_indices: staging.source_indices.as_ptr() as usize,
@@ -923,15 +882,12 @@ fn prepare_xor_jit_bitplane_staging(
         let dst_start = layout.input_offset(segment_idx, slot);
         let dst_end = dst_start + segment_len;
         debug_assert!(dst_end <= staging.inputs.len());
-        debug_assert!(dst_end <= staging.packed_inputs.len());
         let src = if segment_start < input_chunk.len() {
             let src_end = (segment_start + segment_len).min(input_chunk.len());
             &input_chunk[segment_start..src_end]
         } else {
             &[]
         };
-        staging.packed_inputs[dst_start..dst_end].fill(0);
-        staging.packed_inputs[dst_start..dst_start + src.len()].copy_from_slice(src);
         prepare_xor_jit_bitplane_segment(&mut staging.inputs[dst_start..dst_end], src);
     }
 }
@@ -940,9 +896,7 @@ fn prepare_xor_jit_bitplane_staging(
 struct ComputeJob {
     method: CreateGf16Method,
     input_base: usize,
-    packed_input_base: usize,
     output_base: usize,
-    packed_output_base: usize,
     coeffs: usize,
     recovery_exponents: usize,
     source_indices: usize,
@@ -1333,7 +1287,7 @@ fn process_compute_job_xor_jit_bitplane_segment(job: ComputeJob, context: &mut W
             let output_start = layout.output_offset(segment_idx, recovery_idx);
             let output = unsafe {
                 std::slice::from_raw_parts_mut(
-                    (job.packed_output_base as *mut u8).add(output_start),
+                    (job.output_base as *mut u8).add(output_start),
                     job.segment_len,
                 )
             };
@@ -1458,25 +1412,12 @@ fn process_batch_add_avx2_xor_jit_bitplane_add_only_packed(
 ) {
     let input_start = layout.input_offset(segment_idx, 0);
     xor_packed_multi_region_v16i1(
-        unsafe { (job.packed_input_base as *const u8).add(input_start) },
+        unsafe { (job.input_base as *const u8).add(input_start) },
         job.batch_len,
         job.segment_len,
         output,
-        xor_jit_bitplane_input_prefetch_base_ptr_from_base(
-            job,
-            layout,
-            segment_idx,
-            recovery_idx,
-            job.packed_input_base,
-        ),
-        xor_jit_bitplane_output_prefetch_ptr_from_base(
-            job,
-            layout,
-            segment_idx,
-            recovery_idx,
-            0,
-            job.packed_output_base,
-        ),
+        xor_jit_bitplane_input_prefetch_base_ptr(job, layout, segment_idx, recovery_idx),
+        xor_jit_bitplane_output_prefetch_ptr(job, layout, segment_idx, recovery_idx, 0),
     );
 }
 
@@ -2491,33 +2432,7 @@ mod tests {
         );
         assert_eq!(layout.output_offset(1, 0), 7 * layout.segment_len);
         assert_eq!(backend.staging[0].inputs.len(), layout.input_storage_len());
-        assert_eq!(
-            backend.staging[0].packed_inputs.len(),
-            layout.input_storage_len()
-        );
         assert_eq!(backend.output_chunks.len(), layout.output_storage_len());
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[test]
-    fn xor_jit_bitplane_staging_also_keeps_raw_packed_segments() {
-        let layout = XorJitBitplaneLayout::new(2048, 1024, 2, 2);
-        let mut staging =
-            StagingArea::new(2, layout.input_storage_len(), layout.input_storage_len());
-        let input = (0..1536)
-            .map(|idx| (idx as u8).wrapping_mul(7).wrapping_add(3))
-            .collect::<Vec<_>>();
-
-        prepare_xor_jit_bitplane_staging(layout, &mut staging, 1, 2048, &input);
-
-        let seg0 =
-            &staging.packed_inputs[layout.input_offset(0, 1)..layout.input_offset(0, 1) + 1024];
-        let seg1 =
-            &staging.packed_inputs[layout.input_offset(1, 1)..layout.input_offset(1, 1) + 1024];
-
-        assert_eq!(seg0, &input[..1024]);
-        assert_eq!(&seg1[..512], &input[1024..]);
-        assert!(seg1[512..].iter().all(|&byte| byte == 0));
     }
 
     #[cfg(target_arch = "x86_64")]
