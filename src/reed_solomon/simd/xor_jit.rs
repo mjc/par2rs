@@ -37,6 +37,13 @@ struct BitplaneCoeffPlan {
     output_masks: [u16; 16],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+struct InputPreloadPlan {
+    registers: [Option<u8>; 16],
+}
+
 #[cfg(target_arch = "x86_64")]
 impl XorJitPreparedCoeff {
     #[inline]
@@ -494,28 +501,55 @@ fn bitplane_multiply_add_program(plan: &BitplaneCoeffPlan) -> encoder::Program {
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
 fn bitplane_multiply_add_body_program(plan: &BitplaneCoeffPlan) -> encoder::Program {
+    if plan.coefficient() == 1 {
+        return bitplane_identity_multiply_add_body_program();
+    }
+
+    let preloads = InputPreloadPlan::new(plan);
     (0..8).fold(
-        emit_input_plane_preloads(encoder::Program::new()),
-        |program, bit| emit_output_bitplane_pair(program, plan, bit),
+        preloads.emit_preloads(encoder::Program::new()),
+        |program, bit| emit_output_bitplane_pair(program, plan, &preloads, bit),
     )
 }
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
-fn emit_input_plane_preloads(program: encoder::Program) -> encoder::Program {
-    (0..14).fold(program, |program, input_bit| {
-        program.vmovdqu_ymm_from_rdi_offset(
-            preloaded_input_register(input_bit).expect("preloaded input bit"),
-            bitplane_vector_offset(input_bit),
-        )
+fn bitplane_identity_multiply_add_body_program() -> encoder::Program {
+    (0..16).fold(encoder::Program::new(), |program, output_bit| {
+        let offset = bitplane_vector_offset(output_bit);
+        program
+            .vmovdqu_ymm_from_rsi_offset(0, offset)
+            .vpxor_ymm_rdi_offset(0, 0, offset)
+            .vmovdqu_rsi_offset_from_ymm(offset, 0)
     })
 }
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
-fn preloaded_input_register(input_bit: usize) -> Option<u8> {
-    debug_assert!(input_bit < 16);
-    (input_bit < 14).then_some(input_bit as u8 + 2)
+impl InputPreloadPlan {
+    fn new(_plan: &BitplaneCoeffPlan) -> Self {
+        let mut registers = [None; 16];
+        for input_bit in 3..16 {
+            registers[input_bit] = Some(input_bit as u8);
+        }
+
+        Self { registers }
+    }
+
+    fn register(&self, input_bit: usize) -> Option<u8> {
+        debug_assert!(input_bit < 16);
+        self.registers[input_bit]
+    }
+
+    fn emit_preloads(&self, program: encoder::Program) -> encoder::Program {
+        self.registers
+            .iter()
+            .enumerate()
+            .filter_map(|(input_bit, &register)| register.map(|register| (input_bit, register)))
+            .fold(program, |program, (input_bit, register)| {
+                program.vmovdqu_ymm_from_rdi_offset(register, bitplane_vector_offset(input_bit))
+            })
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -523,6 +557,7 @@ fn preloaded_input_register(input_bit: usize) -> Option<u8> {
 fn emit_output_bitplane_pair(
     program: encoder::Program,
     plan: &BitplaneCoeffPlan,
+    preloads: &InputPreloadPlan,
     bit: usize,
 ) -> encoder::Program {
     let low_output = bit;
@@ -532,24 +567,25 @@ fn emit_output_bitplane_pair(
 
     match (low_mask, high_mask) {
         (0, 0) => program,
-        (mask, 0) => emit_output_bitplane(program, (low_output, mask)),
-        (0, mask) => emit_output_bitplane(program, (high_output, mask)),
+        (mask, 0) => emit_output_bitplane(program, preloads, (low_output, mask)),
+        (0, mask) => emit_output_bitplane(program, preloads, (high_output, mask)),
         (low_mask, high_mask) => {
+            let (program, low_mask) =
+                emit_seeded_output_load(program, preloads, 0, low_output, low_mask);
+            let (program, high_mask) =
+                emit_seeded_output_load(program, preloads, 1, high_output, high_mask);
             let common_mask = low_mask & high_mask;
             let low_only_mask = low_mask & !common_mask;
             let high_only_mask = high_mask & !common_mask;
 
-            let program = program
-                .vmovdqu_ymm_from_rsi_offset(0, bitplane_vector_offset(low_output))
-                .vmovdqu_ymm_from_rsi_offset(1, bitplane_vector_offset(high_output));
             let program = input_bits(common_mask).fold(program, |program, input_bit| {
-                xor_input_bit_into_outputs(program, input_bit, [0, 1])
+                xor_input_bit_into_outputs(program, preloads, input_bit, [0, 1])
             });
             let program = input_bits(low_only_mask).fold(program, |program, input_bit| {
-                xor_input_bit_into_outputs(program, input_bit, [0, 0])
+                xor_input_bit_into_outputs(program, preloads, input_bit, [0, 0])
             });
             let program = input_bits(high_only_mask).fold(program, |program, input_bit| {
-                xor_input_bit_into_outputs(program, input_bit, [1, 1])
+                xor_input_bit_into_outputs(program, preloads, input_bit, [1, 1])
             });
 
             program
@@ -563,26 +599,76 @@ fn emit_output_bitplane_pair(
 #[cfg_attr(not(test), allow(dead_code))]
 fn emit_output_bitplane(
     program: encoder::Program,
+    preloads: &InputPreloadPlan,
     (output_bit, input_mask): (usize, u16),
 ) -> encoder::Program {
+    let (program, input_mask) =
+        emit_seeded_output_load(program, preloads, 0, output_bit, input_mask);
     input_bits(input_mask)
-        .fold(
-            program.vmovdqu_ymm_from_rsi_offset(0, bitplane_vector_offset(output_bit)),
-            |program, input_bit| xor_input_bit_into_outputs(program, input_bit, [0, 0]),
-        )
+        .fold(program, |program, input_bit| {
+            xor_input_bit_into_outputs(program, preloads, input_bit, [0, 0])
+        })
         .vmovdqu_rsi_offset_from_ymm(bitplane_vector_offset(output_bit), 0)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn emit_seeded_output_load(
+    program: encoder::Program,
+    preloads: &InputPreloadPlan,
+    output_reg: u8,
+    output_bit: usize,
+    input_mask: u16,
+) -> (encoder::Program, u16) {
+    let output_offset = bitplane_vector_offset(output_bit);
+    let Some(input_bit) = seed_input_bit(input_mask, preloads) else {
+        return (
+            program.vmovdqu_ymm_from_rsi_offset(output_reg, output_offset),
+            input_mask,
+        );
+    };
+
+    let input_mask = input_mask & !(1 << input_bit);
+    match preloads.register(input_bit) {
+        Some(input_reg) => (
+            program.vpxor_ymm_rsi_offset(output_reg, input_reg, output_offset),
+            input_mask,
+        ),
+        None => (
+            program
+                .vmovdqu_ymm_from_rsi_offset(output_reg, output_offset)
+                .vpxor_ymm_rdi_offset(output_reg, output_reg, bitplane_vector_offset(input_bit)),
+            input_mask,
+        ),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn seed_input_bit(input_mask: u16, preloads: &InputPreloadPlan) -> Option<usize> {
+    (0..16)
+        .rev()
+        .find(|&input_bit| {
+            input_mask & (1 << input_bit) != 0 && preloads.register(input_bit).is_some()
+        })
+        .or_else(|| {
+            (0..16)
+                .rev()
+                .find(|&input_bit| input_mask & (1 << input_bit) != 0)
+        })
 }
 
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
 fn xor_input_bit_into_outputs(
     mut program: encoder::Program,
+    preloads: &InputPreloadPlan,
     input_bit: usize,
     outputs: [u8; 2],
 ) -> encoder::Program {
     let first_output = outputs[0];
     let second_output = outputs[1];
-    match preloaded_input_register(input_bit) {
+    match preloads.register(input_bit) {
         Some(input_reg) => {
             program = program.vpxor_ymm(first_output, first_output, input_reg);
             if second_output != first_output {

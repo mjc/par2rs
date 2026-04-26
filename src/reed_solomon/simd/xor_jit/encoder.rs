@@ -104,6 +104,15 @@ impl Program {
         self
     }
 
+    pub fn vpxor_ymm_rsi_offset(mut self, dst: u8, lhs: u8, offset: i32) -> Self {
+        self.instructions.push(Instruction::VpxorMemory {
+            dst: Ymm::new(dst),
+            lhs: Ymm::new(lhs),
+            memory: Memory::base_offset(BaseReg::Rsi, offset),
+        });
+        self
+    }
+
     pub fn vmovdqu_rsi_from_ymm0(mut self) -> Self {
         self.push_vmovdqu_store(Memory::base(BaseReg::Rsi), Ymm::Ymm0);
         self
@@ -325,13 +334,11 @@ impl Instruction {
                 memory.encode_into(encoded, src.code());
             }
             Self::Vpxor { dst, lhs, rhs } => {
-                debug_assert_eq!(dst, lhs);
                 encode_vex_256_66_0f(encoded, dst, lhs, Some(rhs.code()));
                 encoded.push(0xef);
                 encoded.push(modrm_register(dst.code(), rhs.code()));
             }
             Self::VpxorMemory { dst, lhs, memory } => {
-                debug_assert_eq!(dst, lhs);
                 encode_vex_256_66_0f(encoded, dst, lhs, memory.base_code());
                 encoded.push(0xef);
                 memory.encode_into(encoded, dst.code());
