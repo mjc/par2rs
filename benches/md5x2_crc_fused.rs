@@ -19,7 +19,17 @@
 //!   3. md5x2_crc32fast_64b  — MD5x2 absorbs block+file MD5; crc32fast
 //!                             streamed in 64 B chunks.
 //!   4. md5x2_crcfast_64b    — same, but `crc_fast::Digest` for CRC.
-//!   5. md5x2_only           — lower bound: MD5x2 with no CRC.
+//!   5. md5x2_only            — lower bound: MD5x2 with no CRC.
+//!   6. md5x2_64b_then_crc_bulk — MD5x2 at 64 B granularity (block+file MD5
+//!                               in one walk) followed by ONE bulk
+//!                               `crc32fast::Hasher::update(data)` call.
+//!                               Tests whether crc32fast's per-call overhead
+//!                               (SIMD setup, alignment prologue) is what's
+//!                               costing variants 3/4 the gap to variant 5.
+//!   7. md5x2_clmul_64b_fused  — MD5x2 + ParPar PCLMULQDQ CRC32 fused at
+//!                               64 B granularity. The candidate: one
+//!                               cache-line read, three states updated,
+//!                               no per-call SIMD setup overhead.
 //!
 //! The MD5x2 lanes are fed the same 64 B for harness simplicity; this is
 //! what the real `HasherInput` will do when the file is 64 B-aligned and
@@ -30,7 +40,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use md5::Digest as _;
 use md5::Md5;
 use par2rs::checksum::update_file_md5_block_md5_crc32_fused;
-use par2rs::parpar_hasher::md5x2_scalar;
+use par2rs::parpar_hasher::{crc_clmul, md5x2_scalar};
 use std::hint::black_box;
 
 type Out = ([u8; 16], [u8; 16], u32); // (file_md5, block_md5, crc32)
@@ -125,6 +135,50 @@ fn v5_md5x2_only(data: &[u8]) -> ([u8; 16], [u8; 16]) {
     md5x2_finalise(state, data.len())
 }
 
+/// MD5x2 fused at 64 B (block+file MD5 in one walk), but CRC32 is called
+/// ONCE on the whole buffer afterwards so crc32fast hits its big-buffer
+/// fast path instead of paying per-call overhead 65 536× per 4 MiB block.
+///
+/// The buffer is L2-resident from the MD5x2 walk, so the second pass is
+/// a hot read. Tests whether that's cheaper than 64 B-granularity CRC.
+fn v6_md5x2_then_crc_bulk(data: &[u8]) -> Out {
+    let mut state = md5x2_scalar::init_state();
+    for chunk in data.chunks_exact(64) {
+        unsafe {
+            md5x2_scalar::process_block_x2_scalar(&mut state, chunk.as_ptr(), chunk.as_ptr());
+        }
+    }
+    let (lane1, lane2) = md5x2_finalise(state, data.len());
+    let mut crc = crc32fast::Hasher::new();
+    crc.update(data);
+    (lane1, lane2, crc.finalize())
+}
+
+/// MD5x2 + ParPar PCLMULQDQ CRC32 fused at 64 B granularity. Both states
+/// advance from the same cache-line read; no per-call SIMD setup cost.
+///
+/// Bench harness only feeds 16 KiB / 4 MiB inputs (both 64-aligned), so
+/// the CRC `finish` path's tail handling never triggers here — the loop
+/// is the steady-state cost the create path will see for full blocks.
+fn v7_md5x2_clmul_64b_fused(data: &[u8]) -> Out {
+    let mut md5_state = md5x2_scalar::init_state();
+    let mut crc_state = crc_clmul::State::new();
+    unsafe {
+        crc_clmul::init(&mut crc_state);
+        let mut p = data.as_ptr();
+        let mut remaining = data.len();
+        while remaining >= 64 {
+            md5x2_scalar::process_block_x2_scalar(&mut md5_state, p, p);
+            crc_clmul::process_block(&mut crc_state, p);
+            p = p.add(64);
+            remaining -= 64;
+        }
+        let crc = crc_clmul::finish(&mut crc_state, p, remaining);
+        let (lane1, lane2) = md5x2_finalise(md5_state, data.len());
+        (lane1, lane2, crc)
+    }
+}
+
 // ---------- bench ----------
 
 fn bench(c: &mut Criterion) {
@@ -143,11 +197,16 @@ fn bench(c: &mut Criterion) {
         let r3 = v3_md5x2_crc32fast(&d);
         let r4 = v4_md5x2_crcfast(&d);
         let r5 = v5_md5x2_only(&d);
+        let r6 = v6_md5x2_then_crc_bulk(&d);
+        let r7 = v7_md5x2_clmul_64b_fused(&d);
 
-        // CRC: variants 1, 2, 3 must match (all crc32fast); variant 4 same value.
+        // CRC: variants 1, 2, 3, 6, 7 must match (all CRC32 IEEE);
+        // variant 4 same value via crc-fast.
         assert_eq!(r1.2, r2.2);
         assert_eq!(r1.2, r3.2);
         assert_eq!(r1.2, r4.2, "crc-fast disagrees with crc32fast at len={len}");
+        assert_eq!(r1.2, r6.2, "v6 bulk crc disagrees at len={len}");
+        assert_eq!(r1.2, r7.2, "v7 clmul crc disagrees at len={len}");
 
         // Naive single-lane MD5 == MD5x2 lane (since both lanes get the
         // same input, MD5x2 lane1 == MD5x2 lane2 == single-lane MD5).
@@ -162,6 +221,10 @@ fn bench(c: &mut Criterion) {
         assert_eq!(r3.0, r4.0);
         assert_eq!(r3.0, r5.0);
         assert_eq!(r3.1, r5.1);
+        assert_eq!(r3.0, r6.0);
+        assert_eq!(r3.1, r6.1);
+        assert_eq!(r3.0, r7.0);
+        assert_eq!(r3.1, r7.1);
     }
 
     for &len in &sizes {
@@ -183,6 +246,20 @@ fn bench(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("5_md5x2_only", len), &data, |b, d| {
             b.iter(|| black_box(v5_md5x2_only(black_box(d))));
         });
+        group.bench_with_input(
+            BenchmarkId::new("6_md5x2_then_crc_bulk", len),
+            &data,
+            |b, d| {
+                b.iter(|| black_box(v6_md5x2_then_crc_bulk(black_box(d))));
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("7_md5x2_clmul_64b_fused", len),
+            &data,
+            |b, d| {
+                b.iter(|| black_box(v7_md5x2_clmul_64b_fused(black_box(d))));
+            },
+        );
     }
 
     group.finish();

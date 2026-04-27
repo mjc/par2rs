@@ -30,9 +30,13 @@
 //!
 //! * `md5x2_scalar` — two-lane MD5 using GPR-only `asm!` (works on any
 //!   x86_64 CPU). Mirrors `parpar/hasher/md5x2-x86-asm.h`.
-//! * CRC32 is provided by the `crc32fast` crate rather than a port of
-//!   `parpar/hasher/crc_clmul.h`. See `ATTRIBUTION.md` (T2.b decision)
-//!   and `benches/crc_compare.rs` for the data behind that choice.
+//! * `crc_clmul` — x86_64 PCLMULQDQ CRC32 (4-fold). Mirrors
+//!   `parpar/hasher/crc_clmul.h`. Used by the fused driver at 64 B
+//!   granularity to avoid the per-call SIMD-setup overhead a generic
+//!   crate (`crc32fast`) would pay 65 536× per 4 MiB block. See
+//!   `ATTRIBUTION.md` (T2.b → T2.b' decision) and
+//!   `benches/md5x2_crc_fused.rs` for the data behind that choice.
+//!   `crc32fast` is still used for bulk CRC outside the fused driver.
 //! * `hasher_input` — the fused 64-byte driver that owns one MD5x2 state
 //!   and one CRC32 state per source file, plus the staggered-offset
 //!   bookkeeping (`tmp` / `posOffset` / `tmpLen`) that lets the two MD5
@@ -46,5 +50,7 @@
 
 #![allow(dead_code)] // scaffold; populated incrementally
 
+#[cfg(target_arch = "x86_64")]
+pub mod crc_clmul;
 #[cfg(target_arch = "x86_64")]
 pub mod md5x2_scalar;
