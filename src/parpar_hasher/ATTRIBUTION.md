@@ -50,6 +50,21 @@ regime, so no port and no swap. `crc-fast` is retained as a `dev-dep`
 purely so `benches/crc_compare.rs` can be re-run by future contributors
 who want to revisit the decision.
 
+A second bench, `benches/md5x2_crc_fused.rs`, measures the choice
+inside the *actual* `HasherInput` access pattern (MD5x2 + CRC32
+interleaved at 64 B granularity over `(file-MD5, block-MD5, block-CRC32)`).
+There the two CRC backends are within noise of each other (816 vs 808
+MiB/s at 16 KiB; 819 vs 823 MiB/s at 4 MiB) — MD5x2's GPR work hides
+the CRC backend cost difference entirely. Decision unchanged: use
+`crc32fast`.
+
+That same bench surfaced an unrelated finding worth noting here: the
+currently shipped Tier-1 helper
+`checksum::update_file_md5_block_md5_crc32_fused` runs at ~494 MiB/s
+vs ~954 MiB/s for a naive 3-pass sequential at 16 KiB / 4 MiB. Cache
+traffic improved (per `perf stat`), wall-clock did not. Tracked as a
+follow-up; T2.c will likely replace this helper on the create path.
+
 ## What was copied vs. re-derived
 
 * The instruction sequences inside each `asm!` block are direct

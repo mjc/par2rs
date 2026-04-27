@@ -89,6 +89,10 @@ harness = false
 name = "crc_compare"
 harness = false
 
+[[bench]]
+name = "md5x2_crc_fused"
+harness = false
+
 [profile.release]
 debug = true
 strip = false
