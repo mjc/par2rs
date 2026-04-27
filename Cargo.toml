@@ -54,6 +54,8 @@ iai-callgrind = "0.16"
 proptest = "1.5"
 # Random number generation for tests
 rand = "0.9"
+# CRC32 alternative under evaluation vs crc32fast (bench-only for now)
+crc-fast = "1.4"
 
 [[bench]]
 name = "repair_benchmark"
@@ -81,6 +83,10 @@ harness = false
 
 [[bench]]
 name = "fused_hashing"
+harness = false
+
+[[bench]]
+name = "crc_compare"
 harness = false
 
 [profile.release]
