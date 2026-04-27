@@ -4521,6 +4521,9 @@ mod tests {
     use crate::reed_solomon::aligned::alloc_aligned_vec;
     use crate::reed_solomon::codec::{build_split_mul_table, process_slice_multiply_add};
     use crate::reed_solomon::galois::Galois16;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
 
     #[test]
     fn executable_buffer_runs_constant_function() {
@@ -5387,6 +5390,38 @@ mod tests {
     }
 
     #[test]
+    fn prepare_xor_jit_bitplane_packed_input_requested_cases_roundtrip() {
+        let chunk_len = 128 * 1024;
+        for (slice_len, input_num) in [
+            (1024 * 1024usize, 0usize),
+            (1024 * 1024usize, 11usize),
+            (1024 * 1024usize - 512, 0usize),
+            (1024 * 1024usize - 512, 11usize),
+        ] {
+            let aligned_slice_len = slice_len.next_multiple_of(bitplane::AVX2_BLOCK_BYTES);
+            let mut prepared = alloc_aligned_vec(packed_storage_len(slice_len, 12, chunk_len));
+            let input = prepare_pattern37(slice_len);
+            prepare_xor_jit_bitplane_packed_input_cksum(
+                &mut prepared,
+                &input,
+                aligned_slice_len,
+                12,
+                input_num,
+                chunk_len,
+            );
+            let mut actual = vec![0u8; slice_len];
+            assert!(finish_xor_jit_bitplane_packed_output_cksum(
+                &mut actual,
+                &prepared,
+                12,
+                input_num,
+                chunk_len
+            ));
+            assert_eq!(actual, input, "slice_len={slice_len} input_num={input_num}");
+        }
+    }
+
+    #[test]
     fn finish_xor_jit_bitplane_packed_output_matches_segment_loop() {
         let chunk_len = 128 * 1024;
         let num_outputs = 8;
@@ -5427,6 +5462,144 @@ mod tests {
             chunk_len,
         ));
         assert_eq!(actual, input);
+    }
+
+    #[test]
+    fn finish_xor_jit_bitplane_packed_output_requested_cases_roundtrip() {
+        let chunk_len = 128 * 1024;
+        let slice_len = 1024 * 1024;
+        let num_outputs = 8;
+
+        for output_num in [0usize, 7usize] {
+            let input = prepare_pattern29(slice_len);
+            let mut prepared =
+                alloc_aligned_vec(packed_storage_len(slice_len, num_outputs, chunk_len));
+            prepare_xor_jit_bitplane_packed_input_cksum(
+                &mut prepared,
+                &input,
+                slice_len,
+                num_outputs,
+                output_num,
+                chunk_len,
+            );
+
+            let mut actual = vec![0u8; slice_len];
+            assert!(finish_xor_jit_bitplane_packed_output_cksum(
+                &mut actual,
+                &prepared,
+                num_outputs,
+                output_num,
+                chunk_len
+            ));
+            assert_eq!(actual, input, "output_num={output_num}");
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn compare_turbo_prepare_packed_byte_dumps() {
+        let Some(bin_path) = turbo_compare_helper_bin() else {
+            return;
+        };
+        let cases = [
+            (1024 * 1024, 1024 * 1024, 12usize, 0usize),
+            (1024 * 1024, 1024 * 1024, 12usize, 11usize),
+        ];
+        let chunk_len = 128 * 1024;
+
+        for (src_len, slice_len, input_pack_size, input_num) in cases {
+            let output_path = bin_path.with_file_name(format!(
+                "prepare-{src_len}-{slice_len}-{input_pack_size}-{input_num}.bin"
+            ));
+            let status = Command::new(&bin_path)
+                .arg("prepare")
+                .arg(&output_path)
+                .arg(src_len.to_string())
+                .arg(slice_len.to_string())
+                .arg(chunk_len.to_string())
+                .arg(input_pack_size.to_string())
+                .arg(input_num.to_string())
+                .status()
+                .expect("run turbo prepare helper");
+            assert!(status.success(), "turbo prepare helper failed");
+
+            let turbo = fs::read(&output_path).expect("read turbo prepare dump");
+            let par2rs = par2rs_prepare_packed_dump(
+                src_len,
+                slice_len,
+                chunk_len,
+                input_pack_size,
+                input_num,
+            );
+            assert_eq!(
+                turbo, par2rs,
+                "prepare mismatch slice_len={slice_len} input_pack_size={input_pack_size} input_num={input_num}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn compare_turbo_finish_packed_byte_dumps_and_checksum_status() {
+        let Some(bin_path) = turbo_compare_helper_bin() else {
+            return;
+        };
+        let chunk_len = 128 * 1024;
+        let slice_len = 1024 * 1024;
+        let num_outputs = 8usize;
+
+        for output_num in [0usize, 7usize] {
+            let output_path = bin_path.with_file_name(format!("finish-{output_num}.bin"));
+            let status_path = bin_path.with_file_name(format!("finish-{output_num}.status"));
+            let status = Command::new(&bin_path)
+                .arg("finish")
+                .arg(&output_path)
+                .arg(&status_path)
+                .arg(slice_len.to_string())
+                .arg(chunk_len.to_string())
+                .arg(num_outputs.to_string())
+                .arg(output_num.to_string())
+                .arg("0")
+                .status()
+                .expect("run turbo finish helper");
+            if !status.success() {
+                eprintln!("skipping turbo finish compare: helper exited {status}");
+                return;
+            }
+
+            let turbo = fs::read(&output_path).expect("read turbo finish dump");
+            let turbo_ok = fs::read_to_string(&status_path).expect("read turbo finish status");
+            let (par2rs, par2rs_ok) =
+                par2rs_finish_packed_dump(slice_len, chunk_len, num_outputs, output_num, false);
+            assert_eq!(turbo, par2rs, "finish mismatch output_num={output_num}");
+            assert_eq!(turbo_ok.trim(), if par2rs_ok { "1" } else { "0" });
+        }
+
+        let output_path = bin_path.with_file_name("finish-corrupt.bin");
+        let status_path = bin_path.with_file_name("finish-corrupt.status");
+        let status = Command::new(&bin_path)
+            .arg("finish")
+            .arg(&output_path)
+            .arg(&status_path)
+            .arg(slice_len.to_string())
+            .arg(chunk_len.to_string())
+            .arg(num_outputs.to_string())
+            .arg("7")
+            .arg("1")
+            .status()
+            .expect("run turbo finish corruption helper");
+        if !status.success() {
+            eprintln!("skipping turbo finish corruption compare: helper exited {status}");
+            return;
+        }
+
+        let turbo = fs::read(&output_path).expect("read turbo corrupt finish dump");
+        let turbo_ok = fs::read_to_string(&status_path).expect("read turbo corrupt finish status");
+        let (par2rs, par2rs_ok) =
+            par2rs_finish_packed_dump(slice_len, chunk_len, num_outputs, 7, true);
+        assert_eq!(turbo, par2rs, "finish corruption bytes mismatch");
+        assert_eq!(turbo_ok.trim(), if par2rs_ok { "1" } else { "0" });
+        assert!(!par2rs_ok, "corrupted checksum should fail");
     }
 
     #[test]
@@ -5471,6 +5644,247 @@ mod tests {
         let mut dst = alloc_aligned_vec(src.len());
         dst.copy_from_slice(src);
         dst
+    }
+
+    fn turbo_gf16_root() -> &'static Path {
+        Path::new("/home/mjc/projects/par2cmdline-turbo/parpar/gf16")
+    }
+
+    fn turbo_compare_helper_source() -> String {
+        format!(
+            r#"#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define PARPAR_INCLUDE_BASIC_OPS
+#include "{}/gf16_xor_avx2.c"
+
+static void fill_prepare_pattern(uint8_t* dst, size_t len) {{
+    for(size_t i = 0; i < len; i++) {{
+        dst[i] = (uint8_t)((i * 37u + 11u) & 0xffu);
+    }}
+}}
+
+static void fill_finish_pattern(uint8_t* dst, size_t len) {{
+    for(size_t i = 0; i < len; i++) {{
+        dst[i] = (uint8_t)((i * 29u + 7u) & 0xffu);
+    }}
+}}
+
+static void* alloc_aligned(size_t len, int zero) {{
+    size_t alloc_len = ((len + 31u) / 32u) * 32u;
+    void* ptr = NULL;
+    if(posix_memalign(&ptr, 32, alloc_len) != 0) return NULL;
+    if(zero) memset(ptr, 0, alloc_len);
+    return ptr;
+}}
+
+static size_t packed_len(size_t slice_len, unsigned num_slices, size_t chunk_len) {{
+    const size_t block_len = {};
+    size_t aligned_slice_len = ((slice_len + block_len - 1) / block_len) * block_len;
+    size_t compute_len = aligned_slice_len + block_len;
+    size_t segment_count = (compute_len + chunk_len - 1) / chunk_len;
+    size_t last_chunk_len = compute_len % chunk_len;
+    if(last_chunk_len == 0) last_chunk_len = chunk_len;
+    return (segment_count - 1) * (size_t)num_slices * chunk_len + (size_t)num_slices * last_chunk_len;
+}}
+
+static size_t checksum_offset(size_t slice_len, unsigned num_slices, unsigned index, size_t chunk_len) {{
+    const size_t block_len = {};
+    size_t aligned_slice_len = ((slice_len + block_len - 1) / block_len) * block_len;
+    size_t effective_last_chunk_len = (aligned_slice_len + block_len) % chunk_len;
+    if(effective_last_chunk_len == 0) effective_last_chunk_len = chunk_len;
+    size_t full_chunks = aligned_slice_len / chunk_len;
+    size_t chunk_stride = chunk_len * (size_t)num_slices;
+    return chunk_stride * full_chunks + (size_t)index * effective_last_chunk_len + effective_last_chunk_len - block_len;
+}}
+
+int main(int argc, char** argv) {{
+    if(argc < 2) return 2;
+    const char* mode = argv[1];
+    if(strcmp(mode, "prepare") == 0) {{
+        if(argc != 8) return 2;
+        const char* output_path = argv[2];
+        size_t src_len = strtoull(argv[3], NULL, 0);
+        size_t slice_len = strtoull(argv[4], NULL, 0);
+        size_t chunk_len = strtoull(argv[5], NULL, 0);
+        unsigned input_pack_size = (unsigned)strtoul(argv[6], NULL, 0);
+        unsigned input_num = (unsigned)strtoul(argv[7], NULL, 0);
+        uint8_t* src = (uint8_t*)alloc_aligned(src_len, 0);
+        uint8_t* dst = (uint8_t*)alloc_aligned(packed_len(slice_len, input_pack_size, chunk_len), 1);
+        if(!src || !dst) return 3;
+        fill_prepare_pattern(src, src_len);
+        size_t aligned_slice_len = ((slice_len + {} - 1) / {}) * {};
+        gf16_xor_prepare_packed_cksum_avx2(dst, src, src_len, aligned_slice_len, input_pack_size, input_num, chunk_len);
+        FILE* fp = fopen(output_path, "wb");
+        if(!fp) return 4;
+        fwrite(dst, 1, packed_len(slice_len, input_pack_size, chunk_len), fp);
+        fclose(fp);
+        free(dst);
+        free(src);
+        return 0;
+    }}
+    if(strcmp(mode, "finish") == 0) {{
+        if(argc != 9) return 2;
+        const char* output_path = argv[2];
+        const char* status_path = argv[3];
+        size_t slice_len = strtoull(argv[4], NULL, 0);
+        size_t chunk_len = strtoull(argv[5], NULL, 0);
+        unsigned num_outputs = (unsigned)strtoul(argv[6], NULL, 0);
+        unsigned output_num = (unsigned)strtoul(argv[7], NULL, 0);
+        int corrupt = atoi(argv[8]);
+        size_t aligned_slice_len = ((slice_len + {} - 1) / {}) * {};
+        uint8_t* input = (uint8_t*)alloc_aligned(slice_len, 0);
+        uint8_t* prepared = (uint8_t*)alloc_aligned(packed_len(slice_len, num_outputs, chunk_len), 1);
+        uint8_t* output = (uint8_t*)alloc_aligned(slice_len, 0);
+        if(!input || !prepared || !output) return 3;
+        fill_finish_pattern(input, slice_len);
+        gf16_xor_prepare_packed_cksum_avx2(prepared, input, slice_len, aligned_slice_len, num_outputs, output_num, chunk_len);
+        if(corrupt) prepared[checksum_offset(slice_len, num_outputs, output_num, chunk_len)] ^= 1;
+        int ok = gf16_xor_finish_packed_cksum_avx2(output, prepared, slice_len, num_outputs, output_num, chunk_len);
+        FILE* fp = fopen(output_path, "wb");
+        if(!fp) return 4;
+        fwrite(output, 1, slice_len, fp);
+        fclose(fp);
+        fp = fopen(status_path, "wb");
+        if(!fp) return 4;
+        fputc(ok ? '1' : '0', fp);
+        fclose(fp);
+        free(output);
+        free(prepared);
+        free(input);
+        return 0;
+    }}
+    return 2;
+}}
+"#,
+            turbo_gf16_root().display(),
+            bitplane::AVX2_BLOCK_BYTES,
+            bitplane::AVX2_BLOCK_BYTES,
+            bitplane::AVX2_BLOCK_BYTES,
+            bitplane::AVX2_BLOCK_BYTES,
+            bitplane::AVX2_BLOCK_BYTES,
+            bitplane::AVX2_BLOCK_BYTES,
+            bitplane::AVX2_BLOCK_BYTES,
+            bitplane::AVX2_BLOCK_BYTES,
+        )
+    }
+
+    fn turbo_compare_helper_bin() -> Option<PathBuf> {
+        if !turbo_gf16_root().join("gf16_xor_avx2.c").exists() {
+            eprintln!(
+                "skipping turbo compare: missing {}",
+                turbo_gf16_root().display()
+            );
+            return None;
+        }
+        let work_dir = std::env::temp_dir().join(format!(
+            "par2rs-xorjit-turbo-compare-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&work_dir).expect("create turbo compare temp dir");
+        let source_path = work_dir.join("turbo_compare.c");
+        let bin_path = work_dir.join("turbo_compare");
+        fs::write(&source_path, turbo_compare_helper_source()).expect("write turbo helper source");
+        let status = Command::new("cc")
+            .arg("-O2")
+            .arg("-mavx2")
+            .arg("-mvpclmulqdq")
+            .arg(&source_path)
+            .arg(turbo_gf16_root().join("gfmat_coeff.c"))
+            .arg("-o")
+            .arg(&bin_path)
+            .status()
+            .expect("run cc for turbo helper");
+        if !status.success() {
+            panic!("failed to compile turbo compare helper");
+        }
+        Some(bin_path)
+    }
+
+    fn packed_storage_len(slice_len: usize, num_slices: usize, chunk_len: usize) -> usize {
+        let aligned_slice_len = slice_len.next_multiple_of(bitplane::AVX2_BLOCK_BYTES);
+        let compute_len = aligned_slice_len + bitplane::AVX2_BLOCK_BYTES;
+        let segment_count = compute_len.div_ceil(chunk_len);
+        let last_chunk_len = if compute_len % chunk_len == 0 {
+            chunk_len
+        } else {
+            compute_len % chunk_len
+        };
+        (segment_count - 1) * num_slices * chunk_len + num_slices * last_chunk_len
+    }
+
+    fn prepare_pattern37(len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|idx| ((idx * 37 + 11) & 0xff) as u8)
+            .collect::<Vec<_>>()
+    }
+
+    fn prepare_pattern29(len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|idx| ((idx * 29 + 7) & 0xff) as u8)
+            .collect::<Vec<_>>()
+    }
+
+    fn par2rs_prepare_packed_dump(
+        src_len: usize,
+        slice_len: usize,
+        chunk_len: usize,
+        input_pack_size: usize,
+        input_num: usize,
+    ) -> Vec<u8> {
+        let aligned_slice_len = slice_len.next_multiple_of(bitplane::AVX2_BLOCK_BYTES);
+        let mut prepared =
+            alloc_aligned_vec(packed_storage_len(slice_len, input_pack_size, chunk_len));
+        let input = prepare_pattern37(src_len);
+        prepare_xor_jit_bitplane_packed_input_cksum(
+            &mut prepared,
+            &input,
+            aligned_slice_len,
+            input_pack_size,
+            input_num,
+            chunk_len,
+        );
+        prepared
+    }
+
+    fn par2rs_finish_packed_dump(
+        slice_len: usize,
+        chunk_len: usize,
+        num_outputs: usize,
+        output_num: usize,
+        corrupt_checksum: bool,
+    ) -> (Vec<u8>, bool) {
+        let aligned_slice_len = slice_len.next_multiple_of(bitplane::AVX2_BLOCK_BYTES);
+        let input = prepare_pattern29(slice_len);
+        let mut prepared = alloc_aligned_vec(packed_storage_len(slice_len, num_outputs, chunk_len));
+        prepare_xor_jit_bitplane_packed_input_cksum(
+            &mut prepared,
+            &input,
+            aligned_slice_len,
+            num_outputs,
+            output_num,
+            chunk_len,
+        );
+        if corrupt_checksum {
+            let checksum_offset =
+                xor_jit_checksum_offset(aligned_slice_len, num_outputs, output_num, chunk_len);
+            prepared[checksum_offset] ^= 1;
+        }
+        let mut output = vec![0u8; slice_len];
+        let ok = finish_xor_jit_bitplane_packed_output_cksum(
+            &mut output,
+            &prepared,
+            num_outputs,
+            output_num,
+            chunk_len,
+        );
+        (output, ok)
     }
 
     #[test]
