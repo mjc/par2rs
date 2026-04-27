@@ -16,6 +16,12 @@ use md5::Md5;
 use par2rs::checksum::update_file_md5_block_md5_crc32_fused;
 #[cfg(target_arch = "x86_64")]
 use par2rs::parpar_hasher::hasher_input::HasherInput;
+#[cfg(target_arch = "x86_64")]
+use par2rs::parpar_hasher::md5x2::Md5x2;
+#[cfg(target_arch = "x86_64")]
+use par2rs::parpar_hasher::md5x2_scalar::Scalar;
+#[cfg(target_arch = "x86_64")]
+use par2rs::parpar_hasher::md5x2_sse2::Sse2;
 use std::hint::black_box;
 
 type Out = ([u8; 16], [u8; 16], u32);
@@ -49,8 +55,8 @@ fn tier1_helper(data: &[u8]) -> Out {
 // HasherInput: MD5x2 + CLMul CRC32 fused at 64 B granularity.
 // Single-block scenario: one update + one get_block(0) + one end().
 #[cfg(target_arch = "x86_64")]
-fn hasher_input(data: &[u8]) -> Out {
-    let mut h = HasherInput::new();
+fn hasher_input<B: Md5x2>(data: &[u8]) -> Out {
+    let mut h: HasherInput<B> = HasherInput::new();
     h.update(data);
     let bh = h.get_block(0);
     let file = h.end();
@@ -74,8 +80,15 @@ fn bench_tier1_helper_16k(data: Vec<u8>) -> Out {
 #[cfg(target_arch = "x86_64")]
 #[library_benchmark]
 #[bench::sixteen_kib(make_data(16 * 1024))]
-fn bench_hasher_input_16k(data: Vec<u8>) -> Out {
-    black_box(hasher_input(black_box(&data)))
+fn bench_hasher_input_scalar_16k(data: Vec<u8>) -> Out {
+    black_box(hasher_input::<Scalar>(black_box(&data)))
+}
+
+#[cfg(target_arch = "x86_64")]
+#[library_benchmark]
+#[bench::sixteen_kib(make_data(16 * 1024))]
+fn bench_hasher_input_sse2_16k(data: Vec<u8>) -> Out {
+    black_box(hasher_input::<Sse2>(black_box(&data)))
 }
 
 // ----------------------- 4 MiB single block ------------------------
@@ -95,8 +108,15 @@ fn bench_tier1_helper_4m(data: Vec<u8>) -> Out {
 #[cfg(target_arch = "x86_64")]
 #[library_benchmark]
 #[bench::four_mib(make_data(4 * 1024 * 1024))]
-fn bench_hasher_input_4m(data: Vec<u8>) -> Out {
-    black_box(hasher_input(black_box(&data)))
+fn bench_hasher_input_scalar_4m(data: Vec<u8>) -> Out {
+    black_box(hasher_input::<Scalar>(black_box(&data)))
+}
+
+#[cfg(target_arch = "x86_64")]
+#[library_benchmark]
+#[bench::four_mib(make_data(4 * 1024 * 1024))]
+fn bench_hasher_input_sse2_4m(data: Vec<u8>) -> Out {
+    black_box(hasher_input::<Sse2>(black_box(&data)))
 }
 
 // ----------------------- groups + main -----------------------------
@@ -107,10 +127,12 @@ library_benchmark_group!(
     benchmarks =
         bench_naive_seq_16k,
         bench_tier1_helper_16k,
-        bench_hasher_input_16k,
+        bench_hasher_input_scalar_16k,
+        bench_hasher_input_sse2_16k,
         bench_naive_seq_4m,
         bench_tier1_helper_4m,
-        bench_hasher_input_4m
+        bench_hasher_input_scalar_4m,
+        bench_hasher_input_sse2_4m
 );
 
 #[cfg(not(target_arch = "x86_64"))]

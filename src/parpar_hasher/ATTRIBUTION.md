@@ -18,12 +18,13 @@ under **GNU GPL v2 or later**, so the licenses are compatible.
 
 | par2rs Rust source            | Upstream C/C++ source                     | Notes                                                |
 | ----------------------------- | ----------------------------------------- | ---------------------------------------------------- |
+| `md5x2.rs`                    | `parpar/hasher/md5x2-base.h` macro contract | `Md5x2` trait — Rust analogue of upstream's textual `_FNMD5x2(f)` macro substitution. |
 | `md5x2_scalar.rs`             | `parpar/hasher/md5x2-x86-asm.h`           | Two-lane scalar (GPR) MD5 via `asm!`.                |
+| `md5x2_sse2.rs`               | `parpar/hasher/md5x2-sse.h` + `parpar/hasher/md5-base.h` | Two-lane SSE2 MD5: each lane in xmm lanes 0/2 of `[__m128i; 4]` state, rotate via `srli_epi64(shuffle<2200>, 32-r)` trick. |
 | `crc_clmul.rs`                | `parpar/hasher/crc_clmul.h` + `parpar/hasher/tables.cpp` (`pshufb_shf_table`) | x86_64 PCLMULQDQ CRC32 (4-fold). |
-| `hasher_input.rs`             | `parpar/hasher/hasher_input_base.h`,      | Fused 64-byte driver (block-MD5 + file-MD5 + CRC32). |
+| `hasher_input.rs`             | `parpar/hasher/hasher_input_base.h`,      | Fused 64-byte driver (block-MD5 + file-MD5 + CRC32). Generic over `Md5x2` backend. |
 |                               | `parpar/hasher/hasher_input.cpp`,         |                                                      |
 |                               | `parpar/hasher/hasher_input_impl.h`       |                                                      |
-| `md5x2_sse.rs` *(future)*     | `parpar/hasher/md5x2-sse-asm.h`           | SSE2 two-lane MD5 (each lane in `__m128i`).          |
 | `md5x2_avx512.rs` *(future)*  | `parpar/hasher/md5-avx512-asm.h`          | AVX-512 ternary-logic-accelerated path.              |
 | `md5x2_neon.rs` *(future)*    | `parpar/hasher/md5x2-neon-asm.h`,         | aarch64 NEON two-lane MD5.                           |
 |                               | `parpar/hasher/md5-arm64-asm.h`           |                                                      |

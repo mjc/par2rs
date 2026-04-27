@@ -32,7 +32,26 @@
 
 #![cfg(target_arch = "x86_64")]
 
-use super::{crc_clmul, md5x2_scalar};
+use super::crc_clmul;
+use super::md5x2::Md5x2;
+
+/// Default backend on x86_64.
+///
+/// Upstream picks `HasherInput_ClMulScalar` (= scalar MD5x2 + CLMul
+/// CRC32) on big cores and `HasherInput_ClMulSSE` (= SSE2 MD5x2 + CLMul
+/// CRC32) only on small cores (Tremont / Gracemont / Zen1 — see
+/// `parpar/hasher/hasher.cpp:107-117` for the exact dispatch rules).
+/// The reason: SSE2 MD5x2 packs both lanes' 32-bit MD5 words into one
+/// xmm register, which serialises the per-round dependency chain that
+/// scalar GPR code would have run in parallel via OoO execution. On
+/// modern Skylake-class / Zen3+ big cores, the scalar version is
+/// **faster**.
+///
+/// We don't yet have runtime CPU dispatch, so the default mirrors the
+/// most common upstream outcome: scalar. The SSE2 backend remains
+/// available via `HasherInput<Sse2>` for explicit selection / for the
+/// future small-core dispatch path.
+pub type DefaultBackend = super::md5x2_scalar::Scalar;
 
 const MD5_BLOCKSIZE: usize = 64;
 
@@ -40,9 +59,10 @@ const MD5_BLOCKSIZE: usize = 64;
 /// continuously while emitting per-block (MD5, CRC32) pairs at every
 /// `get_block` call.
 ///
-/// Mirrors upstream `HasherInput` (`hasher_input_base.h`).
-pub struct HasherInput {
-    md5_state: [u32; 8],
+/// Mirrors upstream `HasherInput` (`hasher_input_base.h`). Generic over
+/// the MD5x2 backend `B`; the default is [`DefaultBackend`] (SSE2).
+pub struct HasherInput<B: Md5x2 = DefaultBackend> {
+    md5_state: B::State,
     crc_state: crc_clmul::State,
     tmp: [u8; 128],
     tmp_len: usize,
@@ -58,13 +78,13 @@ pub struct BlockHash {
     pub crc32: u32,
 }
 
-impl HasherInput {
+impl<B: Md5x2> HasherInput<B> {
     /// Create a new per-file hasher state. Equivalent to upstream
     /// `HasherInput::HasherInput()` (which calls `reset()`).
     #[inline]
     pub fn new() -> Self {
         let mut h = Self {
-            md5_state: [0; 8],
+            md5_state: B::init_state(),
             crc_state: crc_clmul::State::new(),
             tmp: [0; 128],
             tmp_len: 0,
@@ -79,7 +99,7 @@ impl HasherInput {
     /// Reset to the post-construction state.
     #[inline]
     pub fn reset(&mut self) {
-        self.md5_state = md5x2_scalar::init_state();
+        self.md5_state = B::init_state();
         self.tmp_len = 0;
         self.pos_offset = 0;
         // SAFETY: x86_64 with sse2 always available; init touches state only.
@@ -162,11 +182,7 @@ impl HasherInput {
                     // FIRST data arg goes to lane HASH2X_BLOCK = 0 and
                     // the SECOND to HASH2X_FILE = 1.)
                     crc_clmul::process_block(&mut self.crc_state, block_data);
-                    md5x2_scalar::process_block_x2_scalar(
-                        &mut self.md5_state,
-                        block_data,
-                        self.tmp.as_ptr(),
-                    );
+                    B::process_block(&mut self.md5_state, block_data, self.tmp.as_ptr());
                 }
                 len -= wanted;
                 data_ = unsafe { data_.add(wanted) };
@@ -201,7 +217,7 @@ impl HasherInput {
             unsafe {
                 let block_ptr = data_.add(self.pos_offset);
                 crc_clmul::process_block(&mut self.crc_state, block_ptr);
-                md5x2_scalar::process_block_x2_scalar(&mut self.md5_state, block_ptr, data_);
+                B::process_block(&mut self.md5_state, block_ptr, data_);
             }
             data_ = unsafe { data_.add(MD5_BLOCKSIZE) };
             len -= MD5_BLOCKSIZE;
@@ -225,7 +241,7 @@ impl HasherInput {
         // Extract block-MD5 lane state into 16 raw bytes, then run the
         // upstream md5_final_block over tmp[pos_offset..pos_offset + (data_len_block & 63)],
         // adding `zero_pad` virtual zero bytes after the real tail.
-        let mut md5_out = extract_lane(&self.md5_state, 0);
+        let mut md5_out = B::extract_lane(&self.md5_state, 0);
         let block_tail_start = self.pos_offset;
         let block_tail_len = (self.data_len_block & 63) as usize;
         md5_final_block(
@@ -252,11 +268,7 @@ impl HasherInput {
         // input value here is irrelevant — we can pass tmp for both).
         if self.tmp_len >= MD5_BLOCKSIZE {
             unsafe {
-                md5x2_scalar::process_block_x2_scalar(
-                    &mut self.md5_state,
-                    self.tmp.as_ptr(),
-                    self.tmp.as_ptr(),
-                );
+                B::process_block(&mut self.md5_state, self.tmp.as_ptr(), self.tmp.as_ptr());
             }
             self.tmp_len -= MD5_BLOCKSIZE;
             // Shift the carry down: tmp[64..64+tmp_len] -> tmp[..tmp_len].
@@ -270,7 +282,7 @@ impl HasherInput {
         }
 
         // Reset block lane MD5 + CRC; file lane keeps rolling.
-        md5x2_scalar::init_lane(&mut self.md5_state, 0);
+        B::init_lane(&mut self.md5_state, 0);
         unsafe { crc_clmul::init(&mut self.crc_state) };
         self.pos_offset = self.tmp_len;
         self.data_len_block = 0;
@@ -288,11 +300,7 @@ impl HasherInput {
         // Defensive: usually getBlock already drained tmp_len < 64.
         if self.tmp_len >= MD5_BLOCKSIZE {
             unsafe {
-                md5x2_scalar::process_block_x2_scalar(
-                    &mut self.md5_state,
-                    self.tmp.as_ptr(),
-                    self.tmp.as_ptr(),
-                );
+                B::process_block(&mut self.md5_state, self.tmp.as_ptr(), self.tmp.as_ptr());
             }
             // Upstream doesn't shift here because `end` won't iterate;
             // the remaining tmp bytes for the file lane are always at
@@ -307,7 +315,7 @@ impl HasherInput {
             // dataLen[FILE], 0) without any shift.)
         }
 
-        let mut md5_out = extract_lane(&self.md5_state, 1);
+        let mut md5_out = B::extract_lane(&self.md5_state, 1);
         let file_tail_len = (self.data_len_file & 63) as usize;
         md5_final_block(
             &mut md5_out,
@@ -319,23 +327,10 @@ impl HasherInput {
     }
 }
 
-impl Default for HasherInput {
+impl<B: Md5x2> Default for HasherInput<B> {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Extract one MD5 lane's 4 state words as little-endian bytes — i.e.
-/// the standard MD5 digest representation that
-/// `md5_final_block` consumes and updates in-place.
-#[inline]
-fn extract_lane(state: &[u32; 8], lane: usize) -> [u8; 16] {
-    let off = lane * 4;
-    let mut out = [0u8; 16];
-    for i in 0..4 {
-        out[i * 4..i * 4 + 4].copy_from_slice(&state[off + i].to_le_bytes());
-    }
-    out
 }
 
 /// Pack a 16-byte MD5 state back into 4 little-endian state words.
@@ -533,8 +528,20 @@ fn crc_zero_pad(crc: u32, mut zero_pad: u64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parpar_hasher::md5x2_scalar::Scalar;
+    use crate::parpar_hasher::md5x2_sse2::Sse2;
     use md5::Digest as _;
     use md5::Md5;
+
+    /// Run a `drive(...)` invocation against both backends so every
+    /// functional test simultaneously exercises Scalar and SSE2. Any
+    /// divergence trips here before it reaches production callers.
+    macro_rules! run_both {
+        ($data:expr, $bs:expr, $chunks:expr) => {{
+            drive::<Scalar>($data, $bs, $chunks);
+            drive::<Sse2>($data, $bs, $chunks);
+        }};
+    }
 
     /// Naive 3-pass reference: returns (file_md5, [(block_md5, block_crc), ...]).
     fn reference(data: &[u8], block_size: usize) -> ([u8; 16], Vec<([u8; 16], u32)>) {
@@ -577,8 +584,8 @@ mod tests {
 
     /// Drive a `HasherInput` through a stream split into arbitrary
     /// chunks, then compare its outputs to the naive reference.
-    fn drive(data: &[u8], block_size: usize, chunks: &[usize]) {
-        let mut h = HasherInput::new();
+    fn drive<B: Md5x2>(data: &[u8], block_size: usize, chunks: &[usize]) {
+        let mut h: HasherInput<B> = HasherInput::new();
         let mut got_blocks = Vec::new();
         let mut written_in_block = 0usize;
 
@@ -630,44 +637,48 @@ mod tests {
 
     #[test]
     fn empty() {
-        let h = HasherInput::new();
-        let file = h.end();
-        let mut ref_md5 = Md5::new();
-        ref_md5.update([]);
-        let ref_md5: [u8; 16] = ref_md5.finalize().into();
-        assert_eq!(file, ref_md5);
+        for backend in ["scalar", "sse2"] {
+            let file = match backend {
+                "scalar" => HasherInput::<Scalar>::new().end(),
+                _ => HasherInput::<Sse2>::new().end(),
+            };
+            let mut ref_md5 = Md5::new();
+            ref_md5.update([]);
+            let ref_md5: [u8; 16] = ref_md5.finalize().into();
+            assert_eq!(file, ref_md5, "{backend} empty file MD5 mismatch");
+        }
     }
 
     #[test]
     fn single_block_aligned() {
         // 1 block exactly, no zero-pad.
         let data = synth(4096, 7);
-        drive(&data, 4096, &[]);
+        run_both!(&data, 4096, &[]);
     }
 
     #[test]
     fn multiple_blocks_aligned() {
         let data = synth(4096 * 5, 11);
-        drive(&data, 4096, &[]);
+        run_both!(&data, 4096, &[]);
     }
 
     #[test]
     fn multiple_blocks_short_tail() {
         // Last block is shorter than block_size; get_block must zero-pad.
         let data = synth(4096 * 3 + 123, 17);
-        drive(&data, 4096, &[]);
+        run_both!(&data, 4096, &[]);
     }
 
     #[test]
     fn small_chunked_updates() {
         let data = synth(4096 * 2 + 50, 23);
-        drive(&data, 4096, &[1, 7, 13, 64, 65, 100, 1024]);
+        run_both!(&data, 4096, &[1, 7, 13, 64, 65, 100, 1024]);
     }
 
     #[test]
     fn one_byte_at_a_time() {
         let data = synth(4096 + 10, 41);
-        drive(&data, 4096, &[1]);
+        run_both!(&data, 4096, &[1]);
     }
 
     #[test]
@@ -676,7 +687,7 @@ mod tests {
         // drive helper splits them at the boundary, but each piece is
         // still large multi-cache-line.
         let data = synth(4096 * 4 + 7, 53);
-        drive(&data, 4096, &[1234, 5678, 9999]);
+        run_both!(&data, 4096, &[1234, 5678, 9999]);
     }
 
     #[test]
@@ -684,7 +695,7 @@ mod tests {
         // 64-byte blocks — exercises the staggered-offset code paths
         // heavily (pos_offset cycles through values rapidly).
         let data = synth(64 * 17 + 9, 67);
-        drive(&data, 64, &[1, 33, 65, 100]);
+        run_both!(&data, 64, &[1, 33, 65, 100]);
     }
 
     #[test]
@@ -692,12 +703,12 @@ mod tests {
         // 73-byte blocks (not multiple of 64) — pos_offset takes many
         // distinct values, including the staggered carry case.
         let data = synth(73 * 11 + 19, 71);
-        drive(&data, 73, &[1, 5, 60, 73, 200]);
+        run_both!(&data, 73, &[1, 5, 60, 73, 200]);
     }
 
     #[test]
     fn large_buffer() {
         let data = synth(64 * 1024 + 17, 89);
-        drive(&data, 4096, &[64 * 1024]);
+        run_both!(&data, 4096, &[64 * 1024]);
     }
 }

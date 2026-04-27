@@ -415,6 +415,39 @@ pub fn init_lane(state: &mut [u32; 8], lane: usize) {
     state[off + 3] = 0x10325476;
 }
 
+/// `Md5x2` backend wrapper for the scalar implementation. Used as the
+/// portable fallback and as a correctness oracle for the SSE2 backend.
+pub struct Scalar;
+
+impl crate::parpar_hasher::md5x2::Md5x2 for Scalar {
+    type State = [u32; 8];
+
+    #[inline]
+    fn init_state() -> Self::State {
+        init_state()
+    }
+
+    #[inline]
+    fn init_lane(state: &mut Self::State, lane: usize) {
+        init_lane(state, lane);
+    }
+
+    #[inline]
+    fn extract_lane(state: &Self::State, lane: usize) -> [u8; 16] {
+        let off = lane * 4;
+        let mut out = [0u8; 16];
+        for i in 0..4 {
+            out[i * 4..i * 4 + 4].copy_from_slice(&state[off + i].to_le_bytes());
+        }
+        out
+    }
+
+    #[inline]
+    unsafe fn process_block(state: &mut Self::State, data1: *const u8, data2: *const u8) {
+        process_block_x2_scalar(state, data1, data2)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
