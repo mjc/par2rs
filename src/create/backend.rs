@@ -869,15 +869,20 @@ impl CreateRecoveryBackend {
         let worker_count = self.workers.worker_count();
         let recovery_count = self.recovery_exponents.len();
         let compute_len = self.chunk_len;
+        // Mirror turbo `calcChunkSize`: split the *aligned* slice across
+        // segments. Computing on the unaligned `chunk_len` lets the segment_len
+        // round down below what `max_compute_jobs` predicted, producing more
+        // segments than the preallocated job_storage can hold.
+        let segment_basis = self.aligned_chunk_len.max(compute_len);
         let segment_len = align_down(
             self.method
                 .ideal_segment_len()
-                .min(compute_len)
+                .min(segment_basis)
                 .max(AVX2_ALIGNMENT),
             AVX2_ALIGNMENT,
         )
         .max(AVX2_ALIGNMENT);
-        let segment_count = compute_len.div_ceil(segment_len);
+        let segment_count = segment_basis.div_ceil(segment_len);
         let output_groups = worker_count.min(recovery_count).max(1);
         let outputs_per_group = recovery_count.div_ceil(output_groups);
         let staging = &self.staging[staging_idx];
@@ -887,6 +892,9 @@ impl CreateRecoveryBackend {
         let mut job_count = 0;
         for segment_idx in 0..segment_count {
             let start = segment_idx * segment_len;
+            if start >= compute_len {
+                break;
+            }
             let len = (compute_len - start).min(segment_len);
             for output_group in 0..output_groups {
                 let output_start = output_group * outputs_per_group;
