@@ -57,6 +57,8 @@ pub mod hasher_input;
 #[cfg(target_arch = "x86_64")]
 pub mod md5x2;
 #[cfg(target_arch = "x86_64")]
+pub mod md5x2_bmi1;
+#[cfg(target_arch = "x86_64")]
 pub mod md5x2_scalar;
 #[cfg(target_arch = "x86_64")]
 pub mod md5x2_sse2;

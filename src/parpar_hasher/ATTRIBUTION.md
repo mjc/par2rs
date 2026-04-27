@@ -19,7 +19,8 @@ under **GNU GPL v2 or later**, so the licenses are compatible.
 | par2rs Rust source            | Upstream C/C++ source                     | Notes                                                |
 | ----------------------------- | ----------------------------------------- | ---------------------------------------------------- |
 | `md5x2.rs`                    | `parpar/hasher/md5x2-base.h` macro contract | `Md5x2` trait — Rust analogue of upstream's textual `_FNMD5x2(f)` macro substitution. |
-| `md5x2_scalar.rs`             | `parpar/hasher/md5x2-x86-asm.h`           | Two-lane scalar (GPR) MD5 via `asm!`.                |
+| `md5x2_scalar.rs`             | `parpar/hasher/md5x2-x86-asm.h` (non-BMI1 branches) | Two-lane scalar (GPR) MD5 via `asm!`. Always available on x86_64. |
+| `md5x2_bmi1.rs`               | `parpar/hasher/md5x2-x86-asm.h` (`_MD5_USE_BMI1_` branches), gated through `parpar/hasher/hasher_bmi1.cpp` | Same shape as scalar; G/I/I_LAST round bodies use `andnl` and the `K-1`/`subl` identity to save a NOT (and an OR in I). Requires runtime BMI1 check. |
 | `md5x2_sse2.rs`               | `parpar/hasher/md5x2-sse.h` + `parpar/hasher/md5-base.h` | Two-lane SSE2 MD5: each lane in xmm lanes 0/2 of `[__m128i; 4]` state, rotate via `srli_epi64(shuffle<2200>, 32-r)` trick. |
 | `crc_clmul.rs`                | `parpar/hasher/crc_clmul.h` + `parpar/hasher/tables.cpp` (`pshufb_shf_table`) | x86_64 PCLMULQDQ CRC32 (4-fold). |
 | `hasher_input.rs`             | `parpar/hasher/hasher_input_base.h`,      | Fused 64-byte driver (block-MD5 + file-MD5 + CRC32). Generic over `Md5x2` backend. |

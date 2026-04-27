@@ -31,6 +31,7 @@ use md5::Md5;
 use par2rs::checksum::update_file_md5_block_md5_crc32_fused;
 use par2rs::parpar_hasher::hasher_input::HasherInput;
 use par2rs::parpar_hasher::md5x2::Md5x2;
+use par2rs::parpar_hasher::md5x2_bmi1::Bmi1;
 use par2rs::parpar_hasher::md5x2_scalar::Scalar;
 use par2rs::parpar_hasher::md5x2_sse2::Sse2;
 use std::hint::black_box;
@@ -140,6 +141,10 @@ fn v4_hasher_input_sse2(data: &[u8], block_size: usize) -> MultiBlockOut {
     hasher_input_blocks::<Sse2>(data, block_size)
 }
 
+fn v5_hasher_input_bmi1(data: &[u8], block_size: usize) -> MultiBlockOut {
+    hasher_input_blocks::<Bmi1>(data, block_size)
+}
+
 // ----------------------------- Bench -----------------------------
 
 fn bench(c: &mut Criterion) {
@@ -155,6 +160,7 @@ fn bench(c: &mut Criterion) {
     let multi_total = multi_block_size * multi_blocks + multi_block_size / 2;
 
     // ---- Correctness sanity check (panics on divergence) ----
+    let bmi1_ok = std::is_x86_feature_detected!("bmi1");
     for &len in &single_sizes {
         let data = make_data(len);
         let r1 = v1_naive_seq_blocks(&data, len);
@@ -167,6 +173,10 @@ fn bench(c: &mut Criterion) {
             "HasherInput<Scalar> diverges from naive at len={len}"
         );
         assert_eq!(r1, r4, "HasherInput<Sse2> diverges from naive at len={len}");
+        if bmi1_ok {
+            let r5 = v5_hasher_input_bmi1(&data, len);
+            assert_eq!(r1, r5, "HasherInput<Bmi1> diverges from naive at len={len}");
+        }
     }
     {
         let data = make_data(multi_total);
@@ -177,6 +187,10 @@ fn bench(c: &mut Criterion) {
         assert_eq!(r1, r2, "tier1 helper multi-block diverges");
         assert_eq!(r1, r3, "HasherInput<Scalar> multi-block diverges");
         assert_eq!(r1, r4, "HasherInput<Sse2> multi-block diverges");
+        if bmi1_ok {
+            let r5 = v5_hasher_input_bmi1(&data, multi_block_size);
+            assert_eq!(r1, r5, "HasherInput<Bmi1> multi-block diverges");
+        }
     }
 
     // ---- Single-block group ----
@@ -196,6 +210,11 @@ fn bench(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("4_hasher_sse2", len), &data, |b, d| {
             b.iter(|| black_box(v4_hasher_input_sse2(black_box(d), len)))
         });
+        if bmi1_ok {
+            g.bench_with_input(BenchmarkId::new("5_hasher_bmi1", len), &data, |b, d| {
+                b.iter(|| black_box(v5_hasher_input_bmi1(black_box(d), len)))
+            });
+        }
     }
     g.finish();
 
@@ -218,6 +237,11 @@ fn bench(c: &mut Criterion) {
     g.bench_with_input(BenchmarkId::new("4_hasher_sse2", &label), &data, |b, d| {
         b.iter(|| black_box(v4_hasher_input_sse2(black_box(d), multi_block_size)))
     });
+    if bmi1_ok {
+        g.bench_with_input(BenchmarkId::new("5_hasher_bmi1", &label), &data, |b, d| {
+            b.iter(|| black_box(v5_hasher_input_bmi1(black_box(d), multi_block_size)))
+        });
+    }
     g.finish();
 }
 

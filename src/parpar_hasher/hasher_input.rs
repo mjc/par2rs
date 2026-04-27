@@ -528,18 +528,23 @@ fn crc_zero_pad(crc: u32, mut zero_pad: u64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parpar_hasher::md5x2_bmi1::Bmi1;
     use crate::parpar_hasher::md5x2_scalar::Scalar;
     use crate::parpar_hasher::md5x2_sse2::Sse2;
     use md5::Digest as _;
     use md5::Md5;
 
-    /// Run a `drive(...)` invocation against both backends so every
-    /// functional test simultaneously exercises Scalar and SSE2. Any
-    /// divergence trips here before it reaches production callers.
+    /// Run a `drive(...)` invocation against every backend so every
+    /// functional test simultaneously exercises Scalar, SSE2, and (when
+    /// the host CPU supports it) BMI1. Any divergence trips here before
+    /// it reaches production callers.
     macro_rules! run_both {
         ($data:expr, $bs:expr, $chunks:expr) => {{
             drive::<Scalar>($data, $bs, $chunks);
             drive::<Sse2>($data, $bs, $chunks);
+            if std::is_x86_feature_detected!("bmi1") {
+                drive::<Bmi1>($data, $bs, $chunks);
+            }
         }};
     }
 
