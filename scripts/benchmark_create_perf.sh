@@ -64,6 +64,8 @@ Environment:
   INCLUDE_PSHUFB=1    include the par2rs PSHUFB baseline (default: $INCLUDE_PSHUFB)
   WORK_ROOT=DIR      generated corpus and PAR2 work directory
                      default: result run directory/work
+  CORPUS_ROOT=DIR    reusable corpus root, separate from per-run work/output dirs
+                     default: under WORK_ROOT/<case>/corpus
   VERIFY_OUTPUTS=0   skip cross-tool verification after each create
   VERIFY_REPAIR=MODE run destructive cross-tool repair validation: smoke, 1, or 0
                      default: $VERIFY_REPAIR
@@ -84,6 +86,7 @@ Environment:
 Example:
   nix develop --command env ITERATIONS=10 THREADS=16 PROFILE_CASE=single_5g \\
     WORK_ROOT="\$HOME/uncompressed/par2rs-create-perf/manual-run" \\
+    CORPUS_ROOT="\$HOME/uncompressed/par2rs-create-perf/corpus-cache" \\
     RECOVERY_FILES=8 FIRST_RECOVERY_BLOCK=1 \\
     CASES='single_256m:1:256:1048576,multi_1g:64:16:1048576,single_5g:1:5120:1048576' \\
     scripts/benchmark_create_perf.sh
@@ -175,6 +178,7 @@ mkdir -p "$RESULTS_ROOT"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 RUN_ROOT="$RESULTS_ROOT/run-$TIMESTAMP"
 WORK_ROOT="${WORK_ROOT:-$RUN_ROOT/work}"
+CORPUS_ROOT="${CORPUS_ROOT:-}"
 RAW_CSV="$RUN_ROOT/raw.csv"
 SUMMARY_MD="$RUN_ROOT/summary.md"
 SMOKE_CSV="$RUN_ROOT/smoke.csv"
@@ -192,6 +196,9 @@ trap cleanup EXIT
 echo "=== par2rs create perf benchmark ==="
 echo "results: $RUN_ROOT"
 echo "work:    $WORK_ROOT"
+if [[ -n "$CORPUS_ROOT" ]]; then
+    echo "corpus:  $CORPUS_ROOT"
+fi
 echo "iterations: $ITERATIONS measured, $WARMUP_RUNS warmup"
 echo "cases: $CASES"
 echo "threads: $THREADS"
@@ -272,16 +279,25 @@ split_cases() {
     tr ',' '\n' <<< "$CASES"
 }
 
+corpus_dir_for_case() {
+    local label="$1"
+    if [[ -n "$CORPUS_ROOT" ]]; then
+        printf '%s/%s/corpus\n' "$CORPUS_ROOT" "$label"
+    else
+        printf '%s/%s/corpus\n' "$WORK_ROOT" "$label"
+    fi
+}
+
 make_corpus() {
-    local case_dir="$1"
+    local corpus_dir="$1"
     local file_count="$2"
     local file_size_mib="$3"
 
-    mkdir -p "$case_dir/corpus"
+    mkdir -p "$corpus_dir"
     local i
     for i in $(seq 1 "$file_count"); do
         local file
-        file="$case_dir/corpus/file_$(printf '%04d' "$i").bin"
+        file="$corpus_dir/file_$(printf '%04d' "$i").bin"
         if [[ ! -f "$file" ]]; then
             python3 - "$file" "$i" "$file_size_mib" <<'PY'
 import sys
@@ -781,9 +797,10 @@ run_smoke_benchmarks() {
         fi
 
         local case_dir="$WORK_ROOT/$label"
-        local corpus_dir="$case_dir/corpus"
+        local corpus_dir
+        corpus_dir="$(corpus_dir_for_case "$label")"
         echo "Smoke preparing '$label': ${file_count}x${file_size_mib}MiB, block size ${block_size}"
-        make_corpus "$case_dir" "$file_count" "$file_size_mib"
+        make_corpus "$corpus_dir" "$file_count" "$file_size_mib"
 
         for tool in "${BENCHMARK_TOOLS[@]}"; do
             echo "Smoke measured: $label / $tool"
@@ -911,7 +928,8 @@ generate_flamegraph() {
     local case_spec="$1"
     IFS=: read -r label file_count file_size_mib block_size <<< "$case_spec"
     local case_dir="$WORK_ROOT/$label"
-    local corpus_dir="$case_dir/corpus"
+    local corpus_dir
+    corpus_dir="$(corpus_dir_for_case "$label")"
     local flamegraph_file="$RUN_ROOT/par2rs-create-$label-$PROFILE_TOOL-flamegraph.svg"
     local output_file="$case_dir/flamegraph-out.par2"
 
@@ -1083,7 +1101,8 @@ generate_cache_profile() {
     local case_spec="$1"
     IFS=: read -r label file_count file_size_mib block_size <<< "$case_spec"
     local case_dir="$WORK_ROOT/$label"
-    local corpus_dir="$case_dir/corpus"
+    local corpus_dir
+    corpus_dir="$(corpus_dir_for_case "$label")"
 
     if [[ "$CACHE_PROFILE" != "1" ]]; then
         return 0
@@ -1229,9 +1248,9 @@ while IFS= read -r case_spec; do
         profile_case_spec="$case_spec"
     fi
     case_dir="$WORK_ROOT/$label"
-    corpus_dir="$case_dir/corpus"
+    corpus_dir="$(corpus_dir_for_case "$label")"
     echo "Preparing case '$label': ${file_count}x${file_size_mib}MiB, block size ${block_size}"
-    make_corpus "$case_dir" "$file_count" "$file_size_mib"
+    make_corpus "$corpus_dir" "$file_count" "$file_size_mib"
 
     for tool in "${BENCHMARK_TOOLS[@]}"; do
         echo "Warmup: $label / $tool"
