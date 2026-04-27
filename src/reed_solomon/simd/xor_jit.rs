@@ -393,6 +393,51 @@ pub enum XorJitFlavor {
 }
 
 #[cfg(target_arch = "x86_64")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XorJitCreateMethodInfo {
+    pub ideal_input_multiple: usize,
+    pub prefetch_downscale: usize,
+    pub alignment: usize,
+    pub stride: usize,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XorJitCreatePrefetchPlan {
+    pub pf_len: usize,
+    pub output_prefetch_rounds: usize,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub const fn xor_jit_create_avx2_method_info() -> XorJitCreateMethodInfo {
+    XorJitCreateMethodInfo {
+        ideal_input_multiple: 1,
+        prefetch_downscale: 1,
+        alignment: 32,
+        stride: bitplane::AVX2_BLOCK_BYTES,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub const fn xor_jit_create_output_prefetch_rounds(info: XorJitCreateMethodInfo) -> usize {
+    1usize << info.prefetch_downscale
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub const fn xor_jit_create_prefetch_plan(
+    info: XorJitCreateMethodInfo,
+    len: usize,
+) -> XorJitCreatePrefetchPlan {
+    XorJitCreatePrefetchPlan {
+        pf_len: len >> info.prefetch_downscale,
+        output_prefetch_rounds: xor_jit_create_output_prefetch_rounds(info),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
 type LaneKernelFn = unsafe extern "sysv64" fn(*const u8, *mut u8);
 
@@ -1704,9 +1749,10 @@ pub fn xor_packed_multi_region_v16i1(
     prefetch_in: Option<*const u8>,
     prefetch_out: Option<*const u8>,
 ) {
+    let method_info = xor_jit_create_avx2_method_info();
     assert_eq!(output.len(), len);
     assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
-    assert_eq!(output.as_ptr() as usize % 32, 0);
+    assert_eq!(output.as_ptr() as usize % method_info.alignment, 0);
 
     if regions == 0 || len == 0 {
         return;
@@ -1720,6 +1766,7 @@ pub fn xor_packed_multi_region_v16i1(
             regions,
             output.as_mut_ptr(),
             len,
+            method_info,
             prefetch_in,
             prefetch_out,
         );
@@ -1732,11 +1779,12 @@ pub fn xor_packed_multi_region_v16i1_ptr(
     regions: usize,
     output: *mut u8,
     len: usize,
+    method_info: XorJitCreateMethodInfo,
     prefetch_in: Option<*const u8>,
     prefetch_out: Option<*const u8>,
 ) {
     assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
-    assert_eq!(output as usize % 32, 0);
+    assert_eq!(output as usize % method_info.alignment, 0);
 
     if regions == 0 || len == 0 {
         return;
@@ -1746,7 +1794,15 @@ pub fn xor_packed_multi_region_v16i1_ptr(
     assert!(!output.is_null());
 
     unsafe {
-        xor_packed_multi_region_v16i1_avx2(src, regions, output, len, prefetch_in, prefetch_out);
+        xor_packed_multi_region_v16i1_avx2(
+            src,
+            regions,
+            output,
+            len,
+            method_info,
+            prefetch_in,
+            prefetch_out,
+        );
     }
 }
 
@@ -3891,21 +3947,20 @@ unsafe fn xor_packed_multi_region_v16i1_avx2(
     regions: usize,
     output: *mut u8,
     len: usize,
+    method_info: XorJitCreateMethodInfo,
     prefetch_in: Option<*const u8>,
     prefetch_out: Option<*const u8>,
 ) {
     const INTERLEAVE: usize = 1;
     const REGIONS_PER_CALL: usize = 6;
-    const PREFETCH_FACTOR: usize = 1;
-    const OUTPUT_PREFETCH_ROUNDS: usize = 1 << PREFETCH_FACTOR;
 
     debug_assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
-    debug_assert_eq!(output as usize % 32, 0);
+    debug_assert_eq!(output as usize % method_info.alignment, 0);
 
-    let pf_len = len >> PREFETCH_FACTOR;
+    let prefetch_plan = xor_jit_create_prefetch_plan(method_info, len);
     let mut region = 0usize;
-    let mut output_pf_rounds = OUTPUT_PREFETCH_ROUNDS;
-    let mut prefetch_out_ptr = prefetch_out.map(|ptr| ptr.wrapping_add(pf_len));
+    let mut output_pf_rounds = prefetch_plan.output_prefetch_rounds;
+    let mut prefetch_out_ptr = prefetch_out.map(|ptr| ptr.wrapping_add(prefetch_plan.pf_len));
 
     while output_pf_rounds > 0 && regions.saturating_sub(region) >= REGIONS_PER_CALL {
         let src_end = src.add(region * len + len * INTERLEAVE);
@@ -3919,7 +3974,7 @@ unsafe fn xor_packed_multi_region_v16i1_avx2(
         region += REGIONS_PER_CALL;
         output_pf_rounds -= 1;
         prefetch_out_ptr = if output_pf_rounds > 0 {
-            prefetch_out_ptr.map(|ptr| ptr.wrapping_add(pf_len))
+            prefetch_out_ptr.map(|ptr| ptr.wrapping_add(prefetch_plan.pf_len))
         } else {
             None
         };
@@ -3942,7 +3997,7 @@ unsafe fn xor_packed_multi_region_v16i1_avx2(
     }
 
     if let Some(prefetch_in_ptr) = prefetch_in {
-        let mut prefetch_ptr = prefetch_in_ptr.wrapping_add(pf_len);
+        let mut prefetch_ptr = prefetch_in_ptr.wrapping_add(prefetch_plan.pf_len);
         while regions.saturating_sub(region) >= REGIONS_PER_CALL {
             let src_end = src.add(region * len + len * INTERLEAVE);
             xor_packed_multi_region_v16i1_core(
@@ -3953,7 +4008,7 @@ unsafe fn xor_packed_multi_region_v16i1_avx2(
                 Some((prefetch_ptr, BitplaneAddPrefetchKind::Input)),
             );
             region += REGIONS_PER_CALL;
-            prefetch_ptr = prefetch_ptr.wrapping_add(pf_len);
+            prefetch_ptr = prefetch_ptr.wrapping_add(prefetch_plan.pf_len);
         }
     } else {
         while regions.saturating_sub(region) >= REGIONS_PER_CALL {
@@ -4902,6 +4957,66 @@ mod tests {
 
             assert_eq!(actual, expected, "input_count={input_count}");
         }
+    }
+
+    #[test]
+    fn xor_packed_multi_region_v16i1_ptr_add_only_matches_single_input_xors() {
+        let len = bitplane::AVX2_BLOCK_BYTES * 2;
+        let input_count = 12usize;
+        let method_info = xor_jit_create_avx2_method_info();
+        let mut packed_inputs = alloc_aligned_vec(len * input_count);
+        for input_idx in 0..input_count {
+            let start = input_idx * len;
+            for (byte_idx, byte) in packed_inputs[start..start + len].iter_mut().enumerate() {
+                *byte = (byte_idx as u8)
+                    .wrapping_mul(19)
+                    .wrapping_add((input_idx as u8).wrapping_mul(23))
+                    .wrapping_add(5);
+            }
+        }
+
+        let mut expected = alloc_aligned_vec(len);
+        let mut actual = alloc_aligned_vec(len);
+        for (byte_idx, byte) in expected.iter_mut().enumerate() {
+            *byte = (byte_idx as u8).wrapping_mul(3).wrapping_add(29);
+        }
+        actual.copy_from_slice(&expected);
+
+        for input_idx in 0..input_count {
+            let start = input_idx * len;
+            xor_prepared_bitplane_chunks(&packed_inputs[start..start + len], &mut expected, None);
+        }
+
+        let output_prefetch = actual.as_ptr().wrapping_add(len / 2);
+        let input_prefetch = packed_inputs.as_ptr().wrapping_add(len * 6);
+        xor_packed_multi_region_v16i1_ptr(
+            packed_inputs.as_ptr(),
+            input_count,
+            actual.as_mut_ptr(),
+            len,
+            method_info,
+            Some(input_prefetch),
+            Some(output_prefetch),
+        );
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn xor_jit_create_prefetch_plan_matches_turbo_avx2_rules() {
+        let method_info = xor_jit_create_avx2_method_info();
+        let prefetch_plan = xor_jit_create_prefetch_plan(method_info, 128 * 1024);
+
+        assert_eq!(method_info.ideal_input_multiple, 1);
+        assert_eq!(method_info.prefetch_downscale, 1);
+        assert_eq!(method_info.alignment, 32);
+        assert_eq!(method_info.stride, bitplane::AVX2_BLOCK_BYTES);
+        assert_eq!(
+            prefetch_plan.output_prefetch_rounds,
+            xor_jit_create_output_prefetch_rounds(method_info)
+        );
+        assert_eq!(prefetch_plan.output_prefetch_rounds, 2);
+        assert_eq!(prefetch_plan.pf_len, 64 * 1024);
     }
 
     #[test]
