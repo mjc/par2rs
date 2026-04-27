@@ -474,6 +474,25 @@ impl XorJitBitplaneScratch {
 
     fn load_generated(&mut self, plan: &BitplaneCoeffPlan, prefetch: bool) -> std::io::Result<()> {
         let coefficient = plan.coefficient();
+        let label = if prefetch { "prefetch" } else { "body" };
+
+        if let Some((loaded_coefficient, generated_len, loaded_prefetch)) = self.loaded {
+            if loaded_coefficient == coefficient && loaded_prefetch == prefetch {
+                if xor_jit_dump_dir().is_some() {
+                    let bytes = self.code.copy_prefix(generated_len)?;
+                    dump_scratch_program(label, coefficient, &bytes);
+                }
+                if perf_map_coefficient_labels_enabled() {
+                    let symbol = if prefetch {
+                        format!("par2rs_xor_jit_bitplane_scratch_prefetch_coeff_{coefficient:04x}")
+                    } else {
+                        format!("par2rs_xor_jit_bitplane_scratch_body_coeff_{coefficient:04x}")
+                    };
+                    register_perf_map_range(self.code.as_ptr(), generated_len, &symbol);
+                }
+                return Ok(());
+            }
+        }
 
         if self.code.capacity() < XOR_JIT_TURBO_JIT_SIZE {
             self.code = exec_mem::MutableExecutableBuffer::new(XOR_JIT_TURBO_JIT_SIZE)?;
@@ -485,7 +504,6 @@ impl XorJitBitplaneScratch {
                 "par2rs_xor_jit_bitplane_scratch_body",
             );
         }
-        let label = if prefetch { "prefetch" } else { "body" };
         let static_prefix = xor_jit_body_static_prefix();
 
         if !self.body_static_prefix_loaded {
