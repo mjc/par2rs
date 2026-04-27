@@ -79,6 +79,10 @@ harness = false
 name = "iai_simd"
 harness = false
 
+[[bench]]
+name = "fused_hashing"
+harness = false
+
 [profile.release]
 debug = true
 strip = false
