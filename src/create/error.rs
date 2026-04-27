@@ -66,6 +66,10 @@ pub enum CreateError {
     #[error("Failed to generate packet: {0}")]
     PacketGenerationError(String),
 
+    /// XOR-JIT packed checksum validation failed
+    #[error("XOR-JIT packed checksum validation failed")]
+    XorJitChecksumValidationFailed,
+
     /// I/O error during creation
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
@@ -93,6 +97,7 @@ mod tests {
             CreateError::EmptySourceFiles,
             CreateError::ReedSolomonError("matrix failed".to_string()),
             CreateError::PacketGenerationError("packet failed".to_string()),
+            CreateError::XorJitChecksumValidationFailed,
             CreateError::Other("plain error".to_string()),
         ];
 

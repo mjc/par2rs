@@ -5,6 +5,8 @@
 //! compact typed plan, then the hot path uses generated AVX2 XOR code. No
 //! PSHUFB or scalar lookup table is used here.
 
+use crate::reed_solomon::galois::Galois16;
+
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 #[cfg(target_arch = "x86_64")]
@@ -220,6 +222,37 @@ enum XorJitWriteStrategy {
 struct AlignedJitCopyBuffer([u8; XOR_JIT_TURBO_CODE_SIZE + XOR_JIT_TURBO_COPY_ALIGN]);
 
 #[cfg(target_arch = "x86_64")]
+struct SliceByteSink<'a> {
+    bytes: &'a mut [u8],
+    len: usize,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl<'a> SliceByteSink<'a> {
+    fn new(bytes: &'a mut [u8]) -> Self {
+        Self { bytes, len: 0 }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl encoder::ByteSink for SliceByteSink<'_> {
+    fn push(&mut self, byte: u8) {
+        self.bytes[self.len] = byte;
+        self.len += 1;
+    }
+
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        let end = self.len + bytes.len();
+        self.bytes[self.len..end].copy_from_slice(bytes);
+        self.len = end;
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 impl XorJitPreparedCoeff {
     #[inline]
     pub fn new(coefficient: u16) -> Self {
@@ -255,6 +288,7 @@ impl XorJitPreparedCoeff {
 #[cfg(target_arch = "x86_64")]
 pub struct XorJitPreparedCoeffCache {
     entries: Vec<Option<XorJitPreparedCoeff>>,
+    bitplane_handles: Vec<XorJitPreparedBitplaneHandle>,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -262,6 +296,7 @@ impl XorJitPreparedCoeffCache {
     pub fn new() -> Self {
         Self {
             entries: vec![None; u16::MAX as usize + 1],
+            bitplane_handles: vec![XorJitPreparedBitplaneHandle::default(); u16::MAX as usize + 1],
         }
     }
 
@@ -275,6 +310,27 @@ impl XorJitPreparedCoeffCache {
                 prepared
             }
         }
+    }
+
+    pub fn cache_bitplane_handle(
+        &mut self,
+        coefficient: u16,
+        handle: XorJitPreparedBitplaneHandle,
+    ) {
+        self.bitplane_handles[coefficient as usize] = handle;
+    }
+
+    #[inline]
+    pub fn bitplane_handle_for_coefficient(
+        &self,
+        coefficient: u16,
+    ) -> XorJitPreparedBitplaneHandle {
+        self.bitplane_handles[coefficient as usize]
+    }
+
+    #[inline]
+    pub fn bitplane_handle_table(&self) -> &[XorJitPreparedBitplaneHandle] {
+        &self.bitplane_handles
     }
 }
 
@@ -374,31 +430,24 @@ pub struct XorJitBitplaneKernel {
 #[cfg(target_arch = "x86_64")]
 pub struct XorJitBitplaneScratch {
     code: exec_mem::MutableExecutableBuffer,
-    function: ChunkKernelFn,
-    prefetch_function: ChunkKernelPrefetchFn,
-    loaded: Option<(u16, usize, bool)>,
-    body_static_prefix_loaded: bool,
+    code_start: usize,
 }
 
 #[cfg(target_arch = "x86_64")]
 impl XorJitBitplaneScratch {
     pub fn new() -> std::io::Result<Self> {
         let mut code = exec_mem::MutableExecutableBuffer::new(XOR_JIT_TURBO_JIT_SIZE)?;
-        code.overwrite(&[0xc5, 0xf8, 0x77, 0xc3])?;
+        let static_prefix = xor_jit_body_static_prefix();
+        code.overwrite(static_prefix)?;
         register_perf_map_range(
             code.as_ptr(),
             code.capacity(),
             "par2rs_xor_jit_bitplane_scratch_body",
         );
-        let function = unsafe { code.function() };
-        let prefetch_function = unsafe { code.function() };
 
         Ok(Self {
             code,
-            function,
-            prefetch_function,
-            loaded: None,
-            body_static_prefix_loaded: false,
+            code_start: static_prefix.len(),
         })
     }
 
@@ -426,13 +475,76 @@ impl XorJitBitplaneScratch {
     ) {
         assert_prepared_chunk_shape(input, output);
         unsafe {
-            self.multiply_add_ptr_with_prefetch_handle(
-                prepared,
-                input.as_ptr(),
-                output.as_mut_ptr(),
-                input.len(),
-                prefetch,
-            )
+            match prefetch {
+                Some(prefetch_ptr) => self.multiply_add_ptr_handle_prefetch(
+                    prepared,
+                    input.as_ptr(),
+                    output.as_mut_ptr(),
+                    input.len(),
+                    prefetch_ptr,
+                ),
+                None => self.multiply_add_ptr_handle(
+                    prepared,
+                    input.as_ptr(),
+                    output.as_mut_ptr(),
+                    input.len(),
+                ),
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub unsafe fn multiply_add_ptr_handle(
+        &mut self,
+        prepared: XorJitPreparedBitplaneHandle,
+        input: *const u8,
+        output: *mut u8,
+        len: usize,
+    ) {
+        if len == 0 {
+            return;
+        }
+
+        let coefficient = prepared.coefficient;
+        if coefficient == 0 {
+            return;
+        }
+        self.load_body_for_coefficient(coefficient)
+            .expect("load mutable xor-jit code");
+        unsafe {
+            call_turbo_bitplane_jit(self.code.as_ptr(), input, output, len, std::ptr::null());
+            xor_jit_zeroupper();
+        }
+    }
+
+    #[inline(always)]
+    pub unsafe fn multiply_add_ptr_handle_prefetch(
+        &mut self,
+        prepared: XorJitPreparedBitplaneHandle,
+        input: *const u8,
+        output: *mut u8,
+        len: usize,
+        prefetch: *const u8,
+    ) {
+        if len == 0 {
+            return;
+        }
+
+        let coefficient = prepared.coefficient;
+        if coefficient == 0 {
+            return;
+        }
+        self.load_prefetch_for_coefficient(coefficient)
+            .expect("load mutable prefetch xor-jit code");
+        unsafe {
+            call_turbo_bitplane_jit(
+                self.code.as_ptr(),
+                input,
+                output,
+                len,
+                xor_jit_biased_prefetch_ptr(prefetch),
+            );
+            xor_jit_zeroupper();
         }
     }
 
@@ -444,110 +556,111 @@ impl XorJitBitplaneScratch {
         len: usize,
         prefetch: Option<*const u8>,
     ) {
-        if len == 0 {
-            return;
+        match prefetch {
+            Some(prefetch_ptr) => unsafe {
+                self.multiply_add_ptr_handle_prefetch(prepared, input, output, len, prefetch_ptr)
+            },
+            None => unsafe { self.multiply_add_ptr_handle(prepared, input, output, len) },
         }
+    }
 
-        let coefficient = prepared.coefficient;
+    #[inline(always)]
+    pub unsafe fn multiply_add_ptr_coefficient(
+        &mut self,
+        coefficient: u16,
+        input: *const u8,
+        output: *mut u8,
+        len: usize,
+    ) {
         if coefficient == 0 {
             return;
         }
-        let plan = unsafe { &*prepared.plan };
-
-        if let Some(prefetch_ptr) = prefetch {
-            self.load_prefetch(plan)
-                .expect("load mutable prefetch xor-jit code");
-            unsafe {
-                call_turbo_bitplane_jit(
-                    self.code.as_ptr(),
-                    input,
-                    output,
-                    len,
-                    xor_jit_biased_prefetch_ptr(prefetch_ptr),
-                );
-                xor_jit_zeroupper();
-            }
-        } else {
-            self.load_body(plan).expect("load mutable xor-jit code");
-            unsafe {
-                call_turbo_bitplane_jit(self.code.as_ptr(), input, output, len, std::ptr::null());
-                xor_jit_zeroupper();
-            }
+        self.load_body_for_coefficient(coefficient)
+            .expect("load mutable xor-jit code");
+        unsafe {
+            call_turbo_bitplane_jit(self.code.as_ptr(), input, output, len, std::ptr::null());
+            xor_jit_zeroupper();
         }
     }
 
-    fn load_body(&mut self, plan: &BitplaneCoeffPlan) -> std::io::Result<()> {
-        self.load_generated(plan, false)
+    #[inline(always)]
+    pub unsafe fn multiply_add_ptr_coefficient_prefetch(
+        &mut self,
+        coefficient: u16,
+        input: *const u8,
+        output: *mut u8,
+        len: usize,
+        prefetch: *const u8,
+    ) {
+        if coefficient == 0 {
+            return;
+        }
+        self.load_prefetch_for_coefficient(coefficient)
+            .expect("load mutable prefetch xor-jit code");
+        unsafe {
+            call_turbo_bitplane_jit(
+                self.code.as_ptr(),
+                input,
+                output,
+                len,
+                xor_jit_biased_prefetch_ptr(prefetch),
+            );
+            xor_jit_zeroupper();
+        }
     }
 
-    fn load_prefetch(&mut self, plan: &BitplaneCoeffPlan) -> std::io::Result<()> {
-        self.load_generated(plan, true)
+    fn load_body_for_coefficient(&mut self, coefficient: u16) -> std::io::Result<usize> {
+        self.load_generated_for_coefficient(coefficient, false)
     }
 
-    fn load_generated(&mut self, plan: &BitplaneCoeffPlan, prefetch: bool) -> std::io::Result<()> {
-        let coefficient = plan.coefficient();
+    fn load_prefetch_for_coefficient(&mut self, coefficient: u16) -> std::io::Result<usize> {
+        self.load_generated_for_coefficient(coefficient, true)
+    }
+
+    fn load_generated_for_coefficient(
+        &mut self,
+        coefficient: u16,
+        prefetch: bool,
+    ) -> std::io::Result<usize> {
         let label = if prefetch { "prefetch" } else { "body" };
-
-        if let Some((loaded_coefficient, generated_len, loaded_prefetch)) = self.loaded {
-            if loaded_coefficient == coefficient && loaded_prefetch == prefetch {
-                if xor_jit_dump_dir().is_some() {
-                    let bytes = self.code.copy_prefix(generated_len)?;
-                    dump_scratch_program(label, coefficient, &bytes);
-                }
-                if perf_map_coefficient_labels_enabled() {
-                    let symbol = if prefetch {
-                        format!("par2rs_xor_jit_bitplane_scratch_prefetch_coeff_{coefficient:04x}")
-                    } else {
-                        format!("par2rs_xor_jit_bitplane_scratch_body_coeff_{coefficient:04x}")
-                    };
-                    register_perf_map_range(self.code.as_ptr(), generated_len, &symbol);
-                }
-                return Ok(());
-            }
-        }
 
         if self.code.capacity() < XOR_JIT_TURBO_JIT_SIZE {
             self.code = exec_mem::MutableExecutableBuffer::new(XOR_JIT_TURBO_JIT_SIZE)?;
-            self.loaded = None;
-            self.body_static_prefix_loaded = false;
+            let static_prefix = xor_jit_body_static_prefix();
+            self.code.overwrite(static_prefix)?;
+            self.code_start = static_prefix.len();
             register_perf_map_range(
                 self.code.as_ptr(),
                 self.code.capacity(),
                 "par2rs_xor_jit_bitplane_scratch_body",
             );
         }
-        let static_prefix = xor_jit_body_static_prefix();
-
-        if !self.body_static_prefix_loaded {
-            self.code.overwrite_at(0, static_prefix)?;
-            self.body_static_prefix_loaded = true;
-        }
-        let code_start = static_prefix.len();
         let strategy = xor_jit_write_strategy();
-        let dynamic_len = match strategy {
+        let generated_len = match strategy {
             XorJitWriteStrategy::None | XorJitWriteStrategy::Clear => {
                 if matches!(strategy, XorJitWriteStrategy::Clear) {
                     self.code
-                        .clear_cacheline_bytes_at(code_start, XOR_JIT_TURBO_CODE_SIZE)?;
+                        .clear_cacheline_bytes_at(self.code_start, XOR_JIT_TURBO_CODE_SIZE)?;
                 }
-                self.code.set_len_for_overwrite(code_start)?;
-                emit_bitplane_chunk_program_dynamic_into(plan, prefetch, code_start, &mut self.code)
+                self.code.set_len_for_overwrite(self.code_start)?;
+                self.code_start
+                    + emit_bitplane_chunk_program_dynamic_for_coefficient_into(
+                        coefficient,
+                        prefetch,
+                        self.code_start,
+                        &mut self.code,
+                    )
             }
-            XorJitWriteStrategy::Copy | XorJitWriteStrategy::CopyNt => {
-                let mut dynamic = Vec::with_capacity(XOR_JIT_TURBO_CODE_SIZE);
-                let dynamic_len = emit_bitplane_chunk_program_dynamic_into(
-                    plan,
+            XorJitWriteStrategy::Copy | XorJitWriteStrategy::CopyNt => unsafe {
+                xor_jit_copy_strategy_overwrite(
+                    &mut self.code,
+                    coefficient,
                     prefetch,
-                    code_start,
-                    &mut dynamic,
-                );
-                unsafe {
-                    xor_jit_copy_strategy_overwrite(&mut self.code, code_start, &dynamic, strategy)?
-                };
-                dynamic_len
-            }
+                    self.code_start,
+                    strategy,
+                )?
+            },
         };
-        let generated_len = code_start + dynamic_len;
 
         if xor_jit_dump_dir().is_some() {
             let bytes = self.code.copy_prefix(generated_len)?;
@@ -561,10 +674,7 @@ impl XorJitBitplaneScratch {
             };
             register_perf_map_range(self.code.as_ptr(), generated_len, &symbol);
         }
-        self.function = unsafe { self.code.function() };
-        self.prefetch_function = unsafe { self.code.function() };
-        self.loaded = Some((coefficient, generated_len, prefetch));
-        Ok(())
+        Ok(generated_len)
     }
 }
 
@@ -581,6 +691,7 @@ unsafe fn xor_jit_zeroupper() {
 }
 
 #[cfg(target_arch = "x86_64")]
+#[inline(always)]
 unsafe fn call_turbo_bitplane_jit(
     function: *const u8,
     input: *const u8,
@@ -798,9 +909,153 @@ pub fn prepare_xor_jit_bitplane_segment(dst: &mut [u8], src: &[u8]) {
     assert_eq!(dst.len() % bitplane::AVX2_BLOCK_BYTES, 0);
     assert!(src.len() <= dst.len());
 
-    dst.fill(0);
     let prepared_len = bitplane::prepare_avx2(dst, src);
     assert!(prepared_len <= dst.len());
+    if prepared_len < dst.len() {
+        dst[prepared_len..].fill(0);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn prepare_xor_jit_bitplane_block(dst: &mut [u8], src: &[u8]) {
+    debug_assert_eq!(dst.len(), bitplane::AVX2_BLOCK_BYTES);
+    debug_assert!(src.len() <= bitplane::AVX2_BLOCK_BYTES);
+
+    let dst_block: &mut [u8; bitplane::AVX2_BLOCK_BYTES] =
+        dst.try_into().expect("prepared destination block");
+    if src.len() == bitplane::AVX2_BLOCK_BYTES {
+        let src_block: &[u8; bitplane::AVX2_BLOCK_BYTES] =
+            src.try_into().expect("prepared source block");
+        bitplane::prepare_avx2_block(dst_block, src_block);
+    } else {
+        let mut scratch = [0u8; bitplane::AVX2_BLOCK_BYTES];
+        scratch[..src.len()].copy_from_slice(src);
+        bitplane::prepare_avx2_block(dst_block, &scratch);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn xor_jit_checksum_offset(
+    slice_len: usize,
+    num_slices: usize,
+    index: usize,
+    chunk_len: usize,
+) -> usize {
+    const BLOCK_LEN: usize = bitplane::AVX2_BLOCK_BYTES;
+
+    let mut effective_last_chunk_len = (slice_len + BLOCK_LEN) % chunk_len;
+    if effective_last_chunk_len == 0 {
+        effective_last_chunk_len = chunk_len;
+    }
+    let full_chunks = slice_len / chunk_len;
+    let chunk_stride = chunk_len * num_slices;
+
+    chunk_stride * full_chunks + index * effective_last_chunk_len + effective_last_chunk_len
+        - BLOCK_LEN
+}
+
+#[cfg(target_arch = "x86_64")]
+type XorJitChecksumState = __m256i;
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_jit_checksum_zero() -> XorJitChecksumState {
+    _mm256_setzero_si256()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_jit_checksum_mul2_vec(value: XorJitChecksumState) -> XorJitChecksumState {
+    _mm256_xor_si256(
+        _mm256_add_epi16(value, value),
+        _mm256_and_si256(
+            _mm256_set1_epi16(GF16_REDUCTION as i16),
+            _mm256_cmpgt_epi16(_mm256_setzero_si256(), value),
+        ),
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_jit_checksum_partial_load(src: *const u8, amount: usize) -> __m256i {
+    debug_assert!(amount < std::mem::size_of::<__m256i>());
+    let mut scratch = [0u8; std::mem::size_of::<__m256i>()];
+    unsafe {
+        std::ptr::copy_nonoverlapping(src, scratch.as_mut_ptr(), amount);
+        _mm256_loadu_si256(scratch.as_ptr() as *const __m256i)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_jit_checksum_block_words(src: &[u8], checksum: &mut XorJitChecksumState) {
+    let mut value = unsafe { xor_jit_checksum_mul2_vec(*checksum) };
+    let mut offset = 0usize;
+    while offset + std::mem::size_of::<__m256i>() <= src.len() {
+        value = unsafe {
+            _mm256_xor_si256(
+                value,
+                _mm256_loadu_si256(src.as_ptr().add(offset) as *const __m256i),
+            )
+        };
+        offset += std::mem::size_of::<__m256i>();
+    }
+    if offset < src.len() {
+        value = unsafe {
+            _mm256_xor_si256(
+                value,
+                xor_jit_checksum_partial_load(src.as_ptr().add(offset), src.len() - offset),
+            )
+        };
+    }
+    *checksum = value;
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_jit_checksum_exp(checksum: &mut XorJitChecksumState, exponent: u16) {
+    let mut coefficient = _mm256_set1_epi16(exponent as i16);
+    let checksum_value = *checksum;
+    let mut result = _mm256_and_si256(_mm256_srai_epi16(coefficient, 15), checksum_value);
+    for _ in 0..15 {
+        result = unsafe { xor_jit_checksum_mul2_vec(result) };
+        coefficient = _mm256_add_epi16(coefficient, coefficient);
+        result = _mm256_xor_si256(
+            result,
+            _mm256_and_si256(_mm256_srai_epi16(coefficient, 15), checksum_value),
+        );
+    }
+    *checksum = result;
+}
+
+#[cfg(target_arch = "x86_64")]
+fn xor_jit_gf16_exp(exponent: usize) -> u16 {
+    Galois16::new(2).pow((exponent % 65535) as u16).value()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_jit_store_raw_checksum_state(dst: &mut [u8], checksum: XorJitChecksumState) {
+    dst.fill(0);
+    unsafe {
+        _mm256_storeu_si256(dst.as_mut_ptr() as *mut __m256i, checksum);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_jit_load_raw_checksum_state(src: &[u8]) -> XorJitChecksumState {
+    unsafe { _mm256_loadu_si256(src.as_ptr() as *const __m256i) }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_jit_checksum_is_zero(checksum: XorJitChecksumState) -> bool {
+    let mut lanes = [0u8; std::mem::size_of::<__m256i>()];
+    unsafe {
+        _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, checksum);
+    }
+    lanes.iter().all(|&lane| lane == 0)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -830,6 +1085,537 @@ pub fn finish_xor_jit_bitplane_chunks(dst: &mut [u8], prepared: &[u8]) {
         );
         dst[full_len..].copy_from_slice(&finished_block[..tail_len]);
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn finish_xor_jit_bitplane_block(dst: &mut [u8], prepared: &[u8]) {
+    debug_assert!(dst.len() <= bitplane::AVX2_BLOCK_BYTES);
+    debug_assert_eq!(prepared.len(), bitplane::AVX2_BLOCK_BYTES);
+
+    let prepared_block: &[u8; bitplane::AVX2_BLOCK_BYTES] =
+        prepared.try_into().expect("prepared source block");
+    if dst.len() == bitplane::AVX2_BLOCK_BYTES {
+        let dst_block: &mut [u8; bitplane::AVX2_BLOCK_BYTES] =
+            dst.try_into().expect("finished destination block");
+        bitplane::finish_avx2_block(dst_block, prepared_block);
+    } else {
+        let mut scratch = [0u8; bitplane::AVX2_BLOCK_BYTES];
+        bitplane::finish_avx2_block(&mut scratch, prepared_block);
+        dst.copy_from_slice(&scratch[..dst.len()]);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn xor_jit_finish_checksum_block(prepared: &[u8]) -> XorJitChecksumState {
+    let mut decoded = [0u8; bitplane::AVX2_BLOCK_BYTES];
+    finish_xor_jit_bitplane_block(&mut decoded, prepared);
+    unsafe { xor_jit_load_raw_checksum_state(&decoded[..std::mem::size_of::<__m256i>()]) }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn xor_jit_prepare_checksum_block(dst: &mut [u8], checksum: XorJitChecksumState) {
+    let mut scratch = [0u8; bitplane::AVX2_BLOCK_BYTES];
+    unsafe {
+        xor_jit_store_raw_checksum_state(&mut scratch[..std::mem::size_of::<__m256i>()], checksum);
+    }
+    prepare_xor_jit_bitplane_block(dst, &scratch);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn prepare_xor_jit_bitplane_packed_input_cksum_impl(
+    dst: &mut [u8],
+    src: &[u8],
+    slice_len: usize,
+    input_pack_size: usize,
+    input_num: usize,
+    chunk_len: usize,
+    part_offset: usize,
+    part_len: usize,
+    checksum: &mut XorJitChecksumState,
+) {
+    const BLOCK_LEN: usize = bitplane::AVX2_BLOCK_BYTES;
+
+    assert!(input_num < input_pack_size);
+    assert_eq!(chunk_len % BLOCK_LEN, 0);
+    assert!(src.len() <= slice_len);
+    assert!(slice_len.is_multiple_of(BLOCK_LEN));
+    assert!(part_offset.is_multiple_of(BLOCK_LEN));
+    assert!(part_offset + part_len <= src.len());
+    assert!(part_offset + part_len == src.len() || part_len.is_multiple_of(BLOCK_LEN));
+    if slice_len == 0 {
+        return;
+    }
+
+    let src_len = src.len();
+    let completes_slice = part_offset + part_len == src_len;
+    let data_chunk_len = chunk_len.min(slice_len);
+    let chunk_stride = chunk_len * input_pack_size;
+    let dst_base = input_num * chunk_len;
+    let full_chunks = src_len / data_chunk_len;
+    let mut chunk = part_offset / data_chunk_len;
+    let mut pos = part_offset % data_chunk_len;
+    let mut part_left = part_len;
+
+    while chunk < full_chunks {
+        let src_base = chunk * data_chunk_len;
+        let dst_chunk_base = dst_base + chunk * chunk_stride;
+        while pos < data_chunk_len {
+            if !completes_slice && part_left == 0 {
+                return;
+            }
+            let src_start = src_base + pos;
+            let dst_start = dst_chunk_base + pos;
+            unsafe {
+                xor_jit_checksum_block_words(&src[src_start..src_start + BLOCK_LEN], checksum)
+            };
+            prepare_xor_jit_bitplane_block(
+                &mut dst[dst_start..dst_start + BLOCK_LEN],
+                &src[src_start..src_start + BLOCK_LEN],
+            );
+            if !completes_slice {
+                part_left -= BLOCK_LEN;
+            }
+            pos += BLOCK_LEN;
+        }
+        pos = 0;
+        chunk += 1;
+    }
+
+    let effective_slice_len = slice_len + BLOCK_LEN;
+    let remaining = src_len % data_chunk_len;
+    if remaining != 0 && chunk == full_chunks {
+        let src_base = full_chunks * data_chunk_len;
+        let len = remaining - (remaining % BLOCK_LEN);
+        let mut last_chunk_len = data_chunk_len;
+        if src_len > (slice_len / data_chunk_len) * data_chunk_len {
+            last_chunk_len = slice_len % data_chunk_len;
+        }
+        let mut effective_last_chunk_len = chunk_len;
+        if src_len > (effective_slice_len / chunk_len) * chunk_len {
+            effective_last_chunk_len = effective_slice_len % chunk_len;
+        }
+        let dst_chunk_base = full_chunks * chunk_stride + input_num * effective_last_chunk_len;
+
+        while pos < len {
+            let src_start = src_base + pos;
+            let dst_start = dst_chunk_base + pos;
+            unsafe {
+                xor_jit_checksum_block_words(&src[src_start..src_start + BLOCK_LEN], checksum)
+            };
+            prepare_xor_jit_bitplane_block(
+                &mut dst[dst_start..dst_start + BLOCK_LEN],
+                &src[src_start..src_start + BLOCK_LEN],
+            );
+            if !completes_slice {
+                part_left -= BLOCK_LEN;
+            }
+            pos += BLOCK_LEN;
+        }
+        if remaining > pos {
+            if !completes_slice && part_left == 0 {
+                return;
+            }
+            let dst_start = dst_chunk_base + pos;
+            unsafe {
+                xor_jit_checksum_block_words(&src[src_base + pos..src_base + remaining], checksum)
+            };
+            prepare_xor_jit_bitplane_block(
+                &mut dst[dst_start..dst_start + BLOCK_LEN],
+                &src[src_base + pos..],
+            );
+            if !completes_slice {
+                part_left -= BLOCK_LEN;
+            }
+            pos += BLOCK_LEN;
+        }
+        let skipped = if completes_slice {
+            (last_chunk_len - pos) / BLOCK_LEN
+        } else {
+            (last_chunk_len - pos).min(part_left) / BLOCK_LEN
+        };
+        if skipped != 0 {
+            unsafe { xor_jit_checksum_exp(checksum, xor_jit_gf16_exp(skipped)) };
+        }
+        while pos < last_chunk_len {
+            if !completes_slice && part_left == 0 {
+                return;
+            }
+            let dst_start = dst_chunk_base + pos;
+            dst[dst_start..dst_start + BLOCK_LEN].fill(0);
+            if !completes_slice {
+                part_left -= BLOCK_LEN;
+            }
+            pos += BLOCK_LEN;
+        }
+        pos = 0;
+        chunk += 1;
+    }
+
+    let mut effective_last_chunk_len = effective_slice_len % chunk_len;
+    if effective_last_chunk_len == 0 {
+        effective_last_chunk_len = chunk_len;
+    }
+    if chunk * data_chunk_len < slice_len {
+        let slice_left = slice_len - chunk * data_chunk_len;
+        let skipped = if completes_slice {
+            slice_left / BLOCK_LEN
+        } else {
+            slice_left.min(part_left) / BLOCK_LEN
+        };
+        if skipped != 0 {
+            unsafe { xor_jit_checksum_exp(checksum, xor_jit_gf16_exp(skipped)) };
+        }
+
+        let full_slice_chunks = slice_len / data_chunk_len;
+        while chunk < full_slice_chunks {
+            let dst_chunk_base = dst_base + chunk * chunk_stride;
+            while pos < data_chunk_len {
+                if !completes_slice && part_left == 0 {
+                    return;
+                }
+                let dst_start = dst_chunk_base + pos;
+                dst[dst_start..dst_start + BLOCK_LEN].fill(0);
+                if !completes_slice {
+                    part_left -= BLOCK_LEN;
+                }
+                pos += BLOCK_LEN;
+            }
+            pos = 0;
+            chunk += 1;
+        }
+
+        let remaining = slice_len % data_chunk_len;
+        if remaining != 0 {
+            let dst_chunk_base =
+                full_slice_chunks * chunk_stride + input_num * effective_last_chunk_len;
+            while pos < remaining {
+                if !completes_slice && part_left == 0 {
+                    return;
+                }
+                let dst_start = dst_chunk_base + pos;
+                dst[dst_start..dst_start + BLOCK_LEN].fill(0);
+                if !completes_slice {
+                    part_left -= BLOCK_LEN;
+                }
+                pos += BLOCK_LEN;
+            }
+        }
+    }
+
+    if completes_slice {
+        let checksum_offset =
+            xor_jit_checksum_offset(slice_len, input_pack_size, input_num, chunk_len);
+        xor_jit_prepare_checksum_block(
+            &mut dst[checksum_offset..checksum_offset + BLOCK_LEN],
+            *checksum,
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn prepare_xor_jit_bitplane_packed_input_cksum(
+    dst: &mut [u8],
+    src: &[u8],
+    slice_len: usize,
+    input_pack_size: usize,
+    input_num: usize,
+    chunk_len: usize,
+) {
+    let mut checksum = unsafe { xor_jit_checksum_zero() };
+    prepare_xor_jit_bitplane_packed_input_cksum_impl(
+        dst,
+        src,
+        slice_len,
+        input_pack_size,
+        input_num,
+        chunk_len,
+        0,
+        src.len(),
+        &mut checksum,
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn prepare_xor_jit_bitplane_partial_packsum(
+    dst: &mut [u8],
+    src: &[u8],
+    slice_len: usize,
+    input_pack_size: usize,
+    input_num: usize,
+    chunk_len: usize,
+    part_offset: usize,
+    part_len: usize,
+) {
+    let checksum_offset = xor_jit_checksum_offset(slice_len, input_pack_size, input_num, chunk_len);
+    let completes_slice = part_offset + part_len == src.len();
+    let mut checksum = {
+        let checksum_slot = &mut dst[checksum_offset..checksum_offset + bitplane::AVX2_BLOCK_BYTES];
+        if part_offset == 0 {
+            checksum_slot.fill(0);
+            unsafe { xor_jit_checksum_zero() }
+        } else if completes_slice {
+            let mut checksum_block = [0u8; bitplane::AVX2_BLOCK_BYTES];
+            checksum_block.copy_from_slice(checksum_slot);
+            unsafe {
+                xor_jit_load_raw_checksum_state(&checksum_block[..std::mem::size_of::<__m256i>()])
+            }
+        } else {
+            unsafe {
+                xor_jit_load_raw_checksum_state(&checksum_slot[..std::mem::size_of::<__m256i>()])
+            }
+        }
+    };
+
+    prepare_xor_jit_bitplane_packed_input_cksum_impl(
+        dst,
+        src,
+        slice_len,
+        input_pack_size,
+        input_num,
+        chunk_len,
+        part_offset,
+        part_len,
+        &mut checksum,
+    );
+
+    if !completes_slice {
+        let checksum_slot = &mut dst[checksum_offset..checksum_offset + bitplane::AVX2_BLOCK_BYTES];
+        unsafe {
+            xor_jit_store_raw_checksum_state(checksum_slot, checksum);
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn finish_xor_jit_bitplane_packed_output_cksum_impl(
+    dst: &mut [u8],
+    prepared: &[u8],
+    num_outputs: usize,
+    output_num: usize,
+    chunk_len: usize,
+    part_offset: usize,
+    part_len: usize,
+    checksum: &mut XorJitChecksumState,
+) -> bool {
+    const BLOCK_LEN: usize = bitplane::AVX2_BLOCK_BYTES;
+
+    assert!(output_num < num_outputs);
+    assert_eq!(chunk_len % BLOCK_LEN, 0);
+    assert_eq!(prepared.len() % BLOCK_LEN, 0);
+    assert!(part_offset.is_multiple_of(BLOCK_LEN));
+    assert!(part_offset + part_len <= dst.len());
+    assert!(part_offset + part_len == dst.len() || part_len.is_multiple_of(BLOCK_LEN));
+    if dst.is_empty() {
+        return true;
+    }
+
+    let slice_len = dst.len();
+    let aligned_slice_len = slice_len.next_multiple_of(BLOCK_LEN);
+    let checksum_offset =
+        xor_jit_checksum_offset(aligned_slice_len, num_outputs, output_num, chunk_len);
+    let completes_slice = part_offset + part_len == slice_len;
+    if part_offset == 0 {
+        *checksum =
+            xor_jit_finish_checksum_block(&prepared[checksum_offset..checksum_offset + BLOCK_LEN]);
+        unsafe {
+            xor_jit_checksum_exp(
+                checksum,
+                xor_jit_gf16_exp(65535 - ((aligned_slice_len / BLOCK_LEN) % 65535)),
+            );
+        }
+    }
+
+    let data_chunk_len = chunk_len.min(aligned_slice_len);
+    let src_base = output_num * chunk_len;
+    let chunk_stride = num_outputs * chunk_len;
+    let full_chunks = aligned_slice_len / data_chunk_len;
+    let mut remaining = slice_len.saturating_sub(full_chunks * data_chunk_len);
+    let mut pos = part_offset % data_chunk_len;
+    let mut part_left = part_len;
+
+    for chunk in (part_offset / data_chunk_len)..full_chunks {
+        let prepared_chunk_base = src_base + chunk * chunk_stride;
+        let dst_chunk_base = chunk * data_chunk_len;
+        if data_chunk_len * (chunk + 1) > slice_len {
+            while pos < data_chunk_len - BLOCK_LEN {
+                if !completes_slice && part_left == 0 {
+                    return true;
+                }
+                let src_start = prepared_chunk_base + pos;
+                let dst_start = dst_chunk_base + pos;
+                finish_xor_jit_bitplane_block(
+                    &mut dst[dst_start..dst_start + BLOCK_LEN],
+                    &prepared[src_start..src_start + BLOCK_LEN],
+                );
+                unsafe {
+                    xor_jit_checksum_block_words(&dst[dst_start..dst_start + BLOCK_LEN], checksum)
+                };
+                if !completes_slice {
+                    part_left -= BLOCK_LEN;
+                }
+                pos += BLOCK_LEN;
+            }
+            if !completes_slice && part_left == 0 {
+                return true;
+            }
+            remaining = slice_len - data_chunk_len * chunk - pos;
+            let src_start = prepared_chunk_base + pos;
+            let dst_start = dst_chunk_base + pos;
+            finish_xor_jit_bitplane_block(
+                &mut dst[dst_start..dst_start + remaining],
+                &prepared[src_start..src_start + BLOCK_LEN],
+            );
+            unsafe {
+                xor_jit_checksum_block_words(&dst[dst_start..dst_start + remaining], checksum)
+            };
+            remaining = 0;
+        } else {
+            while pos < data_chunk_len {
+                if !completes_slice && part_left == 0 {
+                    return true;
+                }
+                let src_start = prepared_chunk_base + pos;
+                let dst_start = dst_chunk_base + pos;
+                finish_xor_jit_bitplane_block(
+                    &mut dst[dst_start..dst_start + BLOCK_LEN],
+                    &prepared[src_start..src_start + BLOCK_LEN],
+                );
+                unsafe {
+                    xor_jit_checksum_block_words(&dst[dst_start..dst_start + BLOCK_LEN], checksum)
+                };
+                if !completes_slice {
+                    part_left -= BLOCK_LEN;
+                }
+                pos += BLOCK_LEN;
+            }
+        }
+        pos = 0;
+    }
+
+    let mut effective_last_chunk_len = (aligned_slice_len + BLOCK_LEN) % chunk_len;
+    if effective_last_chunk_len == 0 {
+        effective_last_chunk_len = chunk_len;
+    }
+    if remaining != 0 {
+        let prepared_chunk_base =
+            full_chunks * chunk_stride + output_num * effective_last_chunk_len;
+        let dst_chunk_base = full_chunks * data_chunk_len;
+        let aligned_remaining = remaining - (remaining % BLOCK_LEN);
+        while pos < aligned_remaining {
+            if !completes_slice && part_left == 0 {
+                return true;
+            }
+            let src_start = prepared_chunk_base + pos;
+            let dst_start = dst_chunk_base + pos;
+            finish_xor_jit_bitplane_block(
+                &mut dst[dst_start..dst_start + BLOCK_LEN],
+                &prepared[src_start..src_start + BLOCK_LEN],
+            );
+            unsafe {
+                xor_jit_checksum_block_words(&dst[dst_start..dst_start + BLOCK_LEN], checksum)
+            };
+            if !completes_slice {
+                part_left -= BLOCK_LEN;
+            }
+            pos += BLOCK_LEN;
+        }
+        if pos < remaining {
+            if !completes_slice && part_left == 0 {
+                return true;
+            }
+            let src_start = prepared_chunk_base + pos;
+            let dst_start = dst_chunk_base + pos;
+            finish_xor_jit_bitplane_block(
+                &mut dst[dst_start..dst_start + (remaining - pos)],
+                &prepared[src_start..src_start + BLOCK_LEN],
+            );
+            unsafe {
+                xor_jit_checksum_block_words(
+                    &dst[dst_start..dst_start + (remaining - pos)],
+                    checksum,
+                )
+            };
+        }
+    }
+
+    unsafe { xor_jit_checksum_is_zero(*checksum) }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn finish_xor_jit_bitplane_packed_output_cksum(
+    dst: &mut [u8],
+    prepared: &[u8],
+    num_outputs: usize,
+    output_num: usize,
+    chunk_len: usize,
+) -> bool {
+    let mut checksum = unsafe { xor_jit_checksum_zero() };
+    finish_xor_jit_bitplane_packed_output_cksum_impl(
+        dst,
+        prepared,
+        num_outputs,
+        output_num,
+        chunk_len,
+        0,
+        dst.len(),
+        &mut checksum,
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn finish_xor_jit_bitplane_partial_packsum(
+    dst: &mut [u8],
+    prepared: &mut [u8],
+    slice_len: usize,
+    num_outputs: usize,
+    output_num: usize,
+    chunk_len: usize,
+    part_offset: usize,
+    part_len: usize,
+) -> bool {
+    assert_eq!(dst.len(), slice_len);
+    let checksum_offset = xor_jit_checksum_offset(
+        slice_len.next_multiple_of(bitplane::AVX2_BLOCK_BYTES),
+        num_outputs,
+        output_num,
+        chunk_len,
+    );
+    let completes_slice = part_offset + part_len == slice_len;
+    let mut checksum = {
+        let checksum_slot =
+            &mut prepared[checksum_offset..checksum_offset + bitplane::AVX2_BLOCK_BYTES];
+        if part_offset == 0 {
+            unsafe { xor_jit_checksum_zero() }
+        } else if completes_slice {
+            let mut checksum_block = [0u8; bitplane::AVX2_BLOCK_BYTES];
+            checksum_block.copy_from_slice(checksum_slot);
+            unsafe {
+                xor_jit_load_raw_checksum_state(&checksum_block[..std::mem::size_of::<__m256i>()])
+            }
+        } else {
+            unsafe {
+                xor_jit_load_raw_checksum_state(&checksum_slot[..std::mem::size_of::<__m256i>()])
+            }
+        }
+    };
+    let ok = finish_xor_jit_bitplane_packed_output_cksum_impl(
+        dst,
+        prepared,
+        num_outputs,
+        output_num,
+        chunk_len,
+        part_offset,
+        part_len,
+        &mut checksum,
+    );
+    if !completes_slice {
+        let checksum_slot =
+            &mut prepared[checksum_offset..checksum_offset + bitplane::AVX2_BLOCK_BYTES];
+        unsafe {
+            xor_jit_store_raw_checksum_state(checksum_slot, checksum);
+        }
+    }
+    ok
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -937,6 +1723,30 @@ pub fn xor_packed_multi_region_v16i1(
             prefetch_in,
             prefetch_out,
         );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn xor_packed_multi_region_v16i1_ptr(
+    src: *const u8,
+    regions: usize,
+    output: *mut u8,
+    len: usize,
+    prefetch_in: Option<*const u8>,
+    prefetch_out: Option<*const u8>,
+) {
+    assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
+    assert_eq!(output as usize % 32, 0);
+
+    if regions == 0 || len == 0 {
+        return;
+    }
+
+    assert!(!src.is_null());
+    assert!(!output.is_null());
+
+    unsafe {
+        xor_packed_multi_region_v16i1_avx2(src, regions, output, len, prefetch_in, prefetch_out);
     }
 }
 
@@ -1059,12 +1869,22 @@ fn emit_chunk_program_bytes(program: encoder::Program, prefetch: bool) -> Vec<u8
 
 #[cfg(target_arch = "x86_64")]
 fn emit_bitplane_chunk_program_bytes(plan: &BitplaneCoeffPlan, prefetch: bool) -> Vec<u8> {
-    let static_prefix = xor_jit_body_static_prefix();
-    let mut encoded = Vec::with_capacity(static_prefix.len() + 1024);
-    encoded.extend_from_slice(static_prefix);
-    let _ =
-        emit_bitplane_chunk_program_dynamic_into(plan, prefetch, static_prefix.len(), &mut encoded);
+    let mut encoded = Vec::with_capacity(xor_jit_body_static_prefix().len() + 1024);
+    let _ = emit_bitplane_chunk_program_into(plan, prefetch, &mut encoded);
     encoded
+}
+
+#[cfg(target_arch = "x86_64")]
+fn emit_bitplane_chunk_program_into<S: encoder::ByteSink>(
+    plan: &BitplaneCoeffPlan,
+    prefetch: bool,
+    encoded: &mut S,
+) -> usize {
+    let static_prefix = xor_jit_body_static_prefix();
+    encoded.extend_from_slice(static_prefix);
+    let dynamic_len =
+        emit_bitplane_chunk_program_dynamic_into(plan, prefetch, static_prefix.len(), encoded);
+    static_prefix.len() + dynamic_len
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1085,6 +1905,317 @@ fn emit_bitplane_chunk_program_dynamic_into<S: encoder::ByteSink>(
             })
         },
     )
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+struct TurboMulAddWritePlan {
+    common_lowest: [i16; 8],
+    common_highest: [i16; 8],
+    dep1_highest: [i16; 8],
+    dep2_highest: [i16; 8],
+    mem_deps: [u16; 8],
+    deps1: [u8; 16],
+    deps2: [u8; 16],
+}
+
+#[cfg(target_arch = "x86_64")]
+#[repr(align(32))]
+struct TurboBitdepTable([u8; 16 * 16 * 2 * 4]);
+
+#[cfg(target_arch = "x86_64")]
+fn emit_bitplane_chunk_program_dynamic_for_coefficient_into<S: encoder::ByteSink>(
+    coefficient: u16,
+    prefetch: bool,
+    static_prefix_len: usize,
+    encoded: &mut S,
+) -> usize {
+    let write_plan = unsafe { turbo_muladd_write_plan(coefficient) };
+    encoder::encode_block_loop_dynamic_after_static_prefix_no_vzeroupper_into(
+        static_prefix_len,
+        bitplane::AVX2_BLOCK_BYTES as u32,
+        prefetch.then_some(256),
+        encoded,
+        |program| {
+            (0..8).fold(program, |program, bit| {
+                emit_turbo_muladd_output_pair_for_coefficient_sink(program, bit, &write_plan)
+            })
+        },
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+fn turbo_bitdep_table() -> &'static TurboBitdepTable {
+    static TABLE: OnceLock<TurboBitdepTable> = OnceLock::new();
+    TABLE.get_or_init(|| unsafe { build_turbo_bitdep_table() })
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn build_turbo_bitdep_table() -> TurboBitdepTable {
+    let mut dst = TurboBitdepTable([0; 16 * 16 * 2 * 4]);
+    let polynomial = GF16_REDUCTION as i32;
+    let shuf = _mm_cmpeq_epi8(
+        _mm_setzero_si128(),
+        _mm_and_si128(
+            _mm_shuffle_epi8(
+                _mm_cvtsi32_si128(polynomial & 0xffff),
+                _mm_set_epi32(0, 0, 0x01010101, 0x01010101),
+            ),
+            _mm_set_epi32(0x01020408, 0x10204080, 0x01020408, 0x10204080),
+        ),
+    );
+    let addvals = _mm256_set_epi8(
+        0x80u8 as i8,
+        0x40,
+        0x20,
+        0x10,
+        0x08,
+        0x04,
+        0x02,
+        0x01,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0x80u8 as i8,
+        0x40,
+        0x20,
+        0x10,
+        0x08,
+        0x04,
+        0x02,
+        0x01,
+    );
+    let shuf2 = _mm256_inserti128_si256(_mm256_castsi128_si256(shuf), shuf, 1);
+    let dst_ptr = dst.0.as_mut_ptr() as *mut __m256i;
+    for val in 0..16 {
+        let mut valtest = _mm256_set1_epi16((val << 12) as i16);
+        let mut addmask = _mm256_srai_epi16(valtest, 15);
+        let mut depmask = _mm256_and_si256(addvals, addmask);
+        for _ in 0..3 {
+            let last = _mm256_shuffle_epi8(depmask, shuf2);
+            depmask = _mm256_srli_si256(depmask, 1);
+            depmask = _mm256_xor_si256(depmask, last);
+
+            valtest = _mm256_add_epi16(valtest, valtest);
+            addmask = _mm256_srai_epi16(valtest, 15);
+            addmask = _mm256_and_si256(addvals, addmask);
+            depmask = _mm256_xor_si256(depmask, addmask);
+        }
+        dst_ptr.add(val * 4).write(gf16_bitdep256_swap_xor(depmask));
+        for j in 1..4 {
+            for _ in 0..4 {
+                let last = _mm256_shuffle_epi8(depmask, shuf2);
+                depmask = _mm256_srli_si256(depmask, 1);
+                depmask = _mm256_xor_si256(depmask, last);
+            }
+            dst_ptr
+                .add(val * 4 + j)
+                .write(gf16_bitdep256_swap_xor(depmask));
+        }
+    }
+    dst
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn gf16_bitdep256_swap_xor(value: __m256i) -> __m256i {
+    let mut swapped = _mm256_shuffle_epi8(
+        value,
+        _mm256_set_epi32(
+            0x0e800c80,
+            0x0a800880,
+            0x06800480,
+            0x02800080,
+            0x800f800d_u32 as i32,
+            0x800b8009_u32 as i32,
+            0x80078005_u32 as i32,
+            0x80038001_u32 as i32,
+        ),
+    );
+    swapped = _mm256_permute2x128_si256(swapped, swapped, 0x01);
+    _mm256_blendv_epi8(
+        value,
+        swapped,
+        _mm256_set_epi32(
+            0x00ff00ff,
+            0x00ff00ff,
+            0x00ff00ff,
+            0x00ff00ff,
+            0xff00ff00_u32 as i32,
+            0xff00ff00_u32 as i32,
+            0xff00ff00_u32 as i32,
+            0xff00ff00_u32 as i32,
+        ),
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "ssse3")]
+unsafe fn ssse3_tzcnt_epi16(value: __m128i) -> __m128i {
+    let lmask = _mm_set1_epi8(0xf);
+    let low = _mm_shuffle_epi8(
+        _mm_set_epi8(0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0, 16),
+        _mm_and_si128(value, lmask),
+    );
+    let high = _mm_shuffle_epi8(
+        _mm_set_epi8(4, 5, 4, 6, 4, 5, 4, 7, 4, 5, 4, 6, 4, 5, 4, 16),
+        _mm_and_si128(_mm_srli_epi16(value, 4), lmask),
+    );
+    let combined = _mm_min_epu8(low, high);
+    let high = _mm_srli_epi16(_mm_or_si128(combined, _mm_set1_epi8(8)), 8);
+    _mm_min_epu8(combined, high)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "ssse3")]
+unsafe fn ssse3_lzcnt_epi16(value: __m128i) -> __m128i {
+    let lmask = _mm_set1_epi8(0xf);
+    let low = _mm_shuffle_epi8(
+        _mm_set_epi8(4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 7, 16),
+        _mm_and_si128(value, lmask),
+    );
+    let high = _mm_shuffle_epi8(
+        _mm_set_epi8(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 16),
+        _mm_and_si128(_mm_srli_epi16(value, 4), lmask),
+    );
+    let combined = _mm_min_epu8(low, high);
+    let low = _mm_or_si128(combined, _mm_set1_epi16(8));
+    let high = _mm_srli_epi16(combined, 8);
+    _mm_min_epu8(low, high)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn sse4_lzcnt_to_mask_epi16(mut value: __m128i) -> __m128i {
+    let zeroes = _mm_cmpeq_epi16(value, _mm_setzero_si128());
+    value = _mm_blendv_epi8(
+        value,
+        _mm_slli_si128(value, 1),
+        _mm_cmplt_epi16(value, _mm_set1_epi16(8)),
+    );
+    let bits = _mm_shuffle_epi8(
+        _mm_set_epi8(
+            0x01,
+            0x02,
+            0x04,
+            0x08,
+            0x10,
+            0x20,
+            0x40,
+            0x80u8 as i8,
+            0x01,
+            0x02,
+            0x04,
+            0x08,
+            0x10,
+            0x20,
+            0x40,
+            0,
+        ),
+        value,
+    );
+    _mm_or_si128(bits, _mm_slli_epi16(zeroes, 15))
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "ssse3", enable = "sse4.1")]
+unsafe fn turbo_muladd_write_plan(coefficient: u16) -> TurboMulAddWritePlan {
+    let deps_ptr = turbo_bitdep_table().0.as_ptr() as *const __m256i;
+    let depmask = _mm256_xor_si256(
+        _mm256_xor_si256(
+            _mm256_load_si256(deps_ptr.add((coefficient & 0xf) as usize * 4)),
+            _mm256_load_si256(deps_ptr.add((((coefficient << 3) & 0x780) >> 5) as usize + 1)),
+        ),
+        _mm256_xor_si256(
+            _mm256_load_si256(deps_ptr.add((((coefficient >> 1) & 0x780) >> 5) as usize + 2)),
+            _mm256_load_si256(deps_ptr.add((((coefficient >> 5) & 0x780) >> 5) as usize + 3)),
+        ),
+    );
+
+    let mut tmp3 = _mm256_castsi256_si128(depmask);
+    let mut tmp4 = _mm256_extracti128_si256(depmask, 1);
+    let common_mask = _mm_and_si128(tmp3, tmp4);
+    let common_lowest_vec = ssse3_tzcnt_epi16(common_mask);
+    let common_sub1 = _mm_add_epi16(common_mask, _mm_set1_epi16(-1));
+    let mut common_elim = _mm_andnot_si128(common_sub1, common_mask);
+    let common_mask = _mm_and_si128(common_mask, common_sub1);
+
+    let highest = ssse3_lzcnt_epi16(common_mask);
+    let common_highest_vec = _mm_sub_epi16(_mm_set1_epi16(15), highest);
+    common_elim = _mm_or_si128(common_elim, sse4_lzcnt_to_mask_epi16(highest));
+
+    tmp3 = _mm_xor_si128(tmp3, common_elim);
+    tmp4 = _mm_xor_si128(tmp4, common_elim);
+
+    let highest = ssse3_lzcnt_epi16(tmp3);
+    let dep1_highest_vec = _mm_sub_epi16(_mm_set1_epi16(15), highest);
+    tmp3 = _mm_xor_si128(tmp3, sse4_lzcnt_to_mask_epi16(highest));
+    let highest = ssse3_lzcnt_epi16(tmp4);
+    let dep2_highest_vec = _mm_sub_epi16(_mm_set1_epi16(15), highest);
+    tmp4 = _mm_xor_si128(tmp4, sse4_lzcnt_to_mask_epi16(highest));
+
+    let mem_deps_vec = _mm_or_si128(
+        _mm_and_si128(tmp3, _mm_set1_epi16(7)),
+        _mm_slli_epi16(_mm_and_si128(tmp4, _mm_set1_epi16(7)), 3),
+    );
+
+    tmp3 = _mm_srli_epi16(tmp3, 3);
+    tmp4 = _mm_srli_epi16(tmp4, 3);
+    tmp3 = _mm_blendv_epi8(
+        _mm_add_epi16(tmp3, tmp3),
+        _mm_and_si128(tmp3, _mm_set1_epi8(0x7f)),
+        _mm_set1_epi16(0xff),
+    );
+    tmp4 = _mm_blendv_epi8(
+        _mm_add_epi16(tmp4, tmp4),
+        _mm_and_si128(tmp4, _mm_set1_epi8(0x7f)),
+        _mm_set1_epi16(0xff),
+    );
+
+    let mut common_lowest = [0i16; 8];
+    let mut common_highest = [0i16; 8];
+    let mut dep1_highest = [0i16; 8];
+    let mut dep2_highest = [0i16; 8];
+    let mut mem_deps = [0u16; 8];
+    let mut deps1 = [0u8; 16];
+    let mut deps2 = [0u8; 16];
+    _mm_storeu_si128(
+        common_lowest.as_mut_ptr() as *mut __m128i,
+        common_lowest_vec,
+    );
+    _mm_storeu_si128(
+        common_highest.as_mut_ptr() as *mut __m128i,
+        common_highest_vec,
+    );
+    _mm_storeu_si128(dep1_highest.as_mut_ptr() as *mut __m128i, dep1_highest_vec);
+    _mm_storeu_si128(dep2_highest.as_mut_ptr() as *mut __m128i, dep2_highest_vec);
+    _mm_storeu_si128(mem_deps.as_mut_ptr() as *mut __m128i, mem_deps_vec);
+    _mm_storeu_si128(deps1.as_mut_ptr() as *mut __m128i, tmp3);
+    _mm_storeu_si128(deps2.as_mut_ptr() as *mut __m128i, tmp4);
+
+    TurboMulAddWritePlan {
+        common_lowest,
+        common_highest,
+        dep1_highest,
+        dep2_highest,
+        mem_deps,
+        deps1,
+        deps2,
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1215,10 +2346,11 @@ fn round_up_xor_jit_copy_len(len: usize) -> usize {
 #[cfg(target_arch = "x86_64")]
 unsafe fn xor_jit_copy_strategy_overwrite(
     code: &mut exec_mem::MutableExecutableBuffer,
+    coefficient: u16,
+    prefetch: bool,
     code_start: usize,
-    dynamic: &[u8],
     strategy: XorJitWriteStrategy,
-) -> std::io::Result<()> {
+) -> std::io::Result<usize> {
     debug_assert!(matches!(
         strategy,
         XorJitWriteStrategy::Copy | XorJitWriteStrategy::CopyNt
@@ -1240,9 +2372,16 @@ unsafe fn xor_jit_copy_strategy_overwrite(
             XOR_JIT_TURBO_COPY_ALIGN,
         );
     }
-
-    temp.0[temp_offset..temp_offset + dynamic.len()].copy_from_slice(dynamic);
-    let copy_len = round_up_xor_jit_copy_len(temp_offset + dynamic.len());
+    let dynamic_len = {
+        let mut sink = SliceByteSink::new(&mut temp.0[temp_offset..]);
+        emit_bitplane_chunk_program_dynamic_for_coefficient_into(
+            coefficient,
+            prefetch,
+            code_start,
+            &mut sink,
+        )
+    };
+    let copy_len = round_up_xor_jit_copy_len(temp_offset + dynamic_len);
     if copy_offset + copy_len > code.capacity() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -1256,7 +2395,8 @@ unsafe fn xor_jit_copy_strategy_overwrite(
         XorJitWriteStrategy::CopyNt => xor_jit_copy_nt_aligned_64(dst, temp.0.as_ptr(), copy_len),
         _ => unreachable!("unexpected xor-jit copy strategy"),
     }
-    code.set_len_for_overwrite(code_start + dynamic.len())
+    code.set_len_for_overwrite(code_start + dynamic_len)?;
+    Ok(code_start + dynamic_len)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1768,6 +2908,53 @@ fn emit_output_pair_turbo_sink<'a, S: encoder::ByteSink>(
 }
 
 #[cfg(target_arch = "x86_64")]
+fn emit_turbo_muladd_output_pair_for_coefficient_sink<'a, S: encoder::ByteSink>(
+    program: encoder::ProgramSink<'a, S>,
+    pair_index: usize,
+    write_plan: &TurboMulAddWritePlan,
+) -> encoder::ProgramSink<'a, S> {
+    let first_output = turbo_physical_word_bit(pair_index * 2);
+    let second_output = turbo_physical_word_bit(pair_index * 2 + 1);
+    let program = emit_turbo_muladd_output_seed_for_coefficient_sink(
+        program,
+        0,
+        first_output,
+        write_plan.dep1_highest[pair_index],
+    );
+    let program = emit_turbo_muladd_output_seed_for_coefficient_sink(
+        program,
+        1,
+        second_output,
+        write_plan.dep2_highest[pair_index],
+    );
+    let (program, common_reg, common_active) = emit_turbo_load_part_for_coefficient_sink(
+        program,
+        COMMON_INPUT_REG,
+        write_plan.common_lowest[pair_index],
+        write_plan.common_highest[pair_index],
+    );
+    let tables = turbo_dep_tables();
+    let low_idx = pair_index * 2;
+    let dep_key = ((write_plan.deps1[low_idx] as usize) << 7) | write_plan.deps2[low_idx] as usize;
+    let dep_key_high =
+        ((write_plan.deps1[low_idx + 1] as usize) << 6) | write_plan.deps2[low_idx + 1] as usize;
+    let program = program
+        .emit_bytes(&tables.mem_bytes[write_plan.mem_deps[pair_index] as usize])
+        .emit_bytes(&tables.main_bytes_low[dep_key])
+        .emit_bytes(&tables.main_bytes_high[dep_key_high]);
+    let program = if common_active {
+        program
+            .vpxor_ymm(0, common_reg, 0)
+            .vpxor_ymm(1, common_reg, 1)
+    } else {
+        program
+    };
+    program
+        .vmovdqa_output_offset_from_ymm(bitplane_vector_offset(first_output), 0)
+        .vmovdqa_output_offset_from_ymm(bitplane_vector_offset(second_output), 1)
+}
+
+#[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
 fn emit_turbo_muladd_output_seed_sink<'a, S: encoder::ByteSink>(
     program: encoder::ProgramSink<'a, S>,
@@ -1788,6 +2975,30 @@ fn emit_turbo_muladd_output_seed_sink<'a, S: encoder::ByteSink>(
                 physical_bitplane_vector_offset(highest),
             ),
         None => program.vmovdqa_ymm_from_output_offset(output_reg, output_offset),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn emit_turbo_muladd_output_seed_for_coefficient_sink<'a, S: encoder::ByteSink>(
+    program: encoder::ProgramSink<'a, S>,
+    output_reg: u8,
+    output_bit: usize,
+    highest: i16,
+) -> encoder::ProgramSink<'a, S> {
+    let output_offset = bitplane_vector_offset(output_bit);
+    if highest > 2 {
+        program.vpxor_ymm_output_offset(output_reg, highest as u8, output_offset)
+    } else {
+        let program = program.vmovdqa_ymm_from_output_offset(output_reg, output_offset);
+        if highest >= 0 {
+            program.vpxor_ymm_input_offset(
+                output_reg,
+                output_reg,
+                physical_bitplane_vector_offset(highest as usize),
+            )
+        } else {
+            program
+        }
     }
 }
 
@@ -1822,6 +3033,46 @@ fn emit_turbo_load_part_sink<'a, S: encoder::ByteSink>(
             Some(highest) => program.vpxor_ymm(reg, highest as u8, lowest as u8),
             None => program.vmovdqa_ymm(reg, lowest as u8),
         }
+    };
+
+    (result, reg, true)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn emit_turbo_load_part_for_coefficient_sink<'a, S: encoder::ByteSink>(
+    program: encoder::ProgramSink<'a, S>,
+    reg: u8,
+    lowest: i16,
+    highest: i16,
+) -> (encoder::ProgramSink<'a, S>, u8, bool) {
+    if lowest >= 16 {
+        return (program, reg, false);
+    }
+
+    let result = if lowest < 3 {
+        if highest > 2 {
+            program.vpxor_ymm_input_offset(
+                reg,
+                highest as u8,
+                physical_bitplane_vector_offset(lowest as usize),
+            )
+        } else if highest >= 0 {
+            program
+                .vmovdqa_ymm_from_input_offset(
+                    reg,
+                    physical_bitplane_vector_offset(highest as usize),
+                )
+                .vpxor_ymm_input_offset(reg, reg, physical_bitplane_vector_offset(lowest as usize))
+        } else {
+            program.vmovdqa_ymm_from_input_offset(
+                reg,
+                physical_bitplane_vector_offset(lowest as usize),
+            )
+        }
+    } else if highest >= 0 {
+        program.vpxor_ymm(reg, highest as u8, lowest as u8)
+    } else {
+        program.vmovdqa_ymm(reg, lowest as u8)
     };
 
     (result, reg, true)
@@ -2528,15 +3779,29 @@ unsafe fn xor_packed_multi_region_v16i1_core(
     len: usize,
     prefetch: Option<(*const u8, BitplaneAddPrefetchKind)>,
 ) {
-    use std::arch::x86_64::{__m256i, _mm256_load_si256, _mm256_store_si256, _mm256_xor_si256};
+    use std::arch::x86_64::{
+        __m256i, _mm256_load_si256, _mm256_store_si256, _mm256_xor_si256, _mm_prefetch,
+        _MM_HINT_ET1, _MM_HINT_T1,
+    };
+    use std::mem::size_of;
 
     const TURBO_ADD_MAX_SRCS: usize = 18;
-
+    const TURBO_VEC_STRIDE: usize = 16;
+    const TURBO_VEC_BYTES: isize = size_of::<__m256i>() as isize;
     debug_assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
     debug_assert_eq!(output as usize % 32, 0);
     debug_assert!(src_count <= TURBO_ADD_MAX_SRCS);
+    debug_assert_eq!(
+        bitplane::AVX2_BLOCK_BYTES,
+        TURBO_VEC_STRIDE * size_of::<__m256i>()
+    );
 
     let output_end = output.add(len);
+    let (prefetch_ptr, do_prefetch) = match prefetch {
+        Some((ptr, BitplaneAddPrefetchKind::Output)) => (ptr, 1),
+        Some((ptr, BitplaneAddPrefetchKind::Input)) => (ptr, 2),
+        None => (std::ptr::null(), 0),
+    };
     let src0 = src_end;
     let src1 = src0.add(len);
     let src2 = src1.add(len);
@@ -2558,16 +3823,21 @@ unsafe fn xor_packed_multi_region_v16i1_core(
 
     let mut ptr = -(len as isize);
     while ptr != 0 {
-        let out_block = output_end.offset(ptr);
-        for vec_idx in 0..16usize {
-            let out_ptr = out_block.add(vec_idx * 32).cast::<__m256i>();
+        let out_block = output_end.offset(ptr).cast::<__m256i>();
+        for vec_idx in 0..TURBO_VEC_STRIDE {
+            let out_ptr = out_block.add(vec_idx);
             let mut data = _mm256_load_si256(out_ptr);
             macro_rules! add_src {
                 ($count:expr, $src:expr) => {
                     if src_count >= $count {
                         data = _mm256_xor_si256(
                             data,
-                            _mm256_load_si256($src.offset(ptr).add(vec_idx * 32).cast::<__m256i>()),
+                            _mm256_load_si256(
+                                $src.offset(ptr)
+                                    .cast::<__m256i>()
+                                    .add(vec_idx)
+                                    .cast::<__m256i>(),
+                            ),
                         );
                     }
                 };
@@ -2593,11 +3863,24 @@ unsafe fn xor_packed_multi_region_v16i1_core(
             _mm256_store_si256(out_ptr, data);
         }
 
-        if let Some((prefetch_ptr, kind)) = prefetch {
-            prefetch_prepared_bitplane_add(prefetch_ptr, (len as isize + ptr) as usize, kind);
+        if do_prefetch != 0 {
+            let pf_base = prefetch_ptr
+                .add((len as isize + ptr) as usize >> 1)
+                .cast::<i8>();
+            if do_prefetch == 1 {
+                _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base);
+                _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(64));
+                _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(128));
+                _mm_prefetch::<{ _MM_HINT_ET1 }>(pf_base.add(192));
+            } else {
+                _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base);
+                _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(64));
+                _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(128));
+                _mm_prefetch::<{ _MM_HINT_T1 }>(pf_base.add(192));
+            }
         }
 
-        ptr += bitplane::AVX2_BLOCK_BYTES as isize;
+        ptr += TURBO_VEC_BYTES * TURBO_VEC_STRIDE as isize;
     }
 }
 
@@ -2611,29 +3894,29 @@ unsafe fn xor_packed_multi_region_v16i1_avx2(
     prefetch_in: Option<*const u8>,
     prefetch_out: Option<*const u8>,
 ) {
-    const TURBO_ADD_INTERLEAVE: usize = 1;
-    const TURBO_ADD_REGIONS_PER_CALL: usize = 6;
-    const TURBO_ADD_PREFETCH_FACTOR: usize = 1;
-    const TURBO_ADD_OUTPUT_PREFETCH_ROUNDS: usize = 1 << TURBO_ADD_PREFETCH_FACTOR;
+    const INTERLEAVE: usize = 1;
+    const REGIONS_PER_CALL: usize = 6;
+    const PREFETCH_FACTOR: usize = 1;
+    const OUTPUT_PREFETCH_ROUNDS: usize = 1 << PREFETCH_FACTOR;
 
     debug_assert_eq!(len % bitplane::AVX2_BLOCK_BYTES, 0);
     debug_assert_eq!(output as usize % 32, 0);
 
-    let pf_len = len >> TURBO_ADD_PREFETCH_FACTOR;
+    let pf_len = len >> PREFETCH_FACTOR;
     let mut region = 0usize;
-    let mut output_pf_rounds = TURBO_ADD_OUTPUT_PREFETCH_ROUNDS;
+    let mut output_pf_rounds = OUTPUT_PREFETCH_ROUNDS;
     let mut prefetch_out_ptr = prefetch_out.map(|ptr| ptr.wrapping_add(pf_len));
 
-    while output_pf_rounds > 0 && regions.saturating_sub(region) >= TURBO_ADD_REGIONS_PER_CALL {
-        let src_end = src.add(region * len + len * TURBO_ADD_INTERLEAVE);
+    while output_pf_rounds > 0 && regions.saturating_sub(region) >= REGIONS_PER_CALL {
+        let src_end = src.add(region * len + len * INTERLEAVE);
         xor_packed_multi_region_v16i1_core(
             src_end,
-            TURBO_ADD_REGIONS_PER_CALL,
+            REGIONS_PER_CALL,
             output,
             len,
             prefetch_out_ptr.map(|ptr| (ptr, BitplaneAddPrefetchKind::Output)),
         );
-        region += TURBO_ADD_REGIONS_PER_CALL;
+        region += REGIONS_PER_CALL;
         output_pf_rounds -= 1;
         prefetch_out_ptr = if output_pf_rounds > 0 {
             prefetch_out_ptr.map(|ptr| ptr.wrapping_add(pf_len))
@@ -2644,8 +3927,8 @@ unsafe fn xor_packed_multi_region_v16i1_avx2(
 
     let remaining = regions.saturating_sub(region);
     if let Some(prefetch_ptr) = prefetch_out_ptr {
-        if remaining >= TURBO_ADD_INTERLEAVE {
-            let src_end = src.add(region * len + len * TURBO_ADD_INTERLEAVE);
+        if remaining >= INTERLEAVE {
+            let src_end = src.add(region * len + len * INTERLEAVE);
             xor_packed_multi_region_v16i1_core(
                 src_end,
                 remaining,
@@ -2660,35 +3943,39 @@ unsafe fn xor_packed_multi_region_v16i1_avx2(
 
     if let Some(prefetch_in_ptr) = prefetch_in {
         let mut prefetch_ptr = prefetch_in_ptr.wrapping_add(pf_len);
-        while regions.saturating_sub(region) >= TURBO_ADD_REGIONS_PER_CALL {
-            let src_end = src.add(region * len + len * TURBO_ADD_INTERLEAVE);
+        while regions.saturating_sub(region) >= REGIONS_PER_CALL {
+            let src_end = src.add(region * len + len * INTERLEAVE);
             xor_packed_multi_region_v16i1_core(
                 src_end,
-                TURBO_ADD_REGIONS_PER_CALL,
+                REGIONS_PER_CALL,
                 output,
                 len,
                 Some((prefetch_ptr, BitplaneAddPrefetchKind::Input)),
             );
-            region += TURBO_ADD_REGIONS_PER_CALL;
+            region += REGIONS_PER_CALL;
             prefetch_ptr = prefetch_ptr.wrapping_add(pf_len);
         }
     } else {
-        while regions.saturating_sub(region) >= TURBO_ADD_REGIONS_PER_CALL {
-            let src_end = src.add(region * len + len * TURBO_ADD_INTERLEAVE);
-            xor_packed_multi_region_v16i1_core(
-                src_end,
-                TURBO_ADD_REGIONS_PER_CALL,
-                output,
-                len,
-                None,
-            );
-            region += TURBO_ADD_REGIONS_PER_CALL;
+        while regions.saturating_sub(region) >= REGIONS_PER_CALL {
+            let src_end = src.add(region * len + len * INTERLEAVE);
+            xor_packed_multi_region_v16i1_core(src_end, REGIONS_PER_CALL, output, len, None);
+            region += REGIONS_PER_CALL;
         }
     }
 
-    if region < regions {
-        let src_end = src.add(region * len + len * TURBO_ADD_INTERLEAVE);
-        xor_packed_multi_region_v16i1_core(src_end, regions - region, output, len, None);
+    let mut remaining = regions - region;
+    if REGIONS_PER_CALL > INTERLEAVE && remaining >= INTERLEAVE {
+        let aligned_remaining = remaining - (remaining % INTERLEAVE);
+        let src_end = src.add(region * len + len * INTERLEAVE);
+        xor_packed_multi_region_v16i1_core(src_end, aligned_remaining, output, len, None);
+        region += aligned_remaining;
+        remaining %= INTERLEAVE;
+    }
+
+    let last_interleave = (16usize - region).max(INTERLEAVE).min(INTERLEAVE);
+    if remaining != 0 {
+        let src_end = src.add(region * len + len * last_interleave);
+        xor_packed_multi_region_v16i1_core(src_end, remaining, output, len, None);
     }
 
     xor_jit_zeroupper();
@@ -3791,23 +5078,43 @@ mod tests {
             let plan = BitplaneCoeffPlan::new(coefficient);
             for prefetch in [false, true] {
                 let expected = emit_bitplane_chunk_program_bytes(&plan, prefetch);
-                let static_prefix = xor_jit_body_static_prefix();
                 let mut code =
                     exec_mem::MutableExecutableBuffer::new(XOR_JIT_TURBO_JIT_SIZE).expect("code");
-                code.overwrite_at(0, static_prefix).expect("prefix");
-                code.set_len_for_overwrite(static_prefix.len())
-                    .expect("cursor");
-
-                let dynamic_len = emit_bitplane_chunk_program_dynamic_into(
-                    &plan,
-                    prefetch,
-                    static_prefix.len(),
-                    &mut code,
-                );
+                code.set_len_for_overwrite(0).expect("cursor");
+                let generated_len = emit_bitplane_chunk_program_into(&plan, prefetch, &mut code);
                 let actual = code
-                    .copy_prefix(static_prefix.len() + dynamic_len)
+                    .copy_prefix(generated_len)
                     .expect("copy generated code");
 
+                assert_eq!(
+                    actual, expected,
+                    "coefficient={coefficient:#06x} prefetch={prefetch}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn coefficient_dynamic_encoder_matches_plan_dynamic_encoder() {
+        for coefficient in [1, 2, 3, 5, 0x100b, 0x678b, 0xc814, 0xffff] {
+            let plan = BitplaneCoeffPlan::new(coefficient);
+            for prefetch in [false, true] {
+                let mut expected = Vec::new();
+                let static_prefix_len = xor_jit_body_static_prefix().len();
+                let expected_len = emit_bitplane_chunk_program_dynamic_into(
+                    &plan,
+                    prefetch,
+                    static_prefix_len,
+                    &mut expected,
+                );
+                let mut actual = Vec::new();
+                let actual_len = emit_bitplane_chunk_program_dynamic_for_coefficient_into(
+                    coefficient,
+                    prefetch,
+                    static_prefix_len,
+                    &mut actual,
+                );
+                assert_eq!(actual_len, expected_len);
                 assert_eq!(
                     actual, expected,
                     "coefficient={coefficient:#06x} prefetch={prefetch}"
@@ -3887,11 +5194,10 @@ mod tests {
         );
 
         assert_eq!(output, expected);
-        assert_eq!(scratch.loaded, None);
     }
 
     #[test]
-    fn scratch_reuses_loaded_code_for_repeated_coefficient_and_mode() {
+    fn scratch_rewrites_same_code_for_repeated_coefficient_and_mode() {
         if !is_x86_feature_detected!("avx2") {
             return;
         }
@@ -3903,9 +5209,20 @@ mod tests {
         let mut scratch = XorJitBitplaneScratch::new().expect("scratch");
 
         scratch.multiply_add_chunks_with_prefetch(&prepared, &input, &mut output, None);
-        let loaded_body = scratch.loaded;
+        let body_len = scratch.code.len();
+        let body_code = scratch
+            .code
+            .copy_prefix(body_len)
+            .expect("copy scratch body bytes");
         scratch.multiply_add_chunks_with_prefetch(&prepared, &input, &mut output, None);
-        assert_eq!(scratch.loaded, loaded_body);
+        assert_eq!(scratch.code.len(), body_len);
+        assert_eq!(
+            scratch
+                .code
+                .copy_prefix(body_len)
+                .expect("copy scratch body bytes"),
+            body_code
+        );
 
         scratch.multiply_add_chunks_with_prefetch(
             &prepared,
@@ -3913,14 +5230,25 @@ mod tests {
             &mut output,
             Some(prefetch.as_ptr()),
         );
-        let loaded_prefetch = scratch.loaded;
+        let prefetch_len = scratch.code.len();
+        let prefetch_code = scratch
+            .code
+            .copy_prefix(prefetch_len)
+            .expect("copy scratch prefetch bytes");
         scratch.multiply_add_chunks_with_prefetch(
             &prepared,
             &input,
             &mut output,
             Some(prefetch.as_ptr()),
         );
-        assert_eq!(scratch.loaded, loaded_prefetch);
+        assert_eq!(scratch.code.len(), prefetch_len);
+        assert_eq!(
+            scratch
+                .code
+                .copy_prefix(prefetch_len)
+                .expect("copy scratch prefetch bytes"),
+            prefetch_code
+        );
     }
 
     #[test]
@@ -4015,6 +5343,89 @@ mod tests {
         prepare_xor_jit_bitplane_segment(&mut prepared, &input);
         finish_xor_jit_bitplane_chunks(&mut actual, &prepared);
 
+        assert_eq!(actual, input);
+    }
+
+    #[test]
+    fn prepare_xor_jit_bitplane_packed_input_matches_segment_loop() {
+        let chunk_len = 128 * 1024;
+        let input_pack_size = 16;
+        let input_num = 3;
+        let slice_len = chunk_len + bitplane::AVX2_BLOCK_BYTES * 3;
+        let compute_len = slice_len + bitplane::AVX2_BLOCK_BYTES;
+        let segment_count = compute_len.div_ceil(chunk_len);
+        let last_chunk_len = if compute_len % chunk_len == 0 {
+            chunk_len
+        } else {
+            compute_len % chunk_len
+        };
+        let storage_len =
+            (segment_count - 1) * input_pack_size * chunk_len + input_pack_size * last_chunk_len;
+        let mut prepared = alloc_aligned_vec(storage_len);
+        let input = (0..slice_len)
+            .map(|idx| ((idx * 29 + 7) & 0xff) as u8)
+            .collect::<Vec<_>>();
+
+        prepare_xor_jit_bitplane_packed_input_cksum(
+            &mut prepared,
+            &input,
+            slice_len,
+            input_pack_size,
+            input_num,
+            chunk_len,
+        );
+
+        let mut actual = vec![0u8; slice_len];
+        assert!(finish_xor_jit_bitplane_packed_output_cksum(
+            &mut actual,
+            &prepared,
+            input_pack_size,
+            input_num,
+            chunk_len,
+        ));
+        assert_eq!(actual, input);
+    }
+
+    #[test]
+    fn finish_xor_jit_bitplane_packed_output_matches_segment_loop() {
+        let chunk_len = 128 * 1024;
+        let num_outputs = 8;
+        let output_num = 5;
+        let slice_len = chunk_len + bitplane::AVX2_BLOCK_BYTES * 5;
+        let compute_len = slice_len + bitplane::AVX2_BLOCK_BYTES;
+        let segment_count = compute_len.div_ceil(chunk_len);
+        let last_chunk_len = if compute_len % chunk_len == 0 {
+            chunk_len
+        } else {
+            compute_len % chunk_len
+        };
+        let storage_len =
+            (segment_count - 1) * num_outputs * chunk_len + num_outputs * last_chunk_len;
+        let mut prepared = alloc_aligned_vec(storage_len);
+        let input = (0..slice_len)
+            .map(|idx| (((idx) * 17 + 11) & 0xff) as u8)
+            .collect::<Vec<_>>();
+
+        prepare_xor_jit_bitplane_packed_input_cksum(
+            &mut prepared,
+            &input,
+            slice_len,
+            num_outputs,
+            output_num,
+            chunk_len,
+        );
+        let checksum_offset =
+            xor_jit_checksum_offset(slice_len, num_outputs, output_num, chunk_len);
+        prepared[checksum_offset] ^= 1;
+
+        let mut actual = vec![0u8; slice_len];
+        assert!(!finish_xor_jit_bitplane_packed_output_cksum(
+            &mut actual,
+            &prepared,
+            num_outputs,
+            output_num,
+            chunk_len,
+        ));
         assert_eq!(actual, input);
     }
 

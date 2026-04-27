@@ -33,14 +33,17 @@ pub use pshufb::{
 #[cfg(target_arch = "x86_64")]
 #[doc(hidden)]
 pub use xor_jit::{
-    finish_xor_jit_bitplane_chunks, prepare_xor_jit_bitplane_chunks,
+    finish_xor_jit_bitplane_chunks, finish_xor_jit_bitplane_packed_output_cksum,
+    finish_xor_jit_bitplane_partial_packsum, prepare_xor_jit_bitplane_chunks,
+    prepare_xor_jit_bitplane_packed_input_cksum, prepare_xor_jit_bitplane_partial_packsum,
     prepare_xor_jit_bitplane_segment, process_slice_multiply_add_xor_jit,
     process_slices_multiply_add_xor_jit_x2, process_slices_multiply_add_xor_jit_x4,
     process_slices_multiply_add_xor_jit_x4_inputs_x2_outputs,
     process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs, xor_packed_multi_region_v16i1,
-    xor_prepared_bitplane_chunks, xor_prepared_bitplane_multi_chunks,
-    xor_prepared_bitplane_multi_chunks_v1i6, BitplaneAddPrefetchKind, XorJitBitplaneKernel,
-    XorJitBitplaneScratch, XorJitFlavor, XorJitPreparedCoeff, XorJitPreparedCoeffCache,
+    xor_packed_multi_region_v16i1_ptr, xor_prepared_bitplane_chunks,
+    xor_prepared_bitplane_multi_chunks, xor_prepared_bitplane_multi_chunks_v1i6,
+    BitplaneAddPrefetchKind, XorJitBitplaneKernel, XorJitBitplaneScratch, XorJitFlavor,
+    XorJitPreparedCoeff, XorJitPreparedCoeffCache,
 };
 
 /// SIMD implementation to use for the current platform

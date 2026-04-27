@@ -9,16 +9,14 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
 #[cfg(target_arch = "x86_64")]
-use crate::reed_solomon::simd::xor_jit::XorJitPreparedBitplaneHandle;
-#[cfg(target_arch = "x86_64")]
 use crate::reed_solomon::simd::{
-    detect_simd_support, finish_xor_jit_bitplane_chunks, prepare_avx2_coeff,
-    prepare_xor_jit_bitplane_segment, process_slice_multiply_add_prepared_avx2,
+    detect_simd_support, finish_xor_jit_bitplane_packed_output_cksum, prepare_avx2_coeff,
+    prepare_xor_jit_bitplane_packed_input_cksum, process_slice_multiply_add_prepared_avx2,
     process_slice_multiply_add_xor_jit, process_slices_multiply_add_prepared_avx2_x2,
     process_slices_multiply_add_prepared_avx2_x4, process_slices_multiply_add_xor_jit_x2,
     process_slices_multiply_add_xor_jit_x4,
     process_slices_multiply_add_xor_jit_x4_inputs_x2_outputs,
-    process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs, xor_packed_multi_region_v16i1,
+    process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs, xor_packed_multi_region_v16i1_ptr,
     Avx2PreparedCoeff, SimdLevel, XorJitBitplaneScratch, XorJitFlavor, XorJitPreparedCoeff,
     XorJitPreparedCoeffCache,
 };
@@ -185,6 +183,7 @@ impl CreateCoeff {
         let xor_jit = prepare_bitplane.then(|| {
             let prepared = xor_jit_cache.prepare(value);
             prepared.ensure_bitplane_emitted();
+            xor_jit_cache.cache_bitplane_handle(value, prepared.bitplane_handle());
             prepared
         });
         let xor_jit_bitplane = xor_jit.clone();
@@ -211,7 +210,7 @@ pub struct StagingArea {
     inputs: AlignedVec,
     source_indices: Vec<usize>,
     #[cfg(target_arch = "x86_64")]
-    xor_jit_prepared_coeffs: Vec<XorJitPreparedBitplaneHandle>,
+    xor_jit_coeffs: Vec<u16>,
     batch_len: usize,
 }
 
@@ -221,10 +220,7 @@ impl StagingArea {
         Self {
             inputs: AlignedVec::new_zeroed(input_storage_len),
             source_indices: vec![0; input_grouping],
-            xor_jit_prepared_coeffs: vec![
-                XorJitPreparedBitplaneHandle::default();
-                input_grouping * recovery_count
-            ],
+            xor_jit_coeffs: vec![0; input_grouping * recovery_count],
             batch_len: 0,
         }
     }
@@ -249,74 +245,87 @@ impl StagingArea {
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct XorJitBitplaneLayout {
-    segment_len: usize,
-    segment_count: usize,
-    input_grouping: usize,
+    aligned_slice_len: usize,
+    stride: usize,
+    chunk_len: usize,
+    input_batch_size: usize,
     recovery_count: usize,
 }
 
 #[cfg(target_arch = "x86_64")]
 impl XorJitBitplaneLayout {
     fn new(
-        compute_len: usize,
-        segment_len: usize,
-        input_grouping: usize,
+        max_slice_len: usize,
+        chunk_len: usize,
+        input_batch_size: usize,
         recovery_count: usize,
     ) -> Self {
-        debug_assert!(segment_len > 0);
-        debug_assert!(segment_len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
-        debug_assert!(compute_len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
+        let stride = XOR_JIT_BITPLANE_ALIGNMENT;
+        let aligned_slice_len = align_up(max_slice_len, stride) + stride;
+        debug_assert!(chunk_len > 0);
+        debug_assert!(chunk_len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
+        debug_assert!(aligned_slice_len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
         Self {
-            segment_len,
-            segment_count: compute_len.div_ceil(segment_len),
-            input_grouping,
+            aligned_slice_len,
+            stride,
+            chunk_len,
+            input_batch_size,
             recovery_count,
         }
     }
 
     #[inline]
-    fn input_offset(&self, segment_idx: usize, batch_idx: usize) -> usize {
-        debug_assert!(segment_idx < self.segment_count);
-        debug_assert!(batch_idx < self.input_grouping);
-        let offset =
-            segment_idx * self.input_grouping * self.segment_len + batch_idx * self.segment_len;
+    fn align_to_stride(&self, len: usize) -> usize {
+        align_up(len, self.stride)
+    }
+
+    #[inline]
+    fn aligned_current_slice_size(&self, slice_len: usize) -> usize {
+        self.align_to_stride(slice_len) + self.stride
+    }
+
+    #[inline]
+    fn segment_count_for(&self, aligned_current_slice_size: usize) -> usize {
+        aligned_current_slice_size.div_ceil(self.chunk_len)
+    }
+
+    #[inline]
+    fn input_offset(&self, slice_offset: usize, batch_idx: usize, proc_size: usize) -> usize {
+        debug_assert!(batch_idx < self.input_batch_size);
+        let offset = slice_offset * self.input_batch_size + batch_idx * proc_size;
         debug_assert!(offset.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
         offset
     }
 
     #[inline]
-    fn output_offset(&self, segment_idx: usize, recovery_idx: usize) -> usize {
-        debug_assert!(segment_idx < self.segment_count);
+    fn output_offset(&self, slice_offset: usize, recovery_idx: usize, proc_size: usize) -> usize {
         debug_assert!(recovery_idx < self.recovery_count);
-        let offset =
-            segment_idx * self.recovery_count * self.segment_len + recovery_idx * self.segment_len;
+        let offset = slice_offset * self.recovery_count + recovery_idx * proc_size;
         debug_assert!(offset.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
         offset
     }
 
     #[inline]
-    fn segment_start(&self, segment_idx: usize) -> usize {
-        debug_assert!(segment_idx < self.segment_count);
-        segment_idx * self.segment_len
+    fn slice_offset(&self, segment_idx: usize) -> usize {
+        segment_idx * self.chunk_len
     }
 
     #[inline]
-    fn segment_len_for(&self, segment_idx: usize, compute_len: usize) -> usize {
-        let start = self.segment_start(segment_idx);
-        debug_assert!(start < compute_len);
-        let len = (compute_len - start).min(self.segment_len);
+    fn segment_len_for(&self, slice_offset: usize, aligned_current_slice_size: usize) -> usize {
+        debug_assert!(slice_offset < aligned_current_slice_size);
+        let len = (aligned_current_slice_size - slice_offset).min(self.chunk_len);
         debug_assert!(len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
         len
     }
 
     #[inline]
     fn input_storage_len(&self) -> usize {
-        self.segment_count * self.input_grouping * self.segment_len
+        self.input_batch_size * self.aligned_slice_len
     }
 
     #[inline]
     fn output_storage_len(&self) -> usize {
-        self.segment_count * self.recovery_count * self.segment_len
+        self.recovery_count * self.aligned_slice_len
     }
 }
 
@@ -370,7 +379,7 @@ impl CreateRecoveryBackend {
         let input_grouping = input_grouping(source_count, method);
         #[cfg(target_arch = "x86_64")]
         let xor_jit_layout = xor_jit_bitplane.then(|| {
-            let segment_len = align_down(
+            let chunk_len = align_down(
                 method
                     .ideal_segment_len()
                     .min(aligned_chunk_len)
@@ -378,12 +387,7 @@ impl CreateRecoveryBackend {
                 XOR_JIT_BITPLANE_ALIGNMENT,
             )
             .max(XOR_JIT_BITPLANE_ALIGNMENT);
-            XorJitBitplaneLayout::new(
-                aligned_chunk_len,
-                segment_len,
-                input_grouping,
-                recovery_count,
-            )
+            XorJitBitplaneLayout::new(aligned_chunk_len, chunk_len, input_grouping, recovery_count)
         });
         #[cfg(target_arch = "x86_64")]
         let staging_storage_len = xor_jit_layout
@@ -559,13 +563,7 @@ impl CreateRecoveryBackend {
             let layout = self
                 .xor_jit_layout
                 .expect("XOR-JIT bitplane layout initialized");
-            prepare_xor_jit_bitplane_staging(
-                layout,
-                staging,
-                slot,
-                self.aligned_chunk_len,
-                input_chunk,
-            );
+            prepare_xor_jit_bitplane_staging(layout, staging, slot, self.chunk_len, input_chunk);
         } else {
             staging
                 .slot_mut(slot, self.aligned_chunk_len, self.chunk_len)
@@ -614,7 +612,7 @@ impl CreateRecoveryBackend {
                 layout,
                 staging,
                 slot,
-                self.aligned_chunk_len,
+                self.chunk_len,
                 &self.transfer_buffers[idx][..self.chunk_len],
             );
         } else {
@@ -653,8 +651,13 @@ impl CreateRecoveryBackend {
     }
 
     #[inline]
-    pub fn finish_chunk(&mut self, recovery_blocks: &mut [(u16, Vec<u8>)], block_size: usize) {
+    pub fn finish_chunk(
+        &mut self,
+        recovery_blocks: &mut [(u16, Vec<u8>)],
+        block_size: usize,
+    ) -> bool {
         self.end_input();
+        let mut all_checksum_ok = true;
 
         recovery_blocks
             .iter_mut()
@@ -669,23 +672,14 @@ impl CreateRecoveryBackend {
                         .expect("XOR-JIT bitplane layout initialized");
                     let output_start = recovery_data.len();
                     recovery_data.resize(output_start + self.chunk_len, 0);
-                    for segment_idx in 0..layout.segment_count {
-                        let segment_start = layout.segment_start(segment_idx);
-                        if segment_start >= self.chunk_len {
-                            break;
-                        }
-                        let prepared_len =
-                            layout.segment_len_for(segment_idx, self.aligned_chunk_len);
-                        let output_len = (self.chunk_len - segment_start).min(prepared_len);
-                        let dst_start = output_start + segment_start;
-                        let prepared_start = layout.output_offset(segment_idx, recovery_idx);
-                        let prepared_end = prepared_start + prepared_len;
-                        debug_assert!(prepared_end <= self.output_chunks.len());
-                        finish_xor_jit_bitplane_chunks(
-                            &mut recovery_data[dst_start..dst_start + output_len],
-                            &self.output_chunks[prepared_start..prepared_end],
-                        );
-                    }
+                    let output_checksum_ok = finish_xor_jit_bitplane_packed_output_cksum(
+                        &mut recovery_data[output_start..output_start + self.chunk_len],
+                        &self.output_chunks,
+                        layout.recovery_count,
+                        recovery_idx,
+                        layout.chunk_len,
+                    );
+                    all_checksum_ok &= output_checksum_ok;
                 } else {
                     let start = recovery_idx * self.aligned_chunk_len;
                     let end = start + self.chunk_len;
@@ -700,6 +694,7 @@ impl CreateRecoveryBackend {
                     recovery_data.extend_from_slice(&self.output_chunks[start..end]);
                 }
             });
+        all_checksum_ok
     }
 
     #[inline]
@@ -743,7 +738,9 @@ impl CreateRecoveryBackend {
         let recovery_count = self.recovery_exponents.len();
         #[cfg(target_arch = "x86_64")]
         let compute_len = if self.xor_jit_bitplane {
-            self.aligned_chunk_len
+            self.xor_jit_layout
+                .expect("XOR-JIT bitplane layout initialized")
+                .aligned_current_slice_size(self.chunk_len)
         } else {
             self.chunk_len
         };
@@ -794,9 +791,9 @@ impl CreateRecoveryBackend {
                     input_base: staging.inputs.as_ptr() as usize,
                     output_base: self.output_chunks.as_ptr() as usize,
                     coeffs: self.coeffs.as_ptr() as usize,
-                    recovery_exponents: self.recovery_exponents.as_ptr() as usize,
                     source_indices: staging.source_indices.as_ptr() as usize,
-                    xor_jit_prepared_coeffs: staging.xor_jit_prepared_coeffs.as_ptr() as usize,
+                    recovery_exponents: self.recovery_exponents.as_ptr() as usize,
+                    xor_jit_coeffs: staging.xor_jit_coeffs.as_ptr() as usize,
                     source_count: self.source_count,
                     batch_len: staging.batch_len,
                     aligned_chunk_len: self.aligned_chunk_len,
@@ -811,13 +808,9 @@ impl CreateRecoveryBackend {
                     #[cfg(target_arch = "x86_64")]
                     xor_jit_segment_len: 0,
                     #[cfg(target_arch = "x86_64")]
-                    xor_jit_segment_count: 0,
-                    #[cfg(target_arch = "x86_64")]
                     xor_jit_input_grouping: 0,
                     #[cfg(target_arch = "x86_64")]
-                    xor_jit_recovery_count: 0,
-                    #[cfg(target_arch = "x86_64")]
-                    xor_jit_zero_outputs: false,
+                    xor_jit_add_outputs: false,
                 };
                 job_count += 1;
             }
@@ -836,100 +829,127 @@ impl CreateRecoveryBackend {
     ) -> usize {
         let staging = &self.staging[staging_idx];
         let mut job_count = 0;
-        let zero_outputs = self.xor_jit_zero_outputs_pending;
+        let add_outputs = !self.xor_jit_zero_outputs_pending;
         self.xor_jit_zero_outputs_pending = false;
-        if zero_outputs {
-            self.output_chunks[..layout.output_storage_len()].fill(0);
+        let segment_count = layout.segment_count_for(compute_len);
+
+        let full_chunks_per_worker = segment_count / worker_count.max(1);
+        let leftover_chunks = segment_count % worker_count.max(1);
+        let mut segment_idx = 0usize;
+
+        if leftover_chunks != 0 {
+            let threads_per_chunk = (worker_count / leftover_chunks).min(recovery_count).max(1);
+            let outputs_per_thread = recovery_count as f64 / threads_per_chunk as f64;
+
+            for _ in 0..leftover_chunks {
+                let slice_offset = layout.slice_offset(segment_idx);
+                let segment_len = layout.segment_len_for(slice_offset, compute_len);
+                let mut output_start = 0usize;
+                for thread_chunk in 0..threads_per_chunk {
+                    let output_end = (((thread_chunk + 1) as f64 * outputs_per_thread).round()
+                        as usize)
+                        .min(recovery_count)
+                        .max(output_start + 1);
+                    let local_output_count = output_end - output_start;
+                    debug_assert!(job_count < self.job_storage.len());
+                    self.job_storage[job_count] = ComputeJob {
+                        method: self.method,
+                        input_base: unsafe {
+                            staging.inputs.as_ptr().add(layout.input_offset(
+                                slice_offset,
+                                0,
+                                segment_len,
+                            )) as usize
+                        },
+                        output_base: unsafe {
+                            self.output_chunks.as_ptr().add(layout.output_offset(
+                                slice_offset,
+                                output_start,
+                                segment_len,
+                            )) as usize
+                        },
+                        coeffs: self.coeffs.as_ptr() as usize,
+                        source_indices: staging.source_indices.as_ptr() as usize,
+                        recovery_exponents: unsafe {
+                            self.recovery_exponents.as_ptr().add(output_start) as usize
+                        },
+                        xor_jit_coeffs: unsafe {
+                            staging
+                                .xor_jit_coeffs
+                                .as_ptr()
+                                .add(output_start * layout.input_batch_size)
+                                as usize
+                        },
+                        source_count: self.source_count,
+                        batch_len: staging.batch_len,
+                        aligned_chunk_len: self.aligned_chunk_len,
+                        compute_len: segment_len,
+                        segment_start: 0,
+                        segment_len,
+                        segment_count: 1,
+                        output_start: 0,
+                        output_end: local_output_count,
+                        xor_jit_bitplane: true,
+                        xor_jit_segment_len: layout.chunk_len,
+                        xor_jit_input_grouping: layout.input_batch_size,
+                        xor_jit_add_outputs: add_outputs,
+                    };
+                    job_count += 1;
+                    output_start = output_end;
+                }
+                debug_assert_eq!(output_start, recovery_count);
+                segment_idx += 1;
+            }
         }
 
-        if layout.segment_count >= worker_count {
-            let segment_groups = worker_count.min(layout.segment_count).max(1);
-            let base_segments = layout.segment_count / segment_groups;
-            let extra_segments = layout.segment_count % segment_groups;
-            let mut segment_idx = 0;
-
-            for group_idx in 0..segment_groups {
-                let group_segments = base_segments + usize::from(group_idx < extra_segments);
-                debug_assert!(group_segments > 0);
+        if full_chunks_per_worker != 0 {
+            while segment_idx < segment_count {
+                let slice_offset = layout.slice_offset(segment_idx);
+                let segment_len = layout.segment_len_for(slice_offset, compute_len);
+                let total_len =
+                    (compute_len - slice_offset).min(full_chunks_per_worker * layout.chunk_len);
                 debug_assert!(job_count < self.job_storage.len());
                 self.job_storage[job_count] = ComputeJob {
                     method: self.method,
-                    input_base: staging.inputs.as_ptr() as usize,
-                    output_base: self.output_chunks.as_ptr() as usize,
+                    input_base: unsafe {
+                        staging.inputs.as_ptr().add(layout.input_offset(
+                            slice_offset,
+                            0,
+                            segment_len,
+                        )) as usize
+                    },
+                    output_base: unsafe {
+                        self.output_chunks.as_ptr().add(layout.output_offset(
+                            slice_offset,
+                            0,
+                            segment_len,
+                        )) as usize
+                    },
                     coeffs: self.coeffs.as_ptr() as usize,
-                    recovery_exponents: self.recovery_exponents.as_ptr() as usize,
                     source_indices: staging.source_indices.as_ptr() as usize,
-                    xor_jit_prepared_coeffs: staging.xor_jit_prepared_coeffs.as_ptr() as usize,
+                    recovery_exponents: self.recovery_exponents.as_ptr() as usize,
+                    xor_jit_coeffs: staging.xor_jit_coeffs.as_ptr() as usize,
                     source_count: self.source_count,
                     batch_len: staging.batch_len,
                     aligned_chunk_len: self.aligned_chunk_len,
-                    compute_len,
-                    segment_start: layout.segment_start(segment_idx),
-                    segment_len: layout.segment_len_for(segment_idx, compute_len),
-                    segment_count: group_segments,
+                    compute_len: total_len,
+                    segment_start: 0,
+                    segment_len,
+                    segment_count: full_chunks_per_worker,
                     output_start: 0,
                     output_end: recovery_count,
                     xor_jit_bitplane: true,
-                    xor_jit_segment_len: layout.segment_len,
-                    xor_jit_segment_count: layout.segment_count,
-                    xor_jit_input_grouping: layout.input_grouping,
-                    xor_jit_recovery_count: layout.recovery_count,
-                    xor_jit_zero_outputs: false,
+                    xor_jit_segment_len: layout.chunk_len,
+                    xor_jit_input_grouping: layout.input_batch_size,
+                    xor_jit_add_outputs: add_outputs,
                 };
                 job_count += 1;
-                segment_idx += group_segments;
-            }
-
-            return job_count;
-        }
-
-        let segment_groups = layout.segment_count.max(1);
-        let output_groups = (worker_count / segment_groups)
-            .max(1)
-            .min(recovery_count)
-            .max(1);
-        let outputs_per_group = recovery_count.div_ceil(output_groups);
-
-        for segment_idx in 0..layout.segment_count {
-            let start = layout.segment_start(segment_idx);
-            let len = layout.segment_len_for(segment_idx, compute_len);
-            for output_group in 0..output_groups {
-                let output_start = output_group * outputs_per_group;
-                let output_end = ((output_group + 1) * outputs_per_group).min(recovery_count);
-                if output_start == output_end {
-                    continue;
-                }
-
-                debug_assert!(job_count < self.job_storage.len());
-                self.job_storage[job_count] = ComputeJob {
-                    method: self.method,
-                    input_base: staging.inputs.as_ptr() as usize,
-                    output_base: self.output_chunks.as_ptr() as usize,
-                    coeffs: self.coeffs.as_ptr() as usize,
-                    recovery_exponents: self.recovery_exponents.as_ptr() as usize,
-                    source_indices: staging.source_indices.as_ptr() as usize,
-                    xor_jit_prepared_coeffs: staging.xor_jit_prepared_coeffs.as_ptr() as usize,
-                    source_count: self.source_count,
-                    batch_len: staging.batch_len,
-                    aligned_chunk_len: self.aligned_chunk_len,
-                    compute_len,
-                    segment_start: start,
-                    segment_len: len,
-                    segment_count: 1,
-                    output_start,
-                    output_end,
-                    xor_jit_bitplane: true,
-                    xor_jit_segment_len: layout.segment_len,
-                    xor_jit_segment_count: layout.segment_count,
-                    xor_jit_input_grouping: layout.input_grouping,
-                    xor_jit_recovery_count: layout.recovery_count,
-                    xor_jit_zero_outputs: false,
-                };
-                job_count += 1;
+                segment_idx += full_chunks_per_worker;
             }
         }
 
-        job_count
+        debug_assert_eq!(segment_idx, segment_count);
+        job_count.max(1)
     }
 }
 
@@ -938,24 +958,20 @@ fn prepare_xor_jit_bitplane_staging(
     layout: XorJitBitplaneLayout,
     staging: &mut StagingArea,
     slot: usize,
-    compute_len: usize,
+    slice_len: usize,
     input_chunk: &[u8],
 ) {
-    debug_assert!(compute_len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
-    for segment_idx in 0..layout.segment_count {
-        let segment_start = layout.segment_start(segment_idx);
-        let segment_len = layout.segment_len_for(segment_idx, compute_len);
-        let dst_start = layout.input_offset(segment_idx, slot);
-        let dst_end = dst_start + segment_len;
-        debug_assert!(dst_end <= staging.inputs.len());
-        let src = if segment_start < input_chunk.len() {
-            let src_end = (segment_start + segment_len).min(input_chunk.len());
-            &input_chunk[segment_start..src_end]
-        } else {
-            &[]
-        };
-        prepare_xor_jit_bitplane_segment(&mut staging.inputs[dst_start..dst_end], src);
-    }
+    let aligned_slice_len = layout.align_to_stride(slice_len);
+    debug_assert!(aligned_slice_len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
+    debug_assert!(input_chunk.len() <= slice_len);
+    prepare_xor_jit_bitplane_packed_input_cksum(
+        &mut staging.inputs,
+        input_chunk,
+        aligned_slice_len,
+        layout.input_batch_size,
+        slot,
+        layout.chunk_len,
+    );
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -971,12 +987,7 @@ fn pack_xor_jit_bitplane_coeffs(
 ) {
     for recovery_idx in 0..recovery_count {
         let coeff = &coeffs[gf_coeff_index(recovery_idx, source_idx, source_count)];
-        let prepared = coeff
-            .xor_jit_bitplane
-            .as_ref()
-            .expect("forced XOR-JIT create backend missing bitplane kernel");
-        staging.xor_jit_prepared_coeffs[recovery_idx * input_grouping + slot] =
-            prepared.bitplane_handle();
+        staging.xor_jit_coeffs[recovery_idx * input_grouping + slot] = coeff.value;
     }
 }
 
@@ -986,10 +997,10 @@ struct ComputeJob {
     input_base: usize,
     output_base: usize,
     coeffs: usize,
-    recovery_exponents: usize,
     source_indices: usize,
+    recovery_exponents: usize,
     #[cfg(target_arch = "x86_64")]
-    xor_jit_prepared_coeffs: usize,
+    xor_jit_coeffs: usize,
     source_count: usize,
     batch_len: usize,
     aligned_chunk_len: usize,
@@ -1004,13 +1015,9 @@ struct ComputeJob {
     #[cfg(target_arch = "x86_64")]
     xor_jit_segment_len: usize,
     #[cfg(target_arch = "x86_64")]
-    xor_jit_segment_count: usize,
-    #[cfg(target_arch = "x86_64")]
     xor_jit_input_grouping: usize,
     #[cfg(target_arch = "x86_64")]
-    xor_jit_recovery_count: usize,
-    #[cfg(target_arch = "x86_64")]
-    xor_jit_zero_outputs: bool,
+    xor_jit_add_outputs: bool,
 }
 
 impl Default for CreateGf16Method {
@@ -1324,243 +1331,283 @@ fn process_compute_job_xor_jit(job: ComputeJob, flavor: XorJitFlavor, context: &
 
 #[cfg(target_arch = "x86_64")]
 fn process_compute_job_xor_jit_bitplane(job: ComputeJob, context: &mut WorkerContext) {
-    let layout = xor_jit_bitplane_job_layout(job);
-    let first_segment_idx = job.segment_start / layout.segment_len;
-    debug_assert_eq!(job.segment_start, layout.segment_start(first_segment_idx));
-    for segment_offset in 0..job.segment_count {
-        let segment_idx = first_segment_idx + segment_offset;
-        let segment_start = layout.segment_start(segment_idx);
-        let segment_len = layout.segment_len_for(segment_idx, job.compute_len);
-        process_compute_job_xor_jit_bitplane_segment(
-            ComputeJob {
-                segment_start,
-                segment_len,
-                segment_count: 1,
-                ..job
-            },
-            context,
-        );
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-fn process_compute_job_xor_jit_bitplane_segment(job: ComputeJob, context: &mut WorkerContext) {
-    let layout = xor_jit_bitplane_job_layout(job);
-    let segment_idx = job.segment_start / layout.segment_len;
-    debug_assert_eq!(job.segment_start, layout.segment_start(segment_idx));
-    debug_assert!(job.segment_start.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
-    debug_assert!(job.segment_len.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
     let scratch = context
         .xor_jit_bitplane_scratch
         .get_or_insert_with(|| XorJitBitplaneScratch::new().expect("allocate xor-jit scratch"));
-    for recovery_idx in job.output_start..job.output_end {
-        if xor_jit_output_nonzero(job, recovery_idx) {
-            let output_start = layout.output_offset(segment_idx, recovery_idx);
-            let output = unsafe {
-                std::slice::from_raw_parts_mut(
-                    (job.output_base as *mut u8).add(output_start),
-                    job.segment_len,
+    let num_outputs = job.output_end - job.output_start;
+    let mut inputs_prefetched_per_invok = job.batch_len / job.xor_jit_input_grouping;
+    let mut input_prefetch_out_offset = num_outputs.saturating_sub(1);
+    const MAX_PF_FACTOR: usize = 3;
+    if inputs_prefetched_per_invok > (1usize << XOR_JIT_PREFETCH_DOWNSCALE) {
+        inputs_prefetched_per_invok -= 1usize << XOR_JIT_PREFETCH_DOWNSCALE;
+        inputs_prefetched_per_invok <<= MAX_PF_FACTOR - XOR_JIT_PREFETCH_DOWNSCALE;
+        input_prefetch_out_offset =
+            (job.batch_len << MAX_PF_FACTOR).div_ceil(inputs_prefetched_per_invok);
+        input_prefetch_out_offset = num_outputs.saturating_sub(input_prefetch_out_offset);
+    }
+
+    for round in 0..job.segment_count {
+        let proc_size =
+            (job.compute_len - round * job.xor_jit_segment_len).min(job.xor_jit_segment_len);
+        debug_assert!(proc_size.is_multiple_of(XOR_JIT_BITPLANE_ALIGNMENT));
+        let final_round = round + 1 == job.segment_count;
+
+        let input_ptr = unsafe {
+            (job.input_base as *const u8)
+                .add(round * job.xor_jit_segment_len * job.xor_jit_input_grouping)
+        };
+
+        for local_output_idx in 0..num_outputs {
+            let output_ptr = unsafe {
+                (job.output_base as *mut u8).add(
+                    local_output_idx * proc_size + round * num_outputs * job.xor_jit_segment_len,
                 )
             };
-            if job.xor_jit_zero_outputs {
-                output.fill(0);
+            if !job.xor_jit_add_outputs {
+                unsafe {
+                    std::ptr::write_bytes(output_ptr, 0, proc_size);
+                }
             }
-            process_batch_add_avx2_xor_jit_bitplane_packed(
-                job,
-                layout,
-                segment_idx,
-                recovery_idx,
-                output,
-                scratch,
-            );
-        } else {
-            let output_start = layout.output_offset(segment_idx, recovery_idx);
-            let output = unsafe {
-                std::slice::from_raw_parts_mut(
-                    (job.output_base as *mut u8).add(output_start),
-                    job.segment_len,
-                )
-            };
-            if job.xor_jit_zero_outputs {
-                output.fill(0);
+
+            if final_round {
+                if local_output_idx + 1 < num_outputs {
+                    let output_prefetch = Some(unsafe { output_ptr.add(proc_size) } as *const u8);
+                    if xor_jit_bitplane_output_nonzero(job, local_output_idx) {
+                        process_batch_add_avx2_xor_jit_bitplane_packed_with_prefetch(
+                            job,
+                            local_output_idx,
+                            input_ptr,
+                            output_ptr,
+                            proc_size,
+                            None,
+                            output_prefetch,
+                            scratch,
+                        );
+                    } else {
+                        process_batch_add_avx2_xor_jit_bitplane_add_only_packed_with_prefetch(
+                            job,
+                            input_ptr,
+                            output_ptr,
+                            proc_size,
+                            None,
+                            output_prefetch,
+                        );
+                    }
+                } else {
+                    process_batch_add_avx2_xor_jit_bitplane_packed(
+                        job,
+                        local_output_idx,
+                        input_ptr,
+                        output_ptr,
+                        proc_size,
+                        scratch,
+                    );
+                }
+            } else {
+                let input_prefetch = if local_output_idx >= input_prefetch_out_offset {
+                    Some(unsafe {
+                        (job.input_base as *const u8).add(
+                            (round + 1) * job.xor_jit_segment_len * job.xor_jit_input_grouping
+                                + ((inputs_prefetched_per_invok
+                                    * (local_output_idx - input_prefetch_out_offset)
+                                    * proc_size)
+                                    >> MAX_PF_FACTOR),
+                        )
+                    })
+                } else {
+                    None
+                };
+                let output_prefetch = Some(unsafe { output_ptr.add(proc_size) } as *const u8);
+
+                if xor_jit_bitplane_output_nonzero(job, local_output_idx) {
+                    process_batch_add_avx2_xor_jit_bitplane_packed_with_prefetch(
+                        job,
+                        local_output_idx,
+                        input_ptr,
+                        output_ptr,
+                        proc_size,
+                        input_prefetch,
+                        output_prefetch,
+                        scratch,
+                    );
+                } else {
+                    process_batch_add_avx2_xor_jit_bitplane_add_only_packed_with_prefetch(
+                        job,
+                        input_ptr,
+                        output_ptr,
+                        proc_size,
+                        input_prefetch,
+                        output_prefetch,
+                    );
+                }
             }
-            process_batch_add_avx2_xor_jit_bitplane_add_only_packed(
-                job,
-                layout,
-                segment_idx,
-                recovery_idx,
-                output,
-            );
         }
     }
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
-fn xor_jit_bitplane_job_layout(job: ComputeJob) -> XorJitBitplaneLayout {
-    XorJitBitplaneLayout {
-        segment_len: job.xor_jit_segment_len,
-        segment_count: job.xor_jit_segment_count,
-        input_grouping: job.xor_jit_input_grouping,
-        recovery_count: job.xor_jit_recovery_count,
-    }
+fn xor_jit_bitplane_output_nonzero(job: ComputeJob, local_output_idx: usize) -> bool {
+    unsafe { *(job.recovery_exponents as *const u16).add(local_output_idx) != 0 }
 }
 
 #[cfg(target_arch = "x86_64")]
-#[inline]
-fn xor_jit_output_nonzero(job: ComputeJob, recovery_idx: usize) -> bool {
-    unsafe { *(job.recovery_exponents as *const u16).add(recovery_idx) != 0 }
+fn process_batch_add_avx2_xor_jit_bitplane_packed_with_prefetch(
+    job: ComputeJob,
+    local_output_idx: usize,
+    input_ptr: *const u8,
+    output: *mut u8,
+    round_len: usize,
+    input_prefetch: Option<*const u8>,
+    output_prefetch: Option<*const u8>,
+    scratch: &mut XorJitBitplaneScratch,
+) {
+    let coeff_ptr = unsafe {
+        (job.xor_jit_coeffs as *const u16).add(local_output_idx * job.xor_jit_input_grouping)
+    };
+    unsafe {
+        xor_jit_multi_region_packpf_ptr(
+            scratch,
+            coeff_ptr,
+            input_ptr,
+            job.batch_len,
+            output,
+            round_len,
+            input_prefetch,
+            output_prefetch,
+        );
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
 fn process_batch_add_avx2_xor_jit_bitplane_packed(
     job: ComputeJob,
-    layout: XorJitBitplaneLayout,
-    segment_idx: usize,
-    recovery_idx: usize,
-    output: &mut [u8],
+    local_output_idx: usize,
+    input_ptr: *const u8,
+    output: *mut u8,
+    round_len: usize,
     scratch: &mut XorJitBitplaneScratch,
 ) {
-    let pf_len = job.segment_len >> XOR_JIT_PREFETCH_DOWNSCALE;
-    let input_base =
-        unsafe { (job.input_base as *const u8).add(layout.input_offset(segment_idx, 0)) };
-    let coeff_base = unsafe {
-        (job.xor_jit_prepared_coeffs as *const XorJitPreparedBitplaneHandle)
-            .add(recovery_idx * job.xor_jit_input_grouping)
+    let coeff_ptr = unsafe {
+        (job.xor_jit_coeffs as *const u16).add(local_output_idx * job.xor_jit_input_grouping)
     };
-    let mut region = 0;
-    let mut output_pf_rounds = 1usize << XOR_JIT_PREFETCH_DOWNSCALE;
-    let mut output_pf =
-        xor_jit_bitplane_output_prefetch_ptr(job, layout, segment_idx, recovery_idx, 0);
-
-    while region < job.batch_len && output_pf_rounds > 0 {
-        let Some(prefetch) = output_pf else {
-            break;
-        };
-        xor_jit_bitplane_run_single_region_packed(
-            input_base,
-            coeff_base,
-            job.segment_len,
-            region,
-            output,
+    unsafe {
+        xor_jit_multi_region_ptr(
             scratch,
-            Some(prefetch),
+            coeff_ptr,
+            input_ptr,
+            job.batch_len,
+            output,
+            round_len,
         );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn xor_jit_multi_region_ptr(
+    scratch: &mut XorJitBitplaneScratch,
+    coeffs: *const u16,
+    src: *const u8,
+    regions: usize,
+    output: *mut u8,
+    len: usize,
+) {
+    debug_assert!(regions > 0);
+    for region in 0..regions {
+        let coefficient = unsafe { *coeffs.add(region) };
+        let input = unsafe { src.add(region * len) };
+        unsafe { scratch.multiply_add_ptr_coefficient(coefficient, input, output, len) };
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn xor_jit_multi_region_packpf_ptr(
+    scratch: &mut XorJitBitplaneScratch,
+    coeffs: *const u16,
+    src: *const u8,
+    regions: usize,
+    output: *mut u8,
+    len: usize,
+    prefetch_in: Option<*const u8>,
+    prefetch_out: Option<*const u8>,
+) {
+    const PREFETCH_FACTOR: usize = 1;
+    const OUTPUT_PREFETCH_ROUNDS: usize = 1 << PREFETCH_FACTOR;
+
+    debug_assert!(regions > 0);
+
+    let pf_len = len >> PREFETCH_FACTOR;
+    let mut region = 0usize;
+    let mut prefetch_ptr = prefetch_out;
+    let mut output_pf_rounds = OUTPUT_PREFETCH_ROUNDS;
+    while region < regions && output_pf_rounds > 0 {
+        let coefficient = unsafe { *coeffs.add(region) };
+        let input = unsafe { src.add(region * len) };
+        let current_prefetch = prefetch_ptr.unwrap_or(std::ptr::null());
+        unsafe {
+            scratch.multiply_add_ptr_coefficient_prefetch(
+                coefficient,
+                input,
+                output,
+                len,
+                current_prefetch,
+            );
+        }
         region += 1;
         output_pf_rounds -= 1;
-        output_pf = Some(prefetch.wrapping_add(pf_len));
+        prefetch_ptr = prefetch_ptr.map(|ptr| ptr.wrapping_add(pf_len));
     }
 
-    if let Some(mut prefetch) =
-        xor_jit_bitplane_input_prefetch_base_ptr(job, layout, segment_idx, recovery_idx)
-    {
-        while region < job.batch_len {
-            xor_jit_bitplane_run_single_region_packed(
-                input_base,
-                coeff_base,
-                job.segment_len,
-                region,
-                output,
-                scratch,
-                Some(prefetch),
-            );
+    if let Some(mut prefetch_ptr) = prefetch_in {
+        while region < regions {
+            let coefficient = unsafe { *coeffs.add(region) };
+            let input = unsafe { src.add(region * len) };
+            unsafe {
+                scratch.multiply_add_ptr_coefficient_prefetch(
+                    coefficient,
+                    input,
+                    output,
+                    len,
+                    prefetch_ptr,
+                );
+            }
             region += 1;
-            prefetch = prefetch.wrapping_add(pf_len);
+            prefetch_ptr = prefetch_ptr.wrapping_add(pf_len);
         }
     } else {
-        while region < job.batch_len {
-            xor_jit_bitplane_run_single_region_packed(
-                input_base,
-                coeff_base,
-                job.segment_len,
-                region,
-                output,
+        unsafe {
+            xor_jit_multi_region_ptr(
                 scratch,
-                None,
+                coeffs.add(region),
+                src.add(region * len),
+                regions - region,
+                output,
+                len,
             );
-            region += 1;
         }
     }
 }
 
 #[cfg(target_arch = "x86_64")]
-fn process_batch_add_avx2_xor_jit_bitplane_add_only_packed(
+fn process_batch_add_avx2_xor_jit_bitplane_add_only_packed_with_prefetch(
     job: ComputeJob,
-    layout: XorJitBitplaneLayout,
-    segment_idx: usize,
-    recovery_idx: usize,
-    output: &mut [u8],
+    input_ptr: *const u8,
+    output: *mut u8,
+    round_len: usize,
+    input_prefetch: Option<*const u8>,
+    output_prefetch: Option<*const u8>,
 ) {
-    let input_start = layout.input_offset(segment_idx, 0);
-    xor_packed_multi_region_v16i1(
-        unsafe { (job.input_base as *const u8).add(input_start) },
+    xor_packed_multi_region_v16i1_ptr(
+        input_ptr,
         job.batch_len,
-        job.segment_len,
         output,
-        xor_jit_bitplane_input_prefetch_base_ptr(job, layout, segment_idx, recovery_idx),
-        xor_jit_bitplane_output_prefetch_ptr(job, layout, segment_idx, recovery_idx, 0),
+        round_len,
+        input_prefetch,
+        output_prefetch,
     );
 }
 
-#[cfg(target_arch = "x86_64")]
-#[inline]
-fn xor_jit_bitplane_run_single_region_packed(
-    input_base: *const u8,
-    coeff_base: *const XorJitPreparedBitplaneHandle,
-    segment_len: usize,
-    batch_idx: usize,
-    output: &mut [u8],
-    scratch: &mut XorJitBitplaneScratch,
-    prefetch: Option<*const u8>,
-) {
-    let prepared = unsafe { *coeff_base.add(batch_idx) };
-    unsafe {
-        scratch.multiply_add_ptr_with_prefetch_handle(
-            prepared,
-            input_base.add(batch_idx * segment_len),
-            output.as_mut_ptr(),
-            segment_len,
-            prefetch,
-        )
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-fn xor_jit_bitplane_input_prefetch_base_ptr(
-    job: ComputeJob,
-    layout: XorJitBitplaneLayout,
-    segment_idx: usize,
-    recovery_idx: usize,
-) -> Option<*const u8> {
-    xor_jit_bitplane_input_prefetch_base_ptr_from_base(
-        job,
-        layout,
-        segment_idx,
-        recovery_idx,
-        job.input_base,
-    )
-}
-
-#[cfg(target_arch = "x86_64")]
-fn xor_jit_bitplane_input_prefetch_base_ptr_from_base(
-    job: ComputeJob,
-    layout: XorJitBitplaneLayout,
-    segment_idx: usize,
-    recovery_idx: usize,
-    input_base: usize,
-) -> Option<*const u8> {
-    if segment_idx + 1 >= layout.segment_count {
-        return None;
-    }
-
-    let output_count = job.output_end - job.output_start;
-    let local_output_idx = recovery_idx - job.output_start;
-    let offset = xor_jit_bitplane_input_prefetch_base_offset(job, output_count, local_output_idx)?;
-    let start = layout.input_offset(segment_idx + 1, 0);
-    Some((input_base as *const u8).wrapping_add(start + offset))
-}
-
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", test))]
 fn xor_jit_bitplane_output_prefetch_ptr(
     job: ComputeJob,
     layout: XorJitBitplaneLayout,
@@ -1578,7 +1625,7 @@ fn xor_jit_bitplane_output_prefetch_ptr(
     )
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", test))]
 fn xor_jit_bitplane_output_prefetch_ptr_from_base(
     job: ComputeJob,
     layout: XorJitBitplaneLayout,
@@ -1588,7 +1635,9 @@ fn xor_jit_bitplane_output_prefetch_ptr_from_base(
     output_base: usize,
 ) -> Option<*const u8> {
     let prefetch_len = job.segment_len >> XOR_JIT_PREFETCH_DOWNSCALE;
-    let current = layout.output_offset(segment_idx, recovery_idx);
+    let slice_offset = layout.slice_offset(segment_idx);
+    let proc_size = layout.segment_len_for(slice_offset, layout.aligned_slice_len);
+    let current = layout.output_offset(slice_offset, recovery_idx, proc_size);
     let start = current + job.segment_len + batch_idx * prefetch_len;
     let output_bytes = layout.output_storage_len();
 
@@ -1608,7 +1657,7 @@ fn xor_jit_bitplane_input_prefetch_ptr(
     recovery_idx: usize,
     batch_idx: usize,
 ) -> Option<*const u8> {
-    if segment_idx + 1 >= layout.segment_count {
+    if segment_idx + 1 >= layout.segment_count_for(layout.aligned_slice_len) {
         return None;
     }
 
@@ -1617,7 +1666,9 @@ fn xor_jit_bitplane_input_prefetch_ptr(
     let offset = xor_jit_bitplane_input_prefetch_base_offset(job, output_count, local_output_idx)?
         + (batch_idx - XOR_JIT_PREFETCH_OUTPUT_ROUNDS)
             * (job.segment_len >> XOR_JIT_PREFETCH_DOWNSCALE);
-    let start = layout.input_offset(segment_idx + 1, 0);
+    let next_slice_offset = layout.slice_offset(segment_idx + 1);
+    let next_proc_size = layout.segment_len_for(next_slice_offset, layout.aligned_slice_len);
+    let start = layout.input_offset(next_slice_offset, 0, next_proc_size);
     Some((job.input_base as *const u8).wrapping_add(start + offset))
 }
 
@@ -2178,12 +2229,20 @@ fn max_compute_jobs(
             return worker_count.min(segment_count).max(1);
         }
 
-        let segment_groups = segment_count.max(1);
-        let output_groups = (worker_count / segment_groups)
-            .max(1)
-            .min(recovery_count)
-            .max(1);
-        return (segment_groups * output_groups).max(1);
+        let leftover_chunks = segment_count % worker_count.max(1);
+        let full_chunks = segment_count / worker_count.max(1);
+        let leftover_jobs = if leftover_chunks == 0 {
+            0
+        } else {
+            let threads_per_chunk = (worker_count / leftover_chunks).min(recovery_count).max(1);
+            leftover_chunks * threads_per_chunk
+        };
+        let full_chunk_jobs = if full_chunks == 0 {
+            0
+        } else {
+            worker_count.max(1)
+        };
+        return (leftover_jobs + full_chunk_jobs).max(1);
     }
 
     let output_groups = worker_count.min(recovery_count).max(1);
@@ -2248,7 +2307,7 @@ mod tests {
             .iter()
             .enumerate()
             .for_each(|(idx, input)| backend.add_input(idx, input));
-        backend.finish_chunk(&mut recovery_blocks, block_size);
+        assert!(backend.finish_chunk(&mut recovery_blocks, block_size));
 
         recovery_blocks
             .iter()
@@ -2273,7 +2332,7 @@ mod tests {
             .iter()
             .enumerate()
             .for_each(|(idx, input)| backend.add_input(idx, input));
-        backend.finish_chunk(&mut recovery_blocks, block_size);
+        assert!(backend.finish_chunk(&mut recovery_blocks, block_size));
 
         recovery_blocks
             .iter()
@@ -2358,18 +2417,55 @@ mod tests {
     #[test]
     fn xor_jit_bitplane_layout_offsets_are_segment_major() {
         let layout = XorJitBitplaneLayout::new(1024, 512, 3, 4);
+        let aligned_current_slice_size = layout.aligned_slice_len;
+        let first_slice_offset = layout.slice_offset(0);
+        let second_slice_offset = layout.slice_offset(1);
+        let first_proc_size =
+            layout.segment_len_for(first_slice_offset, aligned_current_slice_size);
+        let second_proc_size =
+            layout.segment_len_for(second_slice_offset, aligned_current_slice_size);
 
-        assert_eq!(layout.input_offset(0, 0), 0);
-        assert_eq!(layout.input_offset(0, 1), 512);
-        assert_eq!(layout.input_offset(0, 2), 1024);
-        assert_eq!(layout.input_offset(1, 0), 1536);
-        assert_eq!(layout.input_offset(1, 1), 2048);
+        assert_eq!(
+            layout.input_offset(first_slice_offset, 0, first_proc_size),
+            0
+        );
+        assert_eq!(
+            layout.input_offset(first_slice_offset, 1, first_proc_size),
+            512
+        );
+        assert_eq!(
+            layout.input_offset(first_slice_offset, 2, first_proc_size),
+            1024
+        );
+        assert_eq!(
+            layout.input_offset(second_slice_offset, 0, second_proc_size),
+            1536
+        );
+        assert_eq!(
+            layout.input_offset(second_slice_offset, 1, second_proc_size),
+            2048
+        );
 
-        assert_eq!(layout.output_offset(0, 0), 0);
-        assert_eq!(layout.output_offset(0, 1), 512);
-        assert_eq!(layout.output_offset(0, 3), 1536);
-        assert_eq!(layout.output_offset(1, 0), 2048);
-        assert_eq!(layout.output_offset(1, 1), 2560);
+        assert_eq!(
+            layout.output_offset(first_slice_offset, 0, first_proc_size),
+            0
+        );
+        assert_eq!(
+            layout.output_offset(first_slice_offset, 1, first_proc_size),
+            512
+        );
+        assert_eq!(
+            layout.output_offset(first_slice_offset, 3, first_proc_size),
+            1536
+        );
+        assert_eq!(
+            layout.output_offset(second_slice_offset, 0, second_proc_size),
+            2048
+        );
+        assert_eq!(
+            layout.output_offset(second_slice_offset, 1, second_proc_size),
+            2560
+        );
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -2378,41 +2474,49 @@ mod tests {
         use std::collections::HashSet;
 
         let layout = XorJitBitplaneLayout::new(2048, 512, 12, 5);
+        let aligned_current_slice_size = layout.aligned_slice_len;
+        let segment_count = layout.segment_count_for(aligned_current_slice_size);
         let mut input_offsets = HashSet::new();
-        for segment_idx in 0..layout.segment_count {
-            for batch_idx in 0..layout.input_grouping {
-                assert!(input_offsets.insert(layout.input_offset(segment_idx, batch_idx)));
+        for segment_idx in 0..segment_count {
+            let slice_offset = layout.slice_offset(segment_idx);
+            let proc_size = layout.segment_len_for(slice_offset, aligned_current_slice_size);
+            for batch_idx in 0..layout.input_batch_size {
+                assert!(input_offsets.insert(layout.input_offset(
+                    slice_offset,
+                    batch_idx,
+                    proc_size
+                )));
             }
         }
-        assert_eq!(
-            input_offsets.len(),
-            layout.segment_count * layout.input_grouping
-        );
+        assert_eq!(input_offsets.len(), segment_count * layout.input_batch_size);
 
         let mut output_offsets = HashSet::new();
-        for segment_idx in 0..layout.segment_count {
+        for segment_idx in 0..segment_count {
+            let slice_offset = layout.slice_offset(segment_idx);
+            let proc_size = layout.segment_len_for(slice_offset, aligned_current_slice_size);
             for recovery_idx in 0..layout.recovery_count {
-                assert!(output_offsets.insert(layout.output_offset(segment_idx, recovery_idx)));
+                assert!(output_offsets.insert(layout.output_offset(
+                    slice_offset,
+                    recovery_idx,
+                    proc_size
+                )));
             }
         }
-        assert_eq!(
-            output_offsets.len(),
-            layout.segment_count * layout.recovery_count
-        );
+        assert_eq!(output_offsets.len(), segment_count * layout.recovery_count);
     }
 
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn xor_jit_bitplane_layout_handles_partial_final_segment() {
-        let layout = XorJitBitplaneLayout::new(1536, 1024, 3, 2);
+        let layout = XorJitBitplaneLayout::new(1024, 1024, 3, 2);
 
-        assert_eq!(layout.segment_count, 2);
-        assert_eq!(layout.segment_start(0), 0);
-        assert_eq!(layout.segment_start(1), 1024);
-        assert_eq!(layout.segment_len_for(0, 1536), 1024);
-        assert_eq!(layout.segment_len_for(1, 1536), 512);
-        assert_eq!(layout.input_storage_len(), 2 * 3 * 1024);
-        assert_eq!(layout.output_storage_len(), 2 * 2 * 1024);
+        assert_eq!(layout.segment_count_for(layout.aligned_slice_len), 2);
+        assert_eq!(layout.slice_offset(0), 0);
+        assert_eq!(layout.slice_offset(1), 1024);
+        assert_eq!(layout.segment_len_for(0, layout.aligned_slice_len), 1024);
+        assert_eq!(layout.segment_len_for(1024, layout.aligned_slice_len), 512);
+        assert_eq!(layout.input_storage_len(), 3 * 1024 + 3 * 512);
+        assert_eq!(layout.output_storage_len(), 2 * 1024 + 2 * 512);
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -2421,23 +2525,25 @@ mod tests {
         let layout = XorJitBitplaneLayout::new(2048, 1024, 12, 3);
         let job = ComputeJob {
             segment_len: 1024,
-            xor_jit_segment_len: layout.segment_len,
-            xor_jit_segment_count: layout.segment_count,
-            xor_jit_input_grouping: layout.input_grouping,
-            xor_jit_recovery_count: layout.recovery_count,
+            xor_jit_segment_len: layout.chunk_len,
+            xor_jit_input_grouping: layout.input_batch_size,
             ..ComputeJob::default()
         };
 
         assert_eq!(
             xor_jit_bitplane_output_prefetch_ptr(job, layout, 0, 1, 0).map(|ptr| ptr as usize),
-            Some(layout.output_offset(0, 2))
+            Some(layout.output_offset(0, 2, 1024))
         );
         assert_eq!(
             xor_jit_bitplane_output_prefetch_ptr(job, layout, 0, 2, 0).map(|ptr| ptr as usize),
-            Some(layout.output_offset(1, 0))
+            Some(layout.output_offset(1024, 0, 512))
         );
         assert_eq!(
             xor_jit_bitplane_output_prefetch_ptr(job, layout, 1, 2, 0).map(|ptr| ptr as usize),
+            Some(layout.output_offset(2048, 0, 512))
+        );
+        assert_eq!(
+            xor_jit_bitplane_output_prefetch_ptr(job, layout, 2, 2, 0).map(|ptr| ptr as usize),
             None
         );
     }
@@ -2453,10 +2559,8 @@ mod tests {
             output_end: 512,
             batch_len: 12,
             segment_len,
-            xor_jit_segment_len: layout.segment_len,
-            xor_jit_segment_count: layout.segment_count,
-            xor_jit_input_grouping: layout.input_grouping,
-            xor_jit_recovery_count: layout.recovery_count,
+            xor_jit_segment_len: layout.chunk_len,
+            xor_jit_input_grouping: layout.input_batch_size,
             ..ComputeJob::default()
         };
 
@@ -2466,24 +2570,27 @@ mod tests {
         );
         assert_eq!(
             xor_jit_bitplane_input_prefetch_ptr(job, layout, 0, 509, 2).map(|ptr| ptr as usize),
-            Some(4096 + layout.input_offset(1, 0))
+            Some(4096 + layout.input_offset(segment_len, 0, segment_len))
         );
         assert_eq!(
             xor_jit_bitplane_input_prefetch_ptr(job, layout, 0, 509, 11).map(|ptr| ptr as usize),
             Some(
-                4096 + layout.input_offset(1, 0) + 9 * (segment_len >> XOR_JIT_PREFETCH_DOWNSCALE)
+                4096 + layout.input_offset(segment_len, 0, segment_len)
+                    + 9 * (segment_len >> XOR_JIT_PREFETCH_DOWNSCALE)
             )
         );
         assert_eq!(
             xor_jit_bitplane_input_prefetch_ptr(job, layout, 0, 510, 2).map(|ptr| ptr as usize),
             Some(
-                4096 + layout.input_offset(1, 0) + 10 * (segment_len >> XOR_JIT_PREFETCH_DOWNSCALE)
+                4096 + layout.input_offset(segment_len, 0, segment_len)
+                    + 10 * (segment_len >> XOR_JIT_PREFETCH_DOWNSCALE)
             )
         );
         assert_eq!(
             xor_jit_bitplane_input_prefetch_ptr(job, layout, 0, 511, 11).map(|ptr| ptr as usize),
             Some(
-                4096 + layout.input_offset(1, 0) + 29 * (segment_len >> XOR_JIT_PREFETCH_DOWNSCALE)
+                4096 + layout.input_offset(segment_len, 0, segment_len)
+                    + 29 * (segment_len >> XOR_JIT_PREFETCH_DOWNSCALE)
             )
         );
     }
@@ -2505,13 +2612,16 @@ mod tests {
         let layout = backend
             .xor_jit_layout
             .expect("forced XOR-JIT should initialize packed layout");
-        assert_eq!(layout.segment_len, 128 * 1024);
-        assert_eq!(layout.segment_count, 8);
+        assert_eq!(layout.chunk_len, 128 * 1024);
+        assert_eq!(layout.segment_count_for(layout.aligned_slice_len), 9);
         assert_eq!(
-            layout.input_offset(1, 0),
-            backend.input_grouping * layout.segment_len
+            layout.input_offset(layout.chunk_len, 0, layout.chunk_len),
+            backend.input_grouping * layout.chunk_len
         );
-        assert_eq!(layout.output_offset(1, 0), 7 * layout.segment_len);
+        assert_eq!(
+            layout.output_offset(layout.chunk_len, 0, layout.chunk_len),
+            7 * layout.chunk_len
+        );
         assert_eq!(backend.staging[0].inputs.len(), layout.input_storage_len());
         assert_eq!(backend.output_chunks.len(), layout.output_storage_len());
     }
@@ -2535,8 +2645,8 @@ mod tests {
         let layout = backend
             .xor_jit_layout
             .expect("forced XOR-JIT should initialize packed layout");
-        assert_eq!(layout.segment_len, 64 * 1024);
-        assert_eq!(layout.segment_count, 16);
+        assert_eq!(layout.chunk_len, 64 * 1024);
+        assert_eq!(layout.segment_count_for(layout.aligned_slice_len), 17);
     }
 
     #[cfg(target_arch = "x86_64")]

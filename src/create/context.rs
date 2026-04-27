@@ -218,7 +218,9 @@ fn encode_and_hash_files(
                 }
             }
 
-            backend.finish_chunk(&mut recovery_blocks, block_size as usize);
+            if !backend.finish_chunk(&mut recovery_blocks, block_size as usize) {
+                return Err(CreateError::XorJitChecksumValidationFailed);
+            }
 
             block_offset += chunk_len as u64;
             let progress =
