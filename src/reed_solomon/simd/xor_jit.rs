@@ -29,6 +29,23 @@ pub struct XorJitPreparedCoeff {
     bitplane_plan: Arc<OnceLock<BitplaneCoeffPlan>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(target_arch = "x86_64")]
+pub struct XorJitPreparedBitplaneHandle {
+    coefficient: u16,
+    plan: *const BitplaneCoeffPlan,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Default for XorJitPreparedBitplaneHandle {
+    fn default() -> Self {
+        Self {
+            coefficient: 0,
+            plan: std::ptr::null(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -181,8 +198,26 @@ const XOR_JIT_BODY_POINTER_BIAS_BYTES: u32 = 128;
 #[cfg(target_arch = "x86_64")]
 const XOR_JIT_TURBO_JIT_SIZE: usize = 4096;
 #[cfg(target_arch = "x86_64")]
+const XOR_JIT_TURBO_CODE_SIZE: usize = 1280;
+#[cfg(target_arch = "x86_64")]
+const XOR_JIT_TURBO_COPY_ALIGN: usize = 32;
+#[cfg(target_arch = "x86_64")]
 const XOR_JIT_TURBO_STUB_BIAS_BYTES: usize =
     bitplane::AVX2_BLOCK_BYTES - XOR_JIT_BODY_POINTER_BIAS_BYTES as usize;
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum XorJitWriteStrategy {
+    None,
+    CopyNt,
+    Copy,
+    Clear,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[repr(align(32))]
+struct AlignedJitCopyBuffer([u8; XOR_JIT_TURBO_CODE_SIZE + XOR_JIT_TURBO_COPY_ALIGN]);
 
 #[cfg(target_arch = "x86_64")]
 impl XorJitPreparedCoeff {
@@ -206,6 +241,14 @@ impl XorJitPreparedCoeff {
 
     pub fn ensure_bitplane_emitted(&self) {
         let _ = self.bitplane_plan();
+    }
+
+    #[inline]
+    pub fn bitplane_handle(&self) -> XorJitPreparedBitplaneHandle {
+        XorJitPreparedBitplaneHandle {
+            coefficient: self.coefficient,
+            plan: self.bitplane_plan() as *const BitplaneCoeffPlan,
+        }
     }
 }
 
@@ -366,19 +409,35 @@ impl XorJitBitplaneScratch {
         output: &mut [u8],
         prefetch: Option<*const u8>,
     ) {
+        self.multiply_add_chunks_with_prefetch_handle(
+            prepared.bitplane_handle(),
+            input,
+            output,
+            prefetch,
+        )
+    }
+
+    pub fn multiply_add_chunks_with_prefetch_handle(
+        &mut self,
+        prepared: XorJitPreparedBitplaneHandle,
+        input: &[u8],
+        output: &mut [u8],
+        prefetch: Option<*const u8>,
+    ) {
         assert_prepared_chunk_shape(input, output);
 
         if input.is_empty() {
             return;
         }
 
-        let coefficient = prepared.coefficient();
+        let coefficient = prepared.coefficient;
         if coefficient == 0 {
             return;
         }
+        let plan = unsafe { &*prepared.plan };
 
         if let Some(prefetch_ptr) = prefetch {
-            self.load_prefetch(prepared.bitplane_plan())
+            self.load_prefetch(plan)
                 .expect("load mutable prefetch xor-jit code");
             unsafe {
                 call_turbo_bitplane_jit(
@@ -391,8 +450,7 @@ impl XorJitBitplaneScratch {
                 xor_jit_zeroupper();
             }
         } else {
-            self.load_body(prepared.bitplane_plan())
-                .expect("load mutable xor-jit code");
+            self.load_body(plan).expect("load mutable xor-jit code");
             unsafe {
                 call_turbo_bitplane_jit(
                     self.code.as_ptr(),
@@ -434,14 +492,32 @@ impl XorJitBitplaneScratch {
             self.code.overwrite_at(0, static_prefix)?;
             self.body_static_prefix_loaded = true;
         }
-        self.code.set_len_for_overwrite(static_prefix.len())?;
-        let dynamic_len = emit_bitplane_chunk_program_dynamic_into(
-            plan,
-            prefetch,
-            static_prefix.len(),
-            &mut self.code,
-        );
-        let generated_len = static_prefix.len() + dynamic_len;
+        let code_start = static_prefix.len();
+        let strategy = xor_jit_write_strategy();
+        let dynamic_len = match strategy {
+            XorJitWriteStrategy::None | XorJitWriteStrategy::Clear => {
+                if matches!(strategy, XorJitWriteStrategy::Clear) {
+                    self.code
+                        .clear_cacheline_bytes_at(code_start, XOR_JIT_TURBO_CODE_SIZE)?;
+                }
+                self.code.set_len_for_overwrite(code_start)?;
+                emit_bitplane_chunk_program_dynamic_into(plan, prefetch, code_start, &mut self.code)
+            }
+            XorJitWriteStrategy::Copy | XorJitWriteStrategy::CopyNt => {
+                let mut dynamic = Vec::with_capacity(XOR_JIT_TURBO_CODE_SIZE);
+                let dynamic_len = emit_bitplane_chunk_program_dynamic_into(
+                    plan,
+                    prefetch,
+                    code_start,
+                    &mut dynamic,
+                );
+                unsafe {
+                    xor_jit_copy_strategy_overwrite(&mut self.code, code_start, &dynamic, strategy)?
+                };
+                dynamic_len
+            }
+        };
+        let generated_len = code_start + dynamic_len;
 
         if xor_jit_dump_dir().is_some() {
             let bytes = self.code.copy_prefix(generated_len)?;
@@ -490,11 +566,26 @@ unsafe fn call_turbo_bitplane_jit(
     std::arch::asm!(
         "call {function}",
         function = in(reg) function,
-        inout("rax") src => _,
-        inout("rcx") dest_end => _,
-        inout("rdx") dest => _,
-        inout("rsi") pf => _,
-        clobber_abi("sysv64"),
+        inlateout("rax") src => _,
+        in("rcx") dest_end,
+        inlateout("rdx") dest => _,
+        inlateout("rsi") pf => _,
+        lateout("ymm0") _,
+        lateout("ymm1") _,
+        lateout("ymm2") _,
+        lateout("ymm3") _,
+        lateout("ymm4") _,
+        lateout("ymm5") _,
+        lateout("ymm6") _,
+        lateout("ymm7") _,
+        lateout("ymm8") _,
+        lateout("ymm9") _,
+        lateout("ymm10") _,
+        lateout("ymm11") _,
+        lateout("ymm12") _,
+        lateout("ymm13") _,
+        lateout("ymm14") _,
+        lateout("ymm15") _,
     );
 }
 
@@ -975,6 +1066,201 @@ fn xor_jit_body_static_prefix() -> &'static [u8] {
             .finish_turbo_block_loop_prefix()
             .into_boxed_slice()
     })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn xor_jit_write_strategy() -> XorJitWriteStrategy {
+    static STRATEGY: OnceLock<XorJitWriteStrategy> = OnceLock::new();
+    *STRATEGY.get_or_init(detect_xor_jit_write_strategy)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn detect_xor_jit_write_strategy() -> XorJitWriteStrategy {
+    let vendor = cpu_vendor_string();
+    let leaf1 = unsafe { __cpuid(1) };
+    let family = ((leaf1.eax >> 8) & 0xf) as u16 + ((leaf1.eax >> 16) & 0xff0) as u16;
+    let model = ((leaf1.eax >> 4) & 0xf) as u8 + ((leaf1.eax >> 12) & 0xf0) as u8;
+    xor_jit_write_strategy_for_cpu(vendor, family, model)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn cpu_vendor_string() -> [u8; 12] {
+    let leaf0 = unsafe { __cpuid(0) };
+    let mut vendor = [0u8; 12];
+    vendor[0..4].copy_from_slice(&leaf0.ebx.to_le_bytes());
+    vendor[4..8].copy_from_slice(&leaf0.edx.to_le_bytes());
+    vendor[8..12].copy_from_slice(&leaf0.ecx.to_le_bytes());
+    vendor
+}
+
+#[cfg(target_arch = "x86_64")]
+fn xor_jit_write_strategy_for_cpu(vendor: [u8; 12], family: u16, model: u8) -> XorJitWriteStrategy {
+    let intel = &vendor == b"GenuineIntel";
+    let atom = intel && intel_model_is_atom(model);
+    let icore_old = intel && intel_model_is_icore_old(model);
+    let icore_new = intel && intel_model_is_icore_new(model);
+
+    if icore_old {
+        XorJitWriteStrategy::Clear
+    } else if atom || icore_new || family == 0x6f || family == 0x1f {
+        XorJitWriteStrategy::CopyNt
+    } else if family == 0x8f || family == 0x9f || family == 0xaf {
+        XorJitWriteStrategy::Clear
+    } else {
+        XorJitWriteStrategy::None
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn intel_model_is_atom(model: u8) -> bool {
+    matches!(
+        model,
+        0x1c | 0x26
+            | 0x27
+            | 0x35
+            | 0x36
+            | 0x37
+            | 0x4a
+            | 0x4c
+            | 0x4d
+            | 0x5a
+            | 0x5d
+            | 0x5c
+            | 0x5f
+            | 0x7a
+            | 0x86
+            | 0x96
+            | 0x9c
+            | 0x8a
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+fn intel_model_is_icore_old(model: u8) -> bool {
+    matches!(
+        model,
+        0x1a | 0x1e
+            | 0x1f
+            | 0x2e
+            | 0x25
+            | 0x2c
+            | 0x2f
+            | 0x2a
+            | 0x2d
+            | 0x3a
+            | 0x3e
+            | 0x3c
+            | 0x3f
+            | 0x45
+            | 0x46
+            | 0x3d
+            | 0x47
+            | 0x4f
+            | 0x56
+            | 0x4e
+            | 0x5e
+            | 0x8e
+            | 0x9e
+            | 0xa5
+            | 0xa6
+            | 0x55
+            | 0x66
+            | 0x67
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+fn intel_model_is_icore_new(model: u8) -> bool {
+    matches!(
+        model,
+        0x7e | 0x7d | 0x6a | 0x6c | 0xa7 | 0x8c | 0x8d | 0x8f | 0xcf | 0x8a
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+fn round_up_xor_jit_copy_len(len: usize) -> usize {
+    len.next_multiple_of(64)
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn xor_jit_copy_strategy_overwrite(
+    code: &mut exec_mem::MutableExecutableBuffer,
+    code_start: usize,
+    dynamic: &[u8],
+    strategy: XorJitWriteStrategy,
+) -> std::io::Result<()> {
+    debug_assert!(matches!(
+        strategy,
+        XorJitWriteStrategy::Copy | XorJitWriteStrategy::CopyNt
+    ));
+
+    let mut temp = AlignedJitCopyBuffer([0; XOR_JIT_TURBO_CODE_SIZE + XOR_JIT_TURBO_COPY_ALIGN]);
+    let dst = code.as_mut_ptr().add(code_start);
+    let align_mask = XOR_JIT_TURBO_COPY_ALIGN - 1;
+    let misalign = (dst as usize) & align_mask;
+    let mut copy_offset = code_start;
+    let mut temp_offset = 0usize;
+
+    if misalign != 0 {
+        copy_offset -= misalign;
+        temp_offset = misalign;
+        std::ptr::copy_nonoverlapping(
+            code.writable_ptr().add(copy_offset),
+            temp.0.as_mut_ptr(),
+            XOR_JIT_TURBO_COPY_ALIGN,
+        );
+    }
+
+    temp.0[temp_offset..temp_offset + dynamic.len()].copy_from_slice(dynamic);
+    let copy_len = round_up_xor_jit_copy_len(temp_offset + dynamic.len());
+    if copy_offset + copy_len > code.capacity() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "generated code exceeds mutable executable buffer capacity",
+        ));
+    }
+
+    let dst = code.as_mut_ptr().add(copy_offset);
+    match strategy {
+        XorJitWriteStrategy::Copy => xor_jit_copy_aligned_64(dst, temp.0.as_ptr(), copy_len),
+        XorJitWriteStrategy::CopyNt => xor_jit_copy_nt_aligned_64(dst, temp.0.as_ptr(), copy_len),
+        _ => unreachable!("unexpected xor-jit copy strategy"),
+    }
+    code.set_len_for_overwrite(code_start + dynamic.len())
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_jit_copy_aligned_64(dst: *mut u8, src: *const u8, len: usize) {
+    debug_assert!(len.is_multiple_of(64));
+    debug_assert_eq!((dst as usize) & 31, 0);
+    debug_assert_eq!((src as usize) & 31, 0);
+
+    for offset in (0..len).step_by(64) {
+        let a = _mm256_load_si256(src.add(offset) as *const __m256i);
+        let b = _mm256_load_si256(src.add(offset + 32) as *const __m256i);
+        _mm256_store_si256(dst.add(offset) as *mut __m256i, a);
+        _mm256_store_si256(dst.add(offset + 32) as *mut __m256i, b);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn xor_jit_copy_nt_aligned_64(dst: *mut u8, src: *const u8, len: usize) {
+    debug_assert!(len.is_multiple_of(64));
+    debug_assert_eq!((dst as usize) & 15, 0);
+    debug_assert_eq!((src as usize) & 15, 0);
+
+    for offset in (0..len).step_by(64) {
+        let a = _mm_load_si128(src.add(offset) as *const __m128i);
+        let b = _mm_load_si128(src.add(offset + 16) as *const __m128i);
+        let c = _mm_load_si128(src.add(offset + 32) as *const __m128i);
+        let d = _mm_load_si128(src.add(offset + 48) as *const __m128i);
+        _mm_stream_si128(dst.add(offset) as *mut __m128i, a);
+        _mm_stream_si128(dst.add(offset + 16) as *mut __m128i, b);
+        _mm_stream_si128(dst.add(offset + 32) as *mut __m128i, c);
+        _mm_stream_si128(dst.add(offset + 48) as *mut __m128i, d);
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -2952,6 +3238,30 @@ mod tests {
         assert_eq!(
             &encoded[..13],
             [0x48, 0x05, 0x00, 0x02, 0x00, 0x00, 0x48, 0x81, 0xc2, 0x00, 0x02, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    fn xor_jit_write_strategy_matches_turbo_zen3_policy() {
+        assert_eq!(
+            xor_jit_write_strategy_for_cpu(*b"AuthenticAMD", 0xaf, 0x21),
+            XorJitWriteStrategy::Clear
+        );
+    }
+
+    #[test]
+    fn xor_jit_write_strategy_matches_turbo_intel_old_core_policy() {
+        assert_eq!(
+            xor_jit_write_strategy_for_cpu(*b"GenuineIntel", 6, 0x2a),
+            XorJitWriteStrategy::Clear
+        );
+    }
+
+    #[test]
+    fn xor_jit_write_strategy_matches_turbo_intel_new_core_policy() {
+        assert_eq!(
+            xor_jit_write_strategy_for_cpu(*b"GenuineIntel", 6, 0x8c),
+            XorJitWriteStrategy::CopyNt
         );
     }
 

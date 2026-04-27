@@ -9,6 +9,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
 #[cfg(target_arch = "x86_64")]
+use crate::reed_solomon::simd::xor_jit::XorJitPreparedBitplaneHandle;
+#[cfg(target_arch = "x86_64")]
 use crate::reed_solomon::simd::{
     detect_simd_support, finish_xor_jit_bitplane_chunks, prepare_avx2_coeff,
     prepare_xor_jit_bitplane_segment, process_slice_multiply_add_prepared_avx2,
@@ -208,10 +210,26 @@ impl CreateCoeff {
 pub struct StagingArea {
     inputs: AlignedVec,
     source_indices: Vec<usize>,
+    #[cfg(target_arch = "x86_64")]
+    xor_jit_prepared_coeffs: Vec<XorJitPreparedBitplaneHandle>,
     batch_len: usize,
 }
 
 impl StagingArea {
+    #[cfg(target_arch = "x86_64")]
+    fn new(input_grouping: usize, input_storage_len: usize, recovery_count: usize) -> Self {
+        Self {
+            inputs: AlignedVec::new_zeroed(input_storage_len),
+            source_indices: vec![0; input_grouping],
+            xor_jit_prepared_coeffs: vec![
+                XorJitPreparedBitplaneHandle::default();
+                input_grouping * recovery_count
+            ],
+            batch_len: 0,
+        }
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
     fn new(input_grouping: usize, input_storage_len: usize) -> Self {
         Self {
             inputs: AlignedVec::new_zeroed(input_storage_len),
@@ -427,8 +445,26 @@ impl CreateRecoveryBackend {
                 AlignedVec::new_zeroed(aligned_chunk_len),
             ],
             staging: vec![
-                StagingArea::new(input_grouping, staging_storage_len),
-                StagingArea::new(input_grouping, staging_storage_len),
+                {
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        StagingArea::new(input_grouping, staging_storage_len, recovery_count)
+                    }
+                    #[cfg(not(target_arch = "x86_64"))]
+                    {
+                        StagingArea::new(input_grouping, staging_storage_len)
+                    }
+                },
+                {
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        StagingArea::new(input_grouping, staging_storage_len, recovery_count)
+                    }
+                    #[cfg(not(target_arch = "x86_64"))]
+                    {
+                        StagingArea::new(input_grouping, staging_storage_len)
+                    }
+                },
             ],
             output_chunks: AlignedVec::new_zeroed(output_storage_len),
             coeffs,
@@ -540,6 +576,18 @@ impl CreateRecoveryBackend {
             .slot_mut(slot, self.aligned_chunk_len, self.chunk_len)
             .copy_from_slice(input_chunk);
         staging.source_indices[slot] = source_idx;
+        #[cfg(target_arch = "x86_64")]
+        if self.xor_jit_bitplane {
+            pack_xor_jit_bitplane_coeffs(
+                &self.coeffs,
+                self.source_count,
+                self.recovery_exponents.len(),
+                self.input_grouping,
+                staging,
+                slot,
+                source_idx,
+            );
+        }
         staging.batch_len += 1;
 
         if staging.batch_len == self.input_grouping {
@@ -579,6 +627,18 @@ impl CreateRecoveryBackend {
             .slot_mut(slot, self.aligned_chunk_len, self.chunk_len)
             .copy_from_slice(&self.transfer_buffers[idx][..self.chunk_len]);
         staging.source_indices[slot] = source_idx;
+        #[cfg(target_arch = "x86_64")]
+        if self.xor_jit_bitplane {
+            pack_xor_jit_bitplane_coeffs(
+                &self.coeffs,
+                self.source_count,
+                self.recovery_exponents.len(),
+                self.input_grouping,
+                staging,
+                slot,
+                source_idx,
+            );
+        }
         staging.batch_len += 1;
 
         if staging.batch_len == self.input_grouping {
@@ -736,6 +796,7 @@ impl CreateRecoveryBackend {
                     coeffs: self.coeffs.as_ptr() as usize,
                     recovery_exponents: self.recovery_exponents.as_ptr() as usize,
                     source_indices: staging.source_indices.as_ptr() as usize,
+                    xor_jit_prepared_coeffs: staging.xor_jit_prepared_coeffs.as_ptr() as usize,
                     source_count: self.source_count,
                     batch_len: staging.batch_len,
                     aligned_chunk_len: self.aligned_chunk_len,
@@ -795,6 +856,7 @@ impl CreateRecoveryBackend {
                     coeffs: self.coeffs.as_ptr() as usize,
                     recovery_exponents: self.recovery_exponents.as_ptr() as usize,
                     source_indices: staging.source_indices.as_ptr() as usize,
+                    xor_jit_prepared_coeffs: staging.xor_jit_prepared_coeffs.as_ptr() as usize,
                     source_count: self.source_count,
                     batch_len: staging.batch_len,
                     aligned_chunk_len: self.aligned_chunk_len,
@@ -843,6 +905,7 @@ impl CreateRecoveryBackend {
                     coeffs: self.coeffs.as_ptr() as usize,
                     recovery_exponents: self.recovery_exponents.as_ptr() as usize,
                     source_indices: staging.source_indices.as_ptr() as usize,
+                    xor_jit_prepared_coeffs: staging.xor_jit_prepared_coeffs.as_ptr() as usize,
                     source_count: self.source_count,
                     batch_len: staging.batch_len,
                     aligned_chunk_len: self.aligned_chunk_len,
@@ -892,6 +955,28 @@ fn prepare_xor_jit_bitplane_staging(
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn pack_xor_jit_bitplane_coeffs(
+    coeffs: &[CreateCoeff],
+    source_count: usize,
+    recovery_count: usize,
+    input_grouping: usize,
+    staging: &mut StagingArea,
+    slot: usize,
+    source_idx: usize,
+) {
+    for recovery_idx in 0..recovery_count {
+        let coeff = &coeffs[gf_coeff_index(recovery_idx, source_idx, source_count)];
+        let prepared = coeff
+            .xor_jit_bitplane
+            .as_ref()
+            .expect("forced XOR-JIT create backend missing bitplane kernel");
+        staging.xor_jit_prepared_coeffs[recovery_idx * input_grouping + slot] =
+            prepared.bitplane_handle();
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct ComputeJob {
     method: CreateGf16Method,
@@ -900,6 +985,8 @@ struct ComputeJob {
     coeffs: usize,
     recovery_exponents: usize,
     source_indices: usize,
+    #[cfg(target_arch = "x86_64")]
+    xor_jit_prepared_coeffs: usize,
     source_count: usize,
     batch_len: usize,
     aligned_chunk_len: usize,
@@ -1318,18 +1405,6 @@ fn xor_jit_bitplane_job_layout(job: ComputeJob) -> XorJitBitplaneLayout {
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
-fn xor_jit_bitplane_input_segment(
-    job: ComputeJob,
-    layout: XorJitBitplaneLayout,
-    segment_idx: usize,
-    batch_idx: usize,
-) -> &'static [u8] {
-    let start = layout.input_offset(segment_idx, batch_idx);
-    unsafe { std::slice::from_raw_parts((job.input_base as *const u8).add(start), job.segment_len) }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
 fn xor_jit_output_nonzero(job: ComputeJob, recovery_idx: usize) -> bool {
     unsafe { *(job.recovery_exponents as *const u16).add(recovery_idx) != 0 }
 }
@@ -1344,6 +1419,12 @@ fn process_batch_add_avx2_xor_jit_bitplane_packed(
     scratch: &mut XorJitBitplaneScratch,
 ) {
     let pf_len = job.segment_len >> XOR_JIT_PREFETCH_DOWNSCALE;
+    let input_base =
+        unsafe { (job.input_base as *const u8).add(layout.input_offset(segment_idx, 0)) };
+    let coeff_base = unsafe {
+        (job.xor_jit_prepared_coeffs as *const XorJitPreparedBitplaneHandle)
+            .add(recovery_idx * job.xor_jit_input_grouping)
+    };
     let mut region = 0;
     let mut output_pf_rounds = 1usize << XOR_JIT_PREFETCH_DOWNSCALE;
     let mut output_pf =
@@ -1353,11 +1434,10 @@ fn process_batch_add_avx2_xor_jit_bitplane_packed(
         let Some(prefetch) = output_pf else {
             break;
         };
-        xor_jit_bitplane_run_single_region(
-            job,
-            layout,
-            segment_idx,
-            recovery_idx,
+        xor_jit_bitplane_run_single_region_packed(
+            input_base,
+            coeff_base,
+            job.segment_len,
             region,
             output,
             scratch,
@@ -1372,11 +1452,10 @@ fn process_batch_add_avx2_xor_jit_bitplane_packed(
         xor_jit_bitplane_input_prefetch_base_ptr(job, layout, segment_idx, recovery_idx)
     {
         while region < job.batch_len {
-            xor_jit_bitplane_run_single_region(
-                job,
-                layout,
-                segment_idx,
-                recovery_idx,
+            xor_jit_bitplane_run_single_region_packed(
+                input_base,
+                coeff_base,
+                job.segment_len,
                 region,
                 output,
                 scratch,
@@ -1387,11 +1466,10 @@ fn process_batch_add_avx2_xor_jit_bitplane_packed(
         }
     } else {
         while region < job.batch_len {
-            xor_jit_bitplane_run_single_region(
-                job,
-                layout,
-                segment_idx,
-                recovery_idx,
+            xor_jit_bitplane_run_single_region_packed(
+                input_base,
+                coeff_base,
+                job.segment_len,
                 region,
                 output,
                 scratch,
@@ -1422,26 +1500,20 @@ fn process_batch_add_avx2_xor_jit_bitplane_add_only_packed(
 }
 
 #[cfg(target_arch = "x86_64")]
-fn xor_jit_bitplane_run_single_region(
-    job: ComputeJob,
-    layout: XorJitBitplaneLayout,
-    segment_idx: usize,
-    recovery_idx: usize,
+#[inline]
+fn xor_jit_bitplane_run_single_region_packed(
+    input_base: *const u8,
+    coeff_base: *const XorJitPreparedBitplaneHandle,
+    segment_len: usize,
     batch_idx: usize,
     output: &mut [u8],
     scratch: &mut XorJitBitplaneScratch,
     prefetch: Option<*const u8>,
 ) {
-    let source_idx = unsafe { *(job.source_indices as *const usize).add(batch_idx) };
-    let coeff = coeff_for(job, recovery_idx, source_idx);
-    let input = xor_jit_bitplane_input_segment(job, layout, segment_idx, batch_idx);
-
-    match &coeff.xor_jit_bitplane {
-        Some(prepared) => {
-            scratch.multiply_add_chunks_with_prefetch(prepared, input, output, prefetch)
-        }
-        None => panic!("forced XOR-JIT create backend missing bitplane kernel"),
-    }
+    let prepared = unsafe { *coeff_base.add(batch_idx) };
+    let input =
+        unsafe { std::slice::from_raw_parts(input_base.add(batch_idx * segment_len), segment_len) };
+    scratch.multiply_add_chunks_with_prefetch_handle(prepared, input, output, prefetch)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -2486,7 +2558,7 @@ mod tests {
             .unwrap_or(slice_len);
 
         let layout = XorJitBitplaneLayout::new(slice_len, chunk_len, input_grouping, 1);
-        let mut staging = StagingArea::new(input_grouping, layout.input_storage_len());
+        let mut staging = StagingArea::new(input_grouping, layout.input_storage_len(), 1);
         let input = (0..src_len)
             .map(|idx| ((idx * 37 + 11) & 0xff) as u8)
             .collect::<Vec<_>>();
