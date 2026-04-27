@@ -14,7 +14,8 @@ ARCH="$(uname -m)"
 ITERATIONS="${ITERATIONS:-30}"
 WARMUP_RUNS="${WARMUP_RUNS:-3}"
 REDUNDANCY="${REDUNDANCY:-10}"
-RECOVERY_FILES="${RECOVERY_FILES:-1}"
+RECOVERY_FILES="${RECOVERY_FILES:-8}"
+FIRST_RECOVERY_BLOCK="${FIRST_RECOVERY_BLOCK:-}"
 THREADS="${THREADS:-1}"
 PAR2CMD_BIN="${PAR2CMD_BIN:-par2}"
 PAR2RS_BIN="${PAR2RS_BIN:-$PROJECT_ROOT/target/release/par2}"
@@ -57,6 +58,8 @@ Environment:
   THREADS=N          pass -t N to both tools; 0 omits -t (default: $THREADS)
   REDUNDANCY=N       create redundancy percentage (default: $REDUNDANCY)
   RECOVERY_FILES=N   recovery file count via -n (default: $RECOVERY_FILES)
+  FIRST_RECOVERY_BLOCK=N
+                     pass -f N to both tools; default unset
   PAR2CMD_BIN=PATH   par2cmdline-turbo binary (default: $PAR2CMD_BIN)
   INCLUDE_PSHUFB=1    include the par2rs PSHUFB baseline (default: $INCLUDE_PSHUFB)
   WORK_ROOT=DIR      generated corpus and PAR2 work directory
@@ -81,6 +84,7 @@ Environment:
 Example:
   nix develop --command env ITERATIONS=10 THREADS=16 PROFILE_CASE=single_5g \\
     WORK_ROOT="\$HOME/uncompressed/par2rs-create-perf/manual-run" \\
+    RECOVERY_FILES=8 FIRST_RECOVERY_BLOCK=1 \\
     CASES='single_256m:1:256:1048576,multi_1g:64:16:1048576,single_5g:1:5120:1048576' \\
     scripts/benchmark_create_perf.sh
 EOF
@@ -191,6 +195,10 @@ echo "work:    $WORK_ROOT"
 echo "iterations: $ITERATIONS measured, $WARMUP_RUNS warmup"
 echo "cases: $CASES"
 echo "threads: $THREADS"
+echo "recovery files: $RECOVERY_FILES"
+if [[ -n "$FIRST_RECOVERY_BLOCK" ]]; then
+    echo "first recovery block: $FIRST_RECOVERY_BLOCK"
+fi
 echo "platform: $PLATFORM/$ARCH"
 echo "tools: ${BENCHMARK_TOOLS[*]}"
 echo "profile tool: $PROFILE_TOOL"
@@ -214,7 +222,14 @@ with open(sys.argv[1], "wb") as f:
         f.write(bytes([(idx * 17 + 3) & 0xFF]) * 1024)
 PY
 
-    local -a probe_cmd=("$PAR2CMD_BIN" c -v -s1048576 -r10 -n1)
+    local probe_recovery_files="$RECOVERY_FILES"
+    if [[ -z "$probe_recovery_files" || "$probe_recovery_files" -lt 1 ]]; then
+        probe_recovery_files=1
+    fi
+    local -a probe_cmd=("$PAR2CMD_BIN" c -v -s1048576 -r10 "-n$probe_recovery_files")
+    if [[ -n "$FIRST_RECOVERY_BLOCK" ]]; then
+        probe_cmd+=("-f$FIRST_RECOVERY_BLOCK")
+    fi
     if [[ "$THREADS" != "0" ]]; then
         probe_cmd+=("-t$THREADS")
     fi
@@ -366,6 +381,9 @@ run_create() {
     else
         selected_method="auto"
         cmd=("$PAR2CMD_BIN" c -q -q "-s$block_size" "-r$REDUNDANCY" "-n$RECOVERY_FILES")
+    fi
+    if [[ -n "$FIRST_RECOVERY_BLOCK" ]]; then
+        cmd+=("-f$FIRST_RECOVERY_BLOCK")
     fi
     if [[ "$THREADS" != "0" ]]; then
         cmd+=("-t$THREADS")
@@ -542,14 +560,14 @@ summarize_results() {
     local warmups="${4:-$WARMUP_RUNS}"
     local title="${5:-PAR2 Create Perf Benchmark}"
 
-    python3 - "$raw_csv" "$summary_md" "$iterations" "$warmups" "$THREADS" "$REDUNDANCY" "$RECOVERY_FILES" "$title" "$TURBO_OBSERVED_METHOD" <<'PY'
+    python3 - "$raw_csv" "$summary_md" "$iterations" "$warmups" "$THREADS" "$REDUNDANCY" "$RECOVERY_FILES" "$FIRST_RECOVERY_BLOCK" "$title" "$TURBO_OBSERVED_METHOD" <<'PY'
 import csv
 import math
 import statistics
 import sys
 from collections import defaultdict
 
-raw_csv, summary_md, iterations, warmups, threads, redundancy, recovery_files, title, turbo_observed_method = sys.argv[1:]
+raw_csv, summary_md, iterations, warmups, threads, redundancy, recovery_files, first_recovery_block, title, turbo_observed_method = sys.argv[1:]
 metrics = [
     ("instructions", "instructions"),
     ("cycles", "cycles"),
@@ -615,6 +633,7 @@ with open(summary_md, "w") as out:
     out.write(f"- threads: {threads}\n")
     out.write(f"- redundancy: {redundancy}%\n")
     out.write(f"- recovery files: {recovery_files}\n")
+    out.write(f"- first recovery block: {first_recovery_block or 'default'}\n")
     out.write(f"- turbo observed method: {turbo_observed_method}\n")
     out.write("- validation: par2rs output verified/repaired by turbo; turbo output verified/repaired by par2rs\n")
     out.write("- primary signal: wall seconds; Linux perf counters are recorded for diagnostics when available\n\n")
@@ -902,6 +921,9 @@ generate_flamegraph() {
 
     rm -f "$case_dir"/flamegraph-out*.par2
     local -a args=(c -q -q "-s$block_size" "-r$REDUNDANCY" "-n$RECOVERY_FILES")
+    if [[ -n "$FIRST_RECOVERY_BLOCK" ]]; then
+        args+=("-f$FIRST_RECOVERY_BLOCK")
+    fi
     if [[ "$THREADS" != "0" ]]; then
         args+=("-t$THREADS")
     fi
@@ -1094,6 +1116,9 @@ generate_cache_profile() {
     local ibs_script="$RUN_ROOT/par2rs-create-$label-$CACHE_PROFILE_TOOL.ibs-op-script.txt"
     local -a env_prefix
     local -a args=(c -q -q "-s$block_size" "-r$REDUNDANCY" "-n$RECOVERY_FILES")
+    if [[ -n "$FIRST_RECOVERY_BLOCK" ]]; then
+        args+=("-f$FIRST_RECOVERY_BLOCK")
+    fi
 
     mapfile -d '' -t env_prefix < <(par2rs_tool_env "$CACHE_PROFILE_TOOL")
     if [[ "$CACHE_PROFILE_JIT_DUMPS" == "1" ]]; then
