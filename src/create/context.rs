@@ -112,9 +112,9 @@ fn encode_and_hash_files(
     thread_count: usize,
     reporter: &dyn CreateReporter,
 ) -> CreateResult<(RecoveryBlockVec, Vec<FileHashState>)> {
-    use crate::checksum::{calculate_file_md5, compute_file_id};
+    use crate::checksum::compute_file_id;
     use crate::create::source_file::BlockChecksum;
-    use crc32fast::Hasher as Crc32Hasher;
+    use crate::parpar_hasher::hasher_input_dyn::HasherInputDyn;
     use md5::{Digest, Md5};
     use std::fs::File;
     use std::io::{Read, Seek};
@@ -124,13 +124,33 @@ fn encode_and_hash_files(
         .build()
         .map_err(|err| CreateError::Other(format!("failed to create thread pool: {err}")))?;
 
-    let mut file_handles: Vec<File> = Vec::with_capacity(source_files.len());
-    let mut file_md5_states: Vec<Md5> = Vec::with_capacity(source_files.len());
-    let mut file_16k_buffers: Vec<Vec<u8>> = Vec::with_capacity(source_files.len());
-    let full_file_hash_in_block_order = chunk_size >= block_size as usize;
+    // True when the recovery loop traverses each file in strict
+    // sequential byte order (chunk_len == block_size for every block),
+    // letting us run HasherInputDyn inline with recovery generation —
+    // mirroring par2cmdline-turbo's `deferhashcomputation = true` path.
+    // Otherwise (slim mode), the recovery loop is chunk-offset-major
+    // across blocks, so per-file bytes are non-sequential there and
+    // we must hash each file in a separate sequential pass — that's
+    // turbo's `deferhashcomputation = false` path
+    // (`Par2CreatorSourceFile::Open` non-defer branch).
+    let defer_hash_to_recovery_loop = chunk_size >= block_size as usize;
 
-    let mut block_md5_states: Vec<Md5> = Vec::with_capacity(source_block_count as usize);
-    let mut block_crc32_states: Vec<Crc32Hasher> = Vec::with_capacity(source_block_count as usize);
+    let mut file_handles: Vec<File> = Vec::with_capacity(source_files.len());
+    let mut file_16k_buffers: Vec<Vec<u8>> = Vec::with_capacity(source_files.len());
+
+    // One HasherInputDyn per source file when we're going to drive it
+    // from the recovery loop. In slim mode we still allocate the slot
+    // but don't use it — kept symmetric for indexing.
+    let mut file_hashers: Vec<Option<HasherInputDyn>> = Vec::with_capacity(source_files.len());
+
+    // Per-block outputs, populated as `get_block` calls retire each block.
+    let mut block_hashes: Vec<Option<crate::parpar_hasher::hasher_input::BlockHash>> =
+        vec![None; source_block_count as usize];
+
+    // Per-file file-MD5, populated either by the slim-mode pre-pass
+    // (turbo's non-defer `Open()` branch) or by `hasher.end()` after
+    // the recovery loop (defer branch).
+    let mut file_full_md5: Vec<Option<crate::domain::Md5Hash>> = vec![None; source_files.len()];
 
     // Per-file metadata: (block_count, global_block_offset)
     let mut file_block_meta: Vec<(u32, u32)> = Vec::with_capacity(source_files.len());
@@ -138,16 +158,127 @@ fn encode_and_hash_files(
 
     for file in source_files {
         file_handles.push(open_for_reading(&file.path)?);
-        file_md5_states.push(Md5::new());
         file_16k_buffers.push(vec![0u8; (file.size as usize).min(16 * 1024)]);
+        file_hashers.push(if defer_hash_to_recovery_loop {
+            Some(HasherInputDyn::new())
+        } else {
+            None
+        });
 
         let block_count = file.calculate_block_count(block_size);
         file_block_meta.push((block_count, global_block_offset));
-        for _ in 0..block_count {
-            block_md5_states.push(Md5::new());
-            block_crc32_states.push(Crc32Hasher::new());
-        }
         global_block_offset += block_count;
+    }
+
+    // Slim mode (turbo's `deferhashcomputation = false`): turbo computes
+    // file MD5, hash16k, and per-block (MD5, CRC32) in
+    // `Par2CreatorSourceFile::Open()` itself, *before* the recovery
+    // loop runs — because in slim mode the recovery loop visits each
+    // file in chunk-offset-major order across blocks, which is not
+    // sequential per-file. We mirror that here: a parallel-across-files
+    // pre-pass that streams each file end-to-end through HasherInputDyn.
+    // The recovery loop will then re-read file bytes (likely page-cache
+    // warm) for the actual Reed-Solomon work and skip hashing.
+    if !defer_hash_to_recovery_loop {
+        use rayon::prelude::*;
+        use std::io::SeekFrom;
+        // Each task gets its own File handle (we can't share &mut File
+        // across rayon tasks). We don't reuse `file_handles` here; the
+        // recovery loop still owns those for its own seeks.
+        let per_file_results: CreateResult<Vec<_>> = pool.install(|| {
+            source_files
+                .par_iter()
+                .enumerate()
+                .map(|(file_idx, file)| -> CreateResult<_> {
+                    let (block_count, g_offset) = file_block_meta[file_idx];
+                    let mut handle = open_for_reading(&file.path)?;
+                    handle
+                        .seek(SeekFrom::Start(0))
+                        .map_err(|e| CreateError::FileReadError {
+                            file: file.path.to_string_lossy().to_string(),
+                            source: e,
+                        })?;
+
+                    let mut hasher = HasherInputDyn::new();
+                    let mut hash16k_buf = vec![0u8; (file.size as usize).min(16 * 1024)];
+                    let mut block_hashes_local: Vec<crate::parpar_hasher::hasher_input::BlockHash> =
+                        Vec::with_capacity(block_count as usize);
+
+                    // 1 MiB I/O buffer, capped at min(blocksize, filesize),
+                    // matching turbo's non-defer `Open()`.
+                    let buffersize = (1024 * 1024)
+                        .min(block_size as usize)
+                        .min(file.size as usize)
+                        .max(1);
+                    let mut buf = vec![0u8; buffersize];
+
+                    let mut offset: u64 = 0;
+                    let mut blocknumber: u32 = 0;
+                    let mut need: u64 = block_size;
+
+                    while offset < file.size {
+                        let want = (file.size - offset).min(buffersize as u64) as usize;
+                        handle.read_exact(&mut buf[..want]).map_err(|e| {
+                            CreateError::FileReadError {
+                                file: file.path.to_string_lossy().to_string(),
+                                source: e,
+                            }
+                        })?;
+
+                        // Capture first 16 KiB for hash16k.
+                        if offset < 16 * 1024 {
+                            let cap_start = offset as usize;
+                            let cap_end = (cap_start + want).min(16 * 1024);
+                            hash16k_buf[cap_start..cap_end]
+                                .copy_from_slice(&buf[..(cap_end - cap_start)]);
+                        }
+
+                        let mut used = 0usize;
+                        while used < want {
+                            let use_n = need.min((want - used) as u64) as usize;
+                            hasher.update(&buf[used..used + use_n]);
+                            used += use_n;
+                            need -= use_n as u64;
+
+                            if need == 0 {
+                                let bh = hasher.get_block(0);
+                                block_hashes_local.push(bh);
+                                blocknumber += 1;
+                                if blocknumber < block_count {
+                                    need = block_size;
+                                }
+                            }
+                        }
+
+                        offset += want as u64;
+                    }
+
+                    // Final short block: feed zero pad to BLOCK lane only.
+                    if need > 0 {
+                        let bh = hasher.get_block(need);
+                        block_hashes_local.push(bh);
+                    }
+
+                    let file_md5 = hasher.end();
+
+                    Ok((
+                        file_idx,
+                        g_offset,
+                        hash16k_buf,
+                        file_md5,
+                        block_hashes_local,
+                    ))
+                })
+                .collect()
+        });
+
+        for (file_idx, g_offset, hash16k_buf, file_md5, blocks) in per_file_results? {
+            file_16k_buffers[file_idx] = hash16k_buf;
+            file_full_md5[file_idx] = Some(crate::domain::Md5Hash::new(file_md5));
+            for (i, bh) in blocks.into_iter().enumerate() {
+                block_hashes[(g_offset + i as u32) as usize] = Some(bh);
+            }
+        }
     }
 
     let recovery_blocks = pool.install(|| {
@@ -169,7 +300,7 @@ fn encode_and_hash_files(
             let mut file_block_idx = 0usize;
 
             for (file_idx, file) in source_files.iter().enumerate() {
-                let (block_count, _) = file_block_meta[file_idx];
+                let (block_count, g_offset) = file_block_meta[file_idx];
                 for block_idx in 0..block_count {
                     let is_last = block_idx == block_count - 1;
                     let block_actual = if is_last && file.size % block_size != 0 {
@@ -207,38 +338,31 @@ fn encode_and_hash_files(
                                     .copy_from_slice(&chunk[..capture_len]);
                             }
                         }
-                        // Fused inner loop: walk the chunk in cache-resident
-                        // sub-slices so file-MD5, block-MD5 and CRC32 all see
-                        // each region while it's hot in L1, instead of three
-                        // independent end-to-end passes that evict each other.
-                        if full_file_hash_in_block_order && bytes_to_read > 0 {
-                            crate::checksum::update_file_md5_block_md5_crc32_fused(
-                                &mut file_md5_states[file_idx],
-                                &mut block_md5_states[file_block_idx],
-                                &mut block_crc32_states[file_block_idx],
-                                &chunk[..bytes_to_read],
-                            );
-                            // chunk is sized to chunk_len; if bytes_to_read <
-                            // chunk_len the trailing zero pad still has to be
-                            // mixed into the BLOCK hashes (per PAR2 spec) but
-                            // not the file hash.
-                            if chunk_len > bytes_to_read {
-                                let pad = &chunk[bytes_to_read..chunk_len];
-                                crate::checksum::update_md5_crc32_fused(
-                                    &mut block_md5_states[file_block_idx],
-                                    &mut block_crc32_states[file_block_idx],
-                                    pad,
-                                );
+
+                        // Defer mode: hash inline with recovery, mirroring
+                        // par2cmdline-turbo's `Par2CreatorSourceFile::UpdateHashes`
+                        // path. Each block is read in full this iteration
+                        // (chunk_len == block_size), and we visit all blocks
+                        // of file N before any block of file N+1, so per-file
+                        // bytes arrive in strict sequential order — exactly
+                        // what HasherInputDyn requires.
+                        //
+                        // Slim mode skips this; a separate per-file pass
+                        // below drives HasherInputDyn for those files.
+                        if defer_hash_to_recovery_loop {
+                            let hasher = file_hashers[file_idx]
+                                .as_mut()
+                                .expect("hasher allocated in defer mode");
+                            if bytes_to_read > 0 {
+                                hasher.update(&chunk[..bytes_to_read]);
                             }
-                        } else {
-                            // Slim/non-block-order mode: file-MD5 is computed
-                            // by a separate pass below (calculate_file_md5),
-                            // so only fuse the block-level pair here.
-                            crate::checksum::update_md5_crc32_fused(
-                                &mut block_md5_states[file_block_idx],
-                                &mut block_crc32_states[file_block_idx],
-                                &chunk[..chunk_len],
-                            );
+                            // PAR2 spec: BLOCK hashes include trailing zero
+                            // pad up to block_size; FILE hash does not. The
+                            // hasher's `get_block(zero_pad)` enforces both
+                            // halves of that.
+                            let zero_pad = (chunk_len - bytes_to_read) as u64;
+                            let bh = hasher.get_block(zero_pad);
+                            block_hashes[(g_offset + block_idx) as usize] = Some(bh);
                         }
                     }
                     backend.add_transfer_input(file_block_idx, file_block_idx);
@@ -262,38 +386,22 @@ fn encode_and_hash_files(
         Ok::<_, CreateError>(recovery_blocks)
     })?;
 
-    // Finalize file MD5s and block checksums
-    let full_file_hashes = if full_file_hash_in_block_order {
-        file_md5_states
-            .into_iter()
-            .map(|s| {
-                let h = s.finalize();
-                let mut b = [0u8; 16];
-                b.copy_from_slice(&h);
-                crate::domain::Md5Hash::new(b)
-            })
-            .collect::<Vec<_>>()
-    } else {
-        // Slim mode: chunk_size < block_size means the chunk loop walks files
-        // out of sequential byte order, so we can't stream the file MD5 during
-        // recovery generation. Fall back to a dedicated read pass per file,
-        // but parallelize across files so multiple disks / page cache reads
-        // overlap. Each file's bytes are likely still hot in the page cache
-        // from the recovery pass, so this is mostly a cache-warm second read
-        // rather than a cold disk re-read.
-        use rayon::prelude::*;
-        pool.install(|| {
-            source_files
-                .par_iter()
-                .map(|file| {
-                    calculate_file_md5(&file.path).map_err(|e| CreateError::FileReadError {
-                        file: file.path.to_string_lossy().to_string(),
-                        source: e,
-                    })
-                })
-                .collect::<CreateResult<Vec<_>>>()
-        })?
-    };
+    // Finalize file MD5s. In defer mode each per-file hasher has been
+    // streamed in block order through the recovery loop and we now
+    // call `end()` to retrieve the file MD5 — turbo's
+    // `Par2Creator::FinishFileHashComputation` path. In slim mode
+    // `file_full_md5[i]` was already populated by the pre-pass above.
+    if defer_hash_to_recovery_loop {
+        for (i, slot) in file_hashers.into_iter().enumerate() {
+            let h = slot.expect("hasher allocated in defer mode");
+            file_full_md5[i] = Some(crate::domain::Md5Hash::new(h.end()));
+        }
+    }
+
+    let full_file_hashes: Vec<crate::domain::Md5Hash> = file_full_md5
+        .into_iter()
+        .map(|o| o.expect("file MD5 populated by either defer or slim path"))
+        .collect();
 
     let file_16k_hashes = file_16k_buffers
         .iter()
@@ -312,22 +420,19 @@ fn encode_and_hash_files(
 
         let mut checksums = Vec::with_capacity(block_count as usize);
         for block_idx in 0..block_count {
-            let md5_raw = block_md5_states[global_block_idx].clone().finalize();
-            let mut md5_bytes = [0u8; 16];
-            md5_bytes.copy_from_slice(&md5_raw);
-            let crc32 = block_crc32_states[global_block_idx].clone().finalize();
-
+            let bh =
+                block_hashes[global_block_idx].expect("block hash populated by defer or slim path");
             log::debug!(
                 "Block {}: MD5={:02x}{:02x}..., CRC32={:08x}",
                 global_block_idx,
-                md5_bytes[0],
-                md5_bytes[1],
-                crc32
+                bh.md5[0],
+                bh.md5[1],
+                bh.crc32
             );
 
             checksums.push(BlockChecksum {
-                crc32,
-                hash: crate::domain::Md5Hash::new(md5_bytes),
+                crc32: bh.crc32,
+                hash: crate::domain::Md5Hash::new(bh.md5),
                 global_index: g_offset + block_idx,
             });
             global_block_idx += 1;
