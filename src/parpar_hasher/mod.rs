@@ -44,3 +44,6 @@
 //! always-available baseline.
 
 #![allow(dead_code)] // scaffold; populated incrementally
+
+#[cfg(target_arch = "x86_64")]
+pub mod md5x2_scalar;
