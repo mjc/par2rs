@@ -206,12 +206,40 @@ fn encode_and_hash_files(
                                 file_16k_buffers[file_idx][capture_start..capture_end]
                                     .copy_from_slice(&chunk[..capture_len]);
                             }
-                            if full_file_hash_in_block_order {
-                                file_md5_states[file_idx].update(&chunk[..bytes_to_read]);
-                            }
                         }
-                        block_md5_states[file_block_idx].update(&chunk[..chunk_len]);
-                        block_crc32_states[file_block_idx].update(&chunk[..chunk_len]);
+                        // Fused inner loop: walk the chunk in cache-resident
+                        // sub-slices so file-MD5, block-MD5 and CRC32 all see
+                        // each region while it's hot in L1, instead of three
+                        // independent end-to-end passes that evict each other.
+                        if full_file_hash_in_block_order && bytes_to_read > 0 {
+                            crate::checksum::update_file_md5_block_md5_crc32_fused(
+                                &mut file_md5_states[file_idx],
+                                &mut block_md5_states[file_block_idx],
+                                &mut block_crc32_states[file_block_idx],
+                                &chunk[..bytes_to_read],
+                            );
+                            // chunk is sized to chunk_len; if bytes_to_read <
+                            // chunk_len the trailing zero pad still has to be
+                            // mixed into the BLOCK hashes (per PAR2 spec) but
+                            // not the file hash.
+                            if chunk_len > bytes_to_read {
+                                let pad = &chunk[bytes_to_read..chunk_len];
+                                crate::checksum::update_md5_crc32_fused(
+                                    &mut block_md5_states[file_block_idx],
+                                    &mut block_crc32_states[file_block_idx],
+                                    pad,
+                                );
+                            }
+                        } else {
+                            // Slim/non-block-order mode: file-MD5 is computed
+                            // by a separate pass below (calculate_file_md5),
+                            // so only fuse the block-level pair here.
+                            crate::checksum::update_md5_crc32_fused(
+                                &mut block_md5_states[file_block_idx],
+                                &mut block_crc32_states[file_block_idx],
+                                &chunk[..chunk_len],
+                            );
+                        }
                     }
                     backend.add_transfer_input(file_block_idx, file_block_idx);
                     file_block_idx += 1;
@@ -246,15 +274,25 @@ fn encode_and_hash_files(
             })
             .collect::<Vec<_>>()
     } else {
-        source_files
-            .iter()
-            .map(|file| {
-                calculate_file_md5(&file.path).map_err(|e| CreateError::FileReadError {
-                    file: file.path.to_string_lossy().to_string(),
-                    source: e,
+        // Slim mode: chunk_size < block_size means the chunk loop walks files
+        // out of sequential byte order, so we can't stream the file MD5 during
+        // recovery generation. Fall back to a dedicated read pass per file,
+        // but parallelize across files so multiple disks / page cache reads
+        // overlap. Each file's bytes are likely still hot in the page cache
+        // from the recovery pass, so this is mostly a cache-warm second read
+        // rather than a cold disk re-read.
+        use rayon::prelude::*;
+        pool.install(|| {
+            source_files
+                .par_iter()
+                .map(|file| {
+                    calculate_file_md5(&file.path).map_err(|e| CreateError::FileReadError {
+                        file: file.path.to_string_lossy().to_string(),
+                        source: e,
+                    })
                 })
-            })
-            .collect::<CreateResult<Vec<_>>>()?
+                .collect::<CreateResult<Vec<_>>>()
+        })?
     };
 
     let file_16k_hashes = file_16k_buffers
