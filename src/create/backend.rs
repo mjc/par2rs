@@ -5,7 +5,10 @@ use crate::reed_solomon::codec::{
 };
 use crate::reed_solomon::galois::Galois16;
 use crate::reed_solomon::AlignedVec;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Condvar, Mutex,
+};
 use std::thread::JoinHandle;
 
 #[cfg(target_arch = "x86_64")]
@@ -222,6 +225,8 @@ pub struct StagingArea {
     xor_jit_coeffs: Vec<u16>,
     #[cfg(target_arch = "x86_64")]
     xor_jit_out_non_zero: Vec<u8>,
+    #[cfg(target_arch = "x86_64")]
+    proc_refs: AtomicUsize,
     batch_len: usize,
 }
 
@@ -233,6 +238,7 @@ impl StagingArea {
             source_indices: vec![0; input_grouping],
             xor_jit_coeffs: vec![0; input_grouping * recovery_count],
             xor_jit_out_non_zero: vec![0; recovery_count],
+            proc_refs: AtomicUsize::new(0),
             batch_len: 0,
         }
     }
@@ -588,9 +594,11 @@ impl CreateRecoveryBackend {
                 ));
             }
         }
-        self.staging
-            .iter_mut()
-            .for_each(|staging| staging.batch_len = 0);
+        self.staging.iter_mut().for_each(|staging| {
+            staging.batch_len = 0;
+            #[cfg(target_arch = "x86_64")]
+            staging.proc_refs.store(0, Ordering::Relaxed);
+        });
 
         debug_assert!(chunk_len <= self.max_chunk_len);
         debug_assert_eq!(
@@ -821,6 +829,9 @@ impl CreateRecoveryBackend {
         if self.xor_jit_bitplane {
             let processing_add = self.processing_add;
             let request_count = self.build_xor_jit_requests(staging_idx, processing_add);
+            self.staging[staging_idx]
+                .proc_refs
+                .store(request_count, Ordering::Release);
             self.workers.submit_xor_jit(
                 &self.xor_jit_req_storage[..request_count],
                 &self.xor_jit_req_thread_starts,
@@ -845,6 +856,11 @@ impl CreateRecoveryBackend {
     fn wait_for_compute(&mut self) {
         if self.compute_in_flight {
             self.workers.wait();
+            #[cfg(target_arch = "x86_64")]
+            debug_assert!(self
+                .staging
+                .iter()
+                .all(|staging| staging.proc_refs.load(Ordering::Acquire) == 0));
             self.compute_in_flight = false;
         }
     }
@@ -918,6 +934,7 @@ impl CreateRecoveryBackend {
         let output_base = self.output_chunks.as_ptr() as usize;
         let coeffs_base = staging.xor_jit_coeffs.as_ptr() as usize;
         let out_non_zero_base = staging.xor_jit_out_non_zero.as_ptr() as usize;
+        let proc_refs = &staging.proc_refs as *const AtomicUsize as usize;
 
         if leftover_chunks != 0 {
             let threads_per_chunk = (worker_count / leftover_chunks).min(recovery_count).max(1);
@@ -966,6 +983,7 @@ impl CreateRecoveryBackend {
                         coeffs: coeffs_base
                             + output_start * self.input_grouping * std::mem::size_of::<u16>(),
                         out_non_zero: out_non_zero_base + output_start * std::mem::size_of::<u8>(),
+                        proc_refs,
                         num_inputs: staging.batch_len,
                         input_grouping: self.input_grouping,
                         chunk_size: layout.chunk_len,
@@ -997,6 +1015,7 @@ impl CreateRecoveryBackend {
                     output: output_base + slice_offset * recovery_count,
                     coeffs: coeffs_base,
                     out_non_zero: out_non_zero_base,
+                    proc_refs,
                     num_inputs: staging.batch_len,
                     input_grouping: self.input_grouping,
                     chunk_size: layout.chunk_len,
@@ -1069,6 +1088,7 @@ struct XorJitComputeReq {
     output: usize,
     coeffs: usize,
     out_non_zero: usize,
+    proc_refs: usize,
     num_inputs: usize,
     input_grouping: usize,
     chunk_size: usize,
@@ -1125,11 +1145,7 @@ struct WorkerShared {
 struct WorkerState {
     jobs: Vec<ComputeJob>,
     #[cfg(target_arch = "x86_64")]
-    xor_jit_reqs: Vec<XorJitComputeReq>,
-    #[cfg(target_arch = "x86_64")]
-    xor_jit_req_starts: Vec<usize>,
-    #[cfg(target_arch = "x86_64")]
-    xor_jit_req_counts: Vec<usize>,
+    xor_jit_worker_reqs: Vec<XorJitWorkerReqState>,
     task_kind: WorkerTaskKind,
     task_count: usize,
     next_task: usize,
@@ -1149,7 +1165,15 @@ enum WorkerTaskKind {
 #[cfg(target_arch = "x86_64")]
 enum WorkerTask {
     ComputeJob(ComputeJob),
-    XorJitBatch(*const XorJitComputeReq, usize),
+    XorJitRequest(*const XorJitComputeReq, *const AtomicUsize, bool),
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, Default)]
+struct XorJitWorkerReqState {
+    reqs: usize,
+    len: usize,
+    next_req: usize,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1188,11 +1212,7 @@ impl CreateWorkerPool {
             state: Mutex::new(WorkerState {
                 jobs: vec![ComputeJob::default(); max_jobs.max(1)],
                 #[cfg(target_arch = "x86_64")]
-                xor_jit_reqs: vec![XorJitComputeReq::default(); max_jobs.max(1)],
-                #[cfg(target_arch = "x86_64")]
-                xor_jit_req_starts: vec![0; worker_count.max(1)],
-                #[cfg(target_arch = "x86_64")]
-                xor_jit_req_counts: vec![0; worker_count.max(1)],
+                xor_jit_worker_reqs: vec![XorJitWorkerReqState::default(); worker_count.max(1)],
                 task_kind: WorkerTaskKind::ComputeJob,
                 task_count: 0,
                 next_task: 0,
@@ -1248,16 +1268,27 @@ impl CreateWorkerPool {
 
         let mut state = self.shared.state.lock().unwrap();
         debug_assert_eq!(state.remaining_tasks, 0);
-        debug_assert!(reqs.len() <= state.xor_jit_reqs.len());
-        debug_assert_eq!(starts.len(), state.xor_jit_req_starts.len());
-        debug_assert_eq!(counts.len(), state.xor_jit_req_counts.len());
-        state.xor_jit_reqs[..reqs.len()].copy_from_slice(reqs);
-        state.xor_jit_req_starts.copy_from_slice(starts);
-        state.xor_jit_req_counts.copy_from_slice(counts);
+        debug_assert_eq!(starts.len(), state.xor_jit_worker_reqs.len());
+        debug_assert_eq!(counts.len(), state.xor_jit_worker_reqs.len());
+        let mut active_workers = 0usize;
+        for worker_id in 0..state.xor_jit_worker_reqs.len() {
+            let start = starts[worker_id];
+            let count = counts[worker_id];
+            if count != 0 {
+                state.xor_jit_worker_reqs[worker_id] = XorJitWorkerReqState {
+                    reqs: reqs[start..start + count].as_ptr() as usize,
+                    len: count,
+                    next_req: 0,
+                };
+                active_workers += 1;
+            } else {
+                state.xor_jit_worker_reqs[worker_id] = XorJitWorkerReqState::default();
+            }
+        }
         state.task_kind = WorkerTaskKind::XorJit;
-        state.task_count = reqs.len();
+        state.task_count = active_workers;
         state.next_task = 0;
-        state.remaining_tasks = state.xor_jit_req_counts.len();
+        state.remaining_tasks = active_workers;
         state.generation = state.generation.wrapping_add(1);
         self.shared.ready.notify_all();
     }
@@ -1308,13 +1339,20 @@ fn worker_loop(shared: Arc<WorkerShared>, worker_id: usize) {
                             seen_generation = state.generation;
                         }
                         WorkerTaskKind::XorJit => {
-                            let start = state.xor_jit_req_starts[worker_id];
-                            let count = state.xor_jit_req_counts[worker_id];
+                            let worker_reqs = state.xor_jit_worker_reqs[worker_id];
+                            if worker_reqs.next_req < worker_reqs.len {
+                                let req_ptr = (worker_reqs.reqs as *const XorJitComputeReq)
+                                    .wrapping_add(worker_reqs.next_req);
+                                let req = unsafe { &*req_ptr };
+                                state.xor_jit_worker_reqs[worker_id].next_req += 1;
+                                let last_for_worker = worker_reqs.next_req + 1 == worker_reqs.len;
+                                break WorkerTask::XorJitRequest(
+                                    req_ptr,
+                                    req.proc_refs as *const AtomicUsize,
+                                    last_for_worker,
+                                );
+                            }
                             seen_generation = state.generation;
-                            break WorkerTask::XorJitBatch(
-                                state.xor_jit_reqs.as_ptr().wrapping_add(start),
-                                count,
-                            );
                         }
                     }
                 }
@@ -1343,10 +1381,12 @@ fn worker_loop(shared: Arc<WorkerShared>, worker_id: usize) {
         #[cfg(target_arch = "x86_64")]
         match task {
             WorkerTask::ComputeJob(job) => process_compute_job(job, &mut context),
-            WorkerTask::XorJitBatch(reqs, count) => {
-                for idx in 0..count {
-                    let req = unsafe { *reqs.add(idx) };
-                    process_xor_jit_request(req, &mut context);
+            WorkerTask::XorJitRequest(req, proc_refs, last_for_worker) => {
+                let req = unsafe { *req };
+                process_xor_jit_request(req, &mut context);
+                unsafe { (*proc_refs).fetch_sub(1, Ordering::AcqRel) };
+                if !last_for_worker {
+                    continue;
                 }
             }
         }
