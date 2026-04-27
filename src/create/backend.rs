@@ -838,6 +838,9 @@ impl CreateRecoveryBackend {
         let mut job_count = 0;
         let zero_outputs = self.xor_jit_zero_outputs_pending;
         self.xor_jit_zero_outputs_pending = false;
+        if zero_outputs {
+            self.output_chunks[..layout.output_storage_len()].fill(0);
+        }
 
         if layout.segment_count >= worker_count {
             let segment_groups = worker_count.min(layout.segment_count).max(1);
@@ -871,7 +874,7 @@ impl CreateRecoveryBackend {
                     xor_jit_segment_count: layout.segment_count,
                     xor_jit_input_grouping: layout.input_grouping,
                     xor_jit_recovery_count: layout.recovery_count,
-                    xor_jit_zero_outputs: zero_outputs,
+                    xor_jit_zero_outputs: false,
                 };
                 job_count += 1;
                 segment_idx += group_segments;
@@ -920,7 +923,7 @@ impl CreateRecoveryBackend {
                     xor_jit_segment_count: layout.segment_count,
                     xor_jit_input_grouping: layout.input_grouping,
                     xor_jit_recovery_count: layout.recovery_count,
-                    xor_jit_zero_outputs: zero_outputs,
+                    xor_jit_zero_outputs: false,
                 };
                 job_count += 1;
             }
