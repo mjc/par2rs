@@ -1514,9 +1514,15 @@ fn xor_jit_bitplane_run_single_region_packed(
     prefetch: Option<*const u8>,
 ) {
     let prepared = unsafe { *coeff_base.add(batch_idx) };
-    let input =
-        unsafe { std::slice::from_raw_parts(input_base.add(batch_idx * segment_len), segment_len) };
-    scratch.multiply_add_chunks_with_prefetch_handle(prepared, input, output, prefetch)
+    unsafe {
+        scratch.multiply_add_ptr_with_prefetch_handle(
+            prepared,
+            input_base.add(batch_idx * segment_len),
+            output.as_mut_ptr(),
+            segment_len,
+            prefetch,
+        )
+    }
 }
 
 #[cfg(target_arch = "x86_64")]

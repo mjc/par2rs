@@ -425,8 +425,26 @@ impl XorJitBitplaneScratch {
         prefetch: Option<*const u8>,
     ) {
         assert_prepared_chunk_shape(input, output);
+        unsafe {
+            self.multiply_add_ptr_with_prefetch_handle(
+                prepared,
+                input.as_ptr(),
+                output.as_mut_ptr(),
+                input.len(),
+                prefetch,
+            )
+        }
+    }
 
-        if input.is_empty() {
+    pub unsafe fn multiply_add_ptr_with_prefetch_handle(
+        &mut self,
+        prepared: XorJitPreparedBitplaneHandle,
+        input: *const u8,
+        output: *mut u8,
+        len: usize,
+        prefetch: Option<*const u8>,
+    ) {
+        if len == 0 {
             return;
         }
 
@@ -442,9 +460,9 @@ impl XorJitBitplaneScratch {
             unsafe {
                 call_turbo_bitplane_jit(
                     self.code.as_ptr(),
-                    input.as_ptr(),
-                    output.as_mut_ptr(),
-                    input.len(),
+                    input,
+                    output,
+                    len,
                     xor_jit_biased_prefetch_ptr(prefetch_ptr),
                 );
                 xor_jit_zeroupper();
@@ -452,13 +470,7 @@ impl XorJitBitplaneScratch {
         } else {
             self.load_body(plan).expect("load mutable xor-jit code");
             unsafe {
-                call_turbo_bitplane_jit(
-                    self.code.as_ptr(),
-                    input.as_ptr(),
-                    output.as_mut_ptr(),
-                    input.len(),
-                    std::ptr::null(),
-                );
+                call_turbo_bitplane_jit(self.code.as_ptr(), input, output, len, std::ptr::null());
                 xor_jit_zeroupper();
             }
         }
