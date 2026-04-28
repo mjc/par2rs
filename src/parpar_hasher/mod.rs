@@ -50,14 +50,22 @@
 
 #![allow(dead_code)] // scaffold; populated incrementally
 
+// ============================================================================
+// Shared across all architectures
+// ============================================================================
+
+pub mod hasher_input_dyn;
+
+// ============================================================================
+// x86_64 backends: Scalar (always-available), SSE2, BMI1, AVX-512
+// ============================================================================
+
 #[cfg(target_arch = "x86_64")]
 pub mod crc_clmul;
 #[cfg(target_arch = "x86_64")]
 pub mod crc_clmul_avx512;
 #[cfg(target_arch = "x86_64")]
 pub mod hasher_input;
-#[cfg(target_arch = "x86_64")]
-pub mod hasher_input_dyn;
 #[cfg(target_arch = "x86_64")]
 pub mod md5x2;
 #[cfg(target_arch = "x86_64")]
@@ -68,3 +76,28 @@ pub mod md5x2_bmi1;
 pub mod md5x2_scalar;
 #[cfg(target_arch = "x86_64")]
 pub mod md5x2_sse2;
+
+// ============================================================================
+// aarch64 backends: Scalar (always-available), NEON+PMULL, ARM CRC
+// ============================================================================
+
+#[cfg(target_arch = "aarch64")]
+pub mod crc_armcrc;
+#[cfg(target_arch = "aarch64")]
+pub mod hasher_input;
+#[cfg(target_arch = "aarch64")]
+pub mod md5x2;
+#[cfg(target_arch = "aarch64")]
+pub mod md5x2_neon;
+#[cfg(target_arch = "aarch64")]
+pub mod md5x2_scalar;
+
+// ============================================================================
+// Public Type Exports (architecture-agnostic re-exports)
+// ============================================================================
+
+#[cfg(target_arch = "x86_64")]
+pub use hasher_input::BlockHash;
+
+#[cfg(target_arch = "aarch64")]
+pub use hasher_input::BlockHash;
