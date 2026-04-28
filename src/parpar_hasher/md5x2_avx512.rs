@@ -301,11 +301,16 @@ mod tests {
 
     /// Hash an N-block message via scalar and AVX-512 backends and
     /// assert lane digests match exactly. Mirrors `md5x2_sse2::tests`.
+    ///
+    /// Panics if AVX-512 is unsupported on this CPU — callers are
+    /// expected to be `#[ignore]`-marked tests so non-AVX-512 hosts
+    /// don't run them at all (rather than silently passing).
     fn cross_check(blocks: &[u8]) {
-        if !avx512_supported() {
-            eprintln!("skipping AVX-512 cross-check (CPU lacks avx512f+avx512vl)");
-            return;
-        }
+        assert!(
+            avx512_supported(),
+            "AVX-512 cross-check invoked on CPU without avx512f+vl — \
+             this test is #[ignore]'d; run with --ignored on AVX-512 hardware"
+        );
         assert_eq!(blocks.len() % 64, 0);
         let n = blocks.len() / 64;
 
@@ -343,25 +348,30 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires AVX-512VL hardware"]
     fn one_block() {
         cross_check(&synth(64, 1));
     }
 
     #[test]
+    #[ignore = "requires AVX-512VL hardware"]
     fn two_blocks() {
         cross_check(&synth(128, 2));
     }
 
     #[test]
+    #[ignore = "requires AVX-512VL hardware"]
     fn many_blocks() {
         cross_check(&synth(64 * 17, 3));
     }
 
     #[test]
+    #[ignore = "requires AVX-512VL hardware"]
     fn lane_reset_round_trip() {
-        if !avx512_supported() {
-            return;
-        }
+        assert!(
+            avx512_supported(),
+            "lane_reset_round_trip invoked on non-AVX-512 host"
+        );
         let mut state = Avx512::init_state();
         let block = synth(64, 4);
         unsafe {

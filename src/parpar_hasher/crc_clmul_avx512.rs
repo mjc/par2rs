@@ -285,11 +285,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires AVX-512VL + PCLMULQDQ hardware"]
     fn avx512_matches_sse_known_vectors() {
-        if !is_supported() {
-            eprintln!("skipping: host lacks avx512vl + pclmulqdq");
-            return;
-        }
+        assert!(is_supported(), "host lacks avx512vl + pclmulqdq");
         for s in [
             &b""[..],
             &b"a"[..],
@@ -302,10 +300,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires AVX-512VL + PCLMULQDQ hardware"]
     fn avx512_matches_sse_short_lengths() {
-        if !is_supported() {
-            return;
-        }
+        assert!(is_supported());
         let pat: Vec<u8> = (0..256u16)
             .map(|i| (i as u8).wrapping_mul(31).wrapping_add(7))
             .collect();
@@ -315,10 +312,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires AVX-512VL + PCLMULQDQ hardware"]
     fn avx512_matches_sse_block_plus_tail() {
-        if !is_supported() {
-            return;
-        }
+        assert!(is_supported());
         let pat: Vec<u8> = (0..8192u32)
             .map(|i| (i as u8).wrapping_mul(31).wrapping_add(7))
             .collect();

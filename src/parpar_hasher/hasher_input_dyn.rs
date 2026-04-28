@@ -10,10 +10,14 @@
 //! match in the prologue, but the per-byte work then runs through the
 //! statically-known backend with no vtable indirection.
 //!
-//! Selection rules match upstream's Zen3-relevant branches (see
+//! Selection rules match upstream's big-core branch (see
 //! `hasher.cpp:105-117`):
 //!
-//! * `bmi1` available → `Bmi1` backend (preferred on big cores).
+//! * `avx512f+vl+pclmulqdq+sse4.1` available AND CPU is not a known
+//!   slow-`vprold` part (Zen4 family `0x19` / Zen5 family `0x1A`)
+//!   → `Avx512` backend (preferred on Intel Skylake-X+, Ice Lake+,
+//!   Sapphire Rapids+, and any future AMD with fast vector rotate).
+//! * else `bmi1` available → `Bmi1` backend.
 //! * else → `Scalar` backend (always-available baseline).
 //!
 //! `Sse2` is not selected automatically: on Zen3 it is slower than
@@ -43,25 +47,42 @@ pub enum HasherInputDyn {
 
 impl HasherInputDyn {
     /// Pick the best backend for the current CPU and construct it.
-    /// Mirrors upstream `HasherInput_Create()`.
+    /// Mirrors upstream `HasherInput_Create()` for the big-core branch.
+    ///
+    /// Selection (preferred → fallback):
+    /// 1. **AVX-512VL** — when avx512f+vl+pclmulqdq+sse4.1 are present
+    ///    AND the CPU is NOT an AMD Zen4/Zen5 part. Upstream's
+    ///    `setup_hasher` excludes Zen4/Zen5 from this tier via
+    ///    `isVecRotSlow` (`vprold` has 2-cycle latency there, slower
+    ///    than the BMI1 path). Since AMD CPUs with AVX-512 are
+    ///    *exclusively* Zen4/Zen5 (Zen3 and earlier have no AVX-512),
+    ///    we exclude AMD entirely from this tier.
+    /// 2. **BMI1** — fast non-AVX-512 fallback.
+    /// 3. **Scalar** — last resort.
     pub fn new() -> Self {
-        // AVX-512VL: prefer when available (Zen3+ desktop, Skylake-X+,
-        // Ice Lake+, Sapphire Rapids+). Required features mirror the
-        // hot-loop intrinsics: avx512f+vl for `vpternlogd`/`vprold`,
-        // pclmulqdq for the CRC fold, sse4.1 for the pshufb tail trick.
-        // TODO: exclude Zen4/Zen5 once we add the `isVecRotSlow` check
-        // upstream uses (rol latency is 2c on Zen4/5).
-        if is_x86_feature_detected!("avx512f")
-            && is_x86_feature_detected!("avx512vl")
-            && is_x86_feature_detected!("pclmulqdq")
-            && is_x86_feature_detected!("sse4.1")
-        {
+        if Self::should_use_avx512() {
             HasherInputDyn::Avx512(HasherInput::new())
         } else if is_x86_feature_detected!("bmi1") {
             HasherInputDyn::Bmi1(HasherInput::new())
         } else {
             HasherInputDyn::Scalar(HasherInput::new())
         }
+    }
+
+    /// Returns true iff the CPU has the full feature set required by
+    /// the AVX-512VL HasherInput backend.
+    fn avx512_supported() -> bool {
+        is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("avx512vl")
+            && is_x86_feature_detected!("pclmulqdq")
+            && is_x86_feature_detected!("sse4.1")
+    }
+
+    /// `true` iff we should auto-select the AVX-512VL backend on this
+    /// CPU. Combines feature detection with the `isVecRotSlow`
+    /// exclusion (Zen4/Zen5 ⇒ slow `vprold`).
+    fn should_use_avx512() -> bool {
+        Self::avx512_supported() && !is_amd_vec_rot_slow()
     }
 
     /// Force the `Scalar` backend regardless of CPU support. Useful in
@@ -84,9 +105,29 @@ impl HasherInputDyn {
     }
 
     /// Force the `Avx512` backend. Requires avx512f + avx512vl +
-    /// pclmulqdq + sse4.1; caller is responsible for the CPU check.
-    pub fn new_avx512() -> Self {
+    /// pclmulqdq + sse4.1.
+    ///
+    /// # Safety
+    /// Calling any method on the returned value (`update`, `get_block`,
+    /// `end`) on a CPU lacking the required features will execute
+    /// unsupported instructions (UB / SIGILL). Prefer
+    /// [`HasherInputDyn::try_new_avx512`] which checks at runtime.
+    pub unsafe fn new_avx512() -> Self {
         HasherInputDyn::Avx512(HasherInput::new())
+    }
+
+    /// Safe AVX-512 constructor: returns `Some` iff the CPU supports
+    /// the full AVX-512VL HasherInput feature set. This bypasses the
+    /// AMD/Zen4 exclusion in `new()` — use only when you specifically
+    /// want to exercise the AVX-512 path (e.g. tests, benches,
+    /// micro-benchmarks evaluating whether the exclusion still holds).
+    pub fn try_new_avx512() -> Option<Self> {
+        if Self::avx512_supported() {
+            // SAFETY: we just checked the feature set.
+            Some(unsafe { Self::new_avx512() })
+        } else {
+            None
+        }
     }
 
     /// Identifies which backend was selected. Mostly for diagnostics.
@@ -141,6 +182,60 @@ impl Default for HasherInputDyn {
     }
 }
 
+/// Returns `true` if this CPU is a known AMD part with slow vector
+/// rotate (`vprold` ≥ 2 cycles latency), which makes the AVX-512VL
+/// HasherInput backend slower than BMI1. Mirrors upstream
+/// `setup_hasher`'s `isVecRotSlow` check (`hasher.cpp` + `cpu.h`).
+///
+/// **Currently slow:** Zen4 (family `0x19`) and Zen5 (family `0x1A`).
+/// Zen3 and earlier have no AVX-512 at all, so they cannot reach this
+/// code path. Future AMD families (Zen6+, family `0x1B` and above) are
+/// **not** excluded — we assume they fix the rotate latency until
+/// proven otherwise.
+fn is_amd_vec_rot_slow() -> bool {
+    // SAFETY: CPUID is a baseline x86 instruction; safe on every
+    // x86_64 CPU that can run this binary.
+    unsafe {
+        use core::arch::x86_64::__cpuid;
+        // Leaf 0: vendor string in EBX/EDX/ECX.
+        let v = __cpuid(0);
+        let vendor = [
+            v.ebx.to_le_bytes(),
+            v.edx.to_le_bytes(),
+            v.ecx.to_le_bytes(),
+        ];
+        let vendor_flat: [u8; 12] = [
+            vendor[0][0],
+            vendor[0][1],
+            vendor[0][2],
+            vendor[0][3],
+            vendor[1][0],
+            vendor[1][1],
+            vendor[1][2],
+            vendor[1][3],
+            vendor[2][0],
+            vendor[2][1],
+            vendor[2][2],
+            vendor[2][3],
+        ];
+        if &vendor_flat != b"AuthenticAMD" {
+            return false;
+        }
+        // Leaf 1 EAX: extended_family[27:20], extended_model[19:16],
+        // family[11:8], model[7:4]. AMD effective family = base +
+        // extended (the conditional add only applies when base==0xF
+        // for Intel, but AMD always sums them per AMD's CPUID spec
+        // §1.3.2 — though for base<0xF the extended bits are 0
+        // anyway, so unconditional sum is safe).
+        let eax = __cpuid(1).eax;
+        let base_family = ((eax >> 8) & 0xF) as u32;
+        let ext_family = ((eax >> 20) & 0xFF) as u32;
+        let family = base_family + ext_family;
+        // Zen4 = 0x19, Zen5 = 0x1A. Both have slow vprold.
+        matches!(family, 0x19 | 0x1A)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,23 +275,27 @@ mod tests {
         assert_eq!(a_file, b_file);
     }
 
-    /// Explicit cross-check: when AVX-512 is available, force the
-    /// `new_avx512()` constructor and compare against scalar over a
-    /// multi-block stream including a partial tail. `dyn_matches_scalar_*`
-    /// only tests whichever backend `new()` picked, so on non-AVX-512
-    /// hosts the AVX-512 path otherwise stays untouched. This makes the
-    /// AVX-512 dispatch path explicit (and skips honestly when the CPU
-    /// lacks it, rather than silently passing).
+    /// Explicit cross-check: force the AVX-512 backend and compare
+    /// against scalar over a multi-block stream including a partial
+    /// tail. `dyn_matches_scalar_*` only tests whichever backend
+    /// `new()` picked, so on non-AVX-512 hosts the AVX-512 path
+    /// otherwise stays untouched.
+    ///
+    /// `#[ignore]` so non-AVX-512 hosts don't silently report a green
+    /// pass for a path that wasn't exercised. Run explicitly with
+    /// `cargo test -- --ignored dyn_avx512_matches_scalar` on
+    /// AVX-512-capable hardware.
     #[test]
+    #[ignore = "requires AVX-512VL hardware; run with --ignored"]
     fn dyn_avx512_matches_scalar() {
-        let avx512_ok = std::is_x86_feature_detected!("avx512f")
-            && std::is_x86_feature_detected!("avx512vl")
-            && std::is_x86_feature_detected!("pclmulqdq")
-            && std::is_x86_feature_detected!("sse4.1");
-        if !avx512_ok {
-            eprintln!("skipping dyn_avx512_matches_scalar (CPU lacks avx512f+vl+pclmulqdq+sse4.1)");
-            return;
-        }
+        let avx512 = match HasherInputDyn::try_new_avx512() {
+            Some(h) => h,
+            None => panic!(
+                "dyn_avx512_matches_scalar invoked on CPU lacking \
+                 avx512f+vl+pclmulqdq+sse4.1 — re-run on AVX-512 hardware"
+            ),
+        };
+        assert_eq!(avx512.backend_name(), "avx512");
 
         // 5 blocks of 1024 + a 333-byte tail — exercises the steady-state
         // 64 B fused loop, get_block at staggered offsets, and the
@@ -205,9 +304,8 @@ mod tests {
         let data: Vec<u8> = (0..total as u32).map(|i| (i * 37 + 11) as u8).collect();
         let block_size = 1024usize;
 
-        let mut a = HasherInputDyn::new_avx512();
+        let mut a = avx512;
         let mut b = HasherInputDyn::new_scalar();
-        assert_eq!(a.backend_name(), "avx512");
 
         let mut a_blocks = Vec::new();
         let mut b_blocks = Vec::new();
