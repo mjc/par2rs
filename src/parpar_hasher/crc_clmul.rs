@@ -68,9 +68,9 @@ impl Default for State {
 /// in `pshufb` produce a zero, which is how upstream implements the
 /// combined "shift-left by `len`" / "shift-right by `16 - len`" trick.
 #[repr(C, align(16))]
-struct ShfTable([u32; 60]);
+pub(super) struct ShfTable(pub(super) [u32; 60]);
 
-static PSHUFB_SHF_TABLE: ShfTable = ShfTable([
+pub(super) static PSHUFB_SHF_TABLE: ShfTable = ShfTable([
     0x84838281, 0x88878685, 0x8c8b8a89, 0x008f8e8d, // shl 15 / shr 1
     0x85848382, 0x89888786, 0x8d8c8b8a, 0x01008f8e, // shl 14 / shr 2
     0x86858483, 0x8a898887, 0x8e8d8c8b, 0x0201008f, // shl 13 / shr 3

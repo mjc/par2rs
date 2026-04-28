@@ -53,11 +53,15 @@
 #[cfg(target_arch = "x86_64")]
 pub mod crc_clmul;
 #[cfg(target_arch = "x86_64")]
+pub mod crc_clmul_avx512;
+#[cfg(target_arch = "x86_64")]
 pub mod hasher_input;
 #[cfg(target_arch = "x86_64")]
 pub mod hasher_input_dyn;
 #[cfg(target_arch = "x86_64")]
 pub mod md5x2;
+#[cfg(target_arch = "x86_64")]
+pub mod md5x2_avx512;
 #[cfg(target_arch = "x86_64")]
 pub mod md5x2_bmi1;
 #[cfg(target_arch = "x86_64")]

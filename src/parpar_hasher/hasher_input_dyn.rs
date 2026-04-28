@@ -24,6 +24,7 @@
 //! oracle for the scalar/BMI1 paths.
 
 use super::hasher_input::{BlockHash, HasherInput};
+use super::md5x2_avx512::Avx512;
 use super::md5x2_bmi1::Bmi1;
 use super::md5x2_scalar::Scalar;
 use super::md5x2_sse2::Sse2;
@@ -37,13 +38,26 @@ pub enum HasherInputDyn {
     Scalar(HasherInput<Scalar>),
     Sse2(HasherInput<Sse2>),
     Bmi1(HasherInput<Bmi1>),
+    Avx512(HasherInput<Avx512>),
 }
 
 impl HasherInputDyn {
     /// Pick the best backend for the current CPU and construct it.
     /// Mirrors upstream `HasherInput_Create()`.
     pub fn new() -> Self {
-        if is_x86_feature_detected!("bmi1") {
+        // AVX-512VL: prefer when available (Zen3+ desktop, Skylake-X+,
+        // Ice Lake+, Sapphire Rapids+). Required features mirror the
+        // hot-loop intrinsics: avx512f+vl for `vpternlogd`/`vprold`,
+        // pclmulqdq for the CRC fold, sse4.1 for the pshufb tail trick.
+        // TODO: exclude Zen4/Zen5 once we add the `isVecRotSlow` check
+        // upstream uses (rol latency is 2c on Zen4/5).
+        if is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("avx512vl")
+            && is_x86_feature_detected!("pclmulqdq")
+            && is_x86_feature_detected!("sse4.1")
+        {
+            HasherInputDyn::Avx512(HasherInput::new())
+        } else if is_x86_feature_detected!("bmi1") {
             HasherInputDyn::Bmi1(HasherInput::new())
         } else {
             HasherInputDyn::Scalar(HasherInput::new())
@@ -69,12 +83,19 @@ impl HasherInputDyn {
         HasherInputDyn::Bmi1(HasherInput::new())
     }
 
+    /// Force the `Avx512` backend. Requires avx512f + avx512vl +
+    /// pclmulqdq + sse4.1; caller is responsible for the CPU check.
+    pub fn new_avx512() -> Self {
+        HasherInputDyn::Avx512(HasherInput::new())
+    }
+
     /// Identifies which backend was selected. Mostly for diagnostics.
     pub fn backend_name(&self) -> &'static str {
         match self {
             HasherInputDyn::Scalar(_) => "scalar",
             HasherInputDyn::Sse2(_) => "sse2",
             HasherInputDyn::Bmi1(_) => "bmi1",
+            HasherInputDyn::Avx512(_) => "avx512",
         }
     }
 
@@ -85,6 +106,7 @@ impl HasherInputDyn {
             HasherInputDyn::Scalar(h) => h.update(data),
             HasherInputDyn::Sse2(h) => h.update(data),
             HasherInputDyn::Bmi1(h) => h.update(data),
+            HasherInputDyn::Avx512(h) => h.update(data),
         }
     }
 
@@ -96,6 +118,7 @@ impl HasherInputDyn {
             HasherInputDyn::Scalar(h) => h.get_block(zero_pad),
             HasherInputDyn::Sse2(h) => h.get_block(zero_pad),
             HasherInputDyn::Bmi1(h) => h.get_block(zero_pad),
+            HasherInputDyn::Avx512(h) => h.get_block(zero_pad),
         }
     }
 
@@ -107,6 +130,7 @@ impl HasherInputDyn {
             HasherInputDyn::Scalar(h) => h.end(),
             HasherInputDyn::Sse2(h) => h.end(),
             HasherInputDyn::Bmi1(h) => h.end(),
+            HasherInputDyn::Avx512(h) => h.end(),
         }
     }
 }
@@ -126,7 +150,7 @@ mod tests {
         let h = HasherInputDyn::new();
         // Just ensure construction works.
         let name = h.backend_name();
-        assert!(matches!(name, "scalar" | "sse2" | "bmi1"));
+        assert!(matches!(name, "scalar" | "sse2" | "bmi1" | "avx512"));
     }
 
     #[test]

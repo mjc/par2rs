@@ -33,6 +33,7 @@
 #![cfg(target_arch = "x86_64")]
 
 use super::crc_clmul;
+use super::crc_clmul_avx512;
 use super::md5x2::Md5x2;
 
 /// Default backend on x86_64.
@@ -54,6 +55,39 @@ use super::md5x2::Md5x2;
 pub type DefaultBackend = super::md5x2_scalar::Scalar;
 
 const MD5_BLOCKSIZE: usize = 64;
+
+/// Per-backend CRC `process_block` dispatch — picks the AVX-512VL
+/// `vpternlogd` fold when the MD5x2 backend's `USE_AVX512_CRC` is true,
+/// else the SSE4.1+PCLMULQDQ baseline. The branch is on a const so it
+/// monomorphises away.
+///
+/// # Safety
+/// `src` must be valid for 64 readable bytes. Caller must have verified
+/// the relevant CPU features (the same set that gates selection of the
+/// MD5x2 backend `B`).
+#[inline(always)]
+unsafe fn crc_process_block<B: Md5x2>(state: &mut crc_clmul::State, src: *const u8) {
+    if B::USE_AVX512_CRC {
+        crc_clmul_avx512::process_block(state, src)
+    } else {
+        crc_clmul::process_block(state, src)
+    }
+}
+
+/// Per-backend CRC `finish` dispatch — same const-branch pattern as
+/// [`crc_process_block`].
+///
+/// # Safety
+/// `src` must be valid for `len` (≤ 63) readable bytes. Caller must have
+/// verified the relevant CPU features.
+#[inline(always)]
+unsafe fn crc_finish<B: Md5x2>(state: &mut crc_clmul::State, src: *const u8, len: usize) -> u32 {
+    if B::USE_AVX512_CRC {
+        crc_clmul_avx512::finish(state, src, len)
+    } else {
+        crc_clmul::finish(state, src, len)
+    }
+}
 
 /// Fused hasher state for one source file. Computes file-MD5
 /// continuously while emitting per-block (MD5, CRC32) pairs at every
@@ -181,7 +215,7 @@ impl<B: Md5x2> HasherInput<B> {
                     // md5_update_block_x2(state, block_data, tmp) — the
                     // FIRST data arg goes to lane HASH2X_BLOCK = 0 and
                     // the SECOND to HASH2X_FILE = 1.)
-                    crc_clmul::process_block(&mut self.crc_state, block_data);
+                    crc_process_block::<B>(&mut self.crc_state, block_data);
                     B::process_block(&mut self.md5_state, block_data, self.tmp.as_ptr());
                 }
                 len -= wanted;
@@ -216,7 +250,7 @@ impl<B: Md5x2> HasherInput<B> {
         while len >= MD5_BLOCKSIZE + self.pos_offset {
             unsafe {
                 let block_ptr = data_.add(self.pos_offset);
-                crc_clmul::process_block(&mut self.crc_state, block_ptr);
+                crc_process_block::<B>(&mut self.crc_state, block_ptr);
                 B::process_block(&mut self.md5_state, block_ptr, data_);
             }
             data_ = unsafe { data_.add(MD5_BLOCKSIZE) };
@@ -254,7 +288,7 @@ impl<B: Md5x2> HasherInput<B> {
         // CRC: finish over the same partial tail, then GF(2)-extend by
         // zero_pad bytes via crc_zeropad.
         let crc_partial = unsafe {
-            crc_clmul::finish(
+            crc_finish::<B>(
                 &mut self.crc_state,
                 self.tmp.as_ptr().add(block_tail_start),
                 block_tail_len,

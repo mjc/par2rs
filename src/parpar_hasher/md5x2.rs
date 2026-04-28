@@ -30,6 +30,18 @@ pub trait Md5x2 {
     /// Backend-private state representation.
     type State;
 
+    /// Whether this backend's host CPU also supports the AVX-512VL
+    /// `vpternlogd` form of the CLMul CRC32 fold (`crc_clmul_avx512`).
+    ///
+    /// Default `false` — the SSE4.1 + PCLMULQDQ baseline is always safe.
+    /// Backends that already require AVX-512VL (e.g. the AVX-512 MD5x2
+    /// path) override this to `true` so `HasherInput` picks the
+    /// `vpternlogd`-collapsed fold without needing a second generic
+    /// parameter. Mirrors upstream's coupling: the `_CRC_USE_AVX512_`
+    /// switch in `crc_clmul.h` is gated by the same CPU feature set as
+    /// the AVX-512 MD5 path, so they're never selected independently.
+    const USE_AVX512_CRC: bool = false;
+
     /// Build a fresh state with both lanes initialised to the standard
     /// MD5 IV.
     fn init_state() -> Self::State;

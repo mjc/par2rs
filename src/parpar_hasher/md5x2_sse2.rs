@@ -71,8 +71,12 @@ pub struct State(pub [__m128i; 4]);
 impl State {
     /// Build the SSE2 state from a flat `[u32; 8]` (`[a0,b0,c0,d0,a1,b1,c1,d1]`).
     /// Used at backend boundaries: init / lane reset / extract.
+    ///
+    /// Made `pub(crate)` so the AVX-512VL backend can share the exact
+    /// same XMM lane layout (`md5_extract_x2_avx512 = md5_extract_x2_sse`
+    /// in upstream `md5x2-sse.h`).
     #[inline(always)]
-    unsafe fn from_flat(flat: &[u32; 8]) -> Self {
+    pub(crate) unsafe fn from_flat(flat: &[u32; 8]) -> Self {
         // Each xmm holds [word_lane0, 0, word_lane1, 0].
         // _mm_set_epi32 takes args in (e3, e2, e1, e0) order — i.e.
         // bits 96..128, 64..96, 32..64, 0..32 — so to get
@@ -87,8 +91,11 @@ impl State {
 
     /// Convert back to flat `[u32; 8]` form by reading 32-bit lanes 0
     /// and 2 of each register. The "GARBAGE" lanes 1 and 3 are discarded.
+    ///
+    /// `pub(crate)` for the same reason as `from_flat` — the AVX-512VL
+    /// backend reuses this layout verbatim.
     #[inline(always)]
-    unsafe fn to_flat(&self) -> [u32; 8] {
+    pub(crate) unsafe fn to_flat(&self) -> [u32; 8] {
         let mut tmp = [0u32; 4];
         let mut out = [0u32; 8];
         for (idx, reg) in self.0.iter().enumerate() {
@@ -129,9 +136,13 @@ unsafe fn rotate<const S: i32>(a: __m128i) -> __m128i {
 /// Direct port of `LOAD4` macro (md5x2-sse.h:13-20). Loads 4 input words
 /// from each of `ptr0` and `ptr1` at byte offset `idx*4`, interleaves
 /// them into MD5x2 layout, and returns (XX_idx, XX_idx+1, XX_idx+2, XX_idx+3).
+// `pub(crate)` so the AVX-512VL backend can reuse the same load+shuffle
+// path: upstream's `LOAD4` is shared between SSE and AVX-512 codepaths
+// (`md5x2-sse.h` defines `LOAD4` once at file scope and the AVX-512VL
+// block doesn't redefine it).
 #[inline(always)]
 #[allow(unused_unsafe)]
-unsafe fn load4(
+pub(crate) unsafe fn load4(
     ptr0: *const u8,
     ptr1: *const u8,
     idx: usize,
