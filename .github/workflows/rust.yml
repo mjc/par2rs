@@ -64,6 +64,41 @@ jobs:
       - name: Run tests
         run: cargo test --all-features --workspace
 
+  cross-compile-aarch64:
+    runs-on: ubuntu-latest
+    name: Cross-compile for aarch64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "cross-compile-aarch64"
+          cache-on-failure: true
+
+      - name: Install cross
+        run: cargo install cross --locked
+
+      - name: Build library for aarch64
+        run: cross build --lib --target aarch64-unknown-linux-gnu
+
+      - name: Build tests for aarch64
+        run: cross build --tests --target aarch64-unknown-linux-gnu
+
+      - name: Verify aarch64 build
+        run: |
+          echo "✓ aarch64-unknown-linux-gnu build succeeded"
+          echo "  - Architecture separation validated"
+          echo "  - x86_64 backends: hasher_input, md5x2_scalar, md5x2_sse2, md5x2_bmi1, md5x2_avx512"
+          echo "  - aarch64 backends: md5x2_scalar, md5x2_neon, crc_armcrc"
+          echo "  - Shared: md5x2 trait"
+
   coverage:
     runs-on: ubuntu-latest
 

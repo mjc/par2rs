@@ -125,10 +125,11 @@ impl Md5x2 for State {
             let zipped = vzipq_u32(in0, in1);
 
             // Extract the low and high halves; each is a uint32x2_t.
-            msg[i] = vget_low_u32(zipped.val[0]);
-            msg[i + 4] = vget_high_u32(zipped.val[0]);
-            msg[i + 8] = vget_low_u32(zipped.val[1]);
-            msg[i + 12] = vget_high_u32(zipped.val[1]);
+            // Note: uint32x4x2_t uses .0 and .1 fields in Rust, not .val[0] and .val[1]
+            msg[i] = vget_low_u32(zipped.0);
+            msg[i + 4] = vget_high_u32(zipped.0);
+            msg[i + 8] = vget_low_u32(zipped.1);
+            msg[i + 12] = vget_high_u32(zipped.1);
         }
 
         // MD5 state during the block processing.
