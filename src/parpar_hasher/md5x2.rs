@@ -11,8 +11,6 @@
 // concrete impl per backend, which gives us monomorphisation without
 // repeating the driver code per backend.
 
-#![cfg(target_arch = "x86_64")]
-
 /// Two-lane MD5 block compressor.
 ///
 /// The state type is an associated type because each backend chooses

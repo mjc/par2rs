@@ -54,7 +54,9 @@
 // Shared across all architectures
 // ============================================================================
 
+#[cfg(target_arch = "x86_64")]
 pub mod hasher_input_dyn;
+pub mod md5x2; // Trait definition is architecture-agnostic
 
 // ============================================================================
 // x86_64 backends: Scalar (always-available), SSE2, BMI1, AVX-512
@@ -66,8 +68,6 @@ pub mod crc_clmul;
 pub mod crc_clmul_avx512;
 #[cfg(target_arch = "x86_64")]
 pub mod hasher_input;
-#[cfg(target_arch = "x86_64")]
-pub mod md5x2;
 #[cfg(target_arch = "x86_64")]
 pub mod md5x2_avx512;
 #[cfg(target_arch = "x86_64")]
@@ -83,10 +83,6 @@ pub mod md5x2_sse2;
 
 #[cfg(target_arch = "aarch64")]
 pub mod crc_armcrc;
-#[cfg(target_arch = "aarch64")]
-pub mod hasher_input;
-#[cfg(target_arch = "aarch64")]
-pub mod md5x2;
 #[cfg(target_arch = "aarch64")]
 pub mod md5x2_neon;
 #[cfg(target_arch = "aarch64")]

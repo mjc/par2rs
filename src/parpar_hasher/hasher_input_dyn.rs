@@ -152,67 +152,6 @@ fn is_amd_vec_rot_slow() -> bool {
 }
 
 // ============================================================================
-// aarch64 Dispatcher (Placeholder for NEON support)
-// ============================================================================
-
-#[cfg(target_arch = "aarch64")]
-pub enum HasherInputDyn {
-    Scalar(HasherInput<super::md5x2_scalar::Scalar>),
-    // Neon(HasherInput<super::md5x2_neon::Neon>),  // TODO: when md5x2_neon is ready
-}
-
-#[cfg(target_arch = "aarch64")]
-impl HasherInputDyn {
-    /// Pick the best backend for the current aarch64 CPU.
-    ///
-    /// Placeholder: currently always returns Scalar. Will be extended
-    /// when NEON backend is ported.
-    pub fn new() -> Self {
-        // TODO: uncomment when md5x2_neon is ready
-        // if cfg!(target_feature = "neon") {
-        //     HasherInputDyn::Neon(HasherInput::new())
-        // } else {
-        HasherInputDyn::Scalar(HasherInput::new())
-        // }
-    }
-
-    pub fn new_scalar() -> Self {
-        HasherInputDyn::Scalar(HasherInput::new())
-    }
-
-    pub fn backend_name(&self) -> &'static str {
-        match self {
-            HasherInputDyn::Scalar(_) => "scalar",
-            // HasherInputDyn::Neon(_) => "neon",
-        }
-    }
-
-    #[inline]
-    pub fn update(&mut self, data: &[u8]) {
-        match self {
-            HasherInputDyn::Scalar(h) => h.update(data),
-            // HasherInputDyn::Neon(h) => h.update(data),
-        }
-    }
-
-    #[inline]
-    pub fn get_block(&mut self, zero_pad: u64) -> BlockHash {
-        match self {
-            HasherInputDyn::Scalar(h) => h.get_block(zero_pad),
-            // HasherInputDyn::Neon(h) => h.get_block(zero_pad),
-        }
-    }
-
-    #[inline]
-    pub fn end(self) -> [u8; 16] {
-        match self {
-            HasherInputDyn::Scalar(h) => h.end(),
-            // HasherInputDyn::Neon(h) => h.end(),
-        }
-    }
-}
-
-// ============================================================================
 // Shared Implementations
 // ============================================================================
 
