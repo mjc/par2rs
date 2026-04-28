@@ -31,6 +31,7 @@ use md5::Md5;
 use par2rs::checksum::update_file_md5_block_md5_crc32_fused;
 use par2rs::parpar_hasher::hasher_input::HasherInput;
 use par2rs::parpar_hasher::md5x2::Md5x2;
+use par2rs::parpar_hasher::md5x2_avx512::Avx512;
 use par2rs::parpar_hasher::md5x2_bmi1::Bmi1;
 use par2rs::parpar_hasher::md5x2_scalar::Scalar;
 use par2rs::parpar_hasher::md5x2_sse2::Sse2;
@@ -145,6 +146,17 @@ fn v5_hasher_input_bmi1(data: &[u8], block_size: usize) -> MultiBlockOut {
     hasher_input_blocks::<Bmi1>(data, block_size)
 }
 
+fn v6_hasher_input_avx512(data: &[u8], block_size: usize) -> MultiBlockOut {
+    hasher_input_blocks::<Avx512>(data, block_size)
+}
+
+fn avx512_supported() -> bool {
+    std::is_x86_feature_detected!("avx512f")
+        && std::is_x86_feature_detected!("avx512vl")
+        && std::is_x86_feature_detected!("pclmulqdq")
+        && std::is_x86_feature_detected!("sse4.1")
+}
+
 // ----------------------------- Bench -----------------------------
 
 fn bench(c: &mut Criterion) {
@@ -161,6 +173,7 @@ fn bench(c: &mut Criterion) {
 
     // ---- Correctness sanity check (panics on divergence) ----
     let bmi1_ok = std::is_x86_feature_detected!("bmi1");
+    let avx512_ok = avx512_supported();
     for &len in &single_sizes {
         let data = make_data(len);
         let r1 = v1_naive_seq_blocks(&data, len);
@@ -177,6 +190,13 @@ fn bench(c: &mut Criterion) {
             let r5 = v5_hasher_input_bmi1(&data, len);
             assert_eq!(r1, r5, "HasherInput<Bmi1> diverges from naive at len={len}");
         }
+        if avx512_ok {
+            let r6 = v6_hasher_input_avx512(&data, len);
+            assert_eq!(
+                r1, r6,
+                "HasherInput<Avx512> diverges from naive at len={len}"
+            );
+        }
     }
     {
         let data = make_data(multi_total);
@@ -190,6 +210,10 @@ fn bench(c: &mut Criterion) {
         if bmi1_ok {
             let r5 = v5_hasher_input_bmi1(&data, multi_block_size);
             assert_eq!(r1, r5, "HasherInput<Bmi1> multi-block diverges");
+        }
+        if avx512_ok {
+            let r6 = v6_hasher_input_avx512(&data, multi_block_size);
+            assert_eq!(r1, r6, "HasherInput<Avx512> multi-block diverges");
         }
     }
 
@@ -213,6 +237,11 @@ fn bench(c: &mut Criterion) {
         if bmi1_ok {
             g.bench_with_input(BenchmarkId::new("5_hasher_bmi1", len), &data, |b, d| {
                 b.iter(|| black_box(v5_hasher_input_bmi1(black_box(d), len)))
+            });
+        }
+        if avx512_ok {
+            g.bench_with_input(BenchmarkId::new("6_hasher_avx512", len), &data, |b, d| {
+                b.iter(|| black_box(v6_hasher_input_avx512(black_box(d), len)))
             });
         }
     }
@@ -241,6 +270,13 @@ fn bench(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("5_hasher_bmi1", &label), &data, |b, d| {
             b.iter(|| black_box(v5_hasher_input_bmi1(black_box(d), multi_block_size)))
         });
+    }
+    if avx512_ok {
+        g.bench_with_input(
+            BenchmarkId::new("6_hasher_avx512", &label),
+            &data,
+            |b, d| b.iter(|| black_box(v6_hasher_input_avx512(black_box(d), multi_block_size))),
+        );
     }
     g.finish();
 }

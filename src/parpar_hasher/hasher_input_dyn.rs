@@ -180,6 +180,48 @@ mod tests {
         assert_eq!(a_file, b_file);
     }
 
+    /// Explicit cross-check: when AVX-512 is available, force the
+    /// `new_avx512()` constructor and compare against scalar over a
+    /// multi-block stream including a partial tail. `dyn_matches_scalar_*`
+    /// only tests whichever backend `new()` picked, so on non-AVX-512
+    /// hosts the AVX-512 path otherwise stays untouched. This makes the
+    /// AVX-512 dispatch path explicit (and skips honestly when the CPU
+    /// lacks it, rather than silently passing).
+    #[test]
+    fn dyn_avx512_matches_scalar() {
+        let avx512_ok = std::is_x86_feature_detected!("avx512f")
+            && std::is_x86_feature_detected!("avx512vl")
+            && std::is_x86_feature_detected!("pclmulqdq")
+            && std::is_x86_feature_detected!("sse4.1");
+        if !avx512_ok {
+            eprintln!("skipping dyn_avx512_matches_scalar (CPU lacks avx512f+vl+pclmulqdq+sse4.1)");
+            return;
+        }
+
+        // 5 blocks of 1024 + a 333-byte tail — exercises the steady-state
+        // 64 B fused loop, get_block at staggered offsets, and the
+        // partial-block tail path.
+        let total = 5 * 1024 + 333;
+        let data: Vec<u8> = (0..total as u32).map(|i| (i * 37 + 11) as u8).collect();
+        let block_size = 1024usize;
+
+        let mut a = HasherInputDyn::new_avx512();
+        let mut b = HasherInputDyn::new_scalar();
+        assert_eq!(a.backend_name(), "avx512");
+
+        let mut a_blocks = Vec::new();
+        let mut b_blocks = Vec::new();
+        for chunk in data.chunks(block_size) {
+            a.update(chunk);
+            b.update(chunk);
+            let pad = (block_size - chunk.len()) as u64;
+            a_blocks.push(a.get_block(pad));
+            b_blocks.push(b.get_block(pad));
+        }
+        assert_eq!(a_blocks, b_blocks, "avx512 vs scalar block hashes diverge");
+        assert_eq!(a.end(), b.end(), "avx512 vs scalar file MD5 diverges");
+    }
+
     #[test]
     fn zero_pad_behavior() {
         // Last block shorter than block_size — caller passes zero_pad
