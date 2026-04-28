@@ -41,6 +41,7 @@ const XOR_JIT_PREFETCH_MAX_FACTOR: usize = 3;
 pub enum CreateGf16Method {
     Auto,
     Avx2PshufbPrepared,
+    #[cfg(target_arch = "x86_64")]
     Avx2XorJit,
     Scalar,
 }
@@ -2521,6 +2522,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn forced_xor_jit_backend_uses_bitplane_without_legacy_fallback() {
         let _guard = env_lock().lock().unwrap();
         std::env::set_var("PAR2RS_CREATE_GF16", "xor-jit");
