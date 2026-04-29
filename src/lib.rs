@@ -27,10 +27,19 @@ pub mod verify;
 pub mod checksum;
 pub mod domain;
 pub mod packets;
+pub mod parpar_hasher;
 pub mod reporters;
 
 // Reed-Solomon is internal implementation detail, but exposed for advanced use
 pub mod reed_solomon;
+
+// FFI bindings to ParPar C++ for comparison/validation (benchmarks only)
+#[cfg(all(
+    feature = "parpar-compare",
+    target_arch = "x86_64",
+    parpar_compare_embedded
+))]
+pub mod ffi;
 
 // Re-export commonly used types for convenience (used internally and by binaries)
 pub use args::parse_args;
