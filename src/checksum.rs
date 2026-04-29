@@ -107,35 +107,88 @@ pub fn compute_block_checksums_padded(data: &[u8], block_size: usize) -> (Md5Has
     compute_md5_crc32_simultaneous_padded(data, block_size)
 }
 
-/// Compute MD5 and CRC32 simultaneously in a single pass (par2cmdline style)
+/// Sub-slice size used by the fused MD5+CRC32 stream updater.
 ///
-/// This is the most efficient way to compute both checksums as it:
-/// - Reads data only once (50% less memory bandwidth)
-/// - Processes data while still in CPU cache
-/// - Updates both hash states in the same loop
+/// Sized to fit comfortably in L1d (typical 32-48 KiB) while remaining large
+/// enough to amortize the per-slice call overhead of the underlying SIMD
+/// compress routines in `md-5` and `crc32fast`.
+const FUSED_HASH_CHUNK: usize = 16 * 1024;
+
+/// Update an MD5 hasher and a CRC32 hasher over the same buffer with
+/// cache-resident sub-slices.
 ///
-/// Based on par2cmdline-turbo's MD5CRC_Calc implementation which showed
-/// ~40-60% performance improvement over separate computation.
+/// Both `md-5` and `crc32fast` use vectorized compress loops internally, so we
+/// can't literally interleave their inner instructions from Rust. What we *can*
+/// do is feed each cache-line-sized region to both hashers back-to-back, so the
+/// CRC pass reads bytes that the MD5 pass just pulled into L1 (or vice versa).
+/// This avoids the worst case where a large `data` buffer is scanned end-to-end
+/// by MD5 (evicting itself from L1), then scanned end-to-end again by CRC32 and
+/// re-fetched from L2/L3.
+///
+/// Mirrors the design intent of par2cmdline-turbo's `HasherInput::update`,
+/// which fuses MD5 and CRC32 updates per 64-byte block via hand-tuned ASM.
+/// Without 2-lane MD5 we can't match the ILP, but we can still kill the
+/// double-scan memory traffic.
+#[inline]
+pub fn update_md5_crc32_fused<D: md5::Digest>(
+    md5_hasher: &mut D,
+    crc_hasher: &mut crc32fast::Hasher,
+    data: &[u8],
+) {
+    for chunk in data.chunks(FUSED_HASH_CHUNK) {
+        md5_hasher.update(chunk);
+        crc_hasher.update(chunk);
+    }
+}
+
+/// Update three hashers (file-MD5, block-MD5, block-CRC32) over the same
+/// buffer with cache-resident sub-slices.
+///
+/// Used by the create path's encode_and_hash_files where each chunk is
+/// simultaneously contributing to a per-file rolling MD5 and the current
+/// block's MD5+CRC32. Without a 2-lane MD5 (md5x2) we still pay two MD5
+/// compress passes, but we keep the data hot between all three hash updates.
+///
+/// Reference: par2cmdline-turbo/parpar/hasher/hasher_input_base.h
+/// (HasherInput::update fuses block-MD5 lane, file-MD5 lane and CRC32 per 64B)
+#[inline]
+pub fn update_file_md5_block_md5_crc32_fused<D: md5::Digest>(
+    file_md5_hasher: &mut D,
+    block_md5_hasher: &mut D,
+    crc_hasher: &mut crc32fast::Hasher,
+    data: &[u8],
+) {
+    for chunk in data.chunks(FUSED_HASH_CHUNK) {
+        block_md5_hasher.update(chunk);
+        crc_hasher.update(chunk);
+        file_md5_hasher.update(chunk);
+    }
+}
+
+/// Compute MD5 and CRC32 from one source-buffer traversal using cache-local chunking.
+///
+/// This helper operates on an in-memory slice, not directly on a file handle.
+/// The create path can still use it as part of a single-read file pipeline, but
+/// at this layer we are simply feeding two independent hashers from the same
+/// chunk stream while the data is still hot in cache.
+///
+/// Based on par2cmdline-turbo's MD5CRC_Calc-style chunking approach.
 ///
 /// # Performance
 ///
-/// For 1MB blocks:
-/// - Separate: 2 passes through data, ~poor cache reuse
-/// - Simultaneous: 1 pass through data, excellent cache reuse
-///
-/// Expected speedup: 1.5-2x for block verification workloads
+/// For large blocks:
+/// - Separate whole-buffer passes: weaker cache locality between hashers
+/// - Chunked paired updates: better cache reuse across both hash states
 #[inline]
 pub fn compute_md5_crc32_simultaneous(data: &[u8]) -> (Md5Hash, Crc32Value) {
     use crc32fast::Hasher as Crc32Hasher;
-    use md5::Digest;
 
     let mut md5_hasher = Md5::new();
     let mut crc_hasher = Crc32Hasher::new();
 
-    // Process data in a single pass, updating both hash states
-    // This keeps data hot in CPU cache for both operations
-    md5_hasher.update(data);
-    crc_hasher.update(data);
+    // Process data in cache-resident sub-slices so neither hasher evicts
+    // the other's working set from L1.
+    update_md5_crc32_fused(&mut md5_hasher, &mut crc_hasher, data);
 
     (
         Md5Hash::new(md5_hasher.finalize().into()),
@@ -143,13 +196,14 @@ pub fn compute_md5_crc32_simultaneous(data: &[u8]) -> (Md5Hash, Crc32Value) {
     )
 }
 
-/// Compute MD5 and CRC32 simultaneously with zero-padding (par2cmdline style)
+/// Compute MD5 and CRC32 over one padded buffer using the same chunked updates.
 ///
 /// For partial blocks at the end of files, this computes both checksums
-/// with zero-padding to the target block size, all in a single pass.
+/// with zero-padding to the target block size from one temporary buffer.
 ///
 /// This is significantly more efficient than the padded separate version
-/// because it only allocates and processes the padded buffer once.
+/// because it only allocates the padded buffer once and then reuses cache-local
+/// chunking for both hashers.
 ///
 /// # Arguments
 ///
@@ -159,17 +213,14 @@ pub fn compute_md5_crc32_simultaneous(data: &[u8]) -> (Md5Hash, Crc32Value) {
 /// # Performance
 ///
 /// For partial blocks:
-/// - Old: allocate padding, compute MD5, compute CRC32 (3 operations)
-/// - New: allocate padding, compute both simultaneously (2 operations)
-///
-/// Expected speedup: 1.3-1.5x for partial block processing
+/// - Separate padded hashing: allocate once, then run distinct whole-buffer hashes
+/// - Chunked paired updates: allocate once, then update both hashers per chunk
 #[inline]
 pub fn compute_md5_crc32_simultaneous_padded(
     data: &[u8],
     target_size: usize,
 ) -> (Md5Hash, Crc32Value) {
     use crc32fast::Hasher as Crc32Hasher;
-    use md5::Digest;
 
     if data.len() >= target_size {
         // No padding needed, use direct simultaneous computation
@@ -183,9 +234,8 @@ pub fn compute_md5_crc32_simultaneous_padded(
     let mut md5_hasher = Md5::new();
     let mut crc_hasher = Crc32Hasher::new();
 
-    // Single pass through padded data
-    md5_hasher.update(&padded);
-    crc_hasher.update(&padded);
+    // Cache-resident sub-slice walk over the padded buffer.
+    update_md5_crc32_fused(&mut md5_hasher, &mut crc_hasher, &padded);
 
     (
         Md5Hash::new(md5_hasher.finalize().into()),
