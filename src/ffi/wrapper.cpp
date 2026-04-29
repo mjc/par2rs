@@ -139,18 +139,19 @@ void parpar_hasher_input_free(void* ctx) {
     static_cast<IHasherInput*>(ctx)->destroy();
 }
 
-void parpar_hasher_input_hash(unsigned method, const unsigned char* data, size_t len, unsigned char* out) {
+bool parpar_hasher_input_hash(unsigned method, const unsigned char* data, size_t len, unsigned char* out) {
     if (!out || (!data && len != 0)) {
-        return;
+        return false;
     }
 
     IHasherInput* ctx = create_input(static_cast<ParParHasherInputMethod>(method));
     if (!ctx) {
-        return;
+        return false;
     }
     ctx->update(data, len);
     ctx->end(out);
     ctx->destroy();
+    return true;
 }
 
 uint32_t parpar_crc32_compute(const unsigned char* data, size_t len) {

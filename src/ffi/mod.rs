@@ -28,7 +28,7 @@ unsafe extern "C" {
     fn parpar_hasher_input_end(ctx: *mut c_void, out: *mut u8);
     fn parpar_hasher_input_reset(ctx: *mut c_void);
     fn parpar_hasher_input_free(ctx: *mut c_void);
-    fn parpar_hasher_input_hash(method: u32, data: *const u8, len: usize, out: *mut u8);
+    fn parpar_hasher_input_hash(method: u32, data: *const u8, len: usize, out: *mut u8) -> bool;
     fn parpar_hasher_input_is_available(method: u32) -> bool;
 
     fn parpar_crc32_compute(data: *const u8, len: usize) -> u32;
@@ -119,17 +119,17 @@ pub mod hasher_input {
             Md5Hash::new(digest)
         }
 
-        pub fn hash(method: HasherInputMethod, data: &[u8]) -> Md5Hash {
+        pub fn hash(method: HasherInputMethod, data: &[u8]) -> Option<Md5Hash> {
             let mut digest = [0u8; 16];
-            unsafe {
+            let ok = unsafe {
                 parpar_hasher_input_hash(
                     method as u32,
                     data.as_ptr(),
                     data.len(),
                     digest.as_mut_ptr(),
-                );
-            }
-            Md5Hash::new(digest)
+                )
+            };
+            ok.then(|| Md5Hash::new(digest))
         }
     }
 
@@ -154,3 +154,53 @@ pub mod crc32 {
 pub use crc32::crc32_compute;
 pub use hasher_input::ParParHasherInput;
 pub use md5::ParParMd5;
+
+#[cfg(all(
+    test,
+    feature = "parpar-compare",
+    target_arch = "x86_64",
+    parpar_compare_embedded
+))]
+mod tests {
+    use super::{hasher_input::ParParHasherInput, HasherInputMethod};
+
+    #[test]
+    fn one_shot_hash_returns_none_for_unavailable_method() {
+        let unavailable = [
+            HasherInputMethod::Avx512,
+            HasherInputMethod::Bmi1,
+            HasherInputMethod::SimdCrc,
+            HasherInputMethod::Crc,
+            HasherInputMethod::Simd,
+            HasherInputMethod::Scalar,
+        ]
+        .into_iter()
+        .find(|method| !method.is_available());
+
+        if let Some(method) = unavailable {
+            assert!(ParParHasherInput::hash(method, b"ffi smoke").is_none());
+        }
+    }
+
+    #[test]
+    fn one_shot_hash_matches_streaming_hash_for_available_method() {
+        let method = [
+            HasherInputMethod::Avx512,
+            HasherInputMethod::Bmi1,
+            HasherInputMethod::SimdCrc,
+            HasherInputMethod::Crc,
+            HasherInputMethod::Simd,
+            HasherInputMethod::Scalar,
+        ]
+        .into_iter()
+        .find(|method| method.is_available())
+        .expect("at least one ParPar method should be available");
+
+        let data = b"ffi smoke";
+        let one_shot = ParParHasherInput::hash(method, data).expect("one-shot hash");
+        let mut streaming = ParParHasherInput::new(method).expect("streaming hash");
+        streaming.update(data);
+
+        assert_eq!(one_shot, streaming.finalize());
+    }
+}
