@@ -7,6 +7,7 @@ use super::error_helpers::{
     create_file, create_new_output_file, get_metadata, open_for_reading, packet_write_error,
 };
 use super::packet_generator::generate_recovery_set_id;
+use super::profile::{CreateProfile, CreateProfileCounters, CreateProfilePhase};
 use super::progress::CreateReporter;
 use super::source_file::{normalize_packet_path, packet_name_from_path, SourceFileInfo};
 use super::types::CreateConfig;
@@ -37,6 +38,16 @@ fn write_recovery_slice_packet<W: std::io::Write>(
     recovery_data: &[u8],
     recovery_set_id: RecoverySetId,
 ) -> std::io::Result<()> {
+    let header = build_recovery_slice_header(exponent, recovery_data, recovery_set_id);
+    writer.write_all(&header)?;
+    writer.write_all(recovery_data)
+}
+
+fn build_recovery_slice_header(
+    exponent: u32,
+    recovery_data: &[u8],
+    recovery_set_id: RecoverySetId,
+) -> [u8; 68] {
     use md5::{Digest, Md5};
 
     let packet_length = 8 + 8 + 16 + 16 + 16 + 4 + recovery_data.len() as u64;
@@ -49,13 +60,14 @@ fn write_recovery_slice_packet<W: std::io::Write>(
     hasher.update(recovery_data);
     let computed_md5 = hasher.finalize();
 
-    writer.write_all(crate::packets::MAGIC_BYTES)?;
-    writer.write_all(&packet_length.to_le_bytes())?;
-    writer.write_all(&computed_md5)?;
-    writer.write_all(recovery_set_id.as_bytes())?;
-    writer.write_all(RECOVERY_PACKET_TYPE)?;
-    writer.write_all(&exponent.to_le_bytes())?;
-    writer.write_all(recovery_data)
+    let mut header = [0u8; 68];
+    header[0..8].copy_from_slice(crate::packets::MAGIC_BYTES);
+    header[8..16].copy_from_slice(&packet_length.to_le_bytes());
+    header[16..32].copy_from_slice(&computed_md5);
+    header[32..48].copy_from_slice(recovery_set_id.as_bytes());
+    header[48..64].copy_from_slice(RECOVERY_PACKET_TYPE);
+    header[64..68].copy_from_slice(&exponent.to_le_bytes());
+    header
 }
 
 /// Compute the chunk size for chunked processing.
@@ -81,6 +93,33 @@ fn calculate_chunk_size_impl(
     aligned.clamp(4, block_size.min(MAX_CREATE_CHUNK_SIZE))
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CreateProcessConfig {
+    chunk_size: ChunkSize,
+    defer_hash_computation: bool,
+}
+
+impl CreateProcessConfig {
+    fn new(
+        block_size: BlockSize,
+        source_block_count: u32,
+        recovery_block_count: u32,
+        memory_limit: usize,
+    ) -> Self {
+        let chunk_size = ChunkSize::new(calculate_chunk_size_impl(
+            block_size.as_usize(),
+            source_block_count as usize,
+            recovery_block_count as usize,
+            memory_limit,
+        ));
+        let defer_hash_computation = chunk_size.as_usize() >= block_size.as_usize();
+        Self {
+            chunk_size,
+            defer_hash_computation,
+        }
+    }
+}
+
 /// Per-file hash data computed during `encode_and_hash_files`.
 struct FileHashState {
     hash_16k: crate::domain::Md5Hash,
@@ -93,6 +132,12 @@ struct FileHashState {
 
 /// Recovery blocks paired with their exponents, as returned by `encode_and_hash_files`.
 type RecoveryBlockVec = Vec<(u16, Vec<u8>)>;
+
+struct EncodeProfile {
+    counters: CreateProfileCounters,
+    source_open_hash_prepass: std::time::Duration,
+    recovery_chunk_processing: std::time::Duration,
+}
 
 /// Encode all source files into recovery blocks while simultaneously computing
 /// file/block hashes in a single pass.
@@ -111,10 +156,12 @@ fn encode_and_hash_files(
     recovery_count: usize,
     thread_count: usize,
     reporter: &dyn CreateReporter,
-) -> CreateResult<(RecoveryBlockVec, Vec<FileHashState>)> {
+    profile_enabled: bool,
+) -> CreateResult<(RecoveryBlockVec, Vec<FileHashState>, Option<EncodeProfile>)> {
     use crate::checksum::compute_file_id;
     use crate::create::source_file::BlockChecksum;
-    use crc32fast::Hasher as Crc32Hasher;
+    use crate::parpar_hasher::hasher_input_dyn::HasherInputDyn;
+    use crate::parpar_hasher::BlockHash;
     use md5::{Digest, Md5};
     use std::fs::File;
     use std::io::{Read, Seek};
@@ -124,50 +171,212 @@ fn encode_and_hash_files(
         .build()
         .map_err(|err| CreateError::Other(format!("failed to create thread pool: {err}")))?;
 
+    // True when the recovery loop traverses each file in strict
+    // sequential byte order (chunk_len == block_size for every block),
+    // letting us run HasherInputDyn inline with recovery generation —
+    // mirroring par2cmdline-turbo's `deferhashcomputation = true` path.
+    // Otherwise (slim mode), the recovery loop is chunk-offset-major
+    // across blocks, so per-file bytes are non-sequential there and
+    // we must hash each file in a separate sequential pass — that's
+    // turbo's `deferhashcomputation = false` path
+    // (`Par2CreatorSourceFile::Open` non-defer branch).
+    let defer_hash_to_recovery_loop = chunk_size >= block_size as usize;
+
+    let source_open_hash_start = profile_enabled.then(std::time::Instant::now);
     let mut file_handles: Vec<File> = Vec::with_capacity(source_files.len());
-    let mut file_md5_states: Vec<Md5> = Vec::with_capacity(source_files.len());
     let mut file_16k_buffers: Vec<Vec<u8>> = Vec::with_capacity(source_files.len());
 
-    let mut block_md5_states: Vec<Md5> = Vec::with_capacity(source_block_count as usize);
-    let mut block_crc32_states: Vec<Crc32Hasher> = Vec::with_capacity(source_block_count as usize);
+    // One HasherInputDyn per source file when we're going to drive it
+    // from the recovery loop. In slim mode we still allocate the slot
+    // but don't use it — kept symmetric for indexing.
+    let mut file_hashers: Vec<Option<HasherInputDyn>> = Vec::with_capacity(source_files.len());
+
+    // Per-block outputs, populated as `get_block` calls retire each block.
+    let mut block_hashes: Vec<Option<BlockHash>> = vec![None; source_block_count as usize];
+
+    // Per-file file-MD5, populated either by the slim-mode pre-pass
+    // (turbo's non-defer `Open()` branch) or by `hasher.end()` after
+    // the recovery loop (defer branch).
+    let mut file_full_md5: Vec<Option<crate::domain::Md5Hash>> = vec![None; source_files.len()];
 
     // Per-file metadata: (block_count, global_block_offset)
     let mut file_block_meta: Vec<(u32, u32)> = Vec::with_capacity(source_files.len());
     let mut global_block_offset = 0u32;
 
     for file in source_files {
-        file_handles.push(open_for_reading(&file.path)?);
-        file_md5_states.push(Md5::new());
+        if defer_hash_to_recovery_loop {
+            file_handles.push(open_for_reading(&file.path)?);
+        }
         file_16k_buffers.push(vec![0u8; (file.size as usize).min(16 * 1024)]);
+        file_hashers.push(if defer_hash_to_recovery_loop {
+            Some(HasherInputDyn::new())
+        } else {
+            None
+        });
 
         let block_count = file.calculate_block_count(block_size);
         file_block_meta.push((block_count, global_block_offset));
-        for _ in 0..block_count {
-            block_md5_states.push(Md5::new());
-            block_crc32_states.push(Crc32Hasher::new());
-        }
         global_block_offset += block_count;
     }
 
-    let recovery_blocks = pool.install(|| {
+    // Slim mode (turbo's `deferhashcomputation = false`): turbo computes
+    // file MD5, hash16k, and per-block (MD5, CRC32) in
+    // `Par2CreatorSourceFile::Open()` itself, *before* the recovery
+    // loop runs — because in slim mode the recovery loop visits each
+    // file in chunk-offset-major order across blocks, which is not
+    // sequential per-file. We mirror that here: a parallel-across-files
+    // pre-pass that streams each file end-to-end through HasherInputDyn,
+    // then reopen the recovery-loop handles afterwards. That avoids
+    // keeping two live FDs per source file at once on large input sets.
+    if !defer_hash_to_recovery_loop {
+        use rayon::prelude::*;
+        use std::io::SeekFrom;
+        // Each task gets its own File handle (we can't share &mut File
+        // across rayon tasks). Recovery-loop handles are opened only
+        // after this pre-pass completes.
+        let per_file_results: CreateResult<Vec<_>> = pool.install(|| {
+            source_files
+                .par_iter()
+                .enumerate()
+                .map(|(file_idx, file)| -> CreateResult<_> {
+                    let (block_count, g_offset) = file_block_meta[file_idx];
+                    let mut handle = open_for_reading(&file.path)?;
+                    handle
+                        .seek(SeekFrom::Start(0))
+                        .map_err(|e| CreateError::FileReadError {
+                            file: file.path.to_string_lossy().to_string(),
+                            source: e,
+                        })?;
+
+                    let mut hasher = HasherInputDyn::new();
+                    let mut hash16k_buf = vec![0u8; (file.size as usize).min(16 * 1024)];
+                    let mut block_hashes_local: Vec<BlockHash> =
+                        Vec::with_capacity(block_count as usize);
+
+                    // 1 MiB I/O buffer, capped at min(blocksize, filesize),
+                    // matching turbo's non-defer `Open()`.
+                    let buffersize = (1024 * 1024)
+                        .min(block_size as usize)
+                        .min(file.size as usize)
+                        .max(1);
+                    let mut buf = vec![0u8; buffersize];
+
+                    let mut offset: u64 = 0;
+                    let mut blocknumber: u32 = 0;
+                    let mut need: u64 = block_size;
+
+                    while offset < file.size {
+                        let want = (file.size - offset).min(buffersize as u64) as usize;
+                        handle.read_exact(&mut buf[..want]).map_err(|e| {
+                            CreateError::FileReadError {
+                                file: file.path.to_string_lossy().to_string(),
+                                source: e,
+                            }
+                        })?;
+
+                        // Capture first 16 KiB for hash16k.
+                        if offset < 16 * 1024 {
+                            let cap_start = offset as usize;
+                            let cap_end = (cap_start + want).min(16 * 1024);
+                            hash16k_buf[cap_start..cap_end]
+                                .copy_from_slice(&buf[..(cap_end - cap_start)]);
+                        }
+
+                        let mut used = 0usize;
+                        while used < want {
+                            let use_n = need.min((want - used) as u64) as usize;
+                            hasher.update(&buf[used..used + use_n]);
+                            used += use_n;
+                            need -= use_n as u64;
+
+                            if need == 0 {
+                                let bh = hasher.get_block(0);
+                                block_hashes_local.push(bh);
+                                blocknumber += 1;
+                                if blocknumber < block_count {
+                                    need = block_size;
+                                }
+                            }
+                        }
+
+                        offset += want as u64;
+                    }
+
+                    // Final short block: feed zero pad to BLOCK lane only.
+                    if need > 0 && block_count > 0 {
+                        let bh = hasher.get_block(need);
+                        block_hashes_local.push(bh);
+                    }
+
+                    let file_md5 = hasher.end();
+
+                    Ok((
+                        file_idx,
+                        g_offset,
+                        hash16k_buf,
+                        file_md5,
+                        block_hashes_local,
+                    ))
+                })
+                .collect()
+        });
+
+        for (file_idx, g_offset, hash16k_buf, file_md5, blocks) in per_file_results? {
+            file_16k_buffers[file_idx] = hash16k_buf;
+            file_full_md5[file_idx] = Some(crate::domain::Md5Hash::new(file_md5));
+            for (i, bh) in blocks.into_iter().enumerate() {
+                block_hashes[(g_offset + i as u32) as usize] = Some(bh);
+            }
+        }
+
+        file_handles = source_files
+            .iter()
+            .map(|file| open_for_reading(&file.path))
+            .collect::<CreateResult<Vec<_>>>()?;
+    }
+    let source_hash_bytes_read = if !profile_enabled || defer_hash_to_recovery_loop {
+        0
+    } else {
+        source_files.iter().map(|file| file.size).sum()
+    };
+    let source_hash_seek_count = if !profile_enabled || defer_hash_to_recovery_loop {
+        0
+    } else {
+        source_files.len() as u64
+    };
+    let source_open_hash_prepass = source_open_hash_start
+        .map(|start| start.elapsed())
+        .unwrap_or_default();
+
+    let recovery_processing_start = profile_enabled.then(std::time::Instant::now);
+    let (recovery_blocks, recovery_counters) = pool.install(|| {
         let mut backend = CreateRecoveryBackend::new(
             base_values,
             first_recovery_block,
             recovery_count,
             chunk_size,
+            thread_count,
         );
+        let selected_backend = profile_enabled.then(|| format!("{:?}", backend.selected_method()));
         let mut recovery_blocks = backend.recovery_blocks(block_size as usize);
+        let mut source_recovery_bytes_read = 0u64;
+        let mut source_seek_count = 0u64;
+        let mut recovery_chunk_count = 0u64;
+        let mut file_positions = vec![0u64; source_files.len()];
 
         // Main chunk loop
         let mut block_offset = 0u64;
         while block_offset < block_size {
             let chunk_len = ((block_size - block_offset) as usize).min(chunk_size);
+            if profile_enabled {
+                recovery_chunk_count += 1;
+            }
             backend.begin_chunk(chunk_len);
 
             let mut file_block_idx = 0usize;
 
             for (file_idx, file) in source_files.iter().enumerate() {
-                let (block_count, _) = file_block_meta[file_idx];
+                let (block_count, g_offset) = file_block_meta[file_idx];
                 for block_idx in 0..block_count {
                     let is_last = block_idx == block_count - 1;
                     let block_actual = if is_last && file.size % block_size != 0 {
@@ -185,18 +394,28 @@ fn encode_and_hash_files(
                         let chunk = backend.prepare_transfer_buffer(file_block_idx);
                         if bytes_to_read > 0 {
                             let file_pos = block_idx as u64 * block_size + block_offset;
-                            file_handles[file_idx]
-                                .seek(std::io::SeekFrom::Start(file_pos))
-                                .map_err(|e| CreateError::FileReadError {
-                                    file: file.path.to_string_lossy().to_string(),
-                                    source: e,
-                                })?;
+                            if file_positions[file_idx] != file_pos {
+                                file_handles[file_idx]
+                                    .seek(std::io::SeekFrom::Start(file_pos))
+                                    .map_err(|e| CreateError::FileReadError {
+                                        file: file.path.to_string_lossy().to_string(),
+                                        source: e,
+                                    })?;
+                                file_positions[file_idx] = file_pos;
+                                if profile_enabled {
+                                    source_seek_count += 1;
+                                }
+                            }
                             file_handles[file_idx]
                                 .read_exact(&mut chunk[..bytes_to_read])
                                 .map_err(|e| CreateError::FileReadError {
                                     file: file.path.to_string_lossy().to_string(),
                                     source: e,
                                 })?;
+                            if profile_enabled {
+                                source_recovery_bytes_read += bytes_to_read as u64;
+                            }
+                            file_positions[file_idx] += bytes_to_read as u64;
                             if file_pos < 16 * 1024 {
                                 let capture_start = file_pos as usize;
                                 let capture_end = (capture_start + bytes_to_read).min(16 * 1024);
@@ -204,17 +423,42 @@ fn encode_and_hash_files(
                                 file_16k_buffers[file_idx][capture_start..capture_end]
                                     .copy_from_slice(&chunk[..capture_len]);
                             }
-                            file_md5_states[file_idx].update(&chunk[..bytes_to_read]);
                         }
-                        block_md5_states[file_block_idx].update(&chunk[..chunk_len]);
-                        block_crc32_states[file_block_idx].update(&chunk[..chunk_len]);
+
+                        // Defer mode: hash inline with recovery, mirroring
+                        // par2cmdline-turbo's `Par2CreatorSourceFile::UpdateHashes`
+                        // path. Each block is read in full this iteration
+                        // (chunk_len == block_size), and we visit all blocks
+                        // of file N before any block of file N+1, so per-file
+                        // bytes arrive in strict sequential order — exactly
+                        // what HasherInputDyn requires.
+                        //
+                        // Slim mode skips this; a separate per-file pass
+                        // below drives HasherInputDyn for those files.
+                        if defer_hash_to_recovery_loop {
+                            let hasher = file_hashers[file_idx]
+                                .as_mut()
+                                .expect("hasher allocated in defer mode");
+                            if bytes_to_read > 0 {
+                                hasher.update(&chunk[..bytes_to_read]);
+                            }
+                            // PAR2 spec: BLOCK hashes include trailing zero
+                            // pad up to block_size; FILE hash does not. The
+                            // hasher's `get_block(zero_pad)` enforces both
+                            // halves of that.
+                            let zero_pad = (chunk_len - bytes_to_read) as u64;
+                            let bh = hasher.get_block(zero_pad);
+                            block_hashes[(g_offset + block_idx) as usize] = Some(bh);
+                        }
                     }
                     backend.add_transfer_input(file_block_idx, file_block_idx);
                     file_block_idx += 1;
                 }
             }
 
-            backend.finish_chunk(&mut recovery_blocks, block_size as usize);
+            if !backend.finish_chunk(&mut recovery_blocks, block_size as usize) {
+                return Err(CreateError::XorJitChecksumValidationFailed);
+            }
 
             block_offset += chunk_len as u64;
             let progress =
@@ -225,18 +469,44 @@ fn encode_and_hash_files(
             );
         }
 
-        Ok::<_, CreateError>(recovery_blocks)
+        let counters = CreateProfileCounters {
+            source_recovery_bytes_read,
+            source_seek_count,
+            recovery_chunk_count,
+            selected_backend,
+            ..CreateProfileCounters::default()
+        };
+        Ok::<_, CreateError>((recovery_blocks, counters))
     })?;
+    let recovery_chunk_processing = recovery_processing_start
+        .map(|start| start.elapsed())
+        .unwrap_or_default();
+    let encode_profile = profile_enabled.then(|| {
+        let mut counters = recovery_counters;
+        counters.source_hash_bytes_read = source_hash_bytes_read;
+        counters.source_seek_count += source_hash_seek_count;
+        EncodeProfile {
+            counters,
+            source_open_hash_prepass,
+            recovery_chunk_processing,
+        }
+    });
 
-    // Finalize file MD5s and block checksums
-    let finalized_file_md5s: Vec<[u8; 16]> = file_md5_states
+    // Finalize file MD5s. In defer mode each per-file hasher has been
+    // streamed in block order through the recovery loop and we now
+    // call `end()` to retrieve the file MD5 — turbo's
+    // `Par2Creator::FinishFileHashComputation` path. In slim mode
+    // `file_full_md5[i]` was already populated by the pre-pass above.
+    if defer_hash_to_recovery_loop {
+        for (i, slot) in file_hashers.into_iter().enumerate() {
+            let h = slot.expect("hasher allocated in defer mode");
+            file_full_md5[i] = Some(crate::domain::Md5Hash::new(h.end()));
+        }
+    }
+
+    let full_file_hashes: Vec<crate::domain::Md5Hash> = file_full_md5
         .into_iter()
-        .map(|s| {
-            let h = s.finalize();
-            let mut b = [0u8; 16];
-            b.copy_from_slice(&h);
-            b
-        })
+        .map(|o| o.expect("file MD5 populated by either defer or slim path"))
         .collect();
 
     let file_16k_hashes = file_16k_buffers
@@ -249,29 +519,26 @@ fn encode_and_hash_files(
 
     for (file_idx, file) in source_files.iter().enumerate() {
         let (block_count, g_offset) = file_block_meta[file_idx];
-        let full_md5 = crate::domain::Md5Hash::new(finalized_file_md5s[file_idx]);
+        let full_md5 = full_file_hashes[file_idx];
         let hash_16k = file_16k_hashes[file_idx];
         let filename = file.packet_name().as_bytes();
         let file_id = compute_file_id(&hash_16k, file.size, filename);
 
         let mut checksums = Vec::with_capacity(block_count as usize);
         for block_idx in 0..block_count {
-            let md5_raw = block_md5_states[global_block_idx].clone().finalize();
-            let mut md5_bytes = [0u8; 16];
-            md5_bytes.copy_from_slice(&md5_raw);
-            let crc32 = block_crc32_states[global_block_idx].clone().finalize();
-
+            let bh =
+                block_hashes[global_block_idx].expect("block hash populated by defer or slim path");
             log::debug!(
                 "Block {}: MD5={:02x}{:02x}..., CRC32={:08x}",
                 global_block_idx,
-                md5_bytes[0],
-                md5_bytes[1],
-                crc32
+                bh.md5[0],
+                bh.md5[1],
+                bh.crc32
             );
 
             checksums.push(BlockChecksum {
-                crc32,
-                hash: crate::domain::Md5Hash::new(md5_bytes),
+                crc32: bh.crc32,
+                hash: crate::domain::Md5Hash::new(bh.md5),
                 global_index: g_offset + block_idx,
             });
             global_block_idx += 1;
@@ -289,7 +556,7 @@ fn encode_and_hash_files(
         });
     }
 
-    Ok((recovery_blocks, hash_states))
+    Ok((recovery_blocks, hash_states, encode_profile))
 }
 
 /// Populate `source_files` from the hash data computed during `encode_and_hash_files`.
@@ -345,6 +612,9 @@ pub struct CreateContext {
 
     /// Output PAR2 files created
     output_files: Vec<String>,
+
+    /// Opt-in create phase/counter profiler.
+    profile: Option<CreateProfile>,
 }
 
 impl CreateContext {
@@ -356,6 +626,7 @@ impl CreateContext {
         config: CreateConfig,
         reporter: Box<dyn CreateReporter>,
     ) -> CreateResult<Self> {
+        let profile = CreateProfile::from_env();
         let mut context = CreateContext {
             config,
             reporter,
@@ -366,12 +637,21 @@ impl CreateContext {
             recovery_block_count: 0,
             recovery_blocks: Vec::new(),
             output_files: Vec::new(),
+            profile,
         };
 
         // Perform initial setup
+        let scan_start = std::time::Instant::now();
         context.scan_source_files()?;
+        if let Some(profile) = &mut context.profile {
+            profile.add_duration(CreateProfilePhase::SourceScanMetadata, scan_start.elapsed());
+            let counters = profile.counters_mut();
+            counters.source_file_count = context.source_files.len();
+            counters.source_bytes = context.source_files.iter().map(|file| file.size).sum();
+        }
         context.calculate_block_size()?;
         context.calculate_recovery_blocks()?;
+        context.record_static_profile_counters();
 
         Ok(context)
     }
@@ -396,6 +676,9 @@ impl CreateContext {
 
         // Report completion
         self.reporter.report_complete(&self.output_files);
+        if let Some(profile) = &self.profile {
+            profile.emit();
+        }
 
         Ok(())
     }
@@ -605,6 +888,27 @@ impl CreateContext {
         Ok(())
     }
 
+    fn process_config(&self) -> CreateProcessConfig {
+        CreateProcessConfig::new(
+            self.block_size,
+            self.source_block_count,
+            self.recovery_block_count,
+            self.config.memory_limit.unwrap_or(DEFAULT_MEMORY_LIMIT),
+        )
+    }
+
+    fn record_static_profile_counters(&mut self) {
+        let process_config = self.process_config();
+        if let Some(profile) = &mut self.profile {
+            let counters = profile.counters_mut();
+            counters.block_size = self.block_size.as_u64();
+            counters.source_block_count = self.source_block_count;
+            counters.recovery_block_count = self.recovery_block_count;
+            counters.chunk_size = process_config.chunk_size.as_usize();
+            counters.defer_hash_computation = process_config.defer_hash_computation;
+        }
+    }
+
     fn checked_recovery_block_count(&self, recovery_blocks: u64) -> CreateResult<u32> {
         if recovery_blocks > 65536 {
             return Err(CreateError::Other(
@@ -691,7 +995,8 @@ impl CreateContext {
 
         let encoder =
             RecoveryBlockEncoder::new(self.block_size.as_usize(), self.source_block_count as usize);
-        let chunk_size = self.calculate_chunk_size();
+        let process_config = self.process_config();
+        let chunk_size = process_config.chunk_size;
 
         self.reporter.report_scanning_files(
             0,
@@ -702,7 +1007,7 @@ impl CreateContext {
             ),
         );
 
-        let (recovery_blocks, hash_states) = encode_and_hash_files(
+        let (recovery_blocks, hash_states, encode_profile) = encode_and_hash_files(
             &self.source_files,
             self.block_size.as_u64(),
             chunk_size.as_usize(),
@@ -712,7 +1017,25 @@ impl CreateContext {
             self.recovery_block_count as usize,
             self.config.effective_threads(),
             self.reporter.as_ref(),
+            self.profile.is_some(),
         )?;
+        if let (Some(profile), Some(encode_profile)) = (&mut self.profile, encode_profile) {
+            profile.add_duration(
+                CreateProfilePhase::SourceOpenHashPrepass,
+                encode_profile.source_open_hash_prepass,
+            );
+            profile.add_duration(
+                CreateProfilePhase::RecoveryChunkProcessing,
+                encode_profile.recovery_chunk_processing,
+            );
+            let counters = profile.counters_mut();
+            counters.source_hash_bytes_read = encode_profile.counters.source_hash_bytes_read;
+            counters.source_recovery_bytes_read =
+                encode_profile.counters.source_recovery_bytes_read;
+            counters.source_seek_count = encode_profile.counters.source_seek_count;
+            counters.recovery_chunk_count = encode_profile.counters.recovery_chunk_count;
+            counters.selected_backend = encode_profile.counters.selected_backend;
+        }
 
         finalize_file_hashes(hash_states, &mut self.source_files)?;
 
@@ -724,17 +1047,6 @@ impl CreateContext {
 
         self.recovery_blocks = recovery_blocks;
         Ok(())
-    }
-
-    /// Calculate optimal chunk size for processing.
-    /// Reference: par2cmdline-turbo/src/par2creator.cpp:329-360 CalculateProcessBlockSize()
-    fn calculate_chunk_size(&self) -> ChunkSize {
-        ChunkSize::new(calculate_chunk_size_impl(
-            self.block_size.as_usize(),
-            self.source_block_count as usize,
-            self.recovery_block_count as usize,
-            self.config.memory_limit.unwrap_or(DEFAULT_MEMORY_LIMIT),
-        ))
     }
 
     /// Write PAR2 files: index file (critical packets only) + volume files (critical + recovery)
@@ -756,6 +1068,7 @@ impl CreateContext {
 
         // Generate all critical packets
         // Reference: par2cmdline-turbo/src/par2creator.cpp CreateMainPacket(), CreateCreatorPacket()
+        let packet_serialization_start = std::time::Instant::now();
         let main_packet = generate_main_packet(
             recovery_set_id,
             self.block_size.as_u64(),
@@ -789,6 +1102,12 @@ impl CreateContext {
         for packet in &file_verif_packets {
             write_file_verification_packet(&mut critical_bytes, packet)
                 .map_err(|e| packet_write_error("file verification packet", e))?;
+        }
+        if let Some(profile) = &mut self.profile {
+            profile.add_duration(
+                CreateProfilePhase::CriticalPacketSerialization,
+                packet_serialization_start.elapsed(),
+            );
         }
 
         // Determine output directory and base name
@@ -857,6 +1176,7 @@ impl CreateContext {
 
         // Write index file: critical packets only, no recovery data
         // Reference: par2cmdline-turbo creates base.par2 with no recovery slices
+        let output_write_start = std::time::Instant::now();
         let mut index_file = open_output(&index_path, self.config.overwrite_existing)?;
         index_file
             .write_all(&critical_bytes)
@@ -872,10 +1192,17 @@ impl CreateContext {
             })?;
         self.output_files
             .push(index_path.to_string_lossy().to_string());
+        if let Some(profile) = &mut self.profile {
+            profile.add_duration(
+                CreateProfilePhase::OutputFileWrites,
+                output_write_start.elapsed(),
+            );
+        }
 
         // Write each volume file: critical packets + its slice of recovery blocks
         // Reference: par2cmdline-turbo/src/par2creator.cpp WriteRecoveryPackets()
         for (entry, vol_path) in plan.iter().zip(volume_paths) {
+            let output_write_start = std::time::Instant::now();
             let mut vol_file = open_output(&vol_path, self.config.overwrite_existing)?;
 
             vol_file
@@ -885,25 +1212,66 @@ impl CreateContext {
                     source: e,
                 })?;
 
+            if let Some(profile) = &mut self.profile {
+                profile.add_duration(
+                    CreateProfilePhase::OutputFileWrites,
+                    output_write_start.elapsed(),
+                );
+            }
+
             // Write recovery slice packets for this volume
             for i in 0..entry.block_count {
                 let packet_exponent = entry.first_exponent + i;
                 let local_idx = (packet_exponent - self.config.first_recovery_block) as usize;
                 let (recovery_exponent, recovery_data) = &self.recovery_blocks[local_idx];
 
-                write_recovery_slice_packet(
-                    &mut vol_file,
-                    *recovery_exponent as u32,
-                    recovery_data,
-                    recovery_set_id,
-                )
-                .map_err(|e| packet_write_error("recovery packet", e))?;
+                if self.profile.is_some() {
+                    let packet_serialization_start = std::time::Instant::now();
+                    let packet_header = build_recovery_slice_header(
+                        *recovery_exponent as u32,
+                        recovery_data,
+                        recovery_set_id,
+                    );
+                    if let Some(profile) = &mut self.profile {
+                        profile.add_duration(
+                            CreateProfilePhase::RecoveryPacketSerialization,
+                            packet_serialization_start.elapsed(),
+                        );
+                    }
+
+                    let output_write_start = std::time::Instant::now();
+                    vol_file
+                        .write_all(&packet_header)
+                        .and_then(|_| vol_file.write_all(recovery_data))
+                        .map_err(|e| packet_write_error("recovery packet", e))?;
+                    if let Some(profile) = &mut self.profile {
+                        profile.add_duration(
+                            CreateProfilePhase::OutputFileWrites,
+                            output_write_start.elapsed(),
+                        );
+                    }
+                } else {
+                    write_recovery_slice_packet(
+                        &mut vol_file,
+                        *recovery_exponent as u32,
+                        recovery_data,
+                        recovery_set_id,
+                    )
+                    .map_err(|e| packet_write_error("recovery packet", e))?;
+                }
             }
 
+            let output_write_start = std::time::Instant::now();
             vol_file.flush().map_err(|e| CreateError::FileCreateError {
                 file: vol_path.to_string_lossy().to_string(),
                 source: e,
             })?;
+            if let Some(profile) = &mut self.profile {
+                profile.add_duration(
+                    CreateProfilePhase::OutputFileWrites,
+                    output_write_start.elapsed(),
+                );
+            }
             self.output_files
                 .push(vol_path.to_string_lossy().to_string());
         }
@@ -934,7 +1302,67 @@ impl CreateContext {
 
 #[cfg(test)]
 mod tests {
+    use super::super::progress::SilentCreateReporter;
+    use super::super::types::CreateConfig;
     use super::*;
+    use proptest::prelude::*;
+
+    fn test_context(output_name: &str, base_path: Option<std::path::PathBuf>) -> CreateContext {
+        CreateContext {
+            config: CreateConfig {
+                output_name: output_name.to_string(),
+                base_path,
+                ..CreateConfig::default()
+            },
+            reporter: Box::new(SilentCreateReporter),
+            recovery_set_id: None,
+            source_files: Vec::new(),
+            block_size: BlockSize::new(0),
+            source_block_count: 0,
+            recovery_block_count: 0,
+            recovery_blocks: Vec::new(),
+            output_files: Vec::new(),
+            profile: None,
+        }
+    }
+
+    fn source_info(path: impl Into<std::path::PathBuf>, size: u64, index: usize) -> SourceFileInfo {
+        SourceFileInfo::new(path.into(), size, index)
+    }
+
+    #[test]
+    fn default_output_base_path_uses_parent_or_current_directory() {
+        assert!(default_output_base_path("out.par2").as_os_str().is_empty());
+        assert_eq!(
+            default_output_base_path("nested/out.par2"),
+            std::path::PathBuf::from("nested")
+        );
+    }
+
+    #[test]
+    fn recovery_slice_header_contains_expected_md5_and_layout() {
+        let set_id = RecoverySetId::new([0xCD; 16]);
+        let recovery_data = [1u8, 2, 3, 4, 5, 6];
+        let header = build_recovery_slice_header(9, &recovery_data, set_id);
+
+        assert_eq!(&header[0..8], crate::packets::MAGIC_BYTES);
+        assert_eq!(
+            u64::from_le_bytes(header[8..16].try_into().unwrap()),
+            8 + 8 + 16 + 16 + 16 + 4 + recovery_data.len() as u64
+        );
+        assert_eq!(&header[32..48], set_id.as_bytes());
+        assert_eq!(&header[48..64], RECOVERY_PACKET_TYPE);
+        assert_eq!(u32::from_le_bytes(header[64..68].try_into().unwrap()), 9);
+
+        use md5::{Digest, Md5};
+        let mut hasher = Md5::new();
+        hasher.update(set_id.as_bytes());
+        hasher.update(RECOVERY_PACKET_TYPE);
+        hasher.update(9u32.to_le_bytes());
+        hasher.update(recovery_data);
+        let expected_md5 = hasher.finalize();
+        assert_eq!(&header[16..32], &expected_md5[..]);
+    }
 
     // --- calculate_chunk_size_impl ---
 
@@ -986,10 +1414,240 @@ mod tests {
     }
 
     #[test]
+    fn chunk_size_is_capped_like_turbo() {
+        let block_size = 64 * 1024 * 1024;
+        let recovery_count = 1;
+        let source_count = 4;
+        let memory_limit = block_size * (recovery_count + 30);
+
+        let result =
+            calculate_chunk_size_impl(block_size, source_count, recovery_count, memory_limit);
+
+        assert_eq!(result, MAX_CREATE_CHUNK_SIZE);
+    }
+
+    #[test]
+    fn chunk_size_keeps_large_full_blocks_capped_like_turbo() {
+        let block_size = 64 * 1024 * 1024;
+        let recovery_count = 2;
+        let source_count = 10;
+        let memory_limit = block_size * (recovery_count + 26);
+
+        let result =
+            calculate_chunk_size_impl(block_size, source_count, recovery_count, memory_limit);
+
+        assert_eq!(result, MAX_CREATE_CHUNK_SIZE);
+    }
+
+    #[test]
+    fn process_config_marks_large_capped_blocks_non_deferred() {
+        let block_size = BlockSize::new(64 * 1024 * 1024);
+        let process_config =
+            CreateProcessConfig::new(block_size, 10, 2, block_size.as_usize() * 28);
+
+        assert_eq!(process_config.chunk_size.as_usize(), MAX_CREATE_CHUNK_SIZE);
+        assert!(!process_config.defer_hash_computation);
+    }
+
+    #[test]
+    fn process_config_marks_full_block_chunks_deferred() {
+        let block_size = BlockSize::new(1024 * 1024);
+        let process_config = CreateProcessConfig::new(block_size, 4, 2, DEFAULT_MEMORY_LIMIT);
+
+        assert_eq!(process_config.chunk_size.as_usize(), block_size.as_usize());
+        assert!(process_config.defer_hash_computation);
+    }
+
+    #[test]
     fn chunk_size_respects_explicit_memory_limit() {
         let block_size = 1024;
         let result = calculate_chunk_size_impl(block_size, 2, 2, 128);
         assert_eq!(result, 16);
+    }
+
+    #[test]
+    fn packet_name_for_path_uses_relative_path_when_base_path_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("base");
+        let nested = base.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("file.bin");
+        std::fs::write(&file, b"hello").unwrap();
+
+        let context = test_context("out.par2", Some(base.clone()));
+        assert_eq!(
+            context.packet_name_for_path(&file).unwrap(),
+            normalize_packet_path(std::path::Path::new("nested/file.bin"))
+        );
+    }
+
+    #[test]
+    fn packet_name_for_path_uses_canonical_base_when_literal_prefix_differs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("base");
+        let nested = base.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("file.bin");
+        std::fs::write(&file, b"hello").unwrap();
+
+        let base_with_dotdots = tmp.path().join("base").join("..").join("base");
+        let context = test_context("out.par2", Some(base_with_dotdots));
+        assert_eq!(
+            context.packet_name_for_path(&file).unwrap(),
+            normalize_packet_path(std::path::Path::new("nested/file.bin"))
+        );
+    }
+
+    #[test]
+    fn packet_name_for_path_falls_back_when_outside_base_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("base");
+        let other = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let file = other.join("file.bin");
+        std::fs::write(&file, b"hello").unwrap();
+
+        let context = test_context("out.par2", Some(base));
+        assert_eq!(
+            context.packet_name_for_path(&file).unwrap(),
+            packet_name_from_path(&file)
+        );
+    }
+
+    #[test]
+    fn packet_base_path_prefers_explicit_base_path_and_otherwise_uses_output_parent() {
+        let explicit = test_context(
+            "nested/out.par2",
+            Some(std::path::PathBuf::from("/tmp/base")),
+        );
+        assert_eq!(
+            explicit.packet_base_path().as_ref(),
+            std::path::Path::new("/tmp/base")
+        );
+
+        let derived = test_context("nested/out.par2", None);
+        assert_eq!(
+            derived.packet_base_path().as_ref(),
+            std::path::Path::new("nested")
+        );
+    }
+
+    #[test]
+    fn scan_source_files_skips_empty_files_and_uses_output_directory_for_packet_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let empty = tmp.path().join("empty.bin");
+        let data = nested.join("data.bin");
+        let output = tmp.path().join("archive.par2");
+        std::fs::write(&empty, []).unwrap();
+        std::fs::write(&data, b"hello world").unwrap();
+
+        let mut context = test_context(output.to_str().unwrap(), None);
+        context.config.source_files = vec![empty, data.clone()];
+
+        context.scan_source_files().unwrap();
+
+        assert_eq!(context.source_files.len(), 1);
+        assert_eq!(context.source_files[0].path, data);
+        assert_eq!(context.source_files[0].packet_name(), "nested/data.bin");
+        assert_eq!(context.source_files[0].size, 11);
+    }
+
+    #[test]
+    fn scan_source_files_rejects_missing_and_all_empty_inputs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty = tmp.path().join("empty.bin");
+        std::fs::write(&empty, []).unwrap();
+
+        let mut empty_only = test_context(tmp.path().join("out.par2").to_str().unwrap(), None);
+        empty_only.config.source_files = vec![empty];
+        assert!(matches!(
+            empty_only.scan_source_files(),
+            Err(CreateError::EmptySourceFiles)
+        ));
+
+        let missing = tmp.path().join("missing.bin");
+        let mut missing_ctx = test_context(tmp.path().join("out.par2").to_str().unwrap(), None);
+        missing_ctx.config.source_files = vec![missing.clone()];
+        assert!(matches!(
+            missing_ctx.scan_source_files(),
+            Err(CreateError::FileNotFound(path)) if path == missing.to_string_lossy()
+        ));
+    }
+
+    #[test]
+    fn calculate_block_size_rejects_target_smaller_than_file_count() {
+        let mut context = test_context("out.par2", None);
+        context.config.source_block_count = Some(SourceBlockCount::new(1));
+        context.source_files = vec![source_info("a.bin", 8, 0), source_info("b.bin", 12, 1)];
+
+        let error = context.calculate_block_size().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("cannot be smaller than the number of files"));
+    }
+
+    #[test]
+    fn calculate_block_size_uses_largest_file_when_target_equals_file_count() {
+        let mut context = test_context("out.par2", None);
+        context.config.source_block_count = Some(SourceBlockCount::new(2));
+        context.source_files = vec![source_info("a.bin", 5, 0), source_info("b.bin", 10, 1)];
+
+        context.calculate_block_size().unwrap();
+
+        assert_eq!(context.block_size.as_u64(), 12);
+        assert_eq!(context.source_block_count, 2);
+    }
+
+    #[test]
+    fn calculate_block_size_uses_minimum_size_when_requested_blocks_exceed_total_units() {
+        let mut context = test_context("out.par2", None);
+        context.config.source_block_count = Some(SourceBlockCount::new(20));
+        context.source_files = vec![source_info("a.bin", 8, 0), source_info("b.bin", 8, 1)];
+
+        context.calculate_block_size().unwrap();
+
+        assert_eq!(context.block_size.as_u64(), 4);
+        assert_eq!(context.source_block_count, 4);
+    }
+
+    #[test]
+    fn calculate_block_size_honors_explicit_block_size() {
+        let mut context = test_context("out.par2", None);
+        context.config.block_size = Some(16);
+        context.source_files = vec![source_info("a.bin", 5, 0), source_info("b.bin", 20, 1)];
+
+        context.calculate_block_size().unwrap();
+
+        assert_eq!(context.block_size.as_u64(), 16);
+        assert_eq!(context.source_block_count, 3);
+    }
+
+    #[test]
+    fn checked_recovery_block_count_rejects_impossible_requests() {
+        let mut context = test_context("out.par2", None);
+        context.config.first_recovery_block = 65_535;
+
+        assert!(context.checked_recovery_block_count(65_537).is_err());
+        assert!(context.checked_recovery_block_count(1).is_err());
+    }
+
+    #[test]
+    fn calculate_recovery_blocks_for_target_size_never_returns_zero() {
+        let mut context = test_context("out.par2", None);
+        context.block_size = BlockSize::new(4);
+        context.source_block_count = 2;
+        context.source_files = vec![source_info("a.bin", 4, 0)];
+        context.config.recovery_file_scheme = crate::create::RecoveryFileScheme::Uniform;
+
+        assert_eq!(
+            context
+                .calculate_recovery_blocks_for_target_size(1)
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -1074,5 +1732,36 @@ mod tests {
 
         // 4096 * (2 + small_source_count) << 1GB, so chunk = full block
         assert_eq!(ctx.block_size(), 4096);
+    }
+
+    proptest! {
+        #[test]
+        fn chunk_size_impl_preserves_alignment_and_bounds(
+            block_size in 4usize..(8 * 1024 * 1024),
+            source_block_count in 1usize..512,
+            recovery_block_count in 0usize..64,
+            memory_limit in 4usize..(256 * 1024 * 1024),
+        ) {
+            let block_size = block_size & !3;
+            prop_assume!(block_size >= 4);
+
+            let result = calculate_chunk_size_impl(
+                block_size,
+                source_block_count,
+                recovery_block_count,
+                memory_limit,
+            );
+            let max_allowed = block_size.min(MAX_CREATE_CHUNK_SIZE);
+            let block_overhead = 2 + (source_block_count + 1).min(24);
+            let full_block_memory = block_size * (recovery_block_count + block_overhead);
+
+            prop_assert!(result >= 4);
+            prop_assert!(result <= max_allowed);
+            prop_assert_eq!(result % 4, 0);
+
+            if full_block_memory <= memory_limit {
+                prop_assert_eq!(result, max_allowed);
+            }
+        }
     }
 }

@@ -117,7 +117,8 @@ impl CreateReporter for SilentCreateReporter {
 
 #[cfg(test)]
 mod tests {
-    use super::percent_complete;
+    use super::{percent_complete, ConsoleCreateReporter, CreateReporter, SilentCreateReporter};
+    use proptest::prelude::*;
 
     #[test]
     fn percent_complete_treats_empty_work_as_complete() {
@@ -127,5 +128,42 @@ mod tests {
     #[test]
     fn percent_complete_clamps_overreported_progress() {
         assert_eq!(percent_complete(12, 10), 100);
+    }
+
+    #[test]
+    fn reporters_are_callable_in_quiet_and_verbose_modes() {
+        for quiet in [true, false] {
+            let reporter = ConsoleCreateReporter::new(quiet);
+            reporter.report_scanning_files(1, 3, "input.bin");
+            reporter.report_file_hashing("input.bin", 5, 10);
+            reporter.report_block_checksums(2, 4);
+            reporter.report_recovery_generation(3, 4);
+            reporter.report_writing_file("output.par2");
+            reporter.report_complete(&["output.par2".to_string()]);
+            reporter.report_error("boom");
+        }
+    }
+
+    #[test]
+    fn silent_reporter_accepts_all_calls() {
+        let reporter = SilentCreateReporter;
+        reporter.report_scanning_files(1, 1, "input.bin");
+        reporter.report_file_hashing("input.bin", 10, 10);
+        reporter.report_block_checksums(1, 1);
+        reporter.report_recovery_generation(1, 1);
+        reporter.report_writing_file("output.par2");
+        reporter.report_complete(&[]);
+        reporter.report_error("boom");
+    }
+
+    proptest! {
+        #[test]
+        fn percent_complete_stays_bounded(completed in 0u64..10_000, total in 1u64..10_000) {
+            let percent = percent_complete(completed, total);
+            let expected = ((completed.min(total) * 100) / total) as u32;
+
+            prop_assert_eq!(percent, expected);
+            prop_assert!(percent <= 100);
+        }
     }
 }
