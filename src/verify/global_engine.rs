@@ -6,11 +6,13 @@
 
 use super::global_table::{GlobalBlockTable, GlobalBlockTableBuilder};
 use super::scanner_state::ScannerState;
+use super::turbo_file_scan::TurboFileScanner;
 use super::types::{
     BlockCount, BlockNumber, BlockVerificationResult, FileScanMetadata, FileSize, FileStatus,
     FileVerificationResult, VerificationResults,
 };
 use super::utils::extract_file_name;
+use super::verification_table::{EntryId, VerificationTable};
 
 use crate::domain::{Crc32Value, FileId, Md5Hash};
 use crate::packets::FileDescriptionPacket;
@@ -250,11 +252,14 @@ impl GlobalVerificationEngine {
     ) {
         // Wrap reporter in Mutex for thread-safe output (like par2cmdline-turbo's output_lock)
         let reporter_lock = Mutex::new(reporter);
+        let ordered_descriptions = self.ordered_file_descriptions();
+        let verification_table =
+            VerificationTable::from_block_table(&self.block_table, &ordered_descriptions);
 
         // Collect files to scan
-        let files_to_scan: Vec<_> = self
-            .file_descriptions
-            .values()
+        let files_to_scan: Vec<_> = ordered_descriptions
+            .iter()
+            .copied()
             .filter(|desc| {
                 let file_name = extract_file_name(desc);
                 let file_path = self.base_dir.join(&file_name);
@@ -266,12 +271,16 @@ impl GlobalVerificationEngine {
         let file_results: Vec<_> = if parallel {
             files_to_scan
                 .par_iter()
-                .map(|file_description| self.process_single_file(file_description, &reporter_lock))
+                .map(|file_description| {
+                    self.process_single_file(file_description, &reporter_lock, &verification_table)
+                })
                 .collect()
         } else {
             files_to_scan
                 .iter()
-                .map(|file_description| self.process_single_file(file_description, &reporter_lock))
+                .map(|file_description| {
+                    self.process_single_file(file_description, &reporter_lock, &verification_table)
+                })
                 .collect()
         };
 
@@ -300,12 +309,26 @@ impl GlobalVerificationEngine {
         let extra_results: Vec<_> = if parallel {
             deduped_extra_files
                 .par_iter()
-                .filter_map(|path| self.process_extra_file(path, &reporter_lock, &file_statuses))
+                .filter_map(|path| {
+                    self.process_extra_file(
+                        path,
+                        &reporter_lock,
+                        &file_statuses,
+                        &verification_table,
+                    )
+                })
                 .collect()
         } else {
             deduped_extra_files
                 .iter()
-                .filter_map(|path| self.process_extra_file(path, &reporter_lock, &file_statuses))
+                .filter_map(|path| {
+                    self.process_extra_file(
+                        path,
+                        &reporter_lock,
+                        &file_statuses,
+                        &verification_table,
+                    )
+                })
                 .collect()
         };
 
@@ -360,6 +383,7 @@ impl GlobalVerificationEngine {
         file_path: &Path,
         reporter_lock: &Mutex<&R>,
         file_statuses: &FileStatusMap,
+        verification_table: &VerificationTable,
     ) -> Option<(PathBuf, PathBuf, LocalBlockMap, FileScanMetadata)> {
         if Self::is_par2_path(file_path) {
             return None;
@@ -377,17 +401,13 @@ impl GlobalVerificationEngine {
         }
 
         let file_size = FileSize::new(metadata.len());
-        let (local_map, mut scan_metadata) =
-            self.scan_single_file_with_progress(file_path, file_size, reporter_lock);
-
-        if self.skip_full_md5 && scan_metadata.actual_file_hash.is_none() {
-            Self::record_file_hashes(
-                file_path,
-                super::types::BlockSize::new(self.block_table.block_size() as usize),
-                false,
-                &mut scan_metadata,
-            );
-        }
+        let (local_map, scan_metadata) = self.scan_single_file_with_progress(
+            file_path,
+            file_size,
+            reporter_lock,
+            verification_table,
+            None,
+        );
 
         let key = Self::canonical_key(file_path);
         Some((file_path.to_path_buf(), key, local_map, scan_metadata))
@@ -398,6 +418,7 @@ impl GlobalVerificationEngine {
         &self,
         file_description: &FileDescriptionPacket,
         reporter_lock: &Mutex<&R>,
+        verification_table: &VerificationTable,
     ) -> (
         LocalBlockMap,
         FileSize,
@@ -418,8 +439,13 @@ impl GlobalVerificationEngine {
         }
 
         // Scan this file and get its local block map, reporting progress
-        let (local_block_map, mut scan_metadata) =
-            self.scan_single_file_with_progress(&file_path, file_size, reporter_lock);
+        let (local_block_map, mut scan_metadata) = self.scan_single_file_with_progress(
+            &file_path,
+            file_size,
+            reporter_lock,
+            verification_table,
+            Some(file_description.file_id),
+        );
 
         // Calculate status for this file
         let total_blocks = self.calculate_total_blocks(file_size);
@@ -463,202 +489,95 @@ impl GlobalVerificationEngine {
         file_path: &Path,
         file_size: FileSize,
         reporter_lock: &Mutex<&R>,
+        verification_table: &VerificationTable,
+        preferred_file: Option<FileId>,
     ) -> (LocalBlockMap, FileScanMetadata) {
-        use crate::checksum::compute_crc32;
-        use crate::checksum::rolling_crc::RollingCrcTable;
-        use crate::verify::scanner_state::ScannerState;
-        use crate::verify::types::{BlockSize, ScanBuffer};
-        use std::fs::File;
-
         let mut local_block_map = HashMap::default();
+        let mut metadata = FileScanMetadata::new();
+        let block_size = self.block_table.block_size() as usize;
 
-        let mut file = match File::open(file_path) {
-            Ok(f) => f,
-            Err(_) => return (local_block_map, FileScanMetadata::new()),
-        };
-        let actual_file_size = file.metadata().ok().map(|metadata| metadata.len());
-
-        let block_size = BlockSize::new(self.block_table.block_size() as usize);
-        let buffer_capacity = block_size.doubled();
-        let mut buffer = ScanBuffer::with_capacity(buffer_capacity);
-
-        // Create rolling CRC table for efficient scanning
-        let rolling_table = RollingCrcTable::new(block_size.as_usize());
-
-        // Initial fill of the buffer
-        let bytes_read = match buffer.read_from(&mut file) {
-            Ok(n) => n,
-            Err(_) => return (local_block_map, FileScanMetadata::new()),
-        };
-
-        log::debug!(
-            "Starting scan: block_size={}, buffer_capacity={}, bytes_read={}, file_size={}",
-            block_size.as_usize(),
-            buffer_capacity,
-            bytes_read,
-            file_size.as_u64()
-        );
-
-        // Initialize scanner state (includes scan metadata)
-        let mut state = ScannerState::new(bytes_read);
-        state.scan_metadata.actual_file_size = actual_file_size;
-
-        // PHASE 1 & 1.5: Aligned blocks and short file detection
-        // The type system ensures short files are handled completely here
-
-        // PHASE 1: Try aligned blocks at file start (fast path for well-formed files)
-        self.scan_aligned_blocks(&buffer, &mut state, block_size, &mut local_block_map);
-
-        // PHASE 1.5: Detect and handle files entirely smaller than one block
-        // This is the ONLY place where short files should be processed
-        // Reference: par2cmdline-turbo handles short files in filechecksummer.cpp
-        if state.is_remainder_at_start() && state.remainder_size(block_size) > 0 {
-            let partial_data = buffer.slice_from(state.buffer_position, state.bytes_in_buffer);
-            self.try_match_and_insert_partial_block(
-                partial_data,
-                block_size.as_usize(),
-                &mut local_block_map,
-                &mut state,
-            );
-
-            // Short file is now complete - mark as 100% scanned and compute file hash
-            Self::report_progress(reporter_lock, &state, file_size);
-
-            Self::record_file_hashes(
-                file_path,
-                block_size,
-                self.skip_full_md5,
-                &mut state.scan_metadata,
-            );
-
-            // Return early - file is complete, prevent duplicate detection in Phase 2
-            return (local_block_map, state.scan_metadata);
+        if file_size.as_u64() == 0 {
+            metadata.actual_file_size = Some(0);
+            let empty_hash = crate::checksum::compute_md5_only(b"");
+            metadata.actual_file_hash = Some(empty_hash);
+            metadata.actual_file_hash_16k = Some(empty_hash);
+            Self::report_progress_by_offset(reporter_lock, 0, file_size);
+            return (local_block_map, metadata);
         }
 
-        // PHASE 2: Byte-by-byte scanning through entire file
-        // Reference: par2cmdline-turbo/src/par2repairer.cpp:1676-1795 (byte-by-byte scan loop)
-        // Reference: par2cmdline-turbo/src/filechecksummer.h:169-192 (Step function)
-
-        // Initialize rolling CRC for current position if we have a full block
-        if state.can_fit_block(block_size) {
-            let initial_crc = compute_crc32(buffer.block_at(state.buffer_position, block_size));
-            state.set_rolling_crc(Some(initial_crc));
+        let mut scanner = match TurboFileScanner::open(file_path, block_size) {
+            Ok(scanner) => scanner,
+            Err(_) => return (local_block_map, metadata),
+        };
+        if scanner.start().is_err() {
+            return (local_block_map, metadata);
         }
 
-        // Scan byte-by-byte through the entire file (like par2cmdline-turbo's Step loop)
-        let mut step_count: u64 = 0;
-        let scan_distance =
-            std::cmp::min(self.skip_leeway.saturating_mul(2), block_size.as_usize());
-        let scan_skip = block_size.as_usize().saturating_sub(scan_distance);
-        let mut consecutive_non_matches = 0usize;
-        loop {
-            step_count += 1;
+        let scan_distance = std::cmp::min(self.skip_leeway.saturating_mul(2), block_size);
+        let scan_skip = if self.data_skipping {
+            block_size.saturating_sub(scan_distance)
+        } else {
+            0
+        };
+        let mut scan_offset = scan_distance / 2;
+        let mut next_expected: Option<EntryId> = None;
 
-            // Check if we've reached end of file
-            if state.bytes_processed.as_u64() >= file_size.as_u64() {
-                log::debug!(
-                    "Reached EOF after {} steps, found {} blocks",
-                    step_count,
-                    local_block_map.len()
-                );
-                break;
-            }
+        while scanner.offset() < scanner.file_size() {
+            let matched =
+                verification_table.find_match(next_expected, preferred_file, &mut scanner);
 
-            // Handle partial block at end of file
-            if !state.can_fit_block(block_size) {
-                if state.remainder_size(block_size) > 0 {
-                    let partial_data =
-                        buffer.slice_from(state.buffer_position, state.bytes_in_buffer);
-                    self.try_match_and_insert_partial_block(
-                        partial_data,
-                        block_size.as_usize(),
-                        &mut local_block_map,
-                        &mut state,
+            if let Some(entry_id) = matched.matched {
+                for exact_entry_id in matched.exact_matches.iter().copied() {
+                    let entry = verification_table.entry(exact_entry_id);
+                    local_block_map
+                        .entry((entry.md5, entry.crc32))
+                        .or_default()
+                        .push((entry.file_id, entry.block_number));
+                    metadata.record_block_found(
+                        scanner.offset() as usize,
+                        entry.file_id,
+                        entry.block_number,
                     );
                 }
-                log::debug!(
-                    "Cannot fit block, exiting after {} steps, found {} blocks",
-                    step_count,
-                    local_block_map.len()
-                );
-                break;
-            }
 
-            // Try to match block at current position
-            match self.scan_block_position(&buffer, &mut state, block_size, &mut local_block_map) {
-                ScanAction::SkipBlock => {
-                    consecutive_non_matches = 0;
-                    // Found a match - jump forward by block size (like par2cmdline-turbo's Jump)
-                    state.skip_block(block_size);
-
-                    // Recompute CRC after skip (can't roll forward a full block)
-                    if state.can_fit_block(block_size) {
-                        let new_crc =
-                            compute_crc32(buffer.block_at(state.buffer_position, block_size));
-                        state.set_rolling_crc(Some(new_crc));
-                    } else {
-                        state.set_rolling_crc(None);
-                    }
+                let entry = verification_table.entry(entry_id);
+                next_expected = entry.next;
+                if scanner.jump(entry.expected_block_length as u64).is_err() {
+                    break;
                 }
-                ScanAction::AdvanceOneByte => {
-                    // No match - advance one byte with rolling CRC (like par2cmdline-turbo's Step)
-                    state.advance_one_byte();
-                    state.slide_crc_one_byte(&rolling_table, &buffer, block_size);
-                    consecutive_non_matches = consecutive_non_matches.saturating_add(1);
+                scan_offset = scan_distance / 2;
+            } else {
+                next_expected = None;
+                if scanner.step().is_err() {
+                    break;
+                }
 
-                    if self.data_skipping
-                        && scan_skip > 0
-                        && scan_distance > 0
-                        && consecutive_non_matches >= scan_distance
-                    {
-                        state.advance_by(scan_skip);
-                        consecutive_non_matches = 0;
-                        if state.can_fit_block(block_size) {
-                            let new_crc =
-                                compute_crc32(buffer.block_at(state.buffer_position, block_size));
-                            state.set_rolling_crc(Some(new_crc));
-                        } else {
-                            state.set_rolling_crc(None);
-                        }
+                let skip_from = scanner.offset();
+                if scan_skip > 0
+                    && scan_distance > 0
+                    && {
+                        scan_offset += 1;
+                        scan_offset >= scan_distance
                     }
+                    && skip_from < scanner.file_size()
+                {
+                    if scanner.jump(scan_skip as u64).is_err() {
+                        break;
+                    }
+                    scan_offset = 0;
                 }
             }
 
-            // Check if we need to refill the buffer
-            // When buffer position reaches blocksize, slide the buffer to keep data available
-            if state.buffer_position.as_usize() >= block_size.as_usize() {
-                match Self::slide_buffer_window(&mut file, &mut buffer, &mut state, block_size) {
-                    Ok(BufferSlideResult::Success) => {
-                        Self::report_progress(reporter_lock, &state, file_size);
-
-                        // Recompute CRC at new buffer position
-                        if state.can_fit_block(block_size) {
-                            let new_crc =
-                                compute_crc32(buffer.block_at(state.buffer_position, block_size));
-                            state.set_rolling_crc(Some(new_crc));
-                        } else {
-                            state.set_rolling_crc(None);
-                        }
-                    }
-                    Ok(BufferSlideResult::CannotSlide) => break,
-                    Err(_) => break,
-                }
-            }
+            Self::report_progress_by_offset(reporter_lock, scanner.offset(), file_size);
         }
 
-        // Mark file as 100% scanned
-        Self::report_progress(reporter_lock, &state, file_size);
+        Self::report_progress_by_offset(reporter_lock, file_size.as_u64(), file_size);
+        let hashes = scanner.finish();
+        metadata.actual_file_hash = Some(hashes.hash_full);
+        metadata.actual_file_hash_16k = Some(hashes.hash_16k);
+        metadata.actual_file_size = Some(hashes.file_size);
 
-        // Compute file hashes and store them in metadata using a streaming hasher
-        // (avoid reading entire file into memory for large files).
-        Self::record_file_hashes(
-            file_path,
-            block_size,
-            self.skip_full_md5,
-            &mut state.scan_metadata,
-        );
-
-        (local_block_map, state.scan_metadata)
+        (local_block_map, metadata)
     }
 
     fn record_file_hashes(
@@ -922,6 +841,21 @@ impl GlobalVerificationEngine {
         file_size: crate::verify::types::FileSize,
     ) {
         let fraction = state.bytes_processed.progress_fraction(file_size.as_u64());
+        if let Ok(reporter) = reporter_lock.lock() {
+            reporter.report_scanning_progress(fraction);
+        }
+    }
+
+    fn report_progress_by_offset<R: VerificationReporter>(
+        reporter_lock: &Mutex<&R>,
+        offset: u64,
+        file_size: crate::verify::types::FileSize,
+    ) {
+        let fraction = if file_size.as_u64() == 0 {
+            0.0
+        } else {
+            offset as f64 / file_size.as_u64() as f64
+        };
         if let Ok(reporter) = reporter_lock.lock() {
             reporter.report_scanning_progress(fraction);
         }

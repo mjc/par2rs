@@ -9,9 +9,11 @@ mod file_verification;
 mod global_engine;
 mod global_table;
 mod scanner_state;
+mod turbo_file_scan;
 mod types;
 mod utils;
 pub(crate) mod validation;
+mod verification_table;
 mod verifier;
 
 // Re-export public types
