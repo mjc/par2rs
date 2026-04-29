@@ -496,15 +496,6 @@ impl GlobalVerificationEngine {
         let mut metadata = FileScanMetadata::new();
         let block_size = self.block_table.block_size() as usize;
 
-        if file_size.as_u64() == 0 {
-            metadata.actual_file_size = Some(0);
-            let empty_hash = crate::checksum::compute_md5_only(b"");
-            metadata.actual_file_hash = Some(empty_hash);
-            metadata.actual_file_hash_16k = Some(empty_hash);
-            Self::report_progress_by_offset(reporter_lock, 0, file_size);
-            return (local_block_map, metadata);
-        }
-
         let mut scanner = match TurboFileScanner::open(file_path, block_size) {
             Ok(scanner) => scanner,
             Err(_) => return (local_block_map, metadata),
@@ -2464,6 +2455,51 @@ mod tests {
         // Empty file should be considered present (no blocks to verify)
         assert_eq!(results.present_file_count, 1);
         assert_eq!(results.total_block_count, 0);
+    }
+
+    #[test]
+    fn test_expected_empty_file_with_non_empty_data_is_corrupted() {
+        use std::fs::File;
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let temporary_directory = tempdir().unwrap();
+        let file_path = temporary_directory.path().join("empty.txt");
+
+        let mut file = File::create(&file_path).unwrap();
+        file.write_all(b"not empty").unwrap();
+
+        use crate::checksum::compute_md5;
+        let empty_md5 = compute_md5(b"");
+
+        let main_packet = crate::packets::MainPacket {
+            length: 92,
+            md5: Md5Hash::new([0; 16]),
+            set_id: crate::domain::RecoverySetId::new([1; 16]),
+            slice_size: 1024,
+            file_count: 1,
+            file_ids: vec![FileId::new([2; 16])],
+            non_recovery_file_ids: vec![],
+        };
+
+        let mut file_description = create_test_file_desc(FileId::new([2; 16]), 0);
+        file_description.file_name = b"empty.txt".to_vec();
+        file_description.md5_hash = empty_md5;
+        file_description.md5_16k = empty_md5;
+
+        let packets = vec![
+            crate::Packet::Main(main_packet),
+            crate::Packet::FileDescription(file_description),
+        ];
+
+        let engine =
+            GlobalVerificationEngine::from_packets(&packets, temporary_directory.path()).unwrap();
+        let reporter = crate::reporters::ConsoleVerificationReporter::new();
+        let results = engine.verify_recovery_set(&reporter, false);
+
+        assert_eq!(results.present_file_count, 0);
+        assert_eq!(results.corrupted_file_count, 1);
+        assert_eq!(results.files[0].status, FileStatus::Corrupted);
     }
 
     #[test]

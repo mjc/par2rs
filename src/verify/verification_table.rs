@@ -52,8 +52,10 @@ impl VerificationTable {
             for (index, block) in file_blocks.into_iter().enumerate() {
                 let expected_block_length = if index + 1 == total_blocks {
                     let full_blocks_len = (index as u64) * block_table.block_size();
-                    (description.file_length - full_blocks_len).min(block_table.block_size())
-                        as usize
+                    description
+                        .file_length
+                        .saturating_sub(full_blocks_len)
+                        .min(block_table.block_size()) as usize
                 } else {
                     block_table.block_size() as usize
                 };

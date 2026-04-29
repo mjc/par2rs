@@ -12,7 +12,7 @@ use crate::parpar_hasher::hasher_input_dyn::HasherInputDyn;
 use md5::Digest;
 use md5::Md5;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::checksum::rolling_crc::RollingCrcTable;
@@ -97,20 +97,18 @@ impl TurboFileScanner {
     }
 
     pub fn start(&mut self) -> io::Result<()> {
+        self.file.seek(SeekFrom::Start(0))?;
         self.current_offset = 0;
         self.read_offset = 0;
         self.out_pos = 0;
         self.in_pos = self.block_size;
         self.tail_pos = 0;
+        self.buffer.fill(0);
         self.checksum = Crc32Value::new(0);
         self.block_hash = None;
+        self.hash_16k = First16kHash::new();
         self.hasher = HasherInputDyn::new();
         self.block_hash_synced = true;
-
-        if self.file_size == 0 {
-            self.buffer[..self.block_size].fill(0);
-            return Ok(());
-        }
 
         self.fill(false)?;
         self.compute_current_checksum(true);
@@ -324,10 +322,6 @@ impl TurboFileScanner {
     }
 
     fn fill(&mut self, long_fill: bool) -> io::Result<()> {
-        if self.read_offset >= self.file_size {
-            return Ok(());
-        }
-
         if self.tail_pos >= self.block_size && !long_fill {
             return Ok(());
         }
@@ -337,24 +331,28 @@ impl TurboFileScanner {
         } else {
             self.block_size * 2
         };
-        let want =
-            ((target - self.tail_pos) as u64).min(self.file_size - self.read_offset) as usize;
 
-        if want > 0 {
-            let bytes_read = self.read_fill(self.tail_pos, want)?;
-            if bytes_read > 0 {
-                let end = self.tail_pos + bytes_read;
-                self.hash_16k.update(&self.buffer[self.tail_pos..end]);
-                if !self.block_hash_synced {
-                    self.hasher.update(&self.buffer[self.tail_pos..end]);
+        if self.read_offset < self.file_size {
+            let want =
+                ((target - self.tail_pos) as u64).min(self.file_size - self.read_offset) as usize;
+
+            if want > 0 {
+                let bytes_read = self.read_fill(self.tail_pos, want)?;
+                if bytes_read > 0 {
+                    let end = self.tail_pos + bytes_read;
+                    self.hash_16k.update(&self.buffer[self.tail_pos..end]);
+                    if !self.block_hash_synced {
+                        self.hasher.update(&self.buffer[self.tail_pos..end]);
+                    }
+                    self.read_offset += bytes_read as u64;
+                    self.tail_pos = end;
                 }
-                self.read_offset += bytes_read as u64;
-                self.tail_pos = end;
             }
         }
 
         if self.tail_pos < target {
             self.buffer[self.tail_pos..target].fill(0);
+            self.tail_pos = target;
         }
 
         Ok(())
@@ -456,5 +454,41 @@ mod tests {
 
         assert_eq!(results.hash_full, expected.hash_full);
         assert_eq!(results.hash_16k, expected.hash_16k);
+    }
+
+    #[test]
+    fn restart_rewinds_file_and_hash_state() {
+        let data: Vec<u8> = (0..64u8).collect();
+        let file = write_temp(&data);
+        let mut scanner = TurboFileScanner::open(file.path(), 16).unwrap();
+
+        scanner.start().unwrap();
+        let initial_checksum = scanner.checksum();
+        let initial_md5 = scanner.current_md5();
+        scanner.step().unwrap();
+        scanner.step().unwrap();
+
+        scanner.start().unwrap();
+        assert_eq!(scanner.offset(), 0);
+        assert_eq!(scanner.checksum(), initial_checksum);
+        assert_eq!(scanner.current_md5(), initial_md5);
+    }
+
+    #[test]
+    fn eof_sliding_uses_zero_padding() {
+        let data: Vec<u8> = (0..17u8).collect();
+        let file = write_temp(&data);
+        let mut scanner = TurboFileScanner::open(file.path(), 16).unwrap();
+
+        scanner.start().unwrap();
+        for _ in 0..16 {
+            scanner.step().unwrap();
+        }
+
+        let (expected_md5, expected_crc) = compute_block_checksums_padded(&data[16..], 16);
+        assert_eq!(scanner.offset(), 16);
+        assert!(scanner.short_block());
+        assert_eq!(scanner.checksum(), expected_crc);
+        assert_eq!(scanner.current_md5(), expected_md5);
     }
 }
