@@ -1,10 +1,21 @@
 #![allow(dead_code)]
 
+#[cfg(unix)]
 use std::ffi::c_void;
+#[cfg(unix)]
 use std::ffi::CString;
 use std::io;
 use std::ptr::NonNull;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(windows)]
+use windows_sys::Win32::System::Memory::{
+    VirtualAlloc, VirtualFree, VirtualProtect, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE,
+    PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_READWRITE,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 
 pub struct ExecutableBuffer {
     ptr: NonNull<u8>,
@@ -254,33 +265,61 @@ enum Protection {
 }
 
 impl Protection {
+    #[cfg(unix)]
     const fn flags(self) -> i32 {
         match self {
             Self::Writable => libc::PROT_READ | libc::PROT_WRITE,
             Self::Executable => libc::PROT_READ | libc::PROT_EXEC,
         }
     }
+
+    #[cfg(windows)]
+    const fn flags(self) -> u32 {
+        match self {
+            Self::Writable => PAGE_READWRITE,
+            Self::Executable => PAGE_EXECUTE_READ,
+        }
+    }
 }
 
 impl Drop for ExecutableBuffer {
     fn drop(&mut self) {
+        #[cfg(unix)]
         unsafe {
             libc::munmap(self.ptr.as_ptr().cast::<c_void>(), self.capacity);
+        }
+        #[cfg(windows)]
+        unsafe {
+            VirtualFree(
+                self.ptr.as_ptr().cast::<core::ffi::c_void>(),
+                0,
+                MEM_RELEASE,
+            );
         }
     }
 }
 
 impl Drop for MutableExecutableBuffer {
     fn drop(&mut self) {
+        #[cfg(unix)]
         unsafe {
             if self.write_ptr != self.exec_ptr {
                 libc::munmap(self.exec_ptr.as_ptr().cast::<c_void>(), self.capacity);
             }
             libc::munmap(self.write_ptr.as_ptr().cast::<c_void>(), self.capacity);
         }
+        #[cfg(windows)]
+        unsafe {
+            VirtualFree(
+                self.write_ptr.as_ptr().cast::<core::ffi::c_void>(),
+                0,
+                MEM_RELEASE,
+            );
+        }
     }
 }
 
+#[cfg(unix)]
 fn map_writable(capacity: usize) -> io::Result<NonNull<u8>> {
     let ptr = unsafe {
         libc::mmap(
@@ -301,6 +340,35 @@ fn map_writable(capacity: usize) -> io::Result<NonNull<u8>> {
         .ok_or_else(|| io::Error::other("mmap returned null executable buffer"))
 }
 
+#[cfg(windows)]
+fn map_writable(capacity: usize) -> io::Result<NonNull<u8>> {
+    let ptr = unsafe {
+        VirtualAlloc(
+            std::ptr::null_mut(),
+            capacity,
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_READWRITE,
+        )
+    };
+    if ptr.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+
+    let ptr = NonNull::new(ptr.cast::<u8>())
+        .ok_or_else(|| io::Error::other("VirtualAlloc returned null executable buffer"))?;
+    if (ptr.as_ptr() as usize) & 63 != 0 {
+        unsafe {
+            VirtualFree(ptr.as_ptr().cast::<core::ffi::c_void>(), 0, MEM_RELEASE);
+        }
+        return Err(io::Error::other(
+            "VirtualAlloc returned a non-cacheline-aligned buffer",
+        ));
+    }
+
+    Ok(ptr)
+}
+
+#[cfg(unix)]
 fn map_writable_executable(capacity: usize) -> io::Result<NonNull<u8>> {
     let ptr = unsafe {
         libc::mmap(
@@ -321,19 +389,62 @@ fn map_writable_executable(capacity: usize) -> io::Result<NonNull<u8>> {
         .ok_or_else(|| io::Error::other("mmap returned null mutable executable buffer"))
 }
 
+#[cfg(windows)]
+fn map_writable_executable(capacity: usize) -> io::Result<NonNull<u8>> {
+    let ptr = unsafe {
+        VirtualAlloc(
+            std::ptr::null_mut(),
+            capacity,
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_EXECUTE_READWRITE,
+        )
+    };
+    if ptr.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+
+    let ptr = NonNull::new(ptr.cast::<u8>())
+        .ok_or_else(|| io::Error::other("VirtualAlloc returned null mutable executable buffer"))?;
+    if (ptr.as_ptr() as usize) & 63 != 0 {
+        unsafe {
+            VirtualFree(ptr.as_ptr().cast::<core::ffi::c_void>(), 0, MEM_RELEASE);
+        }
+        return Err(io::Error::other(
+            "VirtualAlloc returned a non-cacheline-aligned buffer",
+        ));
+    }
+
+    Ok(ptr)
+}
+
 fn map_writable_executable_pair(capacity: usize) -> io::Result<(NonNull<u8>, NonNull<u8>)> {
     if let Ok(ptr) = map_writable_executable(capacity) {
         if (ptr.as_ptr() as usize) & 63 == 0 {
             return Ok((ptr, ptr));
         }
+        #[cfg(unix)]
         unsafe {
             libc::munmap(ptr.as_ptr().cast::<c_void>(), capacity);
         }
+        #[cfg(windows)]
+        unsafe {
+            VirtualFree(ptr.as_ptr().cast::<core::ffi::c_void>(), 0, MEM_RELEASE);
+        }
     }
 
-    map_dual_writable_executable(capacity)
+    #[cfg(unix)]
+    {
+        map_dual_writable_executable(capacity)
+    }
+    #[cfg(windows)]
+    {
+        Err(io::Error::other(
+            "VirtualAlloc returned a non-cacheline-aligned xor-jit buffer",
+        ))
+    }
 }
 
+#[cfg(unix)]
 fn map_dual_writable_executable(capacity: usize) -> io::Result<(NonNull<u8>, NonNull<u8>)> {
     static SHM_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -415,10 +526,29 @@ fn map_dual_writable_executable(capacity: usize) -> io::Result<(NonNull<u8>, Non
     result
 }
 
+#[cfg(unix)]
 fn set_protection(ptr: NonNull<u8>, capacity: usize, protection: Protection) -> io::Result<()> {
     let result =
         unsafe { libc::mprotect(ptr.as_ptr().cast::<c_void>(), capacity, protection.flags()) };
     if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn set_protection(ptr: NonNull<u8>, capacity: usize, protection: Protection) -> io::Result<()> {
+    let mut previous = 0;
+    let result = unsafe {
+        VirtualProtect(
+            ptr.as_ptr().cast::<core::ffi::c_void>(),
+            capacity,
+            protection.flags(),
+            &mut previous,
+        )
+    };
+    if result != 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
@@ -434,7 +564,14 @@ fn round_to_page_size(value: usize) -> usize {
 }
 
 fn page_size() -> usize {
+    #[cfg(unix)]
     let value = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    #[cfg(windows)]
+    let value = {
+        let mut info = unsafe { std::mem::zeroed::<SYSTEM_INFO>() };
+        unsafe { GetSystemInfo(&mut info) };
+        i64::from(info.dwPageSize)
+    };
     if value <= 0 {
         4096
     } else {

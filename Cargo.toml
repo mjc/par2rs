@@ -28,6 +28,9 @@ anyhow = "1.0"
 smallvec = { version = "1.15.1", features = ["const_generics"] }
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_System_SystemInformation"] }
+
 # Binaries
 [[bin]]
 name = "par2"
