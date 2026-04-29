@@ -572,7 +572,9 @@ impl GlobalVerificationEngine {
 
         Self::report_progress_by_offset(reporter_lock, file_size.as_u64(), file_size);
         let hashes = scanner.finish();
-        metadata.actual_file_hash = Some(hashes.hash_full);
+        if !self.skip_full_md5 {
+            metadata.actual_file_hash = Some(hashes.hash_full);
+        }
         metadata.actual_file_hash_16k = Some(hashes.hash_16k);
         metadata.actual_file_size = Some(hashes.file_size);
 
@@ -2854,6 +2856,57 @@ mod tests {
             ),
             FileStatus::Corrupted
         );
+    }
+
+    #[test]
+    fn skip_full_md5_omits_actual_file_hash_from_scan_metadata() {
+        use crate::checksum::{compute_crc32, compute_md5_only};
+        use crate::reporters::SilentVerificationReporter;
+        use crate::verify::global_table::GlobalBlockTableBuilder;
+        use crate::verify::verification_table::VerificationTable;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use tempfile::NamedTempFile;
+
+        let file_id = FileId::new([7; 16]);
+        let data = vec![0x5Au8; 1024];
+        let md5 = compute_md5_only(&data);
+        let crc32 = compute_crc32(&data);
+
+        let mut builder = GlobalBlockTableBuilder::new(1024);
+        builder.add_file_blocks(file_id, &[(md5, crc32)]);
+        let block_table = builder.build();
+        let description = create_test_file_desc(file_id, data.len() as u64);
+        let verification_table = VerificationTable::from_block_table(&block_table, &[&description]);
+
+        let engine = GlobalVerificationEngine {
+            recovery_block_count: 0,
+            skip_full_md5: true,
+            data_skipping: false,
+            skip_leeway: 0,
+            block_table,
+            file_descriptions: HashMap::default(),
+            base_dir: std::path::PathBuf::from("."),
+            file_order: Vec::new(),
+            rename_only: false,
+        };
+
+        let mut file = NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut file, &data).unwrap();
+
+        let reporter = SilentVerificationReporter::new();
+        let reporter_lock = Mutex::new(&reporter);
+        let (_local_map, metadata) = engine.scan_single_file_with_progress(
+            file.path(),
+            FileSize::new(data.len() as u64),
+            &reporter_lock,
+            &verification_table,
+            Some(file_id),
+        );
+
+        assert_eq!(metadata.actual_file_hash, None);
+        assert_eq!(metadata.actual_file_hash_16k, Some(md5));
+        assert_eq!(metadata.actual_file_size, Some(data.len() as u64));
     }
 
     #[test]
