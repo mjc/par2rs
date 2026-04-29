@@ -83,6 +83,11 @@ impl CreateProfile {
         &mut self.counters
     }
 
+    #[cfg(test)]
+    pub(crate) fn counters(&self) -> &CreateProfileCounters {
+        &self.counters
+    }
+
     pub(crate) fn emit(&self) {
         eprintln!("PAR2RS_CREATE_PROFILE_BEGIN");
         eprintln!("phase,seconds");

@@ -1166,3 +1166,162 @@ fn encode_add_reg_imm32(encoded: &mut impl ByteSink, reg: GpReg, value: u32) {
     }
     encoded.extend_from_slice(&value.to_le_bytes());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn program_fixture() -> Program {
+        Program::new()
+            .vmovdqa_ymm_from_rdi_offset(8, 32)
+            .vmovdqa_ymm_from_rsi_offset(9, -64)
+            .vmovdqa_ymm_from_rax_offset(10, 96)
+            .vmovdqa_ymm_from_rdx_offset(11, -32)
+            .vpxor_ymm(12, 8, 9)
+            .vpxor_ymm_rdi_offset(13, 12, 64)
+            .vpxor_ymm_rsi_offset(14, 13, -96)
+            .vpxor_ymm_rax_offset(15, 14, 128)
+            .vpxor_ymm_rdx_offset(7, 15, -128)
+            .vmovdqa_ymm(6, 7)
+            .vmovdqa_rsi_offset_from_ymm(160, 6)
+            .vmovdqa_rdx_offset_from_ymm(-160, 5)
+    }
+
+    #[test]
+    fn program_sink_matches_program_builder_bytes() {
+        let expected = program_fixture().finish();
+        let mut actual = Vec::new();
+        let sink = ProgramSink::new(&mut actual);
+        let _sink = sink
+            .vmovdqa_ymm_from_rdi_offset(8, 32)
+            .vmovdqa_ymm_from_rsi_offset(9, -64)
+            .vmovdqa_ymm_from_rax_offset(10, 96)
+            .vmovdqa_ymm_from_rdx_offset(11, -32)
+            .vpxor_ymm(12, 8, 9)
+            .vpxor_ymm_rdi_offset(13, 12, 64)
+            .vpxor_ymm_rsi_offset(14, 13, -96)
+            .vpxor_ymm_rax_offset(15, 14, 128)
+            .vpxor_ymm_rdx_offset(7, 15, -128)
+            .vmovdqa_ymm(6, 7)
+            .vmovdqa_rsi_offset_from_ymm(160, 6)
+            .vmovdqa_rdx_offset_from_ymm(-160, 5);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn program_sink_supports_emit_bytes_and_mutable_executable_buffer() {
+        let mut executable = exec_mem::MutableExecutableBuffer::new(256).expect("buffer");
+        let expected = program_fixture().finish();
+        let custom_prefix = [0x90, 0x90, 0x66];
+        let mut expected_with_prefix = custom_prefix.to_vec();
+        expected_with_prefix.extend_from_slice(&expected);
+
+        let sink = ProgramSink::new(&mut executable);
+        let _sink = sink
+            .emit_bytes(&custom_prefix)
+            .vmovdqa_ymm_from_rdi_offset(8, 32)
+            .vmovdqa_ymm_from_rsi_offset(9, -64)
+            .vmovdqa_ymm_from_rax_offset(10, 96)
+            .vmovdqa_ymm_from_rdx_offset(11, -32)
+            .vpxor_ymm(12, 8, 9)
+            .vpxor_ymm_rdi_offset(13, 12, 64)
+            .vpxor_ymm_rsi_offset(14, 13, -96)
+            .vpxor_ymm_rax_offset(15, 14, 128)
+            .vpxor_ymm_rdx_offset(7, 15, -128)
+            .vmovdqa_ymm(6, 7)
+            .vmovdqa_rsi_offset_from_ymm(160, 6)
+            .vmovdqa_rdx_offset_from_ymm(-160, 5);
+
+        assert_eq!(
+            executable.copy_prefix(executable.len()).unwrap(),
+            expected_with_prefix
+        );
+    }
+
+    #[test]
+    fn block_loop_finish_variants_preserve_prefixes_and_terminators() {
+        assert_eq!(
+            Program::new().finish_block_loop(512),
+            Program::new().vzeroupper().ret().finish()
+        );
+        assert_eq!(
+            Program::new().finish_block_loop_with_static_prefix(&[], 512, None),
+            Program::new().vzeroupper().ret().finish()
+        );
+        assert_eq!(
+            Program::new().finish_block_loop_with_static_prefix_no_vzeroupper(&[], 512, None),
+            Program::new().ret().finish()
+        );
+
+        let static_prefix = [0xaa, 0xbb, 0xcc];
+        let body = Program::new()
+            .vmovdqu_ymm0_from_rdi()
+            .vmovdqu_ymm1_from_rsi()
+            .vpxor_ymm0_ymm0_ymm1();
+        let finished = body
+            .clone()
+            .finish_block_loop_with_prefetch_and_pointer_bias(512, 128, 64);
+        assert!(finished.starts_with(&[0x48, 0x81, 0xc7, 0x40, 0x00, 0x00, 0x00]));
+        assert_eq!(finished.last(), Some(&0xc3));
+
+        let static_prefixed =
+            body.clone()
+                .finish_block_loop_with_static_prefix(&static_prefix, 512, Some(128));
+        assert!(static_prefixed.starts_with(&static_prefix));
+        assert_eq!(static_prefixed.last(), Some(&0xc3));
+
+        let no_vzeroupper = body
+            .clone()
+            .finish_block_loop_with_static_prefix_no_vzeroupper(&static_prefix, 512, Some(128));
+        assert!(no_vzeroupper.starts_with(&static_prefix));
+        assert_eq!(no_vzeroupper.last(), Some(&0xc3));
+        assert!(!no_vzeroupper
+            .windows(3)
+            .any(|window| window == [0xc5, 0xf8, 0x77]));
+    }
+
+    #[test]
+    fn dynamic_block_loop_emitters_match_static_suffixes() {
+        let static_prefix = [0xde, 0xad, 0xbe, 0xef];
+        let body = Program::new()
+            .vmovdqu_ymm0_from_rdi()
+            .vmovdqu_ymm1_from_rsi()
+            .vpxor_ymm0_ymm0_ymm1();
+
+        let expected = body
+            .clone()
+            .finish_block_loop_with_static_prefix_no_vzeroupper(&static_prefix, 512, Some(128));
+        let mut dynamic = static_prefix.to_vec();
+        let dynamic_len = body
+            .clone()
+            .finish_block_loop_dynamic_after_static_prefix_no_vzeroupper_into(
+                static_prefix.len(),
+                512,
+                Some(128),
+                &mut dynamic,
+            );
+        assert_eq!(dynamic_len, expected.len() - static_prefix.len());
+        assert_eq!(dynamic, expected);
+
+        let mut sink_dynamic = static_prefix.to_vec();
+        let sink_len = encode_block_loop_dynamic_after_static_prefix_no_vzeroupper_into(
+            static_prefix.len(),
+            512,
+            Some(128),
+            &mut sink_dynamic,
+            |sink| {
+                sink.vmovdqa_ymm_from_rdi_offset(8, 32)
+                    .vpxor_ymm_rsi_offset(9, 8, -64)
+                    .vmovdqa_rdx_offset_from_ymm(96, 9)
+            },
+        );
+        let sink_expected = Program::new()
+            .vmovdqa_ymm_from_rdi_offset(8, 32)
+            .vpxor_ymm_rsi_offset(9, 8, -64)
+            .vmovdqa_rdx_offset_from_ymm(96, 9)
+            .finish_block_loop_with_static_prefix_no_vzeroupper(&static_prefix, 512, Some(128));
+        assert_eq!(sink_len, sink_expected.len() - static_prefix.len());
+        assert_eq!(sink_dynamic, sink_expected);
+    }
+}

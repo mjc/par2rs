@@ -3143,6 +3143,67 @@ mod tests {
     }
 
     #[cfg(target_arch = "x86_64")]
+    fn build_xor_jit_test_coeffs(base_values: &[u16], recovery_count: usize) -> Vec<CreateCoeff> {
+        let mut cache = XorJitPreparedCoeffCache::new();
+        (0..recovery_count)
+            .flat_map(|exponent| {
+                base_values
+                    .iter()
+                    .map(move |&base| Galois16::new(base).pow(exponent as u16).value())
+            })
+            .map(|value| CreateCoeff::new(value, false, true, &mut cache))
+            .collect()
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn direct_xor_jit_compute_job_matches_encoder_across_x4_x2_and_x1_paths() {
+        let source_count = 7;
+        let recovery_count = 7;
+        let block_size = 241;
+        let encoder = RecoveryBlockEncoder::new(block_size, source_count);
+        let coeffs = build_xor_jit_test_coeffs(encoder.base_values(), recovery_count);
+        let inputs = deterministic_inputs(source_count, block_size);
+        let refs = inputs.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let source_indices = (0..source_count).collect::<Vec<_>>();
+        let mut packed_inputs = vec![0u8; source_count * 256];
+        let mut outputs = vec![0u8; recovery_count * 256];
+
+        for (idx, input) in inputs.iter().enumerate() {
+            let start = idx * 256;
+            packed_inputs[start..start + input.len()].copy_from_slice(input);
+        }
+
+        let job = ComputeJob {
+            method: CreateGf16Method::Avx2XorJit,
+            input_base: packed_inputs.as_ptr() as usize,
+            output_base: outputs.as_mut_ptr() as usize,
+            coeffs: coeffs.as_ptr() as usize,
+            source_indices: source_indices.as_ptr() as usize,
+            source_count,
+            batch_len: source_count,
+            aligned_chunk_len: 256,
+            segment_start: 0,
+            segment_len: block_size,
+            output_start: 0,
+            output_end: recovery_count,
+        };
+
+        process_compute_job(job, &mut WorkerContext::default());
+
+        for recovery_idx in 0..recovery_count {
+            let expected = encoder
+                .encode_recovery_block(recovery_idx as u16, &refs)
+                .expect("encode recovery block");
+            let start = recovery_idx * 256;
+            assert_eq!(&outputs[start..start + block_size], expected.as_slice());
+            assert!(outputs[start + block_size..start + 256]
+                .iter()
+                .all(|&byte| byte == 0));
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
     #[test]
     #[ignore]
     fn dump_xor_jit_prepared_staging_for_compare() {

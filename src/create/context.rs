@@ -1306,6 +1306,12 @@ mod tests {
     use super::super::types::CreateConfig;
     use super::*;
     use proptest::prelude::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     fn test_context(output_name: &str, base_path: Option<std::path::PathBuf>) -> CreateContext {
         CreateContext {
@@ -1626,6 +1632,18 @@ mod tests {
     }
 
     #[test]
+    fn calculate_block_size_recomputes_final_count_when_lower_bound_meets_upper_bound() {
+        let mut context = test_context("out.par2", None);
+        context.config.source_block_count = Some(SourceBlockCount::new(3));
+        context.source_files = vec![source_info("a.bin", 4, 0), source_info("b.bin", 12, 1)];
+
+        context.calculate_block_size().unwrap();
+
+        assert_eq!(context.block_size.as_u64(), 8);
+        assert_eq!(context.source_block_count, 3);
+    }
+
+    #[test]
     fn checked_recovery_block_count_rejects_impossible_requests() {
         let mut context = test_context("out.par2", None);
         context.config.first_recovery_block = 65_535;
@@ -1712,6 +1730,135 @@ mod tests {
 
         assert_eq!(recovery_packet.exponent, 7);
         assert_eq!(recovery_packet.recovery_data, expected);
+    }
+
+    #[test]
+    fn encode_and_hash_files_slim_mode_profiles_prepass_and_hashes_files() {
+        use crate::checksum::{compute_block_checksums_padded, compute_file_id, compute_md5_only};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let file_a_path = tmp.path().join("a.bin");
+        let file_b_path = tmp.path().join("b.bin");
+        let file_a = b"abcdefghijkl".to_vec();
+        let file_b = b"xyz12".to_vec();
+        std::fs::write(&file_a_path, &file_a).unwrap();
+        std::fs::write(&file_b_path, &file_b).unwrap();
+
+        let source_files = vec![
+            SourceFileInfo::new(file_a_path.clone(), file_a.len() as u64, 0),
+            SourceFileInfo::new(file_b_path.clone(), file_b.len() as u64, 1),
+        ];
+        let block_size = 8u64;
+        let source_block_count: u32 = source_files
+            .iter()
+            .map(|file| file.calculate_block_count(block_size))
+            .sum();
+        let encoder = crate::reed_solomon::RecoveryBlockEncoder::new(
+            block_size as usize,
+            source_block_count as usize,
+        );
+
+        let (_recovery_blocks, hash_states, encode_profile) = encode_and_hash_files(
+            &source_files,
+            block_size,
+            4,
+            source_block_count,
+            encoder.base_values(),
+            0,
+            1,
+            1,
+            &SilentCreateReporter,
+            true,
+        )
+        .unwrap();
+
+        let profile = encode_profile.expect("profile data should be returned when enabled");
+        assert_eq!(
+            profile.counters.source_hash_bytes_read,
+            (file_a.len() + file_b.len()) as u64
+        );
+        assert!(profile.counters.source_seek_count >= source_files.len() as u64);
+        assert!(profile.source_open_hash_prepass > std::time::Duration::ZERO);
+
+        let expected_blocks = [&file_a[..8], &file_a[8..], &file_b[..]];
+        let expected_offsets = [0u32, 2u32];
+        let expected_full_hashes = [compute_md5_only(&file_a), compute_md5_only(&file_b)];
+        let expected_16k_hashes = expected_full_hashes;
+        let expected_file_ids = [
+            compute_file_id(
+                &expected_16k_hashes[0],
+                file_a.len() as u64,
+                source_files[0].packet_name().as_bytes(),
+            ),
+            compute_file_id(
+                &expected_16k_hashes[1],
+                file_b.len() as u64,
+                source_files[1].packet_name().as_bytes(),
+            ),
+        ];
+
+        assert_eq!(hash_states.len(), 2);
+        assert_eq!(hash_states[0].hash_16k, expected_16k_hashes[0]);
+        assert_eq!(hash_states[0].full_md5, expected_full_hashes[0]);
+        assert_eq!(hash_states[0].file_id, expected_file_ids[0]);
+        assert_eq!(hash_states[0].block_count, 2);
+        assert_eq!(hash_states[0].global_block_offset, expected_offsets[0]);
+        assert_eq!(hash_states[1].hash_16k, expected_16k_hashes[1]);
+        assert_eq!(hash_states[1].full_md5, expected_full_hashes[1]);
+        assert_eq!(hash_states[1].file_id, expected_file_ids[1]);
+        assert_eq!(hash_states[1].block_count, 1);
+        assert_eq!(hash_states[1].global_block_offset, expected_offsets[1]);
+
+        let mut flattened = hash_states
+            .into_iter()
+            .flat_map(|state| state.block_checksums)
+            .collect::<Vec<_>>();
+        flattened.sort_by_key(|block| block.global_index);
+        assert_eq!(flattened.len(), expected_blocks.len());
+
+        for (idx, (actual, expected_data)) in flattened.iter().zip(expected_blocks).enumerate() {
+            let (expected_md5, expected_crc32) =
+                compute_block_checksums_padded(expected_data, block_size as usize);
+            assert_eq!(actual.global_index, idx as u32);
+            assert_eq!(actual.hash, expected_md5);
+            assert_eq!(actual.crc32, expected_crc32.as_u32());
+        }
+    }
+
+    #[test]
+    fn create_with_profile_enabled_records_counters_and_outputs() {
+        let _guard = env_lock();
+        std::env::set_var("PAR2RS_CREATE_PROFILE", "1");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let source_path = tmp.path().join("profile.bin");
+        let par2_path = tmp.path().join("profile.par2");
+        std::fs::write(&source_path, b"hello profile").unwrap();
+
+        let mut context = crate::create::CreateContextBuilder::new()
+            .output_name(par2_path.to_str().unwrap())
+            .source_files(vec![source_path.clone()])
+            .block_size(4)
+            .recovery_block_count(1)
+            .quiet(true)
+            .build()
+            .unwrap();
+
+        context.create().unwrap();
+        std::env::remove_var("PAR2RS_CREATE_PROFILE");
+
+        assert!(context.output_files().len() >= 2);
+        let profile = context.profile.as_ref().expect("profile should be enabled");
+        let counters = profile.counters();
+        assert_eq!(counters.source_file_count, 1);
+        assert_eq!(counters.source_bytes, 13);
+        assert_eq!(counters.block_size, 4);
+        assert_eq!(counters.source_block_count, 4);
+        assert_eq!(counters.recovery_block_count, 1);
+        assert!(counters.chunk_size >= 4);
+        assert!(counters.source_recovery_bytes_read >= 13);
+        assert!(counters.recovery_chunk_count >= 1);
+        assert!(counters.selected_backend.is_some());
     }
 
     // --- calculate_chunk_size (method) via CreateContextBuilder ---
