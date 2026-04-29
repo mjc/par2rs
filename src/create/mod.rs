@@ -36,6 +36,7 @@ pub mod error;
 pub mod error_helpers;
 pub mod file_naming;
 pub mod packet_generator;
+pub(crate) mod profile;
 pub mod progress;
 pub mod source_file;
 pub mod types;
@@ -79,4 +80,32 @@ pub fn create_files(
 
     context.create()?;
     Ok(context)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{create_files, SilentCreateReporter};
+
+    #[test]
+    fn create_files_wrapper_creates_output_and_returns_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("data.bin");
+        let output = tmp.path().join("archive.par2");
+        std::fs::write(&source, b"hello world").unwrap();
+
+        let context = create_files(
+            output.to_str().unwrap(),
+            vec![source],
+            10,
+            Box::new(SilentCreateReporter),
+        )
+        .unwrap();
+
+        assert!(!context.output_files().is_empty());
+        assert!(context
+            .output_files()
+            .iter()
+            .any(|path| path.ends_with(".par2")));
+        assert!(context.block_size() >= 4);
+    }
 }
