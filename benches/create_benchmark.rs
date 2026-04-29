@@ -71,7 +71,9 @@ fn bench_par2_creation_redundancy(c: &mut Criterion) {
 
     for redundancy in redundancy_levels {
         group.bench_with_input(
-            BenchmarkId::new("redundancy", format!("{}%", redundancy)),
+            // Avoid `%` in the display label; Criterion forwards benchmark IDs into
+            // plot generation, and gnuplot treats `%` as a format character.
+            BenchmarkId::new("redundancy", format!("{}pct", redundancy)),
             &redundancy,
             |b, &redundancy| {
                 b.iter_batched(
