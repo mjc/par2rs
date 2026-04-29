@@ -685,7 +685,7 @@ impl XorJitBitplaneScratch {
             XorJitWriteStrategy::None | XorJitWriteStrategy::Clear => {
                 if matches!(strategy, XorJitWriteStrategy::Clear) {
                     self.code
-                        .clear_cacheline_bytes_at(self.code_start, XOR_JIT_TURBO_CODE_SIZE)?;
+                        .clear_cacheline_markers_at(self.code_start, XOR_JIT_TURBO_CODE_SIZE)?;
                 }
                 self.code.set_len_for_overwrite(self.code_start)?;
                 self.code_start

@@ -165,7 +165,12 @@ impl MutableExecutableBuffer {
         Ok(())
     }
 
-    pub fn clear_cacheline_bytes_at(&mut self, offset: usize, len: usize) -> io::Result<()> {
+    /// Zero the first byte of each 64-byte cache line in `[offset, offset + len)`.
+    ///
+    /// This mirrors turbo's XOR-JIT scratch reset, which invalidates cached code
+    /// regions by touching one byte per cache line instead of clearing the full
+    /// range.
+    pub fn clear_cacheline_markers_at(&mut self, offset: usize, len: usize) -> io::Result<()> {
         if offset
             .checked_add(len)
             .is_none_or(|end| end > self.capacity)
@@ -472,7 +477,7 @@ mod tests {
         let function: extern "sysv64" fn() -> u32 = unsafe { code.function() };
         assert_eq!(function(), 23);
 
-        code.clear_cacheline_bytes_at(0, 64).expect("clear");
+        code.clear_cacheline_markers_at(0, 64).expect("clear");
         let cleared = code.copy_prefix(64).expect("copy cleared bytes");
         let mut expected = generated.clone();
         expected.resize(64, 0);
@@ -516,7 +521,7 @@ mod tests {
             io::ErrorKind::InvalidInput
         );
         assert_eq!(
-            code.clear_cacheline_bytes_at(1, capacity)
+            code.clear_cacheline_markers_at(1, capacity)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidInput

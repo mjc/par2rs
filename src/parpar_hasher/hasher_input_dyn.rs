@@ -239,7 +239,7 @@ impl HasherInputDyn {
 
     pub fn backend_name(&self) -> &'static str {
         match self {
-            HasherInputDyn::Scalar(_) => "Scalar",
+            HasherInputDyn::Scalar(_) => "scalar",
         }
     }
 }
@@ -265,7 +265,7 @@ mod tests {
         #[cfg(target_arch = "x86_64")]
         assert!(matches!(name, "scalar" | "sse2" | "bmi1" | "avx512"));
         #[cfg(target_arch = "aarch64")]
-        assert!(matches!(name, "Scalar")); // or "neon" when ported
+        assert!(matches!(name, "scalar")); // or "neon" when ported
     }
 
     #[test]

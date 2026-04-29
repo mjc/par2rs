@@ -528,22 +528,23 @@ impl FileScanMetadata {
 
     pub fn has_duplicate_block_ambiguity(&self, target_file_id: FileId) -> bool {
         use rustc_hash::FxHashMap;
-        use rustc_hash::FxHashSet;
 
-        let mut block_numbers_by_offset: FxHashMap<usize, FxHashSet<u32>> = FxHashMap::default();
-        self.found_blocks
-            .iter()
-            .filter(|(_, file_id, _)| *file_id == target_file_id)
-            .for_each(|(offset, _, block_number)| {
-                block_numbers_by_offset
-                    .entry(*offset)
-                    .or_default()
-                    .insert(*block_number);
-            });
+        let mut first_block_by_offset: FxHashMap<usize, u32> = FxHashMap::default();
+        for (offset, file_id, block_number) in &self.found_blocks {
+            if *file_id != target_file_id {
+                continue;
+            }
 
-        block_numbers_by_offset
-            .values()
-            .any(|block_numbers| block_numbers.len() > 1)
+            match first_block_by_offset.get(offset) {
+                Some(first_block) if *first_block != *block_number => return true,
+                Some(_) => {}
+                None => {
+                    first_block_by_offset.insert(*offset, *block_number);
+                }
+            }
+        }
+
+        false
     }
 
     /// Record that a block was found at a specific file offset

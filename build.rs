@@ -14,7 +14,18 @@ fn main() {
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let md5_final = hasher.join("md5-final.c");
 
-    if target_arch != "x86_64" || !md5_final.exists() {
+    if target_arch != "x86_64" {
+        println!(
+            "cargo:warning=parpar-compare requested for unsupported target arch `{target_arch}`; skipping embedded ParPar build"
+        );
+        return;
+    }
+
+    if !md5_final.exists() {
+        println!(
+            "cargo:warning=parpar-compare requested but vendored ParPar sources are unavailable at {}; skipping embedded ParPar build",
+            parpar.display()
+        );
         return;
     }
 
