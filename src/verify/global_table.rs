@@ -217,13 +217,9 @@ impl GlobalBlockTable {
 
         for entries in self.crc_table.values() {
             for entry in entries {
-                if entry.position.file_id == file_id {
-                    file_blocks.push(entry);
-                    // Also collect duplicates
-                    for duplicate in entry.iter_duplicates().skip(1) {
-                        if duplicate.position.file_id == file_id {
-                            file_blocks.push(duplicate);
-                        }
+                for duplicate in entry.iter_duplicates() {
+                    if duplicate.position.file_id == file_id {
+                        file_blocks.push(duplicate);
                     }
                 }
             }
@@ -361,6 +357,11 @@ mod tests {
         let entry = &crc_results[0];
         let duplicates: Vec<_> = entry.iter_duplicates().collect();
         assert_eq!(duplicates.len(), 2);
+
+        let file2_blocks = table.get_file_blocks(file_id2);
+        assert_eq!(file2_blocks.len(), 1);
+        assert_eq!(file2_blocks[0].position.file_id, file_id2);
+        assert_eq!(file2_blocks[0].position.block_number, 5);
     }
 
     #[test]

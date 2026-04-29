@@ -434,6 +434,7 @@ impl GlobalVerificationEngine {
             blocks_available,
             total_blocks,
             &scan_metadata,
+            file_description.file_id,
             &file_description.md5_hash,
         );
 
@@ -1122,6 +1123,7 @@ impl GlobalVerificationEngine {
         blocks_available: BlockCount,
         total_blocks: BlockCount,
         metadata: &FileScanMetadata,
+        file_id: FileId,
         expected_hash: &Md5Hash,
     ) -> FileStatus {
         // First check basic block availability
@@ -1133,17 +1135,6 @@ impl GlobalVerificationEngine {
         }
 
         // All blocks found - check additional criteria from par2cmdline-turbo
-
-        // Check if blocks are perfectly aligned (first at offset 0 and in sequence)
-        // Reference: par2repairer.cpp:1722-1725, 1728-1732
-        if !metadata.is_perfect_match() {
-            log::debug!(
-                "File marked corrupted: not perfect match (first_at_zero={}, in_sequence={})",
-                metadata.first_block_at_offset_zero,
-                metadata.blocks_in_sequence
-            );
-            return FileStatus::Corrupted;
-        }
 
         // Check file hash matches (par2repairer.cpp:1851-1863)
         if let Some(actual_hash) = &metadata.actual_file_hash {
@@ -1158,6 +1149,19 @@ impl GlobalVerificationEngine {
         } else {
             // Could not compute hash - mark as corrupted
             log::debug!("File marked corrupted: no file hash computed");
+            return FileStatus::Corrupted;
+        }
+
+        // Check if blocks are perfectly aligned (first at offset 0 and in sequence).
+        // Duplicate-content files can legitimately match multiple logical blocks at
+        // the same physical offset; in that case the exact full-file hash above is
+        // authoritative for an intact target file.
+        if !metadata.is_perfect_match() && !metadata.has_duplicate_block_ambiguity(file_id) {
+            log::debug!(
+                "File marked corrupted: not perfect match (first_at_zero={}, in_sequence={})",
+                metadata.first_block_at_offset_zero,
+                metadata.blocks_in_sequence
+            );
             return FileStatus::Corrupted;
         }
 
@@ -2867,9 +2871,35 @@ mod tests {
                 BlockCount::new(1),
                 BlockCount::new(1),
                 &metadata,
+                FileId::new([1; 16]),
                 &expected_hash,
             ),
             FileStatus::Corrupted
+        );
+    }
+
+    #[test]
+    fn duplicate_block_ambiguity_with_matching_full_hash_is_present() {
+        let file_id = FileId::new([1; 16]);
+        let expected_hash = Md5Hash::new([9; 16]);
+        let mut metadata = FileScanMetadata::new();
+        metadata.first_block_at_offset_zero = true;
+        metadata.blocks_in_sequence = false;
+        metadata.actual_file_hash = Some(expected_hash);
+        metadata.record_block_found(0, file_id, 0);
+        metadata.record_block_found(0, file_id, 1);
+        metadata.record_block_found(1024, file_id, 0);
+        metadata.record_block_found(1024, file_id, 1);
+
+        assert_eq!(
+            GlobalVerificationEngine::determine_file_status_with_metadata(
+                BlockCount::new(2),
+                BlockCount::new(2),
+                &metadata,
+                file_id,
+                &expected_hash,
+            ),
+            FileStatus::Present
         );
     }
 
