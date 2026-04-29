@@ -109,6 +109,9 @@ impl VerificationTable {
     ) -> MatchResult {
         if let Some(expected_id) = next_expected {
             let entry = &self.entries[expected_id];
+            if entry.expected_block_length == 0 {
+                return MatchResult::default();
+            }
             if entry.next.is_none() {
                 let checksum = scanner.short_checksum(entry.expected_block_length);
                 if checksum == entry.crc32 {
@@ -145,6 +148,9 @@ impl VerificationTable {
         let mut exact_matches = SmallVec::<[EntryId; 4]>::new();
         for entry_id in bucket.iter().copied() {
             let entry = &self.entries[entry_id];
+            if entry.expected_block_length == 0 {
+                continue;
+            }
             if entry.md5 != hash {
                 continue;
             }
@@ -282,5 +288,32 @@ mod tests {
         let matched = result.matched.unwrap();
         assert_eq!(table.entry(matched).file_id, file_b);
         assert_eq!(result.exact_matches.len(), 2);
+    }
+
+    #[test]
+    fn ignores_zero_length_entries_from_malformed_metadata() {
+        let data = vec![0x22; 16];
+        let md5 = compute_md5_only(&data);
+        let crc32 = compute_crc32(&data);
+        let file_id = FileId::new([3; 16]);
+
+        let mut builder = GlobalBlockTableBuilder::new(16);
+        builder.add_file_blocks(file_id, &[(md5, crc32), (md5, crc32)]);
+        let block_table = builder.build();
+
+        // Malformed metadata: file length covers only the first block, so the
+        // second entry's expected length is driven to zero.
+        let desc = test_desc(file_id, 16, "bad.bin", md5, md5);
+        let table = VerificationTable::from_block_table(&block_table, &[&desc]);
+        assert_eq!(table.entry(1).expected_block_length, 0);
+
+        let mut temp = NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut temp, &data).unwrap();
+        let mut scanner = TurboFileScanner::open(temp.path(), 16).unwrap();
+        scanner.start().unwrap();
+
+        let result = table.find_match(Some(1), Some(file_id), &mut scanner);
+        assert!(result.matched.is_none());
+        assert!(result.exact_matches.is_empty());
     }
 }

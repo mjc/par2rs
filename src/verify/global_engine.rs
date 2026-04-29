@@ -532,6 +532,14 @@ impl GlobalVerificationEngine {
                 }
 
                 let entry = verification_table.entry(entry_id);
+                if entry.expected_block_length == 0 {
+                    next_expected = None;
+                    if scanner.step().is_err() {
+                        break;
+                    }
+                    Self::report_progress_by_offset(reporter_lock, scanner.offset(), file_size);
+                    continue;
+                }
                 next_expected = entry.next;
                 if scanner.jump(entry.expected_block_length as u64).is_err() {
                     break;
