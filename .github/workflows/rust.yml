@@ -95,9 +95,55 @@ jobs:
         run: |
           echo "✓ aarch64-unknown-linux-gnu build succeeded"
           echo "  - Architecture separation validated"
-          echo "  - x86_64 backends: hasher_input, md5x2_scalar, md5x2_sse2, md5x2_bmi1, md5x2_avx512"
+          echo "  - x86_64 backends: hasher_input, md5x2_scalar, md5x2_sse2,"
+          echo "    md5x2_bmi1, md5x2_avx512"
           echo "  - aarch64 backends: md5x2_scalar, md5x2_neon, crc_armcrc"
           echo "  - Shared: md5x2 trait"
+
+  build-windows-binaries:
+    runs-on: windows-latest
+    name: Build Windows binaries
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "build-windows-binaries"
+          cache-on-failure: true
+
+      - name: Build release binaries
+        run: cargo build --release --bins --target x86_64-pc-windows-msvc
+
+      - name: Package Windows binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive `
+            -Path `
+              target/x86_64-pc-windows-msvc/release/par2.exe, `
+              target/x86_64-pc-windows-msvc/release/par2create.exe, `
+              target/x86_64-pc-windows-msvc/release/par2repair.exe, `
+              target/x86_64-pc-windows-msvc/release/par2verify.exe `
+            -DestinationPath dist/par2rs-windows-x86_64.zip
+
+      - name: Upload Windows binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: par2rs-windows-x86_64
+          path: |
+            dist/par2rs-windows-x86_64.zip
+            target/x86_64-pc-windows-msvc/release/par2.exe
+            target/x86_64-pc-windows-msvc/release/par2create.exe
+            target/x86_64-pc-windows-msvc/release/par2repair.exe
+            target/x86_64-pc-windows-msvc/release/par2verify.exe
 
   coverage:
     runs-on: ubuntu-latest
