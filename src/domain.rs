@@ -517,3 +517,118 @@ impl std::fmt::Display for FileSize {
         write!(f, "{}", self.0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn hash_newtypes_expose_their_underlying_bytes() {
+        let bytes = [0x5Au8; 16];
+
+        let file_id = FileId::new(bytes);
+        let recovery_set_id = RecoverySetId::from(bytes);
+        let md5 = Md5Hash::from(bytes);
+
+        assert_eq!(file_id.as_bytes(), &bytes);
+        assert_eq!(file_id.as_ref(), &bytes);
+        assert_eq!(file_id, bytes);
+        assert_eq!(bytes, file_id);
+
+        assert_eq!(recovery_set_id.as_bytes(), &bytes);
+        assert_eq!(recovery_set_id.as_ref(), &bytes);
+        assert_eq!(recovery_set_id, bytes);
+        assert_eq!(bytes, recovery_set_id);
+
+        assert_eq!(md5.as_bytes(), &bytes);
+        assert_eq!(md5.as_ref(), &bytes);
+        assert_eq!(md5.len(), 16);
+        assert_eq!(md5, bytes);
+        assert_eq!(bytes, md5);
+    }
+
+    #[test]
+    fn index_and_count_newtypes_support_expected_arithmetic() {
+        let global = GlobalSliceIndex::new(11);
+        let local = LocalSliceIndex::new(7);
+        let mut total_blocks = BlockCount::new(5);
+
+        assert_eq!((global + 4).as_usize(), 15);
+        assert_eq!(global - GlobalSliceIndex::new(3), 8);
+        assert_eq!(local.to_global(GlobalSliceIndex::new(20)).as_usize(), 27);
+        assert_eq!(local.as_usize(), 7);
+        assert_eq!(format!("{global}"), "11");
+        assert_eq!(format!("{local}"), "7");
+
+        assert_eq!(SourceBlockCount::new(9).as_u32(), 9);
+        assert_eq!(SourceBlockCount::new(9).as_usize(), 9);
+        assert_eq!(SourceBlockCount::new(9).as_u64(), 9);
+
+        assert_eq!((BlockCount::new(2) + BlockCount::new(3)).as_u32(), 5);
+        assert_eq!((BlockCount::new(9) - BlockCount::new(4)).as_u32(), 5);
+        assert_eq!(BlockCount::new(9) - 4usize, 5);
+        total_blocks += BlockCount::new(6);
+        assert_eq!(total_blocks.as_usize(), 11);
+        assert_eq!(
+            [BlockCount::new(1), BlockCount::new(2), BlockCount::new(3)]
+                .into_iter()
+                .sum::<BlockCount>()
+                .as_u32(),
+            6
+        );
+        assert_eq!(format!("{total_blocks}"), "11");
+    }
+
+    #[test]
+    fn numeric_wrapper_types_preserve_conversion_and_formatting_behavior() {
+        let crc = Crc32Value::new(0x1234_ABCD);
+        let block_size = BlockSize::new(4096);
+        let chunk_size = ChunkSize::new(2048);
+        let file_size = FileSize::new(10_000);
+
+        assert_eq!(crc.as_u32(), 0x1234_ABCD);
+        assert_eq!(crc.to_le_bytes(), 0x1234_ABCDu32.to_le_bytes());
+        assert_eq!(crc, 0x1234_ABCD);
+        assert_eq!(0x1234_ABCD, crc);
+        assert_eq!(format!("{crc}"), "1234abcd");
+
+        assert_eq!(block_size.as_u64(), 4096);
+        assert_eq!(block_size.as_usize(), 4096);
+        assert_eq!(8193u64 % block_size, 1);
+        assert_eq!(block_size - 96, 4000);
+        assert_eq!(block_size, 4096);
+        assert!(block_size > 1024);
+        assert_eq!(format!("{block_size}"), "4096");
+
+        assert_eq!(chunk_size.as_usize(), 2048);
+        assert_eq!(chunk_size, 2048);
+        assert!(chunk_size > 1024);
+        assert_eq!(format!("{chunk_size}"), "2048");
+
+        assert_eq!(file_size.as_u64(), 10_000);
+        assert_eq!(file_size.as_usize(), 10_000);
+        assert_eq!(file_size % block_size, 1808);
+        assert_eq!(
+            [FileSize::new(3), FileSize::new(4), FileSize::new(5)]
+                .into_iter()
+                .sum::<FileSize>()
+                .as_u64(),
+            12
+        );
+        assert_eq!(file_size, 10_000);
+        assert!(file_size > 9_000);
+        assert_eq!(format!("{file_size}"), "10000");
+    }
+
+    proptest! {
+        #[test]
+        fn local_indices_round_trip_through_global_offsets(local in 0usize..1_000_000, offset in 0usize..1_000_000) {
+            let local_index = LocalSliceIndex::new(local);
+            let global_index = local_index.to_global(GlobalSliceIndex::new(offset));
+
+            prop_assert_eq!(global_index.as_usize(), local + offset);
+            prop_assert_eq!(global_index - GlobalSliceIndex::new(offset), local);
+        }
+    }
+}
