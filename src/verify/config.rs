@@ -173,6 +173,30 @@ impl VerificationConfig {
 #[cfg(test)]
 mod tests {
     use super::VerificationConfig;
+    use clap::{Arg, ArgAction, Command};
+
+    fn verify_app() -> Command {
+        Command::new("test")
+            .arg(Arg::new("threads").long("threads"))
+            .arg(
+                Arg::new("no-parallel")
+                    .long("no-parallel")
+                    .action(ArgAction::SetTrue),
+            )
+            .arg(Arg::new("memory").short('m'))
+            .arg(Arg::new("file_threads").short('T'))
+            .arg(
+                Arg::new("data_skipping")
+                    .short('N')
+                    .action(ArgAction::SetTrue),
+            )
+            .arg(Arg::new("skip_leeway").short('S'))
+            .arg(
+                Arg::new("rename_only")
+                    .short('O')
+                    .action(ArgAction::SetTrue),
+            )
+    }
 
     #[test]
     fn file_scans_can_parallelize_from_file_threads_alone() {
@@ -193,5 +217,58 @@ mod tests {
         let mut config = VerificationConfig::new(8, true);
         config.file_threads = Some(1);
         assert!(!config.should_parallelize_file_scans());
+    }
+
+    #[test]
+    fn for_repair_enables_skip_full_file_md5_without_changing_parallel_policy() {
+        let config = VerificationConfig::for_repair(6, true);
+
+        assert_eq!(config.threads, 6);
+        assert!(config.parallel);
+        assert!(config.skip_full_file_md5);
+        assert_eq!(config.memory_limit, None);
+        assert_eq!(config.file_threads, None);
+        assert!(!config.data_skipping);
+        assert_eq!(config.skip_leeway, 0);
+        assert!(!config.rename_only);
+    }
+
+    #[test]
+    fn should_parallelize_depends_on_effective_thread_count() {
+        assert!(!VerificationConfig::new(1, true).should_parallelize());
+        assert!(VerificationConfig::new(2, true).should_parallelize());
+        assert!(!VerificationConfig::new(8, false).should_parallelize());
+    }
+
+    #[test]
+    fn try_from_args_parses_rename_only_and_resource_flags() {
+        let matches = verify_app().get_matches_from(vec![
+            "test",
+            "--threads",
+            "4",
+            "-m16",
+            "-T2",
+            "-N",
+            "-S10",
+            "-O",
+        ]);
+
+        let config = VerificationConfig::try_from_args(&matches).unwrap();
+
+        assert_eq!(config.threads, 4);
+        assert!(config.parallel);
+        assert_eq!(config.memory_limit, Some(16 * 1024 * 1024));
+        assert_eq!(config.file_threads, Some(2));
+        assert!(config.data_skipping);
+        assert_eq!(config.skip_leeway, 10);
+        assert!(config.rename_only);
+    }
+
+    #[test]
+    fn try_from_args_rejects_invalid_thread_counts() {
+        let matches = verify_app().get_matches_from(vec!["test", "--threads", "invalid"]);
+
+        let error = VerificationConfig::try_from_args(&matches).unwrap_err();
+        assert!(error.contains("Invalid thread count: invalid"));
     }
 }

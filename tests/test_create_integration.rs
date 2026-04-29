@@ -79,6 +79,54 @@ fn run_par2_create(
     Ok(output.status.success())
 }
 
+fn run_par2_create_with_block_size(
+    output_name: &Path,
+    source_files: &[&Path],
+    redundancy: u32,
+    block_size: usize,
+) -> std::io::Result<bool> {
+    let output_dir = output_name.parent().unwrap();
+    let output_filename = output_name.file_name().unwrap();
+
+    let mut cmd = Command::new("par2");
+    cmd.current_dir(output_dir)
+        .arg("create")
+        .arg("-q")
+        .arg("-q")
+        .arg(format!("-s{block_size}"))
+        .arg(format!("-r{redundancy}"))
+        .arg("-n1")
+        .arg(output_filename);
+
+    source_files
+        .iter()
+        .map(|file| {
+            file.parent()
+                .filter(|parent| *parent == output_dir)
+                .and_then(|_| file.file_name())
+                .and_then(|name| name.to_str())
+                .map_or_else(|| file.to_string_lossy().into_owned(), str::to_owned)
+        })
+        .for_each(|file_arg| {
+            cmd.arg(file_arg);
+        });
+
+    let output = cmd.output()?;
+    Ok(output.status.success())
+}
+
+fn verify_with_par2rs(par2_file: &Path) -> par2rs::verify::VerificationResults {
+    let par2_files = par2rs::par2_files::collect_par2_files(par2_file);
+    let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false, false);
+    let base_dir = packet_set.base_dir.clone();
+    par2rs::verify::comprehensive_verify_files(
+        packet_set,
+        &par2rs::verify::VerificationConfig::default(),
+        &par2rs::reporters::SilentVerificationReporter,
+        base_dir,
+    )
+}
+
 fn file_description_names(par2_file: &Path) -> Vec<String> {
     let par2_files = vec![par2_file.to_path_buf()];
     let packet_set = par2rs::par2_files::load_par2_packets(&par2_files, false, false);
@@ -96,6 +144,38 @@ fn file_description_names(par2_file: &Path) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn par2rs_verifies_turbo_created_duplicate_content_files() {
+    if !par2_available() {
+        eprintln!("Skipping test: par2cmdline-turbo not available");
+        return;
+    }
+
+    [0x00, 0xFF].into_iter().for_each(|pattern| {
+        let temp = tempdir().unwrap();
+        let files = (0..4)
+            .map(|idx| {
+                let path = temp.path().join(format!("duplicate_{idx}.bin"));
+                create_test_file(&path, 256 * 1024, pattern).unwrap();
+                path
+            })
+            .collect::<Vec<_>>();
+        let file_refs = files.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+        let par2_file = temp.path().join(format!("turbo_{pattern:02x}.par2"));
+
+        assert!(
+            run_par2_create_with_block_size(&par2_file, &file_refs, 10, 64 * 1024).unwrap(),
+            "par2cmdline-turbo failed to create duplicate-content PAR2 set"
+        );
+
+        let results = verify_with_par2rs(&par2_file);
+        assert!(
+            results.corrupted_file_count == 0 && results.missing_file_count == 0,
+            "par2rs failed to verify turbo duplicate-content set: {results:?}"
+        );
+    });
 }
 
 #[test]
@@ -270,6 +350,39 @@ fn test_create_with_explicit_block_size() {
     assert!(
         run_par2_verify(&par2_file).unwrap(),
         "par2cmdline-turbo failed to verify PAR2 files with explicit block size"
+    );
+}
+
+#[test]
+fn test_create_with_large_block_size_verifies_with_par2cmdline() {
+    if !par2_available() {
+        eprintln!("Skipping test: par2cmdline-turbo not available");
+        return;
+    }
+
+    let temp = tempdir().unwrap();
+    let test_file = temp.path().join("large_block.dat");
+    let par2_file = temp.path().join("large_block.par2");
+
+    // Keep the source small enough for the test to run quickly while forcing
+    // create to honor a large explicit block size.
+    create_test_file(&test_file, 2 * 1024 * 1024, 0x44).unwrap();
+
+    let reporter = Box::new(par2rs::create::ConsoleCreateReporter::new(true));
+    let mut context = par2rs::create::CreateContextBuilder::new()
+        .output_name(par2_file.to_str().unwrap())
+        .source_files(vec![test_file.clone()])
+        .block_size(64 * 1024 * 1024)
+        .recovery_block_count(1)
+        .reporter(reporter)
+        .build()
+        .unwrap();
+
+    context.create().unwrap();
+
+    assert!(
+        run_par2_verify(&par2_file).unwrap(),
+        "par2cmdline-turbo failed to verify large-block create output"
     );
 }
 
