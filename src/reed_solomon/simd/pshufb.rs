@@ -313,8 +313,8 @@ pub unsafe fn process_slices_multiply_add_prepared_avx2_x2(
 ) {
     let len = input_a.len().min(input_b.len()).min(output.len());
     if len < 32 {
-        process_slice_multiply_add_scalar(input_a, output, scalar_a);
-        process_slice_multiply_add_scalar(input_b, output, scalar_b);
+        process_slice_multiply_add_scalar(&input_a[..len], &mut output[..len], scalar_a);
+        process_slice_multiply_add_scalar(&input_b[..len], &mut output[..len], scalar_b);
         return;
     }
 
@@ -396,10 +396,10 @@ pub unsafe fn process_slices_multiply_add_prepared_avx2_x4(
         .min(input_d.len())
         .min(output.len());
     if len < 32 {
-        process_slice_multiply_add_scalar(input_a, output, scalar_a);
-        process_slice_multiply_add_scalar(input_b, output, scalar_b);
-        process_slice_multiply_add_scalar(input_c, output, scalar_c);
-        process_slice_multiply_add_scalar(input_d, output, scalar_d);
+        process_slice_multiply_add_scalar(&input_a[..len], &mut output[..len], scalar_a);
+        process_slice_multiply_add_scalar(&input_b[..len], &mut output[..len], scalar_b);
+        process_slice_multiply_add_scalar(&input_c[..len], &mut output[..len], scalar_c);
+        process_slice_multiply_add_scalar(&input_d[..len], &mut output[..len], scalar_d);
         return;
     }
 
@@ -628,6 +628,64 @@ mod tests {
             });
 
         let mut actual = vec![0u8; 255];
+        unsafe {
+            process_slices_multiply_add_prepared_avx2_x4(
+                &inputs[0],
+                &coeffs[0].1,
+                &coeffs[0].0,
+                &inputs[1],
+                &coeffs[1].1,
+                &coeffs[1].0,
+                &inputs[2],
+                &coeffs[2].1,
+                &coeffs[2].0,
+                &inputs[3],
+                &coeffs[3].1,
+                &coeffs[3].0,
+                &mut actual,
+            );
+        }
+
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn process_slices_multiply_add_prepared_avx2_x4_small_mismatched_buffers_respects_min_len() {
+        if !std::is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let inputs = [
+            (0..31).map(|idx| (idx * 3) as u8).collect::<Vec<_>>(),
+            (0..19).map(|idx| (idx * 5 + 1) as u8).collect::<Vec<_>>(),
+            (0..23).map(|idx| (idx * 7 + 2) as u8).collect::<Vec<_>>(),
+            (0..29).map(|idx| (idx * 11 + 3) as u8).collect::<Vec<_>>(),
+        ];
+        let coeffs = [13, 17, 19, 23]
+            .into_iter()
+            .map(|value| {
+                let split = build_split_mul_table(Galois16::new(value));
+                let prepared = prepare_avx2_coeff(&split);
+                (split, prepared)
+            })
+            .collect::<Vec<_>>();
+
+        let len = inputs
+            .iter()
+            .map(Vec::len)
+            .chain(std::iter::once(27))
+            .min()
+            .unwrap();
+        let mut expected = vec![0xA5; 27];
+        inputs
+            .iter()
+            .zip(coeffs.iter())
+            .for_each(|(input, (split, _))| {
+                process_slice_multiply_add(&input[..len], &mut expected[..len], split)
+            });
+
+        let mut actual = vec![0xA5; 27];
         unsafe {
             process_slices_multiply_add_prepared_avx2_x4(
                 &inputs[0],

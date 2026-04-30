@@ -118,7 +118,7 @@ impl HasherInputDyn {
             HasherInputDyn::Sse2(_) => "sse2",
             HasherInputDyn::Bmi1(_) => "bmi1",
             HasherInputDyn::Avx512(_) => "avx512",
-            HasherInputDyn::Portable(_) => "scalar",
+            HasherInputDyn::Portable(_) => "portable",
         }
     }
 
@@ -263,7 +263,10 @@ mod tests {
         let h = HasherInputDyn::new();
         let name = h.backend_name();
         #[cfg(target_arch = "x86_64")]
-        assert!(matches!(name, "scalar" | "sse2" | "bmi1" | "avx512"));
+        assert!(matches!(
+            name,
+            "scalar" | "sse2" | "bmi1" | "avx512" | "portable"
+        ));
         #[cfg(target_arch = "aarch64")]
         assert!(matches!(name, "scalar")); // or "neon" when ported
     }
