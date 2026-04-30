@@ -65,31 +65,22 @@ fn parpar_hash(method: HasherInputMethod, data: &[u8]) -> [u8; 16] {
     *hasher.finalize().as_bytes()
 }
 
+fn assert_parpar_matches(method: HasherInputMethod, rust_digest: [u8; 16], data: &[u8]) {
+    if method.is_available() {
+        assert_eq!(rust_digest, parpar_hash(method, data));
+    }
+}
+
 #[test]
 fn parpar_matches_par2rs_on_fixed_buffers() {
     for size in [0usize, 1, 63, 64, 65, 1024, 16 * 1024, 4 * 1024 * 1024] {
         let data = make_data(size);
 
-        assert_eq!(
-            par2rs_hash_scalar(&data),
-            parpar_hash(HasherInputMethod::Scalar, &data)
-        );
-        assert_eq!(
-            par2rs_hash_sse2(&data),
-            parpar_hash(HasherInputMethod::Simd, &data)
-        );
-        assert_eq!(
-            par2rs_hash_scalar(&data),
-            parpar_hash(HasherInputMethod::Crc, &data)
-        );
-        assert_eq!(
-            par2rs_hash_sse2(&data),
-            parpar_hash(HasherInputMethod::SimdCrc, &data)
-        );
-        assert_eq!(
-            par2rs_hash_bmi1(&data),
-            parpar_hash(HasherInputMethod::Bmi1, &data)
-        );
+        assert_parpar_matches(HasherInputMethod::Scalar, par2rs_hash_scalar(&data), &data);
+        assert_parpar_matches(HasherInputMethod::Simd, par2rs_hash_sse2(&data), &data);
+        assert_parpar_matches(HasherInputMethod::Crc, par2rs_hash_scalar(&data), &data);
+        assert_parpar_matches(HasherInputMethod::SimdCrc, par2rs_hash_sse2(&data), &data);
+        assert_parpar_matches(HasherInputMethod::Bmi1, par2rs_hash_bmi1(&data), &data);
         if let Some(rust) = par2rs_hash_avx512(&data) {
             assert_eq!(rust, parpar_hash(HasherInputMethod::Avx512, &data));
         }
