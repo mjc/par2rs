@@ -2,11 +2,13 @@
 name = "par2rs"
 version = "0.1.0"
 edition = "2021"
-license = "GPL-3.0-only"
+license = "GPL-2.0-or-later"
 
 [features]
 # Feature flag to skip tests that are unsuitable in Nix builds
 nix-build = []
+# Feature for ParPar C++ FFI comparison (benchmarks only, adds build time)
+parpar-compare = []
 
 [dependencies]
 binrw = "*"
@@ -24,6 +26,10 @@ rustc-hash = "2.1"
 thiserror = "2.0.17"
 anyhow = "1.0"
 smallvec = { version = "1.15.1", features = ["const_generics"] }
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_System_SystemInformation"] }
 
 # Binaries
 [[bin]]
@@ -42,6 +48,10 @@ path = "src/bin/par2repair.rs"
 name = "par2create"
 path = "src/bin/par2create.rs"
 
+[build-dependencies]
+# C++ compiler for conditional ParPar FFI compilation
+cc = "1.0"
+
 [dev-dependencies]
 # Temporary directory management for tests
 tempfile = "3"
@@ -53,6 +63,8 @@ iai-callgrind = "0.16"
 proptest = "1.5"
 # Random number generation for tests
 rand = "0.9"
+# CRC32 alternative under evaluation vs crc32fast (bench-only for now)
+crc-fast = "1.4"
 
 [[bench]]
 name = "repair_benchmark"
@@ -76,6 +88,42 @@ harness = false
 
 [[bench]]
 name = "iai_simd"
+harness = false
+
+[[bench]]
+name = "fused_hashing"
+harness = false
+
+[[bench]]
+name = "crc_compare"
+harness = false
+
+[[bench]]
+name = "md5x2_crc_fused"
+harness = false
+
+[[bench]]
+name = "parpar_hasher_input"
+harness = false
+
+[[bench]]
+name = "iai_hasher_input"
+harness = false
+
+[[bench]]
+name = "compare_with_parpar"
+harness = false
+
+[[bench]]
+name = "iai_parpar_comparison"
+harness = false
+
+[[bench]]
+name = "par2verify_compare"
+harness = false
+
+[[bench]]
+name = "iai_par2verify_compare"
 harness = false
 
 [profile.release]

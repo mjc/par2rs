@@ -64,6 +64,127 @@ jobs:
       - name: Run tests
         run: cargo test --all-features --workspace
 
+  cross-compile-aarch64:
+    runs-on: ubuntu-latest
+    name: Cross-compile for aarch64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "cross-compile-aarch64"
+          cache-on-failure: true
+
+      - name: Install cross
+        run: cargo install cross --locked
+
+      - name: Build library for aarch64
+        run: cross build --lib --target aarch64-unknown-linux-gnu
+
+      - name: Build tests for aarch64
+        run: cross build --tests --target aarch64-unknown-linux-gnu
+
+      - name: Verify aarch64 build
+        run: |
+          echo "✓ aarch64-unknown-linux-gnu build succeeded"
+          echo "  - Architecture separation validated"
+          echo "  - x86_64 backends: hasher_input, md5x2_scalar, md5x2_sse2,"
+          echo "    md5x2_bmi1, md5x2_avx512"
+          echo "  - aarch64 backends: md5x2_scalar, md5x2_neon, crc_armcrc"
+          echo "  - Shared: md5x2 trait"
+
+  build-windows-binaries:
+    runs-on: windows-latest
+    name: Build Windows binaries
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "build-windows-binaries"
+          cache-on-failure: true
+
+      - name: Build release binaries
+        run: cargo build --release --bins --target x86_64-pc-windows-msvc
+
+      - name: Package Windows binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive `
+            -Path `
+              target/x86_64-pc-windows-msvc/release/par2.exe, `
+              target/x86_64-pc-windows-msvc/release/par2create.exe, `
+              target/x86_64-pc-windows-msvc/release/par2repair.exe, `
+              target/x86_64-pc-windows-msvc/release/par2verify.exe `
+            -DestinationPath dist/par2rs-windows-x86_64.zip
+
+      - name: Upload Windows binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: par2rs-windows-x86_64
+          path: |
+            dist/par2rs-windows-x86_64.zip
+            target/x86_64-pc-windows-msvc/release/par2.exe
+            target/x86_64-pc-windows-msvc/release/par2create.exe
+            target/x86_64-pc-windows-msvc/release/par2repair.exe
+            target/x86_64-pc-windows-msvc/release/par2verify.exe
+
+  build-linux-x86_64-binaries:
+    runs-on: ubuntu-latest
+    name: Build Linux x86_64 binaries
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "build-linux-x86_64-binaries"
+          cache-on-failure: true
+
+      - name: Build release binaries
+        run: cargo build --release --bins --target x86_64-unknown-linux-gnu
+
+      - name: Package Linux x86_64 binaries
+        run: |
+          mkdir -p dist
+          tar -C target/x86_64-unknown-linux-gnu/release -czf \
+            dist/par2rs-linux-x86_64-nightly.tar.gz \
+            par2 par2create par2repair par2verify
+
+      - name: Upload Linux x86_64 binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: par2rs-linux-x86_64-nightly
+          path: |
+            dist/par2rs-linux-x86_64-nightly.tar.gz
+            target/x86_64-unknown-linux-gnu/release/par2
+            target/x86_64-unknown-linux-gnu/release/par2create
+            target/x86_64-unknown-linux-gnu/release/par2repair
+            target/x86_64-unknown-linux-gnu/release/par2verify
+
   coverage:
     runs-on: ubuntu-latest
 

@@ -38,3 +38,43 @@ impl From<std::io::Error> for VerificationError {
 
 /// Type alias for verification results
 pub type VerificationResult<T> = Result<T, VerificationError>;
+
+#[cfg(test)]
+mod tests {
+    use super::{VerificationError, VerificationResult};
+
+    #[test]
+    fn display_messages_match_error_variant() {
+        let cases = [
+            (
+                VerificationError::Io("disk failed".to_string()),
+                "I/O error: disk failed",
+            ),
+            (
+                VerificationError::ChecksumCalculation("bad md5".to_string()),
+                "Checksum calculation error: bad md5",
+            ),
+            (
+                VerificationError::InvalidMetadata("missing packet".to_string()),
+                "Invalid metadata: missing packet",
+            ),
+            (
+                VerificationError::CorruptedData("wrong crc".to_string()),
+                "Corrupted data: wrong crc",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn io_errors_convert_and_type_alias_is_usable() {
+        let error = VerificationError::from(std::io::Error::other("boom"));
+        assert!(matches!(error, VerificationError::Io(message) if message.contains("boom")));
+
+        let result: VerificationResult<u32> = Ok(7);
+        assert_eq!(result.unwrap(), 7);
+    }
+}

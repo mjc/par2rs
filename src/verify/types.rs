@@ -526,6 +526,27 @@ impl FileScanMetadata {
         self.first_block_at_offset_zero && self.blocks_in_sequence
     }
 
+    pub fn has_duplicate_block_ambiguity(&self, target_file_id: FileId) -> bool {
+        use rustc_hash::FxHashMap;
+
+        let mut first_block_by_offset: FxHashMap<usize, u32> = FxHashMap::default();
+        for (offset, file_id, block_number) in &self.found_blocks {
+            if *file_id != target_file_id {
+                continue;
+            }
+
+            match first_block_by_offset.get(offset) {
+                Some(first_block) if *first_block != *block_number => return true,
+                Some(_) => {}
+                None => {
+                    first_block_by_offset.insert(*offset, *block_number);
+                }
+            }
+        }
+
+        false
+    }
+
     /// Record that a block was found at a specific file offset
     pub fn record_block_found(&mut self, file_offset: usize, file_id: FileId, block_number: u32) {
         self.found_blocks.push((file_offset, file_id, block_number));

@@ -14,6 +14,7 @@
 pub mod common;
 pub mod portable;
 pub mod pshufb;
+pub mod xor_jit;
 
 use super::codec::SplitMulTable;
 
@@ -26,7 +27,24 @@ pub use portable::process_slice_multiply_add_portable_simd;
 pub use pshufb::{
     prepare_avx2_coeff, process_slice_multiply_add_prepared_avx2,
     process_slice_multiply_add_pshufb, process_slices_multiply_add_prepared_avx2_x2,
-    Avx2PreparedCoeff,
+    process_slices_multiply_add_prepared_avx2_x4, Avx2PreparedCoeff,
+};
+
+#[cfg(target_arch = "x86_64")]
+#[doc(hidden)]
+pub use xor_jit::{
+    finish_xor_jit_bitplane_chunks, finish_xor_jit_bitplane_packed_output_cksum,
+    finish_xor_jit_bitplane_partial_packsum, prepare_xor_jit_bitplane_chunks,
+    prepare_xor_jit_bitplane_packed_input_cksum, prepare_xor_jit_bitplane_partial_packsum,
+    prepare_xor_jit_bitplane_segment, process_slice_multiply_add_xor_jit,
+    process_slices_multiply_add_xor_jit_x2, process_slices_multiply_add_xor_jit_x4,
+    process_slices_multiply_add_xor_jit_x4_inputs_x2_outputs,
+    process_slices_multiply_add_xor_jit_x4_inputs_x4_outputs, xor_jit_create_avx2_method_info,
+    xor_jit_create_output_prefetch_rounds, xor_jit_create_prefetch_plan,
+    xor_packed_multi_region_v16i1, xor_packed_multi_region_v16i1_ptr, xor_prepared_bitplane_chunks,
+    xor_prepared_bitplane_multi_chunks, xor_prepared_bitplane_multi_chunks_v1i6,
+    BitplaneAddPrefetchKind, XorJitBitplaneKernel, XorJitBitplaneScratch, XorJitCreateMethodInfo,
+    XorJitCreatePrefetchPlan, XorJitFlavor, XorJitPreparedCoeff, XorJitPreparedCoeffCache,
 };
 
 /// SIMD implementation to use for the current platform
