@@ -82,15 +82,15 @@ pub fn compute_crc32_padded(data: &[u8], block_size: usize) -> Crc32Value {
 // Combined MD5 + CRC32 (Performance Optimization)
 // ============================================================================
 
-/// Compute both MD5 hash and CRC32 checksum in a single pass
+/// Compute both MD5 hash and CRC32 checksum with cache-local chunking.
 ///
 /// This is more efficient than calling `compute_md5()` and `compute_crc32()`
-/// separately, as it only reads the data once and processes it in parallel.
+/// separately, as each chunk is fed to both hashers while still hot in cache.
 ///
 /// PAR2 frequently needs both checksums for block verification (CRC32 for
 /// fast pre-screening, MD5 for cryptographic verification).
 ///
-/// Uses simultaneous computation for optimal performance (40-60% faster than separate calls).
+/// Uses paired chunk updates for better cache locality than separate calls.
 #[inline]
 pub fn compute_block_checksums(data: &[u8]) -> (Md5Hash, Crc32Value) {
     compute_md5_crc32_simultaneous(data)
